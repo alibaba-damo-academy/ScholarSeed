@@ -1,0 +1,240 @@
+{
+  "core_revision": "efaf0670b4d055f838a2849becb10f08aa06a257",
+  "translations_revision": "5acb9e94995b78727200faa5d89f2d8b72002e2e",
+  "locales": [
+    "en-US",
+    "zh-CN"
+  ],
+  "default_locale": "zh-CN",
+  "english_source": "Original frozen ZetaOffice soffice.data and WASM source messages",
+  "data": {
+    "file": "locales.data",
+    "bytes": 3793352,
+    "sha256": "e4a7ef658c850e6298623f7d13b77cad24e2c91b761705ae6f8fcafd305b8f6b"
+  },
+  "residuals": "locales-residuals.json",
+  "files": [
+    {
+      "path": "/instdir/share/registry/Langpack-zh-CN.xcd",
+      "start": 0,
+      "end": 481,
+      "sha256": "042451ff3ebeadfcee9168b046a370656476885c7b16c8ea97273b2c8b37ddf1"
+    },
+    {
+      "path": "/instdir/share/registry/res/registry_zh-CN.xcd",
+      "start": 481,
+      "end": 692462,
+      "sha256": "98a2b4fc9436de784a82ff937ba744cc2aeb2cdaf35aaf0ed0c68b42bc3366b0"
+    },
+    {
+      "path": "/instdir/share/registry/res/fcfg_langpack_zh-CN.xcd",
+      "start": 692462,
+      "end": 723252,
+      "sha256": "330f1d04f673118f095919dece9bd0f332fa5b447f768c208ebce883b14bea20"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/acc.mo",
+      "start": 723252,
+      "end": 725343,
+      "sha256": "f1ea9f131a32cccdf49689b46aaac7e607a1f9aec404cadfe7f82452d3cb6a6b"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/avmedia.mo",
+      "start": 725343,
+      "end": 727658,
+      "sha256": "984ef9d34a8966acd9b05c65efa18659374da23415a06c4853ce477ceb8b4dab"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/basctl.mo",
+      "start": 727658,
+      "end": 752566,
+      "sha256": "97505c37e5f30fa1852ab6ec74514d7510c70e2ed0b027792d98f489a57eed1c"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sb.mo",
+      "start": 752566,
+      "end": 766631,
+      "sha256": "41a3b06edf713d05d0dc3f244fbbf69a07d8b579bcf4d4f4203347ae3ed8bc2a"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/chart.mo",
+      "start": 766631,
+      "end": 872536,
+      "sha256": "6af3d90959dcb67a0c0dfa0bbb5c01bec493cd76c873b24d2398f562e363cd32"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/cnr.mo",
+      "start": 872536,
+      "end": 889161,
+      "sha256": "8876cf24bdf91ed76f79e78ea17a23fee4d562002c7d464c6c44194f0e2cb17a"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/cui.mo",
+      "start": 889161,
+      "end": 1378245,
+      "sha256": "6c2ddc05af93662a1f14bf436013389ce7b0c7ef4633d14885d672ebfdbade01"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/dba.mo",
+      "start": 1378245,
+      "end": 1482329,
+      "sha256": "4f8c809c6048b4c47e7ec07b460b4caf335451d2b45cc5728311738bcc844b8b"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/dkt.mo",
+      "start": 1482329,
+      "end": 1511874,
+      "sha256": "5b87db421877dad8306c39e88165d1963a78fa9ce4fb8154db604f0647bb5a0f"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/editeng.mo",
+      "start": 1511874,
+      "end": 1535815,
+      "sha256": "97c7283efb9839d2b29fcc44c7c50dd34a4b98bf6d32cb4a1b63d840e7547481"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/pcr.mo",
+      "start": 1535815,
+      "end": 1602301,
+      "sha256": "10b7e1d829f022060ee16d9a3fc8746ec9bc81ea2dabe395444779577813ecfd"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/flt.mo",
+      "start": 1602301,
+      "end": 1654753,
+      "sha256": "0a777b25e1c97435ca18963b34ee1c4ea2823f4e904f8270f6e667b699a85f1e"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/frm.mo",
+      "start": 1654753,
+      "end": 1662620,
+      "sha256": "39597409e2f603754c666c968301ad06a230840ce6ad9403f248b8c422521d7a"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/for.mo",
+      "start": 1662620,
+      "end": 1694473,
+      "sha256": "021188330a86cc8f95d2ca69d769173eb4e8d59534c2c893017e3ce7f6363833"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/fps.mo",
+      "start": 1694473,
+      "end": 1702173,
+      "sha256": "4b4e5920b4ee7a41c0e2d8d682846c3d5f5d6e3271f3f0a313d3241b821ce0b1"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/fwk.mo",
+      "start": 1702173,
+      "end": 1709017,
+      "sha256": "faed5e0ad9688feb3ed9d50dcb0aea6de752dbe81cecc3051d3def6bca0ab2ce"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/oox.mo",
+      "start": 1709017,
+      "end": 1710394,
+      "sha256": "efa26f28f3e88e12a6fac573f39e50fd02b12b7c213e5e0e16657bc8d4fa802b"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/rpt.mo",
+      "start": 1710394,
+      "end": 1730835,
+      "sha256": "9640b841d38dd806cdda66a3c1123e0814360b5eb6a5bac03d3b6bee10b02661"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sc.mo",
+      "start": 1730835,
+      "end": 2339075,
+      "sha256": "d62bce55cc49ee8643bc0f9a88945e8e786e377247991e4a52fda526a67ad2fb"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sca.mo",
+      "start": 2339075,
+      "end": 2414671,
+      "sha256": "9882bc8f47419fb8f84256aa9c3b88cd582641f1f5dc8555e223e33c2b9326d7"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/scc.mo",
+      "start": 2414671,
+      "end": 2417446,
+      "sha256": "e451e681869ad690d1b4bb2f88505dff648b02ae2328dbf2354884451c8cbf8a"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sd.mo",
+      "start": 2417446,
+      "end": 2574275,
+      "sha256": "dfe9c9c52728ffda1a7bfd67a1dd88069b69598ee81ca444bdf7d3c03b874ce1"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sfx.mo",
+      "start": 2574275,
+      "end": 2662267,
+      "sha256": "1653ca292b35e7d1d40c55b210de630fc9fabe111ff768c0045c4b70ba115ef4"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/shell.mo",
+      "start": 2662267,
+      "end": 2663995,
+      "sha256": "1577bd270aba3983287ff89f5611023b638bc6071df3456704b1174d6d891c17"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sm.mo",
+      "start": 2663995,
+      "end": 2718039,
+      "sha256": "1750e2cd269f3b7cc494e084d9b7f3f52dc2569a681190dd3755872a85f0b216"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/svl.mo",
+      "start": 2718039,
+      "end": 2719614,
+      "sha256": "c10f30e9688a671803d328741980e0271ebc0b9b473c8002c3a4b8a492b9ef03"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/svt.mo",
+      "start": 2719614,
+      "end": 2809571,
+      "sha256": "65800583fe103d0bf8c07bb7de9eb02c7683986b5e883ae31e7fb2753f1f492d"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/svx.mo",
+      "start": 2809571,
+      "end": 3128221,
+      "sha256": "67c8e56729a310d0f6c642adaa29e9bf31d3b0c470a0aab554c63cafe432c44c"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/sw.mo",
+      "start": 3128221,
+      "end": 3679569,
+      "sha256": "a86990c09409568e60d1760628b0009bf4486278ddfa9439b72b95b493bcdf5b"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/uui.mo",
+      "start": 3679569,
+      "end": 3708696,
+      "sha256": "5cb500128293647615d9964b1de68bac5bd1b0fada2e6d055c04512b4a198318"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/vcl.mo",
+      "start": 3708696,
+      "end": 3744103,
+      "sha256": "f21e096fac7def854f206580345f953041e6f3b659b0eb1388e6a00dffc16f37"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/wiz.mo",
+      "start": 3744103,
+      "end": 3771776,
+      "sha256": "54767b540d007030711a54bdd997b1967cc5972ca8cf6d8ca6ffd8d57989502c"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/wpt.mo",
+      "start": 3771776,
+      "end": 3775288,
+      "sha256": "5d2a8c617d17df399a71c1c3dfbf054c0bf4590813a1cc0160d4ce56dba377e3"
+    },
+    {
+      "path": "/instdir/program/resource/zh_CN/LC_MESSAGES/xsc.mo",
+      "start": 3775288,
+      "end": 3793352,
+      "sha256": "b3828bca963c8c0cdcbcaeb4f19bcb941fa50936b5d10e29d712a718298cd657"
+    }
+  ]
+}

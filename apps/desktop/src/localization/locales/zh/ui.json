@@ -1,0 +1,115 @@
+{
+  "copy": {
+    "idle": "复制",
+    "success": "已复制",
+    "error": "复制失败"
+  },
+  "loading": "加载中",
+  "close": "关闭",
+  "search": "搜索…",
+  "toast": {
+    "close": "关闭通知"
+  },
+  "pagination": {
+    "label": "分页",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} 页"
+  },
+  "breadcrumb": {
+    "label": "面包屑导航",
+    "more": "更多路径"
+  },
+  "tag": {
+    "close": "关闭标签"
+  },
+  "calendar": {
+    "caption": "2026 年 9 月"
+  },
+  "otp": {
+    "slot": "验证码第 {{position}} 位"
+  },
+  "resize": {
+    "action": "调整面板大小",
+    "panel": "面板 {{position}}"
+  },
+  "carousel": {
+    "role": "轮播",
+    "slide": "幻灯片",
+    "goto": "切换到第 {{position}} 张"
+  },
+  "password": {
+    "show": "显示",
+    "hide": "隐藏"
+  },
+  "navigation": {
+    "overview": "总览",
+    "close": "关闭页签",
+    "closeNamed": "关闭 {{label}}",
+    "closeOthers": "关闭其他",
+    "closeLeft": "关闭左侧",
+    "closeRight": "关闭右侧",
+    "closeAll": "关闭全部",
+    "splitRight": "拆分右侧",
+    "moveRight": "移至右侧",
+    "splitDown": "拆分下方",
+    "moveDown": "移至下方",
+    "moveLeft": "移至左侧",
+    "moveUp": "移至上方",
+    "moveLeftTop": "移至左上",
+    "moveLeftBottom": "移至左下",
+    "moveRightTop": "移至右上",
+    "moveRightBottom": "移至右下",
+    "moveTopLeft": "移至左上",
+    "moveTopRight": "移至右上",
+    "moveBottomLeft": "移至左下",
+    "moveBottomRight": "移至右下",
+    "modules": "模块导航"
+  },
+  "optional": "可选",
+  "attachments": {
+    "remove": "移除附件 {{title}}"
+  },
+  "command": {
+    "title": "命令"
+  },
+  "cancel": "取消",
+  "save": "保存",
+  "refresh": "刷新",
+  "retry": "重试",
+  "open": "打开",
+  "avatar": {
+    "label": "{{name}} 的头像"
+  },
+  "create": "创建",
+  "delete": "删除",
+  "done": "完成",
+  "navigationTabs": {
+    "unsaved": "未保存"
+  },
+  "markdown": {
+    "taskComplete": "已完成",
+    "taskIncomplete": "未完成",
+    "image": "图片"
+  },
+  "floatingWindow": {
+    "close": "关闭{{title}}",
+    "move": "移动{{title}}",
+    "pin": "固定浮窗",
+    "unpin": "取消固定浮窗",
+    "maximize": "铺满工作区",
+    "restore": "还原浮窗",
+    "resize": "调整浮层大小"
+  },
+  "badge": {
+    "remove": "移除标签"
+  },
+  "chart": {
+    "label": "图表"
+  },
+  "icon": {
+    "missing": "缺少图标",
+    "missingNamed": "缺少图标：{{name}}",
+    "missingMark": "缺"
+  }
+}

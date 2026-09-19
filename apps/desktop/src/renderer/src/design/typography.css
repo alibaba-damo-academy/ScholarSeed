@@ -1,0 +1,8 @@
+:root {
+  --vds-type-caption-size: var(--vds-font-caption);
+  --vds-type-caption-line: var(--vds-lh-caption);
+  --vds-type-body-size: var(--vds-font-body-lv2);
+  --vds-type-body-line: var(--vds-lh-body-lv2);
+  --vds-type-title-size: var(--vds-font-title);
+  --vds-type-title-line: var(--vds-lh-title);
+}

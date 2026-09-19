@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-plan.schema.json",
+  "title": "Agentic search plan for one immutable outer round",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "strategy_version",
+    "run_id",
+    "outer_round",
+    "precise_intent",
+    "subtopics",
+    "candidate_angles",
+    "search_angles",
+    "landmark_queries",
+    "planned_queries",
+    "max_results",
+    "exclude_ids",
+    "created_at",
+    "entity_analysis",
+    "entity_hypotheses",
+    "concept_probes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "strategy_version": {
+      "enum": [
+        "search-skill-entity-probes-v1",
+        "search-skill-fast-mock-v1",
+        "search-skill-balanced-v1"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "outer_round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "precise_intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_analysis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "entity_hypotheses": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "rationale",
+          "confidence"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "enum": [
+              "disease",
+              "project",
+              "method",
+              "standard",
+              "dataset",
+              "cohort",
+              "person",
+              "organization",
+              "venue",
+              "other"
+            ]
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "concept_probes": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "required": [
+          "concept",
+          "mode",
+          "query",
+          "rationale",
+          "entity"
+        ],
+        "properties": {
+          "concept": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "enum": [
+              "keyword",
+              "title"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "subtopics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "candidate_angles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 15,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "search_angles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "landmark_queries": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "required": [
+          "mode",
+          "query",
+          "rationale"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "keyword",
+              "title"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "planned_queries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "angle",
+          "source",
+          "mode",
+          "query",
+          "purpose"
+        ],
+        "properties": {
+          "angle": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "enum": [
+              "paperhub",
+              "web"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "keyword",
+              "web"
+            ]
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "max_results": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "exclude_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created_at": {
+      "type": "string"
+    }
+  }
+}

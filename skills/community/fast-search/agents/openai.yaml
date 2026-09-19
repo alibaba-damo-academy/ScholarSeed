@@ -1,0 +1,4 @@
+interface:
+  display_name: "Veryfast Academic Search"
+  short_description: "Low-latency academic paper discovery"
+  default_prompt: "Use $fast-search to quickly find the most relevant academic papers for this query."

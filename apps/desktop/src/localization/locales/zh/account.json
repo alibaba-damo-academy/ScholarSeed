@@ -1,0 +1,191 @@
+{
+  "identity": {
+    "defaultName": "书深用户"
+  },
+  "accountLogin": {
+    "title": "登录",
+    "closeLogin": "关闭登录",
+    "close": "关闭",
+    "retry": "重试",
+    "loading": "正在读取登录方式",
+    "waiting": "本地服务还没返回认证配置。后端刚启动时会出现这一屏，稍候重试即可。",
+    "unsupported": "后端认证模式是 {{mode}}，桌面端没有对应的登录界面。关掉这一层就能继续用应用。",
+    "disabled": "后端没有开启登录校验，应用已经可以直接使用。",
+    "noEntry": "这个后端没有应用内登录入口",
+    "notRequired": "当前无需登录"
+  },
+  "accountExtra": {
+    "permissionRead": "无法读取系统能力状态，请重试",
+    "permissionUnsupported": "当前能力无法直接打开系统设置",
+    "permissionOpen": "打开系统设置失败，请手动前往“隐私与安全性”检查",
+    "never": "从未使用",
+    "unnamed": "未命名密钥",
+    "managedName": "书深技能凭据",
+    "managed": "{{prefix}}··· · 书深自动管理，所有设备共用；轮换后旧密钥立即失效，所有设备下次开会话获取新密钥 · 最后使用 {{lastUsed}}",
+    "keyDates": "{{prefix}}··· · 创建于 {{created}} · 最后使用 {{lastUsed}}"
+  },
+  "permissionDetails": {
+    "projectScoped": "通过你选择的项目目录授权，无需开启完全磁盘访问",
+    "systemSettings": "请在 macOS 系统设置中检查授权状态",
+    "notificationsUnavailable": "当前系统不支持桌面通知",
+    "notImplemented": "相关功能尚未提供"
+  },
+  "actions": {
+    "close": "关闭",
+    "rotate": "轮换",
+    "revoke": "吊销",
+    "retry": "重试",
+    "markAllRead": "全部标为已读"
+  },
+  "models": {
+    "loadFailed": "模型服务加载失败，请重试。",
+    "deleteFailed": "删除该端点失败",
+    "enabledCount": "{{enabled}} / {{total}} 已启用",
+    "empty": "还没有连接。添加一个后，勾选它的模型即可与内置模型并列出现在选择器里。",
+    "chatgptConnected": " · ChatGPT 已连接",
+    "chatgptLoginRequired": " · 需登录 ChatGPT",
+    "noKey": " · 未设密钥",
+    "enableNamed": "启用 {{name}}",
+    "add": "添加连接",
+    "chatgptSubscription": "ChatGPT（订阅登录）",
+    "customProvider": "自定义（自建服务或未列出的供应商）",
+    "wireHint": "按服务实际支持的协议选择。Codex 原生工具（如网页搜索）需要 Responses；纯 Chat Completions 端点不能承载这些工具。修改协议后请新建对话，或重启应用后继续原对话。",
+    "wireChatCompletions": "OpenAI 兼容 · /chat/completions",
+    "wireResponses": "OpenAI Responses · /responses",
+    "reasoningNamed": "{{name}} · 思考深度",
+    "reasoningLevelNamed": "{{name}} 思考深度档位",
+    "delete": "删除",
+    "providerModel": "{{provider}} · {{model}}",
+    "disabledReasons": {
+      "gatewayCredentialRequired": "登录后可使用内置模型",
+      "subscriptionConnectionRequired": "请在模型服务中连接 ChatGPT"
+    },
+    "capabilitiesTitle": "模型能力管理",
+    "capabilitiesDescription": "在右侧按模型管理思考档位、上下文窗口和输入模态；厂商口径仅作默认建议，保存后的模型声明优先用于会话。",
+    "contextWindowHint": "留空表示使用厂商默认值",
+    "contextWindowPlaceholder": "例如 1000000",
+    "maxOutput": "最大输出",
+    "maxOutputHint": "留空表示未声明",
+    "maxOutputPlaceholder": "例如 131072",
+    "saveEfforts": "保存档位",
+    "cancelEfforts": "取消",
+    "editEfforts": "编辑思考档位",
+    "effortsUnconfirmed": "未确认",
+    "tokenPlanPersonal": "阿里云百炼 Token Plan（个人版）",
+    "tokenPlanTeam": "阿里云百炼 Token Plan（团队版）"
+  },
+  "sharing": {
+    "private": "隐私模式",
+    "improve": "参与改进"
+  },
+  "settings": {
+    "title": "设置"
+  },
+  "providerPresets": {
+    "dashscope": {
+      "label": "阿里云百炼",
+      "credentialHint": "在百炼控制台创建 API-KEY"
+    },
+    "openai": {
+      "label": "OpenAI",
+      "note": "该端点也实现 Responses 协议，可在下方切换",
+      "credentialHint": "在 OpenAI 平台的 API keys 页创建"
+    },
+    "google": {
+      "label": "Google Gemini",
+      "note": "这是 Gemini 的 OpenAI 兼容面；原生 Gemini 协议暂不支持",
+      "credentialHint": "使用 Google AI Studio 的 API key"
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "credentialHint": "在 DeepSeek 开放平台创建 API key"
+    },
+    "moonshot": {
+      "label": "Moonshot（Kimi）",
+      "credentialHint": "在 Moonshot 开放平台创建 API key"
+    },
+    "zhipu": {
+      "label": "智谱 GLM",
+      "credentialHint": "在智谱开放平台创建 API key"
+    },
+    "openrouter": {
+      "label": "OpenRouter",
+      "note": "聚合多家模型，拉取后的候选列表很长，可搜索筛选",
+      "credentialHint": "在 OpenRouter 控制台创建 API key"
+    },
+    "ollama": {
+      "label": "本地 Ollama / vLLM",
+      "note": "请求不出本机；vLLM 等其它本地服务改一下端口即可",
+      "credentialHint": "本地服务通常不校验凭据，可填任意值（例如 ollama）"
+    }
+  },
+  "update": {
+    "installFailed": "更新安装失败，请重试。"
+  },
+  "loginFailure": {
+    "account_base_unavailable": "账号服务地址暂不可用，请稍后重试。",
+    "open_browser_failed": "无法打开系统浏览器，请重试。",
+    "bad_callback": "登录回调无效，请重新发起登录。",
+    "state_mismatch": "本次登录无法与当前客户端匹配，请重新发起登录。",
+    "handoff_invalid": "登录凭证无效或已过期，请重新登录。",
+    "adopt_failed": "未能在本机完成登录，请重试。",
+    "exchange_error": "未能连接账号服务完成登录，请检查网络后重试。",
+    "verify_failed": "未能确认本机登录状态，请重试。",
+    "native_unavailable": "浏览器模式不支持桌面登录交接，请使用桌面端。",
+    "login_failed": "登录未成功，请重试。",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "failure": {
+    "invalid_phone": "手机号格式不正确",
+    "invalid_purpose": "验证码用途不支持",
+    "rate_cooldown": "发送太频繁，请稍后再试",
+    "rate_daily_phone": "该手机号今日发送次数已用完",
+    "rate_daily_ip": "当前网络今日发送次数已用完",
+    "sms_not_configured": "短信通道未配置，请联系管理员",
+    "sms_send_failed": "短信发送失败，请稍后再试",
+    "account_disabled": "账号已被停用",
+    "invalid_code": "验证码不正确",
+    "code_expired": "验证码已过期",
+    "code_exhausted": "验证码错误次数过多，请重新获取",
+    "invalid_password": "手机号或密码不正确",
+    "invalid_nickname": "昵称需为 1–64 个字符",
+    "phone_taken": "该手机号已被注册",
+    "invite_required": "需要邀请码",
+    "invite_invalid": "邀请码无效或已用完",
+    "unauthorized": "登录状态已失效，请重新登录",
+    "invalid_refresh": "登录状态已失效，请重新登录",
+    "forbidden": "没有权限",
+    "not_found": "资源不存在",
+    "invalid_api_key": "API 密钥无效或已吊销",
+    "invalid_api_key_name": "密钥名称过长",
+    "api_key_limit": "活跃密钥数已达上限，请先吊销一个",
+    "api_key_managed": "这把密钥由书深自动管理，所有设备共用；只能轮换，不能吊销。轮换后所有设备下次开会话获取新密钥",
+    "not_registered": "该手机号未注册",
+    "password_too_short": "密码至少 {{count}} 位",
+    "network": "无法连接账号服务",
+    "no_base_url": "账号服务地址未配置",
+    "invalid_response": "账号服务返回了无法识别的数据，请稍后重试",
+    "local_logout_failed": "本地登录凭据未能清除，请重试",
+    "logout_revocation_failed": "本机执行凭据清理失败，请重试退出登录。",
+    "http_failure": "请求失败（{{status}}）",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "modelSettings": {
+    "title": "模型管理",
+    "description": "集中管理模型显示状态、思考强度和上下文参数。",
+    "saved": "已保存",
+    "save": "保存设置",
+    "name": "模型名称",
+    "reasoning": "思考强度",
+    "visibility": "显示状态",
+    "contextWindow": "上下文窗口",
+    "fixedReasoning": "固定开启",
+    "unconfirmed": "未确认",
+    "builtin": "内置模型",
+    "showNamed": "显示 {{name}}",
+    "contextWindowNamed": "{{name}} 的上下文窗口"
+  },
+  "verification": {
+    "cooldown": "{{seconds}} 秒"
+  }
+}

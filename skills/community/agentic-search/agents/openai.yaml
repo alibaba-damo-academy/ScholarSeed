@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tiered Academic Search"
+  short_description: "Fast-to-deep academic paper discovery"
+  default_prompt: "Use $agentic-search and $web-search to perform a thorough Quality-mode academic paper search, routing every public-web lookup through web-search."

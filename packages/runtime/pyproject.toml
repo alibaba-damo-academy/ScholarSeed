@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scholarseed-runtime"
+version = "0.2.0"
+description = "Vendor-neutral contracts and gateway for external agent runtimes"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scholarseed_runtime*"]
+
+[tool.setuptools.package-data]
+scholarseed_runtime = ["py.typed"]

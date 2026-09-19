@@ -1,0 +1,15 @@
+{
+  "id": "health-check",
+  "config": {
+    "model_name": "qwen3.8-max",
+    "language": "zh"
+  },
+  "auth": "none",
+  "drive": "cmd.jsonl",
+  "expected": {
+    "toolCalls": [],
+    "minTurns": 1,
+    "maxTurns": 1,
+    "responseContains": ["HEALTH_OK"]
+  }
+}

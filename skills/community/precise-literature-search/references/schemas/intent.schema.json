@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "intent.schema.json",
+  "title": "Confirmed or draft literature search intent",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "original_request",
+    "precise_intent",
+    "research_questions",
+    "include_criteria",
+    "exclude_criteria",
+    "time_range",
+    "paper_types",
+    "language",
+    "max_results",
+    "confirmed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.1"
+    },
+    "original_request": {
+      "type": "string"
+    },
+    "precise_intent": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "research_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "include_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "time_range": {
+      "type": "object",
+      "required": [
+        "from_year",
+        "to_year"
+      ],
+      "properties": {
+        "from_year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "to_year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      }
+    },
+    "paper_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "language": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_results": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "User requested result count; null means unspecified. Search request max_results is a separate bounded tool budget."
+    },
+    "confirmed": {
+      "type": "boolean"
+    },
+    "confirmation_source": {
+      "enum": [
+        "user_explicit",
+        "auto_delegated"
+      ]
+    }
+  }
+}

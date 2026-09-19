@@ -1,0 +1,103 @@
+{
+  "center": "Getting started",
+  "view": "View",
+  "seen": "Viewed",
+  "unseen": "Not viewed",
+  "reset": "Reset all to not viewed",
+  "done": "Done",
+  "skip": "Skip",
+  "next": "Next",
+  "start": "Get started",
+  "step": "{{current}}/{{total}}",
+  "noProject": "No projects yet. Create one first.",
+  "sample": "Your library is empty. Using a sample PDF for the tour.",
+  "sampleTitle": "Onboarding sample.pdf",
+  "sampleLimited": "The built-in sample demonstrates selection and copying. Figure explanations, reading assistance, and document AI context require an imported document.",
+  "unavailable": "This tour is not available on the current page yet. Try again after it finishes loading.",
+  "noPdf": "There is no readable PDF in your library. Import a PDF to view this tour.",
+  "openFailed": "Unable to open the page for this tour. Please try again.",
+  "home": {
+    "name": "Get started",
+    "description": "Start with literature or a project",
+    "title": "Where would you like to start?",
+    "literatureTitle": "Start with literature",
+    "literatureBody": "You already have papers and want to import and organize them.",
+    "literatureLink": "Import literature →",
+    "projectTitle": "Start with a project",
+    "projectBody": "You have a research topic or paper in mind and are ready to begin.",
+    "projectLink": "New project →",
+    "browse": "Just looking around"
+  },
+  "project": {
+    "name": "Projects",
+    "description": "Resources, literature and ScholarSeed AI",
+    "switcher": {
+      "title": "This is your project",
+      "body": "Search, writing and AI discussions use this project’s literature and resources. Switch or create projects here."
+    },
+    "resources": {
+      "title": "Resources",
+      "body": "Keep notes, data and documents together as AI context for writing and discussion."
+    },
+    "discovery": {
+      "title": "Discover resources",
+      "body": "Describe what you need to search academic sources or the web. You can also discover papers in the literature library."
+    },
+    "literature": {
+      "title": "Project literature",
+      "body": "Collect papers for this project and use AI to discover literature, extract key points and compare views."
+    },
+    "ai": {
+      "title": "Let your ideas grow",
+      "body": "Discuss a review, a research question or any idea with AI. It can use the resources and literature in your project."
+    }
+  },
+  "globalLib": {
+    "name": "Literature library",
+    "description": "Import, discover and organize literature",
+    "library": {
+      "title": "Your complete literature library",
+      "body": "Search, organize and manage all your papers here, and add them to projects as needed."
+    },
+    "import": {
+      "title": "Import literature",
+      "body": "Import PDF, BibTeX, Zotero and more, with automatic metadata extraction."
+    },
+    "discovery": {
+      "title": "Discover literature",
+      "body": "Enter a title, author or keywords. AI searches academic sources and finds papers you can import."
+    },
+    "categories": {
+      "title": "My collections",
+      "body": "Projects contain the papers used in each project. Create collections as needed to organize your literature."
+    },
+    "ai": {
+      "title": "Chat with your library",
+      "body": "Open ScholarSeed AI to search across papers, compare views and locate original evidence."
+    }
+  },
+  "pdf": {
+    "name": "Reading papers",
+    "description": "Figures, reading tools and text selection",
+    "figure": {
+      "title": "Let AI explain a figure",
+      "body": "Choose Figure explanation, then select a figure. AI explains its comparisons, how to read it and its conclusions."
+    },
+    "tools": {
+      "title": "Reading assistant",
+      "body": "Use parallel translation, structured AI reading, literature notes and annotation review."
+    },
+    "selection": {
+      "title": "Select text and ask",
+      "body": "Explain, translate or highlight a passage here. Add it to the conversation to ask follow-up questions."
+    },
+    "ai": {
+      "title": "Chat with this paper",
+      "body": "Open ScholarSeed AI with this paper as context. In a project, you can also compare it with other project papers."
+    },
+    "sampleSelection": {
+      "title": "Select text to see its toolbar",
+      "body": "This is the real reading toolbar. Try selecting and copying in this sample; import your own paper to explain, translate, highlight, or add text to a conversation."
+    }
+  }
+}

@@ -1,0 +1,17 @@
+# Default C1 Quality alias, loaded with: codex --profile agentic-search
+# It does not store proxy credentials or API keys; Codex inherits those from the
+# launching environment. Use the quick/balanced profiles only when explicitly
+# selecting those lower-latency workflows.
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+service_tier = "fast"
+web_search = "live"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[features]
+apps = false
+fast_mode = true
+
+[sandbox_workspace_write]
+network_access = true

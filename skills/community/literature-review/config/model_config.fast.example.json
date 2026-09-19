@@ -1,0 +1,173 @@
+{
+  "_comment": [
+    "Copy this file to model_config.fast.json; custom endpoints can override the bundled defaults.",
+    "Set SCHOLARSEED_ACCOUNT_TOKEN for text; images prefer IMAGE_API_KEY and fall back to SCHOLARSEED_ACCOUNT_TOKEN.",
+    "TEXT_BASE_URL and IMAGE_BASE_URL optionally override the qwen and idealab URLs below.",
+    "The qwen provider drives paper-card extraction and deterministic repair calls.",
+    "The idealab provider is used by plan-generate when the outline contains image figures."
+  ],
+  "providers": {
+    "qwen": {
+      "backend": "openai",
+      "base_url": "https://scholarseed.damo.alibaba.com/v1/"
+    },
+    "idealab": {
+      "backend": "openai_image",
+      "base_url": "https://scholarseed.damo.alibaba.com/v1/"
+    }
+  },
+  "stages": {
+    "retrieval_annotate": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 60,
+      "max_tokens": 500,
+      "thinking": false,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "processing": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 600,
+      "max_tokens": 16000,
+      "thinking": false,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "refinement_full": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 300,
+      "max_tokens": 32000,
+      "temperature": 0.2,
+      "thinking": false,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "figures_image": {
+      "provider": "idealab",
+      "model": "gpt-image-2-0421-global",
+      "quality": "high",
+      "timeout": 300
+    },
+    "drafting": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 600,
+      "max_tokens": 16000,
+      "temperature": 0.2,
+      "thinking": false,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "outline_generation": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 900,
+      "max_tokens": 16384,
+      "temperature": 0.2,
+      "thinking": false,
+      "max_attempts": 2,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "manuscript_generation": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 900,
+      "max_tokens": 65536,
+      "temperature": 0.2,
+      "thinking": false,
+      "max_attempts": 2,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "chapter_generation": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 600,
+      "max_tokens": 32768,
+      "temperature": 0.2,
+      "thinking": false,
+      "max_attempts": 2,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    },
+    "refinement_delta": {
+      "provider": "qwen",
+      "model": "qwen3.8-max",
+      "timeout": 600,
+      "max_tokens": 32768,
+      "temperature": 0.2,
+      "thinking": false,
+      "max_attempts": 2,
+      "context_window": 1000000,
+      "capacity_verified": {
+        "source": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "checked_at": "2026-09-14",
+        "model_context": 1000000,
+        "model_max_output": 131072,
+        "gateway_model_list": "qwen3.8-max advertised; gateway-specific capacity may be lower"
+      },
+      "stream": true,
+      "request_deadline_sec": 1800
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "project": "preference-optimization-for-alignment",
+  "references": [
+    {
+      "ref_id": "rafailov2023dpo",
+      "paper_id": "unified_258959321",
+      "id_source": "paperhub",
+      "doi": null,
+      "arxiv_id": "2305.18290",
+      "url": "https://arxiv.org/abs/2305.18290",
+      "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+      "authors": ["Rafael Rafailov", "Archit Sharma", "Eric Mitchell", "et al."],
+      "year": 2023,
+      "venue": "NeurIPS",
+      "cited_by": ["idea-2: reference-free preference optimization under distribution shift"],
+      "claim": "DPO removes the separate reward model and RL loop, optimizing preferences directly",
+      "verification": "verified",
+      "evidence": "re-read via agentic-search; abstract + method section confirm the reward-model-free derivation",
+      "has_fulltext": true
+    },
+    {
+      "ref_id": "some-paywalled-2024",
+      "paper_id": "",
+      "id_source": "none",
+      "doi": null,
+      "arxiv_id": null,
+      "url": null,
+      "title": "A domain-specific alignment study (publisher-hosted)",
+      "authors": [],
+      "year": 2024,
+      "venue": null,
+      "cited_by": ["idea-4: cross-domain preference transfer"],
+      "claim": "reports a 12-point gain on a held-out clinical preference set",
+      "verification": "unverifiable-in-scope",
+      "evidence": null,
+      "has_fulltext": false
+    }
+  ]
+}

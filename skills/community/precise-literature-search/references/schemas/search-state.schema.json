@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-state.schema.json",
+  "title": "Recoverable internal state for one outer search round",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "iteration",
+    "max_iterations",
+    "searched_queries",
+    "subtopic_coverage",
+    "dry_iterations",
+    "pool_size",
+    "source_counts",
+    "errors",
+    "stop_reason",
+    "updated_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "iteration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_iterations": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "searched_queries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "subtopic_coverage": {
+      "type": "object"
+    },
+    "dry_iterations": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pool_size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_counts": {
+      "type": "object"
+    },
+    "source_details": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "status",
+          "queries",
+          "candidates",
+          "endpoint",
+          "errors"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "success",
+              "partial",
+              "failed",
+              "unavailable",
+              "execution_blocked",
+              "transport_error",
+              "authentication_error"
+            ]
+          },
+          "queries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "candidates": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stop_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "unresolved_errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Current failures derived from exact query attempts; errors and query-log retain audit history."
+    }
+  }
+}

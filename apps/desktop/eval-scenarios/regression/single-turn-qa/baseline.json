@@ -1,0 +1,18 @@
+{
+  "scenarioId": "single-turn-qa",
+  "version": "2026-09-20",
+  "model": "qwen3.8-max",
+  "provisional": true,
+  "metrics": {
+    "taskCompleted": true,
+    "turnCount": { "min": 1, "max": 3 },
+    "toolCallsIncludes": ["read_file"],
+    "responseContains": ["main.py"],
+    "responseNotContains": ["无法完成", "I cannot", "找不到文件"]
+  },
+  "traceDigest": {
+    "totalTokens": { "min": 500, "max": 8000 },
+    "toolSpans": { "min": 1, "max": 3 },
+    "errorSpans": 0
+  }
+}

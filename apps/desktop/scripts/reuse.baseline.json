@@ -1,0 +1,7 @@
+{
+  "$comment": "存量原生控件债务的棘轮基线: 逐文件额度只允许降不允许升, 未登记文件额度为 0。请用 `node --experimental-transform-types scripts/reuse.mjs --write-baseline` 重写, 不要手改。",
+  "components/business/AccountPanel.tsx": 10,
+  "components/business/Feedback.tsx": 3,
+  "components/primitive/Markdown.tsx": 2,
+  "features/workbench/viewers/TableViewer.tsx": 2
+}

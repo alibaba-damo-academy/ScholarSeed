@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "download-selection.schema.json",
+  "title": "Confirmed paper and access selection",
+  "type": "object",
+  "required": ["schema_version", "run_id", "metadata_path", "selected_paper_ids", "download_open", "download_paid", "read_after_download", "confirmed_by_user"],
+  "properties": {
+    "schema_version": {"enum": ["1.0", "1.1"]},
+    "run_id": {"type": "string"},
+    "metadata_path": {"type": "string"},
+    "selected_paper_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "download_open": {"type": "boolean"},
+    "download_paid": {"type": "boolean"},
+    "read_after_download": {"type": "boolean"},
+    "confirmed_by_user": {"const": true},
+    "decision_source": {"enum": ["user_explicit", "auto_delegated"]},
+    "paid_download_confirmation": {"enum": ["included_in_selection", "separate"]}
+  }
+}

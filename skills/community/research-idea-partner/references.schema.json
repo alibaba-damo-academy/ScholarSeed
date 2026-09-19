@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "research-idea-partner/references.schema.json",
+  "title": "research-idea-partner cited-references payload v1",
+  "description": "Machine-readable companion to literature_report.md. Lists only papers the generated ideas actually cite so ScholarSeed can render them in the conversation.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "references"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "schema_version Optional display metadata; missing or invalid values use display defaults."
+    },
+    "project": {
+      "description": "research_ideas/<project> slug Optional display metadata; missing or invalid values use display defaults."
+    },
+    "generated_at": {
+      "description": "ISO-8601; stamped by the client/host, not required from the skill Optional display metadata; missing or invalid values use display defaults."
+    },
+    "references": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "ref_id": {
+            "description": "ALWAYS-PRESENT stable local handle the client links on (paper<->idea), unique within the doc, e.g. 'R1' / 'rafailov2023dpo'. Independent of external ids — a web-only paper with no DOI/arXiv still has a ref_id. Optional display metadata; missing or invalid values use display defaults."
+          },
+          "paper_id": {
+            "description": "PRIMARY external identifier = PaperHub cross-source doc_id, e.g. 'unified_258959321' (covers non-arXiv too). Empty string when the paper is NOT in PaperHub (e.g. reached only via web search). Optional display metadata; missing or invalid values use display defaults."
+          },
+          "id_source": {
+            "description": "which identifier this row is keyed on, chosen by PRIORITY for non-PaperHub/web-only sources: paperhub(paper_id) > doi > arxiv > url > title_key(a normalized-title fallback key so the row is still de-dupable) > none. Whatever is chosen, ref_id remains the client's link handle. Optional display metadata; missing or invalid values use display defaults."
+          },
+          "title_key": {
+            "description": "last-resort stable key for web-only papers with no doi/arxiv/paperhub id: lowercased, punctuation-stripped title (+year if known). Lets the client de-dupe/add-to-library even without a formal id. Optional display metadata; missing or invalid values use display defaults."
+          },
+          "doi": {
+            "description": "e.g. 10.1145/3600006 — cross-publisher standard, but not all papers have one Optional display metadata; missing or invalid values use display defaults."
+          },
+          "arxiv_id": {
+            "description": "e.g. 2305.18290 — preprints only Optional display metadata; missing or invalid values use display defaults."
+          },
+          "url": {
+            "description": "url Optional display metadata; missing or invalid values use display defaults."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "original-language title (kept verbatim, not translated)",
+            "pattern": ".*\\S.*"
+          },
+          "authors": {
+            "description": "may be empty if not retrieved Optional display metadata; missing or invalid values use display defaults."
+          },
+          "year": {
+            "description": "year Optional display metadata; missing or invalid values use display defaults."
+          },
+          "venue": {
+            "description": "venue Optional display metadata; missing or invalid values use display defaults."
+          },
+          "cited_by": {
+            "description": "which generated idea(s) cite this paper — idea ids/titles from ideas.md, so the panel can link paper <-> idea Optional display metadata; missing or invalid values use display defaults."
+          },
+          "claim": {
+            "description": "the specific load-bearing claim/number the idea attaches to this paper (for the citation-faithfulness check) Optional display metadata; missing or invalid values use display defaults."
+          },
+          "verification": {
+            "description": "honesty firewall vocabulary. verified = re-read via agentic-search; unverified = mentioned but not independently checked; unverifiable-in-scope = agentic-search could not reach it (non-arXiv/self-hosted/ResearchGate/patent) — never load-bearing Optional display metadata; missing or invalid values use display defaults."
+          },
+          "evidence": {
+            "description": "OPTIONAL provenance snippet / source locator (e.g. sentence ids or a short quote) supporting the cited claim; null when unverified Optional display metadata; missing or invalid values use display defaults."
+          },
+          "has_fulltext": {
+            "description": "whether full text (not just abstract) was available Optional display metadata; missing or invalid values use display defaults."
+          }
+        }
+      }
+    }
+  }
+}

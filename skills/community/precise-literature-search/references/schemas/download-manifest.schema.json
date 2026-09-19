@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "download-manifest.schema.json",
+  "title": "Download results and resumable download status",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "generated_at",
+    "is_placeholder",
+    "papers",
+    "summary",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "is_placeholder": {
+      "type": "boolean"
+    },
+    "status": {
+      "enum": [
+        "action_required",
+        "completed"
+      ]
+    },
+    "papers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "paper_id",
+          "title",
+          "access_type",
+          "status",
+          "file_path",
+          "verified_exists",
+          "message"
+        ],
+        "properties": {
+          "paper_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "access_type": {
+            "enum": [
+              "open",
+              "paid",
+              "unknown"
+            ]
+          },
+          "status": {
+            "enum": [
+              "downloaded",
+              "action_required",
+              "failed",
+              "skipped",
+              "not_attempted"
+            ]
+          },
+          "file_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_exists": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "action_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "download_route": {
+            "enum": [
+              "open-download",
+              "paid-download"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "selected",
+        "downloaded",
+        "action_required",
+        "failed",
+        "skipped"
+      ]
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "adapter": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "interactive",
+            "autodev"
+          ]
+        },
+        "autodev": {
+          "type": "boolean"
+        },
+        "cdp": {
+          "type": "boolean"
+        }
+      }
+    },
+    "action_type": {
+      "type": "string"
+    },
+    "action": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "chrome_command": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "safe_to_close_cdp_browser": {
+          "type": "boolean"
+        }
+      }
+    },
+    "message": {
+      "type": "string"
+    },
+    "resume_token": {
+      "type": "string"
+    },
+    "completion_notice": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "safe_to_close_cdp_browser": {
+          "type": "boolean"
+        },
+        "browser_pool_released": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

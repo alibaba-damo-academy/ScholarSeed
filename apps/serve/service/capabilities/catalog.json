@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "surfaces": {
+    "conversation": {
+      "skills": [
+        "research-idea-partner",
+        "literature-review",
+        "precise-literature-search",
+        "fast-search"
+      ],
+      "sources": []
+    },
+    "settings": {
+      "skills": [
+        "research-idea-partner",
+        "literature-review",
+        "precise-literature-search",
+        "fast-search"
+      ],
+      "sources": [
+        "user"
+      ]
+    }
+  }
+}

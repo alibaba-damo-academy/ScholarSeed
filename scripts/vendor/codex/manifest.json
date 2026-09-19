@@ -1,0 +1,21 @@
+{
+  "version": "0.153.4",
+  "package": "@openai/codex",
+  "artifacts": {
+    "darwin-arm64": {
+      "file": "codex-0.153.4-darwin-arm64.tgz",
+      "integrity": "sha512-B1qhN3fa1ay0R0wGziXqgwSkB5icpYChNKHhtBHff/0UtSTC7z+l8aTtvMlGjH3E8HEvY3+njIJelM9CAAoVWg==",
+      "target": "aarch64-apple-darwin"
+    },
+    "darwin-x64": {
+      "file": "codex-0.153.4-darwin-x64.tgz",
+      "integrity": "sha512-vnSbbPzfoDZmmyzsxswsDDXQ06IVFBzkQU7/hroB3ji93Ok2utcsq8Psfk2tjF5r9mEx8RWFJhzuTGHG26/NDA==",
+      "target": "x86_64-apple-darwin"
+    },
+    "win32-x64": {
+      "file": "codex-0.153.4-win32-x64.tgz",
+      "integrity": "sha512-lMkB43kJZH0VFr+hoXc11qqR7QtQIbkr07ALgj4urKL1osNyUyuy1iXd3Vzz2iCYvBUCSw7I0l/W1cEPGx9euQ==",
+      "target": "x86_64-pc-windows-msvc"
+    }
+  }
+}

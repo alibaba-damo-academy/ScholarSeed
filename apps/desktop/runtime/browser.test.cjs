@@ -1,0 +1,37 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
+const { browserEnvironment, BROWSER_NODE_RELATIVE, BUNDLED_PYTHON_RELATIVE, BROWSER_NODE_ENV } = require('./browser.cjs')
+
+test('bundled Python uses the relocatable product Node without host configuration', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'browser 中文 '))
+  try {
+    const node = path.join(root, BROWSER_NODE_RELATIVE)
+    fs.mkdirSync(path.dirname(node), { recursive: true })
+    fs.writeFileSync(node, 'fixture', { mode: 0o755 })
+    const python = path.join(root, BUNDLED_PYTHON_RELATIVE)
+    fs.mkdirSync(path.dirname(python), { recursive: true })
+    fs.writeFileSync(python, 'fixture', { mode: 0o755 })
+    const alias = path.join(path.dirname(python), 'python3.12')
+    fs.symlinkSync('python3', alias)
+    const externalVenv = path.join(root, 'external-venv/bin/python')
+    fs.mkdirSync(path.dirname(externalVenv), { recursive: true })
+    fs.symlinkSync(python, externalVenv)
+    const original = { [BROWSER_NODE_ENV]: '/host/node', NODE_OPTIONS: '--require=/host/code', NODE_PATH: '/host/packages', OTHER: 'preserved' }
+    const environment = browserEnvironment(original, root, path.join(root, BUNDLED_PYTHON_RELATIVE))
+    assert.deepEqual(environment, { [BROWSER_NODE_ENV]: node, OTHER: 'preserved' })
+    assert.equal(original.NODE_OPTIONS, '--require=/host/code')
+    assert.deepEqual(browserEnvironment(original, root, alias), environment)
+    assert.deepEqual(browserEnvironment(original, root, externalVenv), original)
+    assert.deepEqual(browserEnvironment(original, root, '/external/python'), original)
+    assert.deepEqual(browserEnvironment(original, root, path.join(root, BUNDLED_PYTHON_RELATIVE), false), original)
+    fs.unlinkSync(node)
+    assert.throws(() => browserEnvironment(original, root, path.join(root, BUNDLED_PYTHON_RELATIVE)), /ENOENT/)
+    fs.symlinkSync(process.execPath, node)
+    assert.throws(() => browserEnvironment(original, root, path.join(root, BUNDLED_PYTHON_RELATIVE)), /regular/)
+  } finally {
+    fs.rmSync(root, { recursive: true })
+  }
+})

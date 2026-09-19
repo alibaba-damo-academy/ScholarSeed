@@ -1,0 +1,10 @@
+apps/desktop/src/renderer/public/office/**/soffice.wasm filter=lfs diff=lfs merge=lfs -text
+apps/desktop/src/renderer/public/office/**/soffice.data filter=lfs diff=lfs merge=lfs -text
+apps/desktop/src/renderer/public/office/zeta-20250513/locales.json -text
+apps/desktop/src/renderer/public/office/zeta-20250513/locales-residuals.json -text
+apps/desktop/src/renderer/public/office/zeta-20250513/soffice.js -text
+scripts/vendor/python-build-standalone/*-pc-windows-msvc-*.tar.gz filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/ripgrep/*-pc-windows-msvc/rg.exe filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/codex/*.tgz filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/texlive/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+*.pdf binary

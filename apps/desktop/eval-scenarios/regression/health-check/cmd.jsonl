@@ -1,0 +1,8 @@
+{"op":"say","text":"请只回复 HEALTH_OK"}
+{"op":"wait","wait_ms":10000}
+{"op":"status"}
+{"op":"wait","wait_ms":10000}
+{"op":"status"}
+{"op":"text"}
+{"op":"shot","name":"health-check"}
+{"op":"quit"}

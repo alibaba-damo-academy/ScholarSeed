@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest-bound PDF reading outcome",
+  "type": "object",
+  "required": ["schema_version", "run_id", "search_round", "manifest_sha256", "papers"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "run_id": {"type": "string", "minLength": 1},
+    "search_round": {"type": "integer", "minimum": 1},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "papers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["paper_id", "file_path", "status", "reason"],
+        "properties": {
+          "paper_id": {"type": "string", "minLength": 1},
+          "file_path": {"type": ["string", "null"]},
+          "status": {"enum": ["readable", "unreadable"]},
+          "reason": {"type": ["string", "null"]}
+        },
+        "allOf": [{"if": {"properties": {"status": {"const": "unreadable"}}},
+                   "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}}]
+      }
+    }
+  }
+}

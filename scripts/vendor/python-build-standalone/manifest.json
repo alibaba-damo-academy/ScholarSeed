@@ -1,0 +1,25 @@
+{
+  "python": "3.12.13",
+  "release": "20260623",
+  "sqlite": "3.53.1",
+  "targets": {
+    "darwin-arm64": {
+      "triple": "aarch64-apple-darwin",
+      "executable": "python/bin/python3",
+      "venvExecutable": "bin/python",
+      "machine": "arm64"
+    },
+    "darwin-x64": {
+      "triple": "x86_64-apple-darwin",
+      "executable": "python/bin/python3",
+      "venvExecutable": "bin/python",
+      "machine": "x86_64"
+    },
+    "win32-x64": {
+      "triple": "x86_64-pc-windows-msvc",
+      "executable": "python/python.exe",
+      "venvExecutable": "Scripts/python.exe",
+      "machine": "AMD64"
+    }
+  }
+}

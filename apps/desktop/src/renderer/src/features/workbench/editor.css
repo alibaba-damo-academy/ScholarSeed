@@ -1,0 +1,50 @@
+.vds-code-document {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vds-code-document.is-actions-external {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.vds-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vds-border-default);
+}
+
+.vds-code-document .vds-monaco:has(.find-widget:hover)
+  > .context-view:has(.monaco-hover[role='tooltip']) {
+  top: auto !important;
+  bottom: calc(100% - var(--vds-monaco-find-widget-top)) !important;
+}
+
+.vds-code-document .vds-monaco:has(.find-widget:focus-within)
+  > .context-view:has(.monaco-hover[role='tooltip']) {
+  top: auto !important;
+  bottom: calc(100% - var(--vds-monaco-find-widget-top)) !important;
+}
+
+.vds-markdown-workbench .vds-markdown-source:has(.find-widget:hover),
+.vds-markdown-workbench .vds-code-document:has(.find-widget:hover),
+.vds-markdown-workbench .vds-code-document .vds-monaco:has(.find-widget:hover) {
+  overflow: visible;
+}
+
+.vds-markdown-workbench .vds-markdown-source:has(.find-widget:focus-within),
+.vds-markdown-workbench .vds-code-document:has(.find-widget:focus-within),
+.vds-markdown-workbench .vds-code-document .vds-monaco:has(.find-widget:focus-within) {
+  overflow: visible;
+}
+
+.vds-markdown-workbench .vds-markdown-source:has(.find-widget:hover),
+.vds-markdown-workbench .vds-markdown-source:has(.find-widget:focus-within) {
+  position: relative;
+  z-index: var(--vds-z-tooltip);
+}

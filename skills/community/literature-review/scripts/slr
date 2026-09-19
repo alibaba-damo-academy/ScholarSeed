@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLR_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SLR_SKILL_ROOT="$(dirname "$SLR_LAUNCHER_DIR")"
+SLR_PYTHON="${SCHOLARSEED_PYTHON:-$SLR_SKILL_ROOT/.venv/bin/python}"
+
+if [ ! -x "$SLR_PYTHON" ]; then
+  echo "[slr] Python environment not found: $SLR_PYTHON" >&2
+  echo "[slr] set SCHOLARSEED_PYTHON or create it with: ./scripts/setup" >&2
+  exit 1
+fi
+
+"$SLR_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 12), "SLR requires bound Python 3.12.x"'
+
+export PATH="$(dirname "$SLR_PYTHON"):$PATH"
+exec "$SLR_PYTHON" "$SLR_LAUNCHER_DIR/slr.py" "$@"

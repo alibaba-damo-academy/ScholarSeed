@@ -1,0 +1,191 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "output_spec.json",
+  "description": "User output choices; runtime resolves template and bibliography defaults. Omitted length is unconstrained.",
+  "type": "object",
+  "required": [
+    "format",
+    "citation_style"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "type": "string",
+      "enum": [
+        "latex_pdf",
+        "markdown"
+      ]
+    },
+    "template": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "neurips",
+        "ctexart",
+        null
+      ],
+      "description": "For latex_pdf: neurips on English runs, ctexart on Chinese runs. Null for Markdown. This is selected by the pipeline, not offered as a user choice."
+    },
+    "citation_style": {
+      "type": "string",
+      "enum": [
+        "numeric",
+        "author_year",
+        "ieee",
+        "acm"
+      ]
+    },
+    "bibliography_style": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resolved by scripts/templates.py; never hand-written."
+    },
+    "natbib_options": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Resolved with bibliography_style by scripts/templates.py."
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requested": {
+          "type": "string"
+        },
+        "fidelity": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "approximate"
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "bst_source": {
+          "type": "string",
+          "enum": [
+            "shipped",
+            "texmf"
+          ]
+        }
+      }
+    },
+    "page_budget": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "Advisory PDF page count; null for Markdown."
+    },
+    "word_budget": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1,
+      "description": "Advisory body length in words or Chinese characters."
+    },
+    "budget_note": {
+      "type": "string"
+    },
+    "decided_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "decided_by": {
+      "type": "string",
+      "enum": [
+        "user",
+        "default"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "format": {
+            "const": "latex_pdf"
+          }
+        },
+        "required": [
+          "format"
+        ]
+      },
+      "then": {
+        "properties": {
+          "template": {
+            "enum": [
+              "neurips",
+              "ctexart"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "format": {
+            "const": "markdown"
+          }
+        },
+        "required": [
+          "format"
+        ]
+      },
+      "then": {
+        "properties": {
+          "template": {
+            "type": "null"
+          },
+          "page_budget": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "examples": [
+    {
+      "format": "latex_pdf",
+      "template": "neurips",
+      "citation_style": "numeric",
+      "bibliography_style": "unsrtnat_scholarseed",
+      "natbib_options": "numbers,sort&compress",
+      "resolution": {
+        "requested": "unsrtnat_scholarseed",
+        "fidelity": "exact",
+        "note": "Bracketed numbers in order of first citation.",
+        "bst_source": "shipped"
+      },
+      "page_budget": 20,
+      "word_budget": null,
+      "budget_note": "Advisory 20-page PDF band.",
+      "decided_at": "2026-08-20T11:04:00Z",
+      "decided_by": "user"
+    },
+    {
+      "format": "markdown",
+      "template": null,
+      "citation_style": "author_year",
+      "bibliography_style": "plainnat",
+      "natbib_options": "authoryear,round",
+      "resolution": {
+        "requested": "plainnat author-year",
+        "fidelity": "exact",
+        "note": "Generic author-year; not APA 7.",
+        "bst_source": "shipped"
+      },
+      "page_budget": null,
+      "word_budget": 11000,
+      "budget_note": "Advisory Markdown word band.",
+      "decided_at": "2026-08-20T11:04:00Z",
+      "decided_by": "user"
+    }
+  ]
+}

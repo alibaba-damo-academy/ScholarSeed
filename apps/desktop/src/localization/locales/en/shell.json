@@ -1,0 +1,123 @@
+{
+  "navigation": {
+    "projects": "Home",
+    "returnHome": "Back to home"
+  },
+  "chrome": {
+    "projectOverview": "Home",
+    "literatureOverview": "Literature overview",
+    "selectProject": "Select project",
+    "globalSearch": "Search project files, conversations, literature, and materials (⌘K)",
+    "search": "Search",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebarShortcut": "Collapse sidebar (⌘B)",
+    "expandSidebarShortcut": "Expand sidebar (⌘B)",
+    "aiAssistant": "AI assistant",
+    "scholarseedAi": "ScholarSeed AI",
+    "requiresProject": "{{label}} (select or create a project first)",
+    "taskCenter": "Task center",
+    "taskCenterCount": "Task center, {{count}} active",
+    "projectLiterature": "Project literature"
+  },
+  "tabs": {
+    "opened": "Open documents",
+    "rightOpened": "Open documents on the right"
+  },
+  "panels": {
+    "resizeModule": "Resize module panel",
+    "resizeAssistant": "Resize AI conversation panel",
+    "openAssistant": "Expand AI conversation panel",
+    "closeAssistant": "Collapse AI conversation panel"
+  },
+  "projectMenu": {
+    "empty": "No projects yet",
+    "create": "New project"
+  },
+  "notice": {
+    "completed": "Operation completed",
+    "updated": "Your changes have been applied:"
+  },
+  "foreground": {
+    "title": "Action incomplete",
+    "close": "Dismiss error",
+    "hint": "Follow the guidance below:",
+    "runtimeNotReady": "Codex Runtime is not ready.",
+    "submitNotReady": "The message submission entry point is not ready.",
+    "reviewUnknown": "Could not confirm pending review status. Try again later.",
+    "reviewUnsaved": "Review files have unsaved edits. Save or discard them before continuing.",
+    "effortFailed": "Could not change reasoning effort. Try again.",
+    "workspaceAuthorization": "Workspace authorization failed. Check folder permissions and reconnect.",
+    "permissionConnection": "Could not connect to ScholarSeed. Check the connection and retry the permission change.",
+    "permissionRequiresApprovalResolution": "Resolve the current approval before changing permission mode.",
+    "permissionImmutable": "The runtime could not update permissions. Reconnect the session and try again.",
+    "permissionFailed": "Permission mode was not changed. Check the runtime connection and try again."
+  },
+  "search": {
+    "project": {
+      "untitledSession": "Untitled conversation",
+      "placeholder": "Search files, conversations, literature, resources…",
+      "filesPlaceholder": "Quick open a project file…",
+      "empty": "Enter keywords to search resources, literature, and conversations in this project.",
+      "loading": "Searching…"
+    },
+    "domain": {
+      "resource": "Resources",
+      "literature": "Literature",
+      "session": "Conversations"
+    },
+    "recent": {
+      "title": "Recently opened",
+      "openedAt": "Opened {{time}}",
+      "path": "{{project}}/Resources/{{path}}",
+      "empty": "No recently opened files."
+    },
+    "noHits": "No results",
+    "more": "Show more",
+    "truncated": "Too many matches. Showing the first {{total}}. Add keywords to narrow your search."
+  },
+  "home": {
+    "question": "What would you like to research today?",
+    "subtitle": "Research with ScholarSeed: find papers, analyze data, and polish your writing…",
+    "quickStart": "Quick start",
+    "morning": "Good morning",
+    "afternoon": "Good afternoon",
+    "evening": "Good evening",
+    "selectProject": "Select a project",
+    "greeting": "{{greeting}}, {{name}},",
+    "reviewTitle": "Write a literature review",
+    "reviewHint": "Search papers, extract claims, and identify research gaps",
+    "ideaTitle": "Generate research ideas",
+    "ideaHint": "Find gaps, form testable hypotheses, and identify starting points",
+    "reproduceTitle": "Reproduce a paper",
+    "reproduceHint": "Use the paper reproduction skill: break down algorithms, implement code, and validate a demo"
+  },
+  "workspaceLoading": {
+    "signInTitle": "Sign in to continue",
+    "failedTitle": "Conversations could not be loaded",
+    "loadingTitle": "Loading workspace",
+    "signInDetail": "Sign in to load projects and conversations from the local service.",
+    "failedDetail": "The local service did not return the conversation list. You can retry now.",
+    "syncing": "Syncing projects and recent conversations…",
+    "connecting": "Connecting to the local service…",
+    "signIn": "Sign in",
+    "reload": "Reload"
+  },
+  "notifications": {
+    "title": "ScholarSeed task",
+    "waiting": "Your confirmation or input is needed",
+    "done": "Task completed",
+    "failed": "Task failed",
+    "abandoned": "Task stopped"
+  },
+  "delete": {
+    "title": "Delete this conversation?",
+    "filesRetained": "Deleting a conversation keeps its local artifacts in the working directory.",
+    "irreversible": "Deleting <name/> cannot be undone.",
+    "running": "This conversation is running. Interrupt it before deleting it.",
+    "failed": "Deletion failed: the backend did not confirm it. Check the serve logs.",
+    "cancel": "Cancel",
+    "deleting": "Deleting…",
+    "confirm": "Delete"
+  }
+}

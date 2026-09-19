@@ -1,0 +1,8 @@
+{"op":"say","text":"请读取项目里的 main.py，用一两句话说明这个文件是做什么的"}
+{"op":"wait","wait_ms":10000}
+{"op":"status"}
+{"op":"wait","wait_ms":10000}
+{"op":"status"}
+{"op":"text"}
+{"op":"shot","name":"single-turn-qa"}
+{"op":"quit"}

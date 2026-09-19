@@ -1,0 +1,52 @@
+# --- Experiment / dev artifacts: NOT part of the runnable skill ---
+# Evaluation harness, benchmarks, reproducibility tooling (run offline, not by users)
+eval/
+# Prompt A/B snapshots
+variants/
+# Dev handoff notes & backend-analysis writeup (kept in the experiment record, not shipped)
+HANDOFF.md
+BACKEND_ANALYSIS.md
+
+# Chinese-language backup of SKILL.md (the shipped SKILL.md is English)
+SKILL.zh.md
+
+# Not shipped in the standalone agentic-search skill repo:
+#   MODULE.md       — describes this as a sub-module of the parent skill (N/A standalone)
+#   SEARCH_AGENT.md — compat symlink -> SKILL.md (only for an upper skill reading the old name)
+#   placeholder.py  — deterministic demo/fallback (the real skill is agent-driven)
+#   examples/       — output-format sample docs
+MODULE.md
+SEARCH_AGENT.md
+placeholder.py
+examples/
+
+# Dev changelog — not part of the skill.
+CHANGES.md
+
+# Local-only PaperHub API reference and migration tests
+/api.md
+/tests/
+
+# Machine-local config — contains host IP / local cache path. Do NOT commit.
+# Copy tools/search_config.example.json to tools/search_config.json per machine.
+tools/search_config.json
+
+# Reproducibility cache (frozen tool-call responses)
+.search_cache/
+
+# Benchmark run outputs (metadata.json / task.md / summaries / durations)
+runs/
+
+# Runtime outputs produced by the Codex skill
+agentic-search-results/
+
+# Agent scratch directories
+work_*/
+session/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Finder metadata
+.DS_Store

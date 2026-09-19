@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "run-state.schema.json",
+  "title": "Resumable run state",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "status",
+    "created_at",
+    "updated_at",
+    "search_round",
+    "paths",
+    "events",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "INITIALIZED",
+        "INTENT_DRAFTED",
+        "INTENT_CONFIRMED",
+        "SEARCHING",
+        "REVIEW_PENDING",
+        "REFINEMENT_REQUESTED",
+        "RESULTS_ACCEPTED",
+        "DOWNLOAD_DECISION_PENDING",
+        "DOWNLOADING_OPEN",
+        "PAID_DOWNLOAD_PENDING",
+        "PAID_ACTION_REQUIRED",
+        "DOWNLOADING_PAID",
+        "READING",
+        "REPORT_REVIEW_PENDING",
+        "FINAL_REPORTING",
+        "COMPLETED",
+        "FAILED"
+      ]
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "updated_at": {
+      "type": "string"
+    },
+    "search_round": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "completion_outcome": {
+      "enum": [
+        "full_text",
+        "no_readable_fulltext"
+      ]
+    },
+    "paths": {
+      "type": "object",
+      "required": [
+        "request",
+        "intent",
+        "latest_metadata",
+        "selection",
+        "download_manifest",
+        "report"
+      ],
+      "properties": {
+        "latest_search_report": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paper_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reading_outcome": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report_review": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "final_report": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

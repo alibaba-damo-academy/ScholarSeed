@@ -1,0 +1,132 @@
+{
+  "dependencies": {},
+  "files": [
+    {
+      "mode": 420,
+      "path": "README.md",
+      "sha256": "b5c155fd828090f404f8f037b569517eb731d4ced97153266bbc9624bdd40d61",
+      "size": 8693
+    },
+    {
+      "mode": 420,
+      "path": "SETUP.md",
+      "sha256": "101a43d3f82949abf9842f6a9aaf5cc5f01a7ce70617065930163416cf6dc276",
+      "size": 15009
+    },
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "9fee16967b261564f0be6ac299340112043adaaba7b5f128df5fe9ecdcfb991b",
+      "size": 5674
+    },
+    {
+      "mode": 420,
+      "path": "agents/openai.yaml",
+      "sha256": "2e8a03eff1ed3fcdd4d5c68e405b7a1ca46a797118d4cbac841767f7ddb99f79",
+      "size": 217
+    },
+    {
+      "mode": 420,
+      "path": "config/agentic-search-veryfast.json",
+      "sha256": "c913dc59a92462c4f92782e760f46cd803b50185fc111c86a478048b3ac601d3",
+      "size": 443
+    },
+    {
+      "mode": 420,
+      "path": "paper_api_calls.md",
+      "sha256": "142863a88216af2ac924b4ad7e6a1ac2e66181a0bc0b2f70af1c2f9c352737ca",
+      "size": 13313
+    },
+    {
+      "mode": 493,
+      "path": "tools/appserver_quick.py",
+      "sha256": "00b4e93527a89ed879399c0c22ece5da0c5fef348e5a17d3db664c680b04668a",
+      "size": 32715
+    },
+    {
+      "mode": 420,
+      "path": "tools/cache.py",
+      "sha256": "db9b4dbfce74e83a3bc3ecf573107dcffdcdf5ec1679d8a3c55a49f80cdaffb4",
+      "size": 5307
+    },
+    {
+      "mode": 420,
+      "path": "tools/doctor.py",
+      "sha256": "eaf7c1be4668ed4e16ff542055df1976ffc4abfa900dcfb8bdf7b8b57b2aec36",
+      "size": 3317
+    },
+    {
+      "mode": 420,
+      "path": "tools/install_codex.py",
+      "sha256": "1985dd7722dcd1228e6486447b0b22ee99bb4f992c1276775a11ace24b3e4312",
+      "size": 5963
+    },
+    {
+      "mode": 420,
+      "path": "tools/localconf.py",
+      "sha256": "fdde3051a6299e00ec7689bb5686dcb52ed6c3d135e8c967b8c4fd9c6521b594",
+      "size": 4275
+    },
+    {
+      "mode": 420,
+      "path": "tools/paperhub.py",
+      "sha256": "c8d243ca1db6f4df241071ab79498f970446d06e04dee1519d3448192f1a080e",
+      "size": 20539
+    },
+    {
+      "mode": 420,
+      "path": "tools/quick_finalize.py",
+      "sha256": "f306ae18b209c3bd8ab9187d5654c93619a731102161dfa33729fddace6568ee",
+      "size": 10311
+    },
+    {
+      "mode": 420,
+      "path": "tools/quick_search.py",
+      "sha256": "e352090c28c6b2b4bb638ce76256ff6448bb35eab17cc8b50bae4009af8db1c1",
+      "size": 4536
+    },
+    {
+      "mode": 420,
+      "path": "tools/ranking.py",
+      "sha256": "ac58a6bd1cc0528dad0d0cd170a38935dbda4174bac61e897f7cd65889a27c33",
+      "size": 4162
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_config.default.json",
+      "sha256": "8a71104a36f81eb577bc097d75da025f696cbe360c1580ef9f1d9dbcc19d1c5f",
+      "size": 428
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_config.example.json",
+      "sha256": "0a3302b1044e40e2c239c26433096a01fe2ab20f36f3858b5a33cfa2c7416958",
+      "size": 473
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_policy.py",
+      "sha256": "af3f258e52fadaacb968048cc56b5168e8f32f70aa7bc7a4f33dfc31e79401aa",
+      "size": 4422
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_round.py",
+      "sha256": "b92f37f12718dc4ca55fd32f7a45a7acdc283281585c572444d6839225ac886d",
+      "size": 29835
+    },
+    {
+      "mode": 420,
+      "path": "tools/state.py",
+      "sha256": "014c73aa630aa88bf902d20b02069894fd3e8ed1affa4b6ce56a3cca12005095",
+      "size": 14778
+    }
+  ],
+  "name": "fast-search",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "9fee16967b261564f0be6ac299340112043adaaba7b5f128df5fe9ecdcfb991b",
+  "version": "1.0.0"
+}

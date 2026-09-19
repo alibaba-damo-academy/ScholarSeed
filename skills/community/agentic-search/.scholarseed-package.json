@@ -1,0 +1,220 @@
+{
+  "dependencies": {
+    "skills": [
+      "web-search"
+    ]
+  },
+  "files": [
+    {
+      "mode": 420,
+      "path": ".gitignore",
+      "sha256": "280b7f989f3d3bd4e8b429f4c7efc4e2dcb4a0ba5cd1d624a2ff4970835c7242",
+      "size": 1486
+    },
+    {
+      "mode": 420,
+      "path": "README.md",
+      "sha256": "ef1ff88b66a3a84b60db9a6265bf4e7f9d6d3e663107a36439a8859d8407774e",
+      "size": 8831
+    },
+    {
+      "mode": 420,
+      "path": "SETUP.md",
+      "sha256": "08ace99e0efe493f497a62042fa1e800869ea821d88171cb2fa598307dfa564e",
+      "size": 11319
+    },
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
+      "size": 10731
+    },
+    {
+      "mode": 420,
+      "path": "agents/openai.yaml",
+      "sha256": "f516bd20ffa241626ed697874c27b2e32ae2b3b14866a9120bb0ca2e4d936e4a",
+      "size": 279
+    },
+    {
+      "mode": 420,
+      "path": "config/agentic-search-balanced.config.toml",
+      "sha256": "53034704dfc52d27b4f5a6afc8f2f0b3929aa9004c6623e12a1348f961441dd6",
+      "size": 251
+    },
+    {
+      "mode": 420,
+      "path": "config/agentic-search-quality.config.toml",
+      "sha256": "253c82612f522f3eaaa7594a5b97614a5dfed593efa17e10ed8e8373f311282b",
+      "size": 453
+    },
+    {
+      "mode": 420,
+      "path": "config/agentic-search-quick.config.toml",
+      "sha256": "5950e630d0b981861b6b755e1dfa4b003f1bea17f1c35a38dead73919386f592",
+      "size": 251
+    },
+    {
+      "mode": 420,
+      "path": "config/agentic-search.config.toml",
+      "sha256": "f782c9da1e0bdec3fc54801af520271e2b81183624b1e263779ef974e6ad7834",
+      "size": 526
+    },
+    {
+      "mode": 420,
+      "path": "docs/PAPERHUB_FALLBACK.md",
+      "sha256": "069d342ee14c941ca236c06cddc3534c84418f3a05e3cf3edc9765a9502ecfa3",
+      "size": 3294
+    },
+    {
+      "mode": 420,
+      "path": "docs/PAPERHUB_WEB_SEARCH_PRODUCT_MIGRATION.md",
+      "sha256": "ddac700889f8fafeb23e20234d28ca1f1377e39f4d41aca4de2356f4e3b17d9b",
+      "size": 5600
+    },
+    {
+      "mode": 420,
+      "path": "docs/TIERED_SEARCH.md",
+      "sha256": "d361f59b6e171f0b3321b33f8e18dad13c84c5be37714f874809fb1f1c4b6d90",
+      "size": 6484
+    },
+    {
+      "mode": 420,
+      "path": "references/balanced-quality-workflow.md",
+      "sha256": "15e07305e352a7218cbae80a1e36605d1bad64ad21add0a50e3afd091cd87c0f",
+      "size": 8003
+    },
+    {
+      "mode": 420,
+      "path": "references/c1-quality-workflow.md",
+      "sha256": "4ac21657658f320de5481acaafe6b1769abac8aad24bc477e0d52f5f286d5ca4",
+      "size": 7906
+    },
+    {
+      "mode": 420,
+      "path": "references/output-schema.md",
+      "sha256": "ac23abf15c50df84b33984c1c2bc40b1984f8c2da530884bc4afad6fd1db92a4",
+      "size": 6423
+    },
+    {
+      "mode": 420,
+      "path": "tools/brave.py",
+      "sha256": "e6146adfa6e9a23f73cf8987d52c2393f299069dcd1907155edd1370aa62c39b",
+      "size": 5946
+    },
+    {
+      "mode": 420,
+      "path": "tools/cache.py",
+      "sha256": "db9b4dbfce74e83a3bc3ecf573107dcffdcdf5ec1679d8a3c55a49f80cdaffb4",
+      "size": 5307
+    },
+    {
+      "mode": 420,
+      "path": "tools/dedup.py",
+      "sha256": "741df1b87609797db604432b6e9f421730de1b7331f082bff0d8d686011f14fb",
+      "size": 2205
+    },
+    {
+      "mode": 420,
+      "path": "tools/doctor.py",
+      "sha256": "461f85cbd8f17ea72a4eafcbd43dc42c2cad81d75d7e8c0b6d2e2792db231f61",
+      "size": 4301
+    },
+    {
+      "mode": 420,
+      "path": "tools/finalize.py",
+      "sha256": "21ffb93c176d37b8919686ef63c96b97a6a4c85bf8614b566b8ef57f8037a9cc",
+      "size": 10352
+    },
+    {
+      "mode": 420,
+      "path": "tools/install_codex.py",
+      "sha256": "4400e6cce404b8cb7ac530e8990e381af137ced7bb396f1f8c1db13ce8deb227",
+      "size": 7416
+    },
+    {
+      "mode": 420,
+      "path": "tools/localconf.py",
+      "sha256": "9b393d26f0b3340e04c8b6217caa0e94c50778dfde053fe33400795349404c89",
+      "size": 4900
+    },
+    {
+      "mode": 420,
+      "path": "tools/paper_select.py",
+      "sha256": "e61c0567303af1ba9e19b8f38e6c47ecabbba5b3d7da0584f5c292a92b25a2f3",
+      "size": 7119
+    },
+    {
+      "mode": 420,
+      "path": "tools/paperhub.py",
+      "sha256": "e2ff1ffd5642567929d57a210a213a6433f56769f45c7bfb56998f724bd71ffe",
+      "size": 20642
+    },
+    {
+      "mode": 420,
+      "path": "tools/pool_inspect.py",
+      "sha256": "3bba40d94a6443a0142226e5e6fd0f8d1a54602254b5453fb38ee8e992f3b606",
+      "size": 15832
+    },
+    {
+      "mode": 420,
+      "path": "tools/quick_finalize.py",
+      "sha256": "098a34306fb1b3bb3c483b258b48ff740a908e8eb1e69c4a8bc8b2e2b555e57c",
+      "size": 10190
+    },
+    {
+      "mode": 420,
+      "path": "tools/quick_search.py",
+      "sha256": "cf26b0d54839a35a98e209fd25cf28b4c4ea1ea467c92049f1ae243166de5a7f",
+      "size": 5596
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_config.default.json",
+      "sha256": "2ad5c45ee6d5c7dbb0c13243131188f6099b5e901e7bb527f9d4aa876b45c14b",
+      "size": 546
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_config.example.json",
+      "sha256": "39ac6d29ffcde5ac5c75148bfc8680116365b71e9056839c0911c44633311966",
+      "size": 594
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_policy.py",
+      "sha256": "dc1f4df982b4e7f655309dd27d8bd3381ef87356a8e75fa9465fd79a3936f305",
+      "size": 6697
+    },
+    {
+      "mode": 420,
+      "path": "tools/search_round.py",
+      "sha256": "96f7facd6921c2f22484fe309b62d887974c35f96ac8125e6713868c09ee4f84",
+      "size": 37823
+    },
+    {
+      "mode": 420,
+      "path": "tools/state.py",
+      "sha256": "6db329f1c32c29930449aaa218b42e3261ff78b13fd4cef2654df7b367772220",
+      "size": 14820
+    },
+    {
+      "mode": 420,
+      "path": "tools/tests/test_product_endpoints.py",
+      "sha256": "de4614810d8e0e7d9bf8740379f718db080ca3e0d394e7f9d8dcaede89d57a0d",
+      "size": 3075
+    },
+    {
+      "mode": 420,
+      "path": "tools/web_fallback.py",
+      "sha256": "05c00342cfc395d960282d719927e3b956b890a5124ef69fa5b37af53b7cdb7f",
+      "size": 12666
+    }
+  ],
+  "name": "agentic-search",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
+  "version": "1.1.0"
+}

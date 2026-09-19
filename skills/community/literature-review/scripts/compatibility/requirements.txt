@@ -1,0 +1,3 @@
+# Optional dependency of the old direct fast_audit CLI only.
+# Not used by slr run verify_audit or the current four-rule publication path.
+jieba>=0.42

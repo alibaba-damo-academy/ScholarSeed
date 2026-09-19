@@ -1,0 +1,115 @@
+{
+  "copy": {
+    "idle": "Copy",
+    "success": "Copied",
+    "error": "Copy failed"
+  },
+  "loading": "Loading",
+  "close": "Close",
+  "search": "Search…",
+  "toast": {
+    "close": "Dismiss notification"
+  },
+  "pagination": {
+    "label": "Pagination",
+    "previous": "Previous page",
+    "next": "Next page",
+    "page": "Page {{page}}"
+  },
+  "breadcrumb": {
+    "label": "Breadcrumb",
+    "more": "More paths"
+  },
+  "tag": {
+    "close": "Close tag"
+  },
+  "calendar": {
+    "caption": "September 2026"
+  },
+  "otp": {
+    "slot": "Verification code digit {{position}}"
+  },
+  "resize": {
+    "action": "Resize panels",
+    "panel": "Panel {{position}}"
+  },
+  "carousel": {
+    "role": "carousel",
+    "slide": "slide",
+    "goto": "Go to slide {{position}}"
+  },
+  "password": {
+    "show": "Show",
+    "hide": "Hide"
+  },
+  "navigation": {
+    "overview": "Overview",
+    "close": "Close tab",
+    "closeNamed": "Close {{label}}",
+    "closeOthers": "Close others",
+    "closeLeft": "Close to the left",
+    "closeRight": "Close to the right",
+    "closeAll": "Close all",
+    "splitRight": "Split right",
+    "moveRight": "Move to the right",
+    "splitDown": "Split down",
+    "moveDown": "Move down",
+    "moveLeft": "Move to the left",
+    "moveUp": "Move up",
+    "moveLeftTop": "Move to upper left",
+    "moveLeftBottom": "Move to lower left",
+    "moveRightTop": "Move to upper right",
+    "moveRightBottom": "Move to lower right",
+    "moveTopLeft": "Move to upper left",
+    "moveTopRight": "Move to upper right",
+    "moveBottomLeft": "Move to lower left",
+    "moveBottomRight": "Move to lower right",
+    "modules": "Module navigation"
+  },
+  "optional": "Optional",
+  "attachments": {
+    "remove": "Remove attachment {{title}}"
+  },
+  "command": {
+    "title": "Command"
+  },
+  "cancel": "Cancel",
+  "save": "Save",
+  "refresh": "Refresh",
+  "retry": "Retry",
+  "open": "Open",
+  "avatar": {
+    "label": "{{name}}’s avatar"
+  },
+  "create": "Create",
+  "delete": "Delete",
+  "done": "Done",
+  "navigationTabs": {
+    "unsaved": "Unsaved"
+  },
+  "markdown": {
+    "taskComplete": "Completed",
+    "taskIncomplete": "Not completed",
+    "image": "Image"
+  },
+  "floatingWindow": {
+    "close": "Close {{title}}",
+    "move": "Move {{title}}",
+    "pin": "Pin floating window",
+    "unpin": "Unpin floating window",
+    "maximize": "Maximize floating window",
+    "restore": "Restore floating window",
+    "resize": "Resize floating window"
+  },
+  "badge": {
+    "remove": "Remove badge"
+  },
+  "chart": {
+    "label": "Chart"
+  },
+  "icon": {
+    "missing": "Missing icon",
+    "missingNamed": "Missing icon: {{name}}",
+    "missingMark": "?"
+  }
+}

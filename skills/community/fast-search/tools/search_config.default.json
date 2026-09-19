@@ -1,0 +1,9 @@
+{
+  "_comment": "Portable defaults shipped with the skill. Set SCHOLARSEED_API_KEY in the environment. Override URL/proxy with AGENTIC_SEARCH_CONFIG, ~/.config/agentic-search/search_config.json, or tools/search_config.json.",
+  "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub/papersearch/",
+  "paperhub_proxy_mode": "auto",
+  "extra_no_proxy": [],
+  "cache_dir": "",
+  "cache_mode": "off",
+  "cache_replay_timing": "instant"
+}

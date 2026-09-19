@@ -1,0 +1,16 @@
+{
+  "version": "0.1.3",
+  "sha256": "6c0fb096e7111e113afeea9a59c042728d9705127c340d12c7ff5b34373bb6ae",
+  "public_source_url": null,
+  "license": {
+    "package": null,
+    "zotero_derived_translators": "AGPL-3.0; see individual embedded source headers for the exact terms.",
+    "notice": "THIRD_PARTY_NOTICES.md",
+    "license_text": "AGPL-3.0.txt"
+  },
+  "reproducible_build": {
+    "status": "Public source URL is not yet supplied; independent reproduction is pending source publication.",
+    "source_revision": "67c55e96f4ad1f6a741026577bfcac096acd113f",
+    "instructions": "After the corresponding public source is published, export the recorded revision into a clean directory, build its wheel with uv build --wheel --out-dir <wheel-dir> <clean-tree>, and compare the wheel SHA-256 with the value above. Exact build-tool versions were not recorded; byte-for-byte reproducibility has not been verified."
+  }
+}

@@ -1,0 +1,10 @@
+.venv/
+.venv-*/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+dist/
+*.tar.gz
+*.zip
+config/secrets.local.json
+vendor/agentic-search/tools/search_config.json
