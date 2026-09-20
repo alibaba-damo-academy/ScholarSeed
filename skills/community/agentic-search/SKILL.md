@@ -53,7 +53,7 @@ Balanced graph.
    publication failure, then the `browser` profile (`provider:
    visible-browser`) only when the runtime permits full access. For official
    and browser, require a delivered `web-search-result.json` artifact, gate on
-   `schema: shushen.web_search.v1`, and decide the search outcome from its
+   `schema: scholarseed.web_search.v1`, and decide the search outcome from its
    `status`, not the provider process exit code. `completed` and `empty` are
    terminal successes; `unavailable`, `failed`, and `action_required` are not
    successful candidate sets. Treat a nonzero publication command, missing or
@@ -69,8 +69,8 @@ Balanced graph.
    environment values.
 
 For a `$web-search` native-profile fallback, require exactly one object between
-`<shushen_web_search_results>` and `</shushen_web_search_results>`. Validate the
-strict native envelope: `schema` = `shushen.web_search.v1`; `status` =
+`<scholarseed_web_search_results>` and `</scholarseed_web_search_results>`. Validate the
+strict native envelope: `schema` = `scholarseed.web_search.v1`; `status` =
 `completed` or `empty`; `provider` = `codex-native`; `query` exactly matches the
 requested query; `candidates` contains at most 20 exact
 `{title,url,description}` objects; and `error` is null. If native Web Search

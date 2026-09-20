@@ -73,8 +73,14 @@ class ProductEndpointTests(unittest.TestCase):
 
     def test_web_search_native_contract_matches_v1(self):
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("<shushen_web_search_results>", skill)
-        self.assertIn("</shushen_web_search_results>", skill)
+        self.assertIn("<scholarseed_web_search_results>", skill)
+        self.assertIn("</scholarseed_web_search_results>", skill)
+        self.assertIn("`schema` = `scholarseed.web_search.v1`", skill)
+        for relative in ("SKILL.md", "README.md", "references/balanced-quality-workflow.md"):
+            self.assertNotIn("shushen.web_search", (ROOT / relative).read_text(encoding="utf-8"))
+        producer = ROOT.parent / "web-search" / "scripts"
+        for name in ("official.py", "browser.py"):
+            self.assertIn('SCHEMA = "scholarseed.web_search.v1"', (producer / name).read_text())
         self.assertIn("`provider` = `codex-native`", skill)
         self.assertNotIn("WEB_SEARCH_RESULT_BEGIN", skill)
         self.assertNotIn("`provider` = `native`", skill)

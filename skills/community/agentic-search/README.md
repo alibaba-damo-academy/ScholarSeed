@@ -129,7 +129,7 @@ deadline 可以阻止新的检索批次，但不能中断正在生成的一次�
 
 1. **PaperHub** 是可选的结构化增强源，用于关键词、题名、论文详情和参考文献查询；
 2. **`$web-search` skill** 统一承接公网检索，宿主依次尝试 `official-api`、`codex-native`、
-   `visible-browser`；三者统一返回 `shushen.web_search.v1` 候选核心，agentic-search 不直接
+   `visible-browser`；三者统一返回 `scholarseed.web_search.v1` 候选核心，agentic-search 不直接
    绕过该 skill 调用原生 Web Search；
 3. **Brave 默认关闭**。即使环境中存在 `BRAVE_API_KEY`，也不会自动使用。
 

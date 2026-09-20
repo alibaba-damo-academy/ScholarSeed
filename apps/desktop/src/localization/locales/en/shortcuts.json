@@ -1,7 +1,7 @@
 {
   "nav": "Keyboard shortcuts",
   "title": "Keyboard shortcuts",
-  "description": "View and edit Shushen's global and file-editor shortcuts in one place. New commands and conflict handling use this catalog.",
+  "description": "View and edit ScholarSeed's global and file-editor shortcuts in one place. New commands and conflict handling use this catalog.",
   "searchLabel": "Search keyboard shortcuts",
   "searchPlaceholder": "Search commands, groups, or keys",
   "emptyTitle": "No shortcuts found",
