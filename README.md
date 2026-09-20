@@ -41,3 +41,7 @@ npm --prefix apps/desktop run typecheck
 ```
 
 首版以 macOS 验收为目标；Windows 源码保留，但尚未完成公开环境验收。首次准备版本的实际验收仍在进行，不能把源码存在视为已验证。内部工作记录、开发者 skills、视觉规范门禁和私有历史不随本仓库交付。
+
+## 许可证
+
+本仓库的原创内容采用 [Apache License 2.0](LICENSE) 授权。随附第三方组件及素材仍遵循各自的许可证与声明，不被本仓库许可证替代。已有声明见 [Office](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) 和 [paper-fulltext-dl](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)；第三方授权审核仍需完成。

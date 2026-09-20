@@ -4,7 +4,7 @@
 # 不依赖产品后端或桌面端；通用 Gateway 不反向依赖任何厂商实现。
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,6 +12,8 @@ name = "scholarseed-codex"
 version = "0.2.0"
 description = "ScholarSeed runtime adapter for the Codex app-server harness"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = ["scholarseed-runtime==0.2.0"]
 

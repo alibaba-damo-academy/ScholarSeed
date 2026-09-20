@@ -4,7 +4,7 @@
 # 仅依赖 scholarseed-runtime 公开契约，不依赖书深产品后端或桌面端。
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,6 +12,8 @@ name = "scholarseed-dsh"
 version = "0.2.0"
 description = "ScholarSeed runtime adapter for the DeepSeek Harness runtime"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = ["scholarseed-runtime==0.2.0"]
 

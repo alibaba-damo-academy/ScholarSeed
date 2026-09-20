@@ -4,7 +4,7 @@
   "description": "书深 — 科研智能体桌面应用",
   "main": "out/main/index.js",
   "author": "ScholarSeed",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "packageManager": "npm@11.13.0",
   "engines": {
     "node": "24.16.0",
@@ -104,6 +104,7 @@
     "files": [
       "out/**/*",
       "!out/renderer/**/*",
+      "LICENSE",
       "package.json"
     ],
     "extraResources": [
