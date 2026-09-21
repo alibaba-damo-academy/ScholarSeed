@@ -7,21 +7,30 @@ import { TextLayerBuilder } from 'pdfjs-dist/legacy/web/pdf_viewer.mjs'
 import { Button, Popover, PopoverContent, PopoverTrigger } from '../../../components/ui'
 import type { PdfMark } from '../api'
 import type { PdfFonts } from './fonts'
-import { citationRegions, clipQuads, enclosingRectangle, matchText, nearestRectangle, projectVisibleMarks } from './geometry'
+import { citationRegions, clipQuads, enclosingRectangle, matchText, nearestRectangle, projectVisibleMarks, type Size } from './geometry'
 import { externalPdfLinks, PDF_ANNOTATION_INTENT, type ExternalPdfLink } from './links'
 import {
   PDF_HIGHLIGHT_OPACITY,
+  PDF_HIGHLIGHT_VISUAL_CLASS,
   PDF_MARK_COLORS,
   PDF_SEARCH_HIGHLIGHT_OPACITY,
   PDF_STRIKETHROUGH_THICKNESS,
   PDF_UNDERLINE_OPACITY,
-  PDF_UNDERLINE_THICKNESS
+  PDF_UNDERLINE_THICKNESS,
+  pdfMarkVisualClass
 } from './records'
 import { internalLink, type PdfDestination, type PdfInternalLink } from './navigation'
 
 const NEAR_PAGE_MARGIN = '600px'
 const MAX_RENDER_PIXELS = 16_000_000
+const PDF_ZOOM_RENDER_DELAY_MS = 400
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+
+function releaseCanvas(canvas: HTMLCanvasElement | null): void {
+  if (!canvas) return
+  canvas.width = 0
+  canvas.height = 0
+}
 
 interface PdfLinkTarget {
   matched: boolean
@@ -30,6 +39,23 @@ interface PdfLinkTarget {
 
 export type PdfFocusTarget = { kind: 'reading'; page: number; text: string } | { kind: 'search'; page: number; ordinal: number } | { kind: 'annotation'; page: number; id: string } | { kind: 'citation'; page: number; region?: number } | { kind: 'link'; page: number; left: number; top: number }
 export type PdfFocus = PdfFocusTarget & { sequence: number }
+
+export interface PdfPageProps {
+  page: PDFPageProxy
+  fonts: PdfFonts
+  scale: number
+  annotations?: PdfMark[]
+  commentMarkIds?: string[]
+  search?: string
+  focus?: PdfFocus
+  citationQuads?: number[][]
+  selectionQuads?: number[][]
+  thumbnail?: boolean
+  keepRendered?: boolean
+  onAnnotationOpen?: (mark: PdfMark) => void
+  onInternalLink?: (destination: PdfDestination) => void | Promise<void>
+  renderAnnotation?: (mark: PdfMark, close: () => void) => ReactNode
+}
 
 /** Map PDF.js text spans (including its line breaks) back to DOM ranges. */
 function searchQuads(host: HTMLElement, query: string): { quad: number[]; ordinal: number }[] {
@@ -56,34 +82,24 @@ function searchQuads(host: HTMLElement, query: string): { quad: number[]; ordina
   })
 }
 
-export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], thumbnail = false, keepRendered = false, onAnnotationOpen, onInternalLink, renderAnnotation }: {
-  page: PDFPageProxy
-  fonts: PdfFonts
-  scale: number
-  annotations?: PdfMark[]
-  commentMarkIds?: string[]
-  search?: string
-  focus?: PdfFocus
-  citationQuads?: number[][]
-  selectionQuads?: number[][]
-  thumbnail?: boolean
-  keepRendered?: boolean
-  onAnnotationOpen?: (mark: PdfMark) => void
-  onInternalLink?: (destination: PdfDestination) => void | Promise<void>
-  renderAnnotation?: (mark: PdfMark, close: () => void) => ReactNode
-}): React.JSX.Element {
+export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], thumbnail = false, keepRendered = false, onAnnotationOpen, onInternalLink, renderAnnotation }: PdfPageProps): React.JSX.Element {
   const { t } = useTranslation('pdf')
   const host = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
+  const stagingCanvas = useRef<HTMLCanvasElement>(null)
   const textHost = useRef<HTMLDivElement>(null)
   const text = useRef<HTMLDivElement | null>(null)
   const annotationTriggers = useRef(new Map<string, HTMLButtonElement>())
   const [openAnnotation, setOpenAnnotation] = useState<string | null>(null)
   const consumedFocus = useRef<number>()
   const [near, setNear] = useState(false)
+  const [canvasReady, setCanvasReady] = useState(false)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [matches, setMatches] = useState<{ quad: number[]; ordinal: number }[]>([])
+  const [renderScale, setRenderScale] = useState(scale)
+  const renderSequence = useRef(0)
+  const renderSettled = useRef<Promise<unknown>>(Promise.resolve())
   const [readingMatches, setReadingMatches] = useState<{ quad: number[]; ordinal: number }[]>([])
   const [links, setLinks] = useState<PdfInternalLink[]>([])
   const [externalLinks, setExternalLinks] = useState<ExternalPdfLink[]>([])
@@ -100,35 +116,82 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
   }, [])
 
   useEffect(() => {
+    if (scale === renderScale) return
+    const timer = window.setTimeout(() => setRenderScale(scale), PDF_ZOOM_RENDER_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [renderScale, scale])
+
+  useEffect(() => () => {
+    const settled = renderSettled.current
+    const target = canvas.current
+    const staging = stagingCanvas.current
+    void settled.catch(() => undefined).then(() => {
+      releaseCanvas(target)
+      releaseCanvas(staging)
+      page.cleanup()
+    })
+  }, [page])
+
+  useEffect(() => {
+    const sequence = ++renderSequence.current
     const target = canvas.current
     const layer = textHost.current
     setReady(false)
     setError(null)
-    if (!renderable || !target || (!thumbnail && !layer)) return
+    if (!renderable || !target || (!thumbnail && !layer)) {
+      setCanvasReady(false)
+      const settled = renderSettled.current
+      void settled.catch(() => undefined).then(() => {
+        releaseCanvas(target)
+        if (renderSequence.current !== sequence) return
+        releaseCanvas(stagingCanvas.current)
+        if (canvas.current === target) canvas.current = null
+        page.cleanup()
+      })
+      return
+    }
     let active = true
-    const view = page.getViewport({ scale })
-    const ratio = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_RENDER_PIXELS / (view.width * view.height)))
-    target.width = Math.max(1, Math.floor(view.width * ratio))
-    target.height = Math.max(1, Math.floor(view.height * ratio))
-    const context = target.getContext('2d')
-    if (!context) return
     let render: RenderTask | undefined
     let textLayer: TextLayerBuilder | undefined
     const events = new AbortController()
-    void fonts.prepare(page).then(async () => {
+    const previousRender = renderSettled.current
+    const settled = previousRender.catch(() => undefined).then(async () => {
       if (!active) return
-      render = page.render({ canvas: target, canvasContext: context, viewport: view, transform: [ratio, 0, 0, ratio, 0, 0] })
-      layer?.replaceChildren()
-      if (!thumbnail && layer) {
-        textLayer = new TextLayerBuilder({ pdfPage: fonts.textPage(page), abortSignal: events.signal })
-        if (page.pageNumber === 1) textLayer.div.dataset.ob = 'pdf-first-text'
-        text.current = textLayer.div
-        layer.append(textLayer.div)
+      const staging = stagingCanvas.current ?? document.createElement('canvas')
+      stagingCanvas.current = staging
+      const view = page.getViewport({ scale: renderScale })
+      const ratio = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_RENDER_PIXELS / (view.width * view.height)))
+      staging.width = Math.max(1, Math.floor(view.width * ratio))
+      staging.height = Math.max(1, Math.floor(view.height * ratio))
+      const context = staging.getContext('2d')
+      if (!context) return
+      render = page.render({ canvas: staging, canvasContext: context, viewport: view, transform: [ratio, 0, 0, ratio, 0, 0] })
+      await render.promise
+      if (!active) return
+      target.width = staging.width
+      target.height = staging.height
+      const targetContext = target.getContext('2d')
+      if (!targetContext) return
+      targetContext.drawImage(staging, 0, 0)
+      releaseCanvas(staging)
+      setCanvasReady(true)
+      if (thumbnail || !layer) {
+        setReady(true)
+        return
       }
+      await fonts.prepare(page)
+      if (!active) return
+      layer?.replaceChildren()
+      textLayer = new TextLayerBuilder({ pdfPage: fonts.textPage(page), abortSignal: events.signal })
+      if (page.pageNumber === 1) textLayer.div.dataset.ob = 'pdf-first-text'
+      text.current = textLayer.div
+      layer.append(textLayer.div)
       // @ts-expect-error PDF.js 6.3.289 types require images; its implementation accepts omission.
-      await Promise.all([render.promise, textLayer?.render({ viewport: view })])
+      await textLayer.render({ viewport: view })
       if (active) setReady(true)
-    }).catch((reason: unknown) => {
+    })
+    renderSettled.current = settled
+    void settled.catch((reason: unknown) => {
       if (active && !(reason instanceof Error && reason.name === 'RenderingCancelledException')) {
         setError(reason instanceof Error ? reason.message : String(reason))
       }
@@ -139,11 +202,8 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
       events.abort()
       textLayer?.cancel()
       text.current = null
-      // Release offscreen canvases, keeping page geometry for scrolling/navigation.
-      target.width = 0
-      target.height = 0
     }
-  }, [renderable, page, fonts, scale, thumbnail])
+  }, [renderable, page, fonts, renderScale, thumbnail])
 
   useEffect(() => {
     if (thumbnail || !near) return
@@ -237,8 +297,9 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
   return (
     <div ref={host} className={thumbnail ? 'vds-pdf-thumbnail-page' : 'vds-pdf-page'}
       data-testid={thumbnail ? undefined : `pdf-page-${page.pageNumber}`} data-page={page.pageNumber}
+      data-canvas-rendered={canvasReady} data-text-rendered={ready}
       data-rendered={ready} style={{ width: viewport.width, height: viewport.height, '--total-scale-factor': scale * page.userUnit } as React.CSSProperties}>
-      {renderable && <canvas ref={canvas} style={{ width: viewport.width, height: viewport.height }} />}
+      {renderable && <canvas ref={node => { if (node) canvas.current = node }} style={{ width: viewport.width, height: viewport.height }} />}
       {!thumbnail && <div ref={textHost} onClick={event => {
         if (window.getSelection()?.toString()) return
         const bounds = host.current?.getBoundingClientRect()
@@ -250,8 +311,8 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
         // the popover anchor and follows the keyboard activation path.
         if (mark) annotationTriggers.current.get(mark.id)?.click()
       }} />}
-      {!ready && <span className="vds-pdf-page-placeholder">{error !== null ? t('pageRenderFailed', { detail: error }) : t('page', { page: page.pageNumber })}</span>}
-      {!thumbnail && <div className="vds-pdf-annotation-layer pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] overflow-hidden">
+      {!canvasReady && <span className="vds-pdf-page-placeholder">{error !== null ? t('pageRenderFailed', { detail: error }) : t('page', { page: page.pageNumber })}</span>}
+      {!thumbnail && <div data-pdf-highlight-layer className="pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] overflow-hidden mix-blend-darken">
         {focus?.kind === 'link' && linkTarget ? <span
           data-internal-link-target
           data-matched-text={linkTarget.matched}
@@ -264,6 +325,31 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
             '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY
           } as React.CSSProperties}
         /> : null}
+        {selectionQuads.map((quad, index) => <span key={`selection-${index}`} data-pdf-selection-highlight className="absolute bg-[var(--vds-notice-bg-default)] opacity-[var(--pdf-highlight-opacity)]" style={{
+          left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY
+        } as React.CSSProperties} />)}
+        {readingMatches.map(({ quad }, index) => <span key={`reading-${index}`} data-reading-highlight className="absolute bg-[var(--vds-brand-bg-disabled)] opacity-[var(--pdf-highlight-opacity)]" style={{ left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY } as React.CSSProperties} />)}
+        {citationQuads.map((quad, index) => <span key={`citation-${index}`} data-citation-highlight className="absolute bg-[var(--vds-pdf-citation-highlight)] opacity-[var(--pdf-highlight-opacity)]" style={{
+          left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY
+        } as React.CSSProperties} />)}
+        {searchMarks.map(mark => <span key={mark.key} data-current-search={mark.currentSearch} className={`absolute${mark.currentSearch ? ' outline-2 outline-[var(--vds-warning-text-primary)]' : ''}`} style={{
+          left: `${mark.quad[0] * 100}%`, top: `${mark.quad[1] * 100}%`,
+          width: `${(mark.quad[2] - mark.quad[0]) * 100}%`, height: `${(mark.quad[3] - mark.quad[1]) * 100}%`,
+          opacity: mark.opacity, background: mark.color
+        }} />)}
+        {visibleAnnotations.flatMap(({ mark: annotation, quads }) => annotation.style === 'highlight' ? quads.map((quad, index) => <span
+          key={`highlight-${annotation.id}-${index}`}
+          data-pdf-annotation-highlight
+          className={PDF_HIGHLIGHT_VISUAL_CLASS}
+          style={{
+            left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`,
+            width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`,
+            '--pdf-mark-color': PDF_MARK_COLORS[annotation.color],
+            '--pdf-mark-opacity': PDF_HIGHLIGHT_OPACITY
+          } as React.CSSProperties}
+        />) : [])}
+      </div>}
+      {!thumbnail && <div className="vds-pdf-annotation-layer pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] overflow-hidden">
         {links.map(link => <Button
           unstyled
           key={link.id}
@@ -286,26 +372,10 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
           }}
           style={{ left: link.left, top: link.top, width: link.width, height: link.height }}
         />)}
-        {selectionQuads.map((quad, index) => <span key={`selection-${index}`} data-pdf-selection-highlight className="bg-[var(--vds-notice-bg-default)] opacity-[var(--pdf-highlight-opacity)]" style={{
-          left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY
-        } as React.CSSProperties} />)}
-        {readingMatches.map(({ quad }, index) => <span key={`reading-${index}`} data-reading-highlight className="bg-[var(--vds-brand-bg-disabled)] opacity-[var(--pdf-highlight-opacity)]" style={{ left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY } as React.CSSProperties} />)}
-        {citationQuads.map((quad, index) => <span key={`citation-${index}`} data-citation-highlight className="bg-[var(--vds-pdf-citation-highlight)] opacity-[var(--pdf-highlight-opacity)]" style={{
-          left: `${quad[0] * 100}%`, top: `${quad[1] * 100}%`, width: `${(quad[2] - quad[0]) * 100}%`, height: `${(quad[3] - quad[1]) * 100}%`, '--pdf-highlight-opacity': PDF_HIGHLIGHT_OPACITY
-        } as React.CSSProperties} />)}
-        {searchMarks.map(mark => <span key={mark.key} data-current-search={mark.currentSearch} className={`absolute mix-blend-multiply${mark.currentSearch ? ' outline-2 outline-[var(--vds-warning-text-primary)]' : ''}`} style={{
-          left: `${mark.quad[0] * 100}%`, top: `${mark.quad[1] * 100}%`,
-          width: `${(mark.quad[2] - mark.quad[0]) * 100}%`, height: `${(mark.quad[3] - mark.quad[1]) * 100}%`,
-          opacity: mark.opacity, background: mark.color
-        }} />)}
         {visibleAnnotations.flatMap(({ mark: annotation, quads }) => quads.map((quad, index) => {
           const color = PDF_MARK_COLORS[annotation.color]
           const hasComment = commentMarkIds.includes(annotation.id) && index === quads.length - 1
-          const markVisual = annotation.style === 'highlight'
-            ? 'bg-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
-            : annotation.style === 'underline'
-              ? 'border-b-[length:var(--pdf-mark-thickness)] border-b-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
-              : ''
+          const markVisual = pdfMarkVisualClass(annotation.style)
           return <Popover key={`${annotation.id}-${index}`} open={openAnnotation === annotation.id && index === 0} onOpenChange={(open) => { setOpenAnnotation(open ? annotation.id : null); if (open) onAnnotationOpen?.(annotation) }}>
             <PopoverTrigger asChild>
               <Button
@@ -317,7 +387,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
                 aria-label={t('pdfAnnotation.location', { page: annotation.page, text: annotation.text })}
                 data-annotation-id={annotation.id}
                 data-testid={`pdf-mark-${annotation.id}`}
-                className="pointer-events-none absolute cursor-pointer mix-blend-multiply"
+                className="pointer-events-none absolute cursor-pointer"
                 onClick={index === 0 ? undefined : event => {
                   event.preventDefault()
                   annotationTriggers.current.get(annotation.id)?.click()
@@ -340,6 +410,72 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
           </Popover>
         }))}
       </div>}
+    </div>
+  )
+}
+
+export function PdfPageSlot({
+  estimatedSize,
+  initialPage,
+  loadPage,
+  pageNumber,
+  ...pageProps
+}: Omit<PdfPageProps, 'page'> & {
+  estimatedSize: Size
+  initialPage?: PDFPageProxy
+  loadPage: (pageNumber: number) => Promise<PDFPageProxy | null>
+  pageNumber: number
+}): React.JSX.Element {
+  const { t } = useTranslation('pdf')
+  const host = useRef<HTMLDivElement>(null)
+  const [near, setNear] = useState(Boolean(initialPage))
+  const [page, setPage] = useState<PDFPageProxy | null>(initialPage ?? null)
+
+  useEffect(() => {
+    setPage(initialPage ?? null)
+    setNear(Boolean(initialPage))
+  }, [initialPage, loadPage])
+
+  useEffect(() => {
+    const target = host.current
+    if (!target || page) return
+    const observer = new IntersectionObserver(
+      entries => setNear(entries[0]?.isIntersecting ?? false),
+      { rootMargin: NEAR_PAGE_MARGIN }
+    )
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [page])
+
+  useEffect(() => {
+    if (!near || page) return
+    let active = true
+    void loadPage(pageNumber).then(loaded => {
+      if (active && loaded) setPage(loaded)
+    })
+    return () => { active = false }
+  }, [loadPage, near, page, pageNumber])
+
+  if (page) return <PdfPage {...pageProps} page={page} />
+
+  const width = estimatedSize.width * pageProps.scale
+  const height = estimatedSize.height * pageProps.scale
+  return (
+    <div
+      ref={host}
+      className={pageProps.thumbnail ? 'vds-pdf-thumbnail-page' : 'vds-pdf-page'}
+      data-canvas-rendered="false"
+      data-page={pageNumber}
+      data-rendered="false"
+      data-testid={pageProps.thumbnail ? undefined : `pdf-page-${pageNumber}`}
+      data-text-rendered="false"
+      style={{
+        width,
+        height,
+        '--total-scale-factor': pageProps.scale
+      } as React.CSSProperties}
+    >
+      <span className="vds-pdf-page-placeholder">{t('page', { page: pageNumber })}</span>
     </div>
   )
 }

@@ -389,6 +389,7 @@ def register_resource_routes(app: FastAPI) -> None:
             "session_id": record.source_session_id,
             "turn_id": record.source_turn_id,
             "item_id": record.source_item_id,
+            "source_range": (record.source_detail or {}).get("range"),
         }
 
     @app.get(f"{RESOURCE_ROUTE_PREFIX}/web-origin")

@@ -8,7 +8,8 @@ from io import BytesIO
 from typing import Any
 from zipfile import BadZipFile
 
-from docx import Document
+from docx import Document as load_document
+from docx.document import Document
 from docx.opc.exceptions import PackageNotFoundError
 
 FORMAT = "docx"
@@ -55,7 +56,7 @@ def _utf16_length(text: str) -> int:
 
 def _document(payload: bytes) -> Document:
     try:
-        return Document(BytesIO(payload))
+        return load_document(BytesIO(payload))
     except (BadZipFile, KeyError, PackageNotFoundError, ValueError) as exc:
         raise DocxSelectionError("writer_document") from exc
 

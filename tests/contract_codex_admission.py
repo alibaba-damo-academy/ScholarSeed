@@ -18,9 +18,16 @@ from scholarseed_codex.environment import (
     SCHOLARSEED_CODEX_SOURCE_HOME_ENV,
 )
 from scholarseed_codex.protocol.session import CodexRuntimeReadiness, CodexRuntimeStatus
-from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.protocol.state import AppServerError, CodexActivationStage
 from scholarseed_codex.provider import CodexRuntimeProvider
-from scholarseed_runtime.contract import CommandState, OpenSessionRequest
+from scholarseed_runtime.contract import CommandState, OpenSessionRequest, ResumeSessionRequest
+from scholarseed_runtime.contract.binding import RuntimeBinding
+from scholarseed_runtime.contract.capability import CapabilitySet
+from scholarseed_runtime.contract.command import (
+    InventoryRequest,
+    RuntimeInspectionRequest,
+    SkillConfigurationRequest,
+)
 from scholarseed_runtime.contract.resource import (
     RESOURCE_RESERVATION_INVALID,
     ResourcePurpose,
@@ -28,7 +35,7 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.runtime import ProviderConfiguration
-from tests.contract_codex_capacity import ControlledHost
+from tests.contract_codex_capacity import ControlledHost, TimingRecorder
 
 WAIT_SECONDS = 0.05
 SETTLEMENT_SECONDS = 0.2
@@ -77,6 +84,77 @@ class CodexAdmissionContracts(unittest.IsolatedAsyncioTestCase):
             time() + 10,
             OpenSessionRequest("product-session", self.root),
         )
+
+    def test_timing_is_excluded_from_request_equality_and_repr(self) -> None:
+        binding = RuntimeBinding(
+            product_session_id="timed-session",
+            runtime_id="codex",
+            adapter_version="",
+            runtime_version="",
+            protocol_version="",
+            protocol_schema_hash="",
+            opaque_session_ref="timed-thread",
+            capabilities=CapabilitySet(),
+        )
+        requests = (
+            OpenSessionRequest(binding.product_session_id, self.root),
+            ResumeSessionRequest(binding, self.root),
+            RuntimeInspectionRequest(self.root, InventoryRequest(())),
+            SkillConfigurationRequest(self.root, ()),
+        )
+        for request in requests:
+            with self.subTest(request=type(request).__name__):
+                timed = replace(request, timing=TimingRecorder())
+                repeated = replace(request, timing=TimingRecorder())
+                self.assertEqual(timed, request)
+                self.assertEqual(timed, repeated)
+                self.assertEqual(repr(timed), repr(request))
+                self.assertEqual(repr(timed), repr(repeated))
+                if isinstance(timed, (OpenSessionRequest, ResumeSessionRequest)):
+                    self.assertIs(self.provider._open_request(timed).timing, timed.timing)
+
+    async def test_provider_retry_with_new_timing_preserves_reservation(self) -> None:
+        request = self.request("timed-idempotence")
+        timed = replace(
+            request, session_request=replace(request.session_request, timing=TimingRecorder())
+        )
+        receipt = await self.provider.reserve(timed)
+        repeated = await self.provider.reserve(
+            replace(timed, session_request=replace(timed.session_request, timing=TimingRecorder()))
+        )
+        self.assertEqual(receipt.reservation_id, repeated.reservation_id)
+        await self.provider.cancel_resource(receipt.reservation_id)
+        terminal = await self.provider.reserve(request)
+        self.assertEqual(terminal.reservation_id, receipt.reservation_id)
+        self.assertIs(terminal.state, ResourceState.CANCELLED)
+
+    async def test_cancelled_prepare_wait_does_not_release_another_owners_lock(self) -> None:
+        timing = TimingRecorder()
+        request = self.request("timed-lock-cancel")
+        request = replace(request, session_request=replace(request.session_request, timing=timing))
+        await self.provider._prepare_lock.acquire()
+        waiter = asyncio.create_task(self.provider.reserve(request))
+        try:
+            await asyncio.wait_for(
+                timing.signal(CodexActivationStage.PREPARE_LOCK_WAIT).wait(), SETTLEMENT_SECONDS
+            )
+            self.assertFalse(waiter.done())
+            waiter.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+            self.assertTrue(self.provider._prepare_lock.locked())
+            self.assertEqual(
+                timing.finished,
+                [(CodexActivationStage.PREPARE_LOCK_WAIT, asyncio.CancelledError)],
+            )
+            self.assertNotIn(CodexActivationStage.LAUNCH_CREDENTIALS, timing.entered)
+        finally:
+            self.provider._prepare_lock.release()
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+        receipt = await self.provider.reserve(self.request("after-timed-cancel"))
+        self.assertIs(receipt.state, ResourceState.GRANTED)
+        await self.provider.cancel_resource(receipt.reservation_id)
 
     async def test_unclaimed_expiry_releases_prepared_session_and_preserves_receipt(self) -> None:
         request = self.request()

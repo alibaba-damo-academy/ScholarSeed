@@ -183,8 +183,10 @@ class LiteratureAttachmentContent:
         attachment_id: str,
     ) -> tuple[bytes, str, str]:
         attachment = self.attachment(literature_id, attachment_id)
+        if not attachment.path or not is_managed_attachment(attachment.path):
+            raise ContentError(ATTACHMENT_MISSING)
         try:
-            payload = read_attachment(self.location_attachment(attachment))
+            payload = read_attachment(attachment.path)
         except ContentError:
             raise
         except FileNotFoundError as error:

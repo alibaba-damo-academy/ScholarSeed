@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 from markdown_it import MarkdownIt
 
@@ -44,6 +45,7 @@ from service.platform.citations import (
 )
 from service.platform.context import (
     AssistantAnswerSource,
+    AssistantTurnItem,
     AssistantTurnSnapshot,
     ContextAuthority,
     ContextRef,
@@ -91,6 +93,7 @@ class ResolvedDocument:
     source_kind: str
     source_id: str
     ref: ContextRef | None
+    item: AssistantTurnItem | None
 
 
 def searchable_text(text: str) -> str:
@@ -137,7 +140,7 @@ def citation_handles(markdown: str) -> tuple[str, ...]:
     for block in MarkdownIt("commonmark").parse(markdown):
         for token in block.children or ():
             href = token.attrGet("href") if token.type == "link_open" else None
-            if href and href.startswith(CITATION_SCHEME):
+            if isinstance(href, str) and href.startswith(CITATION_SCHEME):
                 handle = href[len(CITATION_SCHEME) :]
                 if handle not in handles:
                     handles.append(handle)
@@ -349,6 +352,7 @@ class CitationService:
             if self._attachments and turn_id
             else ()
         )
+        item: AssistantTurnItem | None = None
         attachment = next((ref for ref in attachment_refs if ref["id"] == query.ref_id), None)
         if query.ref_id.startswith(LIBRARY_REF_PREFIX) and self._literature is not None:
             source_kind = ContextRefKind.LITERATURE.value
@@ -395,7 +399,7 @@ class CitationService:
                 )
             )
             source_kind, source_id = ref.kind.value, ref.source_id
-        return ResolvedDocument(document, source_kind, source_id, ref)
+        return ResolvedDocument(document, source_kind, source_id, ref, item)
 
     def query(
         self, session_id: str, snapshot_id: str, operation: str, query: PdfQuery, turn_id: str = ""
@@ -447,7 +451,8 @@ class CitationService:
         source_kind = resolved.source_kind
         source_id = resolved.source_id
         ref = resolved.ref
-        preferred = {"pipeline": "local_pdf", "fallback_reason": ""}
+        resolved_item = resolved.item
+        preferred: dict[str, Any] = {"pipeline": "local_pdf", "fallback_reason": ""}
         is_selection = ref is not None and ref.anchor is not None
         if self._literature is not None and not is_selection:
             preferred = self._literature.preferred(
@@ -457,7 +462,10 @@ class CitationService:
             )
         if preferred.get("state") in ("queued", "running"):
             return {"ok": True, **preferred, "instruction": "Check status later, then read again."}
-        card_fragments = preferred.get("fragments", [])
+        raw_card_fragments = preferred.get("fragments", [])
+        card_fragments: list[dict[str, Any]] = (
+            raw_card_fragments if isinstance(raw_card_fragments, list) else []
+        )
         if query.query.strip():
             terms = searchable_text(query.query).split()
             card_fragments = [
@@ -478,26 +486,30 @@ class CitationService:
         if preferred.get("fragments") and not card_fragments:
             preferred = {"pipeline": "local_pdf", "fallback_reason": "papercard_query_unmatched"}
         omitted_regions: list[dict] = []
+        unavailable_pages: tuple[int, ...] = ()
+        fragments: list[dict[str, Any]]
         if card_fragments:
             fragments = card_fragments
-            index_id = preferred["index_id"]
-            unavailable_pages = ()
+            index_id = str(preferred["index_id"])
         elif is_selection:
-            if ref.anchor is None or ref.anchor.locator.get("kind") != PDF_LOCATOR:
+            if (
+                ref is None
+                or ref.anchor is None
+                or resolved_item is None
+                or ref.anchor.locator.get("kind") != PDF_LOCATOR
+            ):
                 raise ValueError("source_type_unsupported")
+            anchor = ref.anchor
             # SelectionContextProvider already verified both bytes and selected-text hash
             # when this immutable snapshot was admitted. Keep its precise native anchor.
             fragments = [
                 {
-                    "fragment_id": item.evidence_id,
-                    "text": item.excerpt_text,
-                    "pages": [
-                        {"page": ref.anchor.locator["page"], "quads": ref.anchor.locator["quads"]}
-                    ],
+                    "fragment_id": resolved_item.evidence_id,
+                    "text": resolved_item.excerpt_text,
+                    "pages": [{"page": anchor.locator["page"], "quads": anchor.locator["quads"]}],
                 }
             ]
             index_id = document.revision
-            unavailable_pages: tuple[int, ...] = ()
         else:
             if not document.payload:
                 return {
@@ -559,7 +571,7 @@ class CitationService:
                     fragments = [f for f in card_fragments if f["pages"]] + local
                 unavailable_pages = index.unavailable_pages
         selected = fragments[query.offset : query.offset + query.limit]
-        records = []
+        records: list[dict[str, Any]] = []
         response_bytes = 0
         for fragment in selected:
             provenance = {**preferred, "index_id": index_id, **fragment.get("provenance", {})}

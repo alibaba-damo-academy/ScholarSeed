@@ -12,13 +12,11 @@ const DEFAULT_HOME = path.join(os.homedir(), '.scholarseed')
 const WHEEL_PROJECTS = [
   ['packages/runtime', 'dist/runtime'],
   ['packages/damoatrace', 'dist/damoatrace'],
-  ['packages/adapters/codex', 'dist/adapters'],
-  ['packages/adapters/dsh', 'dist/adapters']
+  ['packages/adapters/codex', 'dist/adapters']
 ]
 const FORMAT_PATHS = [
   'apps/serve/service', 'apps/serve/tests', 'packages/runtime/scholarseed_runtime',
-  'packages/damoatrace/damoatrace', 'packages/adapters/codex/scholarseed_codex',
-  'packages/adapters/dsh/scholarseed_dsh', 'scripts', 'tests'
+  'packages/damoatrace/damoatrace', 'packages/adapters/codex/scholarseed_codex', 'scripts', 'tests'
 ]
 const LINT_PATHS = ['apps/serve/service', 'packages/adapters', 'scripts']
 const GLOBAL_BINS = ['scholarseed', 'scholarseed-desktop', 'scholarseed-serve', 'damoatrace']

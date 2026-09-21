@@ -561,24 +561,35 @@ def register_global_routes(app: FastAPI) -> None:
         repository = LiteratureRepository()
         size = min(max(page_size, 1), MAX_PAGE_SIZE)
         current = max(page, DEFAULT_PAGE)
-        filters = {
-            "q": q.strip(),
-            "project_id": project_id,
-            "collection_ids": tuple(collection_id),
-            "tag_ids": tuple(tag_id),
-            "without_collection": without_collection,
-            "without_project": without_project,
-            "recent_only": recent,
-        }
+        collection_ids = tuple(collection_id)
+        tag_ids = tuple(tag_id)
         items = repository.list(
-            **filters, sort=sort, order=order, limit=size, offset=(current - 1) * size
+            q=q.strip(),
+            project_id=project_id,
+            collection_ids=collection_ids,
+            tag_ids=tag_ids,
+            without_collection=without_collection,
+            without_project=without_project,
+            recent_only=recent,
+            sort=sort,
+            order=order,
+            limit=size,
+            offset=(current - 1) * size,
         )
         project_names = _project_names(request)
         return {
             "items": [_summary(item, repository, project_names, project_id) for item in items],
             "page": current,
             "page_size": size,
-            "total": repository.filtered_total(**filters),
+            "total": repository.filtered_total(
+                q=q.strip(),
+                project_id=project_id,
+                collection_ids=collection_ids,
+                tag_ids=tag_ids,
+                without_collection=without_collection,
+                without_project=without_project,
+                recent_only=recent,
+            ),
             "next_cursor": str(current + 1) if len(items) == size else None,
         }
 
@@ -831,35 +842,29 @@ def register_global_routes(app: FastAPI) -> None:
         with LiteratureFileBatch(SERVICE_LITERATURE_FILES_DIR) as batch:
             path = batch.stage(published.name, content)
             if primary:
-                attachment = batch.commit(
-                    (item,),
-                    saver=lambda _items: (
-                        repository.add_attachment(
-                            item_id,
-                            upload.filename or "附件",
-                            path,
-                            attachment_format.kind,
-                            revision=published.revision,
-                            role=AttachmentRole.PRIMARY,
-                            media_type=attachment_format.media_type,
-                        ),
-                    ),
-                )[0]
-                return attachment
-            attachment = batch.commit(
-                (item,),
-                saver=lambda _items: (
-                    repository.add_attachment(
+                attachment = batch.commit_operation(
+                    lambda: repository.add_attachment(
                         item_id,
                         upload.filename or "附件",
                         path,
                         attachment_format.kind,
                         revision=published.revision,
-                        role=AttachmentRole.SUPPLEMENTARY,
+                        role=AttachmentRole.PRIMARY,
                         media_type=attachment_format.media_type,
-                    ),
-                ),
-            )[0]
+                    )
+                )
+                return attachment
+            attachment = batch.commit_operation(
+                lambda: repository.add_attachment(
+                    item_id,
+                    upload.filename or "附件",
+                    path,
+                    attachment_format.kind,
+                    revision=published.revision,
+                    role=AttachmentRole.SUPPLEMENTARY,
+                    media_type=attachment_format.media_type,
+                )
+            )
         return attachment
 
     @app.get(f"{API_PREFIX}/collections")
@@ -1052,7 +1057,8 @@ def register_global_routes(app: FastAPI) -> None:
     ) -> dict[str, Any]:
         identifier = str(uuid4())
         source = str(payload.get("source", ""))
-        options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+        raw_options = payload.get("options")
+        options: dict[str, Any] = raw_options if isinstance(raw_options, dict) else {}
         identity = ""
         if source == ZOTERO_SOURCE:
             scoped_project = _project_scope(request, str(options.get("project_id") or ""))
@@ -1068,7 +1074,7 @@ def register_global_routes(app: FastAPI) -> None:
             # 调用方给了幂等键就用它 (一次导入意图一个键, 重试复用); 没给就退回按
             # 受理参数取指纹, 让不带键的调用方也不会把同一批文献导两遍。
             identity = (idempotency_key or "").strip() or _zotero_import_identity(options)
-        task = {
+        task: dict[str, Any] = {
             "id": identifier,
             "kind": IMPORT_KIND,
             "status": RUNNING if source == ZOTERO_SOURCE else TERMINAL_FAILED,

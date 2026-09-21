@@ -9,12 +9,14 @@ import stat
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from types import ModuleType
+from typing import Protocol, cast
 
+_msvcrt: ModuleType | None
 try:
-    import msvcrt
+    import msvcrt as _msvcrt
 except ModuleNotFoundError:
-    msvcrt = None  # type: ignore[assignment]
+    _msvcrt = None
 
 WINDOWS_PLATFORM = "nt"
 DIRECTORY_MODE = 0o700
@@ -72,6 +74,15 @@ class _StatIdentity(Protocol):
 
     @property
     def st_ctime_ns(self) -> int: ...
+
+
+class _WindowsCrtApi(Protocol):
+    def open_osfhandle(self, handle: int, flags: int) -> int: ...
+
+    def get_osfhandle(self, descriptor: int) -> int: ...
+
+
+WINDOWS_CRT = cast(_WindowsCrtApi, _msvcrt) if _msvcrt is not None else None
 
 
 _WIN_DLL = getattr(ctypes, "WinDLL", None)
@@ -238,7 +249,7 @@ def _windows_access(flags: int) -> int:
 
 
 def _open_windows_file(path: Path, flags: int) -> int:
-    if _KERNEL32 is None or msvcrt is None:
+    if _KERNEL32 is None or WINDOWS_CRT is None:
         raise OSError("Windows filesystem backend unavailable")
     handle = _KERNEL32.CreateFileW(
         str(path),
@@ -265,7 +276,7 @@ def _open_windows_file(path: Path, flags: int) -> int:
         if info.file_attributes & FILE_ATTRIBUTE_REPARSE_POINT:
             raise OSError(errno.ELOOP, "reparse-point entry rejected", str(path))
         descriptor_flags = flags & (ACCESS_MODE_MASK | os.O_APPEND)
-        descriptor = msvcrt.open_osfhandle(
+        descriptor = WINDOWS_CRT.open_osfhandle(
             int(handle),
             descriptor_flags | getattr(os, "O_BINARY", 0),
         )
@@ -346,9 +357,9 @@ def path_for_file(descriptor: int) -> Path:
     """Resolve an already-open Windows file handle for named-stream operations."""
     if _KERNEL32 is None:
         return Path(f"/dev/fd/{descriptor}").resolve()
-    if msvcrt is None:
+    if WINDOWS_CRT is None:
         raise OSError("Windows C runtime unavailable")
-    handle = msvcrt.get_osfhandle(descriptor)
+    handle = WINDOWS_CRT.get_osfhandle(descriptor)
     buffer = ctypes.create_unicode_buffer(WINDOWS_PATH_BUFFER)
     length = _KERNEL32.GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
     if not length or length >= len(buffer):

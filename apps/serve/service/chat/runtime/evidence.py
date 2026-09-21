@@ -7,9 +7,11 @@ import sqlite3
 import subprocess
 import threading
 from contextlib import nullcontext
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Mapping
 
 from damoatrace.paths import TRACE_DIR
@@ -38,6 +40,11 @@ from service.chat.constants import (
 from service.chat.persistence.events import ProductEventRecord
 from service.chat.runtime.capture import SessionCapture
 from service.chat.runtime.incidents import event_incident
+from service.chat.runtime.timing import (
+    MILLISECONDS_PER_SECOND,
+    ActivationMeasurement,
+    ActivationTiming,
+)
 from service.chat.runtime.utils import integer, optional_integer, text
 from service.chat.service.recording import RecordingService
 from service.chat.service.streams import DIAGNOSTIC_EVENT
@@ -69,6 +76,8 @@ TRACE_RESOURCE_LIFECYCLE = "runtime.resource.lifecycle"
 TRACE_RESOURCE_CHECKPOINT = "runtime.resource.checkpoint"
 TRACE_CHECKPOINT_FAILED = "runtime_trace_checkpoint_failed"
 TRACE_CONTENT_INCOMPLETE = f"{PRODUCT_TRACE_NAMESPACE}.content.incomplete"
+TRACE_MODEL_REQUEST_PREPARATION = "runtime.turn.model_request_preparation"
+MODEL_REQUEST_PREPARATION_STAGE = "turn.started_to_model_bridge_ingress"
 RUNTIME_EVIDENCE_LIMIT = 200
 TRACE_STATUS_OK = "ok"
 TRACE_STATUS_ERROR = "error"
@@ -165,6 +174,7 @@ class TraceKind(str, Enum):
     MODE_TRANSITION = "mode.transition"
     CHANNEL_RECEIVE = "channel.receive"
     CHANNEL_SEND = "channel.send"
+    ACTIVATION = "runtime.activation"
 
 
 _TERMINAL_SUFFIXES = {
@@ -208,6 +218,16 @@ _TOOL_COMPLETION_EXTENSIONS = frozenset(
     {"web_search_completed", "paper_search_completed", "skill_completed"}
 )
 _EXTENSION_KIND_KEY = "extension_kind"
+_RPC_METHOD_KEY = "rpc_method"
+_COMPLETION_PHASE_STARTED = "started"
+_SAFE_EXTENSION_ATTRIBUTE_KEYS = (_EXTENSION_KIND_KEY, _RPC_METHOD_KEY)
+
+
+@dataclass(frozen=True)
+class TurnPreparationStart:
+    vendor_turn_id: str
+    started_at: datetime
+    started: float
 
 
 class SessionTrace:
@@ -236,6 +256,8 @@ class SessionTrace:
         self._degraded = False
         self._failure_count = 0
         self._lock = threading.Lock()
+        self._timing_lock = threading.Lock()
+        self._turn_preparations: dict[str, TurnPreparationStart] = {}
         self._capture = (
             SessionCapture(session_id, self.path, recording, secrets=secrets) if recording else None
         )
@@ -261,7 +283,51 @@ class SessionTrace:
             },
         )
 
+    def activation(self, request_id: str) -> ActivationTiming:
+        return ActivationTiming(request_id, self._activation_measurement)
+
+    def _activation_measurement(self, sample: ActivationMeasurement) -> None:
+        self._emit(
+            kind=TraceKind.ACTIVATION,
+            name=sample.stage,
+            attributes={
+                "runtime_id": self.runtime_id,
+                "stage": sample.stage,
+                "activation_id": sample.activation_id,
+                "request_id": sample.request_id,
+                "status": sample.status.value,
+                "failure_type": sample.failure_type,
+                "evidence_completeness": "complete",
+                "evidence_gaps": [],
+            },
+            status=sample.status.value,
+            span_id=sample.span_id,
+            parent_span_id=sample.parent_span_id,
+            started_at=sample.started_at,
+            duration_ms=sample.duration_ms,
+        )
+
     def completion(self, fields: Mapping[str, Any]) -> None:
+        if fields.get("phase") == _COMPLETION_PHASE_STARTED:
+            client_turn_id = str(fields.get("client_user_message_id") or "").strip()
+            with self._timing_lock:
+                preparation = self._turn_preparations.pop(client_turn_id, None)
+            if preparation is not None:
+                self._emit(
+                    kind=TraceKind.MODE_TRANSITION,
+                    name=TRACE_MODEL_REQUEST_PREPARATION,
+                    attributes={
+                        "runtime_id": self.runtime_id,
+                        "stage": MODEL_REQUEST_PREPARATION_STAGE,
+                        "client_user_message_id": client_turn_id,
+                        "vendor_turn_id": preparation.vendor_turn_id,
+                        "model_request_id": str(fields.get("request_id") or ""),
+                        "evidence_completeness": "complete",
+                        "evidence_gaps": [],
+                    },
+                    started_at=preparation.started_at,
+                    duration_ms=(perf_counter() - preparation.started) * MILLISECONDS_PER_SECOND,
+                )
         self._emit(
             kind=TraceKind.LLM_STREAM,
             name=DIAGNOSTIC_EVENT,
@@ -329,6 +395,10 @@ class SessionTrace:
         error: dict[str, str] | None = None,
         inputs: dict[str, Any] | None = None,
         outputs: dict[str, Any] | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        started_at: datetime | None = None,
+        duration_ms: float = 0,
     ) -> None:
         with self._recording.guard if self._recording else nullcontext(), self._lock:
             try:
@@ -358,6 +428,10 @@ class SessionTrace:
                     error=error,
                     inputs=inputs,
                     outputs=outputs,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                    started_at=started_at,
+                    duration_ms=duration_ms,
                 )
             except TRACE_FAILURES as failure:
                 self._failure_count += 1
@@ -541,6 +615,14 @@ class SessionTrace:
     def runtime_event(self, event: RuntimeEvent) -> None:
         payload = event.payload if isinstance(event.payload, Mapping) else {}
         attributes = self._vendor_attributes(event)
+        if event.kind is RuntimeEventKind.RUNTIME_EXTENSION:
+            attributes.update(
+                {
+                    key: value
+                    for key in _SAFE_EXTENSION_ATTRIBUTE_KEYS
+                    if isinstance((value := payload.get(key)), str)
+                }
+            )
         inputs, outputs = None, None
         try:
             if self._capture:
@@ -635,6 +717,16 @@ class SessionTrace:
             )
             return
         if event.kind == RuntimeEventKind.TURN_STARTED:
+            client_turn_id = str(
+                attributes.get("client_user_message_id") or event.correlation_id or ""
+            ).strip()
+            if client_turn_id:
+                with self._timing_lock:
+                    self._turn_preparations[client_turn_id] = TurnPreparationStart(
+                        vendor_turn_id=event.native_turn_id,
+                        started_at=datetime.now(timezone.utc),
+                        started=perf_counter(),
+                    )
             self._emit(
                 kind=TraceKind.TURN_START,
                 name=self._runtime_name("turn.started"),
@@ -643,6 +735,12 @@ class SessionTrace:
             return
         terminal_suffix = _TERMINAL_SUFFIXES.get(event.kind)
         if terminal_suffix is not None:
+            client_turn_id = str(
+                attributes.get("client_user_message_id") or event.correlation_id or ""
+            ).strip()
+            if client_turn_id:
+                with self._timing_lock:
+                    self._turn_preparations.pop(client_turn_id, None)
             trace_status = _TERMINAL_STATUSES[event.kind]
             failure_code = str(payload.get("error_code") or event.kind.value)
             failure_message = str(payload.get("safe_error") or TRACE_RUNTIME_FAILURE_MESSAGE)
@@ -966,6 +1064,8 @@ class SessionTrace:
 
     def close(self) -> None:
         self._finish_content()
+        with self._timing_lock:
+            self._turn_preparations.clear()
         if self._capture:
             self._capture.close()
         try:

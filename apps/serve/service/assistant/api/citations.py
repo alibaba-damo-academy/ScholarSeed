@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -17,6 +18,7 @@ from service.assistant.service.authorization import (
 )
 from service.assistant.service.citations import CitationService
 from service.chat.api.bridge import bridge_caller
+from service.chat.runtime.live import LiveSession
 from service.chat.service.sessions import SessionService
 from service.content.domain.model import ContentError
 from service.platform.bridge import (
@@ -28,9 +30,15 @@ from service.platform.bridge import (
     PDF_MATERIALIZE_OPERATION,
     PDF_REQUESTS,
     PDF_ROUTE_PREFIX,
+    LiteratureAnnotations,
+    LiteratureAuthorize,
+    LiteratureList,
+    LiteratureRead,
+    PdfAnnotations,
+    PdfMaterialize,
     PdfQuery,
 )
-from service.platform.citations import PdfMaterializerPort
+from service.platform.citations import PdfMaterialization, PdfMaterializerPort
 
 PDF_RETRIEVED_EVENT = "pdf.retrieved"
 PDF_MATERIALIZED_EVENT = "pdf.materialized"
@@ -48,7 +56,9 @@ async def _request_body(request: Request) -> bytes:
     return bytes(raw)
 
 
-def _active_scope(sessions: SessionService, live, snapshot_id: str, turn_id: str) -> bool:
+def _active_scope(
+    sessions: SessionService, live: LiveSession, snapshot_id: str, turn_id: str
+) -> bool:
     return (
         sessions.bridge_caller(live.id) is live
         and live.active_assistant_snapshot_id == snapshot_id
@@ -92,13 +102,16 @@ def register_citation_bridge(
                     snapshot_id=snapshot_id,
                     turn_id=turn_id,
                     authorization_type=policy.authorization_type,
-                    ref_id=query.ref_id,
+                    ref_id=str(getattr(query, "ref_id", "")),
                     client_turn_id=getattr(live, "active_product_turn_id", ""),
                 )
-            materialized = None
+            materialized: PdfMaterialization | None = None
+            materialize_request: PdfMaterialize | None = None
+            prepared: dict[str, Any] | None = None
             if operation == PDF_MATERIALIZE_OPERATION:
-                if materializer is None:
+                if materializer is None or not isinstance(query, PdfMaterialize):
                     raise ValueError("pdf_materializer_unavailable")
+                materialize_request = query
                 resolved = citations.document(
                     live.id,
                     snapshot_id,
@@ -106,16 +119,21 @@ def register_citation_bridge(
                     turn_id,
                 )
                 materialized = await asyncio.to_thread(materializer.prepare, resolved.document)
-                prepared = None
             elif policy is not None and operation == "library":
+                if not isinstance(query, PdfQuery):
+                    raise ValueError("bridge_operation_unknown")
                 prepared = await asyncio.to_thread(
                     citations.metadata_library, live.id, snapshot_id, query
                 )
             elif operation == ANNOTATIONS_OPERATION:
+                if not isinstance(query, PdfAnnotations):
+                    raise ValueError("bridge_operation_unknown")
                 prepared = await asyncio.to_thread(
                     citations.pdf_annotations, live.id, snapshot_id, query, turn_id
                 )
             else:
+                if not isinstance(query, PdfQuery):
+                    raise ValueError("bridge_operation_unknown")
                 prepared = await asyncio.to_thread(
                     citations.query, live.id, snapshot_id, operation, query, turn_id
                 )
@@ -123,10 +141,19 @@ def register_citation_bridge(
                 return JSONResponse(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                 )
-            if materialized is not None:
-                result = materializer.publish(materialized, live.runtime_workdir, query.target)
-                result["ref_id"] = query.ref_id
+            result: dict[str, Any]
+            if (
+                materialized is not None
+                and materializer is not None
+                and materialize_request is not None
+            ):
+                result = materializer.publish(
+                    materialized, live.runtime_workdir, materialize_request.target
+                )
+                result["ref_id"] = materialize_request.ref_id
             else:
+                if prepared is None:
+                    raise ValueError("bridge_operation_unknown")
                 result = citations.commit_read(live.id, snapshot_id, prepared)
         except (ValueError, ContentError, OSError) as error:
             return JSONResponse({"ok": False, "error": str(error)}, HTTP_400_BAD_REQUEST)
@@ -136,7 +163,7 @@ def register_citation_bridge(
                 {"ok": False, "error": "bridge_response_too_large; reduce limit"},
                 HTTP_400_BAD_REQUEST,
             )
-        event_payload = {"operation": operation, "snapshot_id": snapshot_id}
+        event_payload: dict[str, Any] = {"operation": operation, "snapshot_id": snapshot_id}
         if operation == PDF_MATERIALIZE_OPERATION:
             event_payload.update(
                 {
@@ -177,6 +204,8 @@ def register_citation_bridge(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                 )
             if operation == "authorize":
+                if not isinstance(query, LiteratureAuthorize):
+                    raise ValueError("bridge_operation_unknown")
                 if policy is None:
                     raise ValueError("fulltext_authorization_task_required")
                 if query.authorization_type != policy.authorization_type:
@@ -202,6 +231,8 @@ def register_citation_bridge(
                 }
             else:
                 if operation in LITERATURE_CONTENT_OPERATIONS and policy is not None:
+                    if not isinstance(query, (LiteratureRead, LiteratureAnnotations)):
+                        raise ValueError("bridge_operation_unknown")
                     if authorizer is None:
                         raise ValueError("fulltext_authorization_unavailable")
                     authorizer.require(
@@ -213,14 +244,20 @@ def register_citation_bridge(
                         client_turn_id=getattr(live, "active_product_turn_id", ""),
                     )
                 if operation == "list":
+                    if not isinstance(query, LiteratureList):
+                        raise ValueError("bridge_operation_unknown")
                     prepared = await asyncio.to_thread(
                         citations.literature_list, live.id, snapshot_id, query
                     )
                 elif operation == ANNOTATIONS_OPERATION:
+                    if not isinstance(query, LiteratureAnnotations):
+                        raise ValueError("bridge_operation_unknown")
                     prepared = await asyncio.to_thread(
                         citations.literature_annotations, live.id, snapshot_id, query
                     )
                 else:
+                    if not isinstance(query, LiteratureRead):
+                        raise ValueError("bridge_operation_unknown")
                     prepared = await asyncio.to_thread(
                         citations.literature_read, live.id, snapshot_id, query, turn_id
                     )
@@ -228,7 +265,7 @@ def register_citation_bridge(
                 return JSONResponse(
                     {"ok": False, "error": "bridge_access_denied"}, HTTP_403_FORBIDDEN
                 )
-            result = (
+            result: dict[str, Any] = (
                 prepared
                 if operation in ("list", "authorize", ANNOTATIONS_OPERATION)
                 else citations.commit_literature_read(live.id, snapshot_id, prepared)

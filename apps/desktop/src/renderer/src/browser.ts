@@ -25,7 +25,7 @@ declare const __SCHOLARSEED_WEB_VERSION__: string
 /** 桌面独有能力不在浏览器实现，交回 renderer 既有的降级分支。 */
 type BrowserBridge = Omit<
   ScholarSeedBridge,
-  'writeClipboard' | 'pickImport' | 'trashToken' | 'openTrash' | 'acquireOfficeImage'
+  'writeClipboard' | 'writeClipboardContent' | 'pasteClipboard' | 'pickImport' | 'trashToken' | 'openTrash' | 'acquireOfficeImage'
 >
 type UpdateState = Awaited<ReturnType<ScholarSeedBridge['getUpdateState']>>
 

@@ -29,6 +29,7 @@ import { searchPapersBibtex } from './result'
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
 
 const REFERENCES_PAGE_SIZE = 5
+const REFERENCES_FULL_PAGE_LIMIT = 4
 const VISIBLE_AUTHORS = 2
 
 const LITERATURE_SCHEMA_VERSION = '1.0'
@@ -291,7 +292,7 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
               ) : <p className="m-0 p-[var(--vds-space-3)] text-[var(--vds-text-secondary)]">{search ? t('references.noMatch') : t('references.noReferences')}</p>}
               <div className="flex flex-wrap items-center justify-between gap-[var(--vds-space-2)] border-t border-[var(--vds-divider-default)] px-[var(--vds-space-2)] py-[var(--vds-space-3)]">
                 <p className="m-0 text-[var(--vds-text-secondary)]" role="status">{search ? t('references.filtered', { matched: filtered.length, total: payload.references.length }) : t('references.total', { count: payload.references.length })}{filtered.length ? t('references.page', { current: currentPage, total: pageCount }) : ''}</p>
-                <Pagination ariaLabel={t('references.pagination')} page={currentPage} pageCount={pageCount} onPageChange={setPage} />
+                <Pagination ariaLabel={t('references.pagination')} page={currentPage} pageCount={pageCount} fullPageLimit={REFERENCES_FULL_PAGE_LIMIT} onPageChange={setPage} />
               </div>
             </CardContent>
           </CollapsibleContent>

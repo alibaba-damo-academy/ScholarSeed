@@ -164,11 +164,19 @@ def _graphics(page: Page) -> list[Region]:
 
 
 def _tables(page: Page) -> list[Region]:
-    return [
-        Region(tuple(table.bbox), PDF_TABLE, TABLE_REASON)
-        for table in page.find_tables()
-        if len(table.rows) >= MIN_TABLE_ROWS and len(table.columns) >= MIN_TABLE_COLUMNS
-    ]
+    regions: list[Region] = []
+    for table in page.find_tables():
+        if len(table.rows) < MIN_TABLE_ROWS or len(table.columns) < MIN_TABLE_COLUMNS:
+            continue
+        left, top, right, bottom = table.bbox
+        regions.append(
+            Region(
+                (float(left), float(top), float(right), float(bottom)),
+                PDF_TABLE,
+                TABLE_REASON,
+            )
+        )
+    return regions
 
 
 REGION_DETECTORS = (_graphics, _tables)

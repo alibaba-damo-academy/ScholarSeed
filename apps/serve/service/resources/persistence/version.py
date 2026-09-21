@@ -1113,8 +1113,8 @@ class VersionStore:
             identity = connection.execute(
                 "SELECT * FROM resources_files WHERE current_path = ?", (snapshot.path,)
             ).fetchone()
+            file_id: str | None = str(identity["file_id"]) if identity is not None else None
             if identity is not None:
-                file_id = identity["file_id"]
                 latest = connection.execute(
                     "SELECT * FROM resources_versions WHERE file_id = ? ORDER BY sequence DESC LIMIT 1",
                     (file_id,),
@@ -1127,6 +1127,7 @@ class VersionStore:
                 )
             else:
                 latest, has_pending = None, False
+            version_id: str | None
             if latest is None and not has_pending:
                 result = self._seal_snapshot(
                     connection,
@@ -1142,8 +1143,10 @@ class VersionStore:
                 )
                 pending.sync_working(connection, file_id, PendingOrigin.USER, now)
             else:
-                version_id = latest["version_id"] if latest else None
+                version_id = str(latest["version_id"]) if latest else None
                 unchanged = True
+            if file_id is None:
+                raise VersionStoreConflict("file_identity_conflict")
             connection.execute(
                 "INSERT OR IGNORE INTO resources_admissions (file_id, source, created_at_ms) VALUES (?, ?, ?)",
                 (file_id, ADMISSION_SOURCE_MANUAL, now),
@@ -1238,15 +1241,20 @@ class VersionStore:
                 "WHERE pending.file_id > ? ORDER BY pending.file_id LIMIT ?",
                 (after_file_id, limit),
             ).fetchall()
-            return tuple(
-                PendingFile(
-                    row["path"],
-                    FileState(row["file_state"]),
-                    row["version_id"],
-                    pending.from_row(row),
+            files: list[PendingFile] = []
+            for row in rows:
+                snapshot = pending.from_row(row)
+                if snapshot is None:
+                    raise VersionStoreConflict("pending_snapshot_missing")
+                files.append(
+                    PendingFile(
+                        row["path"],
+                        FileState(row["file_state"]),
+                        row["version_id"],
+                        snapshot,
+                    )
                 )
-                for row in rows
-            )
+            return tuple(files)
 
     def working_snapshot(self, file_id: str) -> SnapshotIdentity | None:
         """Read the durable working identity without observing or changing disk."""
@@ -3189,10 +3197,11 @@ class VersionStore:
             member.target_mode_bits,
             member.target_annotation_object_id,
         )
+        review = current.review
+        if review is None:
+            raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
         expected_target = (
-            before
-            if resolution.choice is ReviewResolutionChoice.KEEP_CURRENT
-            else current.review.candidate
+            before if resolution.choice is ReviewResolutionChoice.KEEP_CURRENT else review.candidate
         )
         if (
             before.path != resolution.expected_head.path
@@ -3219,10 +3228,13 @@ class VersionStore:
                     connection, manifest.members[0].file_id, manifest.review_decision
                 )
             else:
+                discard_revision = manifest.discard_revision
+                if discard_revision is None:
+                    raise VersionStoreConflict("invalid_restore_reservation")
                 self._validate_discard(
                     connection,
                     manifest.members[0].file_id,
-                    manifest.discard_revision,
+                    discard_revision,
                     manifest.source_id,
                 )
 
@@ -3983,9 +3995,12 @@ class VersionStore:
                         or snapshot.annotation_revision != target.annotation_object_id
                     ):
                         raise VersionStoreConflict("preflight_stale")
+                    review = current.review
+                    if review is None:
+                        raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
                     if (
                         resolution.choice is ReviewResolutionChoice.RESTORE_CANDIDATE
-                        and target != current.review.candidate
+                        and target != review.candidate
                     ):
                         raise VersionStoreConflict(ReviewConflict.CANDIDATE_REVISION.value)
                     if descriptor is not None:

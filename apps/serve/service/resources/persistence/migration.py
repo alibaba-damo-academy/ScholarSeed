@@ -253,12 +253,23 @@ def protected_history(connection: sqlite3.Connection) -> tuple[set[str], set[str
 
 
 def identity(payload: Mapping[str, object], *, stored: bool = False) -> SnapshotIdentity:
+    object_id = payload["object_id"]
+    path = payload["path"]
+    mode_bits = payload["mode_bits"]
+    annotation_object_id = payload["annotation_object_id"]
+    if (
+        not (object_id is None or isinstance(object_id, str))
+        or not isinstance(path, str)
+        or not (mode_bits is None or type(mode_bits) is int)
+        or not (annotation_object_id is None or isinstance(annotation_object_id, str))
+    ):
+        raise MigrationError(MigrationBlocker.EVIDENCE_INVALID)
     result = SnapshotIdentity(
-        object_id=payload["object_id"],
+        object_id=object_id,
         state=FileState(payload["file_state" if stored else "state"]),
-        path=payload["path"],
-        mode_bits=payload["mode_bits"],
-        annotation_object_id=payload["annotation_object_id"],
+        path=path,
+        mode_bits=mode_bits,
+        annotation_object_id=annotation_object_id,
     )
     if result.state is FileState.PRESENT and (
         result.object_id is None or type(result.mode_bits) is not int

@@ -107,7 +107,7 @@ def session_cards(
     events: ProductEventStore, session_id: str, card_type: str
 ) -> list[dict[str, Any]]:
     """Read durable typed cards, including sessions beyond one replay page."""
-    result = []
+    result: list[dict[str, Any]] = []
     cursor = 0
     while records := events.replay(session_id, after_seq=cursor):
         result.extend(

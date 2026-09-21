@@ -336,19 +336,28 @@ def register_literature_routes(
         size = min(max(page_size, 1), 200)
         current = max(page, 1)
         repository = LiteratureRepository()
-        filters = {
-            "q": q.strip(),
-            "project_id": project_id,
-            "collection_ids": tuple(collection_id),
-            "tag_ids": tuple(tag_id),
-            "without_collection": without_collection,
-        }
-        items = repository.list(**filters, limit=size, offset=(current - 1) * size)
+        collection_ids = tuple(collection_id)
+        tag_ids = tuple(tag_id)
+        items = repository.list(
+            q=q.strip(),
+            project_id=project_id,
+            collection_ids=collection_ids,
+            tag_ids=tag_ids,
+            without_collection=without_collection,
+            limit=size,
+            offset=(current - 1) * size,
+        )
         return {
             "items": [_summary(item, repository, project_id) for item in items],
             "page": current,
             "page_size": size,
-            "total": repository.filtered_total(**filters),
+            "total": repository.filtered_total(
+                q=q.strip(),
+                project_id=project_id,
+                collection_ids=collection_ids,
+                tag_ids=tag_ids,
+                without_collection=without_collection,
+            ),
             "next_cursor": str(current + 1) if len(items) == size else None,
         }
 

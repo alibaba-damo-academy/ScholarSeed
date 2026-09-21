@@ -11,6 +11,9 @@ import { createRoot } from 'react-dom/client'
 
 import '../styles.css'
 import { Markdown } from './primitive/Markdown'
+import { sourceOffsetRect } from './markdown/source'
+
+Object.assign(window, { sourceOffsetRect })
 
 const localization = createLocalization('zh', { zh: { assistant: zhAssistant, ui: zhUi }, en: { assistant: enAssistant, ui: enUi } }, { report: () => undefined })
 
@@ -47,7 +50,7 @@ const source = [
   '\\*\\*字面符号：\\*\\*BERT'
 ].join('\n')
 
-const citationClaimsSource = [
+const citationSource = [
   '未验证的推断。样本量为 30；损失为 2.8 dB[1](scholarseed-cite:numeric)；另一个结论[2](scholarseed-cite:second)。仍需实验。',
   '',
   'Unverified assumption. The result is 0.42.[3](scholarseed-cite:english)',
@@ -99,8 +102,8 @@ function Fixture() {
       <span data-testid="answer-marker">{annotation.id}</span>
     )}
   />
-  <div data-testid="citation-claims"><Markdown text={citationClaimsSource} sourceMapped
-    renderCitation={(range, children) => <span data-testid="claim-link" data-original={citationClaimsSource.slice(range.start, range.end)}>{children}</span>} /></div>
+  <div data-testid="citation-content"><Markdown text={citationSource} sourceMapped
+    renderCitation={(range, children) => <span data-testid="claim-link" data-original={citationSource.slice(range.start, range.end)}>{children}</span>} /></div>
   <div data-testid="wrapped-web-citation"><Markdown text={wrappedWebSource} sourceMapped
     citationUrls={['https://example.com/source', 'https://example.com/unionpay']}
     renderCitation={(range, children) => <span data-testid="web-citation" data-original={wrappedWebSource.slice(range.start, range.end)}>{children}</span>} /></div>

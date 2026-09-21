@@ -158,6 +158,8 @@ class AssistantResourceService:
             return self._citations.resolve_saved(citation, project_id)
         # Existing receipts predate the self-contained citation metadata. Resolve
         # only their retained handle through the original answer, never arbitrary links.
+        if record.source_id is None:
+            raise AssistantResourceError(IMPORT_UNAVAILABLE)
         answer = self._answers.answer(
             session_id=record.source_session_id, answer_id=record.source_id
         )
@@ -549,7 +551,7 @@ class AssistantResourceService:
         for project in projects:
             try:
                 records = self._links.list_session(project.id, session_id)
-            except ArtifactLinkError as error:
+            except (ArtifactLinkError, ContentError) as error:
                 raise AssistantResourceError(error.code) from error
             for record in records:
                 if record.destination is not LibraryDestination.RESOURCES:

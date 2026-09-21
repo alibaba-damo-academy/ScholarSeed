@@ -29,6 +29,7 @@ let documentKind
 let writerSelection
 let selectionDragging = false
 let pendingWriterAutoscroll
+let writerAutoscrollCursor
 const OFFICE_IMAGE_FAILED = 'office_image_failed'
 const OFFICE_POLICY_FAILED = 'office_policy_failed'
 const OFFICE_FORMULA_POLICY_FAILED = 'office_formula_policy_failed'
@@ -177,6 +178,7 @@ function closeDocument() {
   documentKind = undefined
   selectionDragging = false
   pendingWriterAutoscroll = undefined
+  writerAutoscrollCursor = undefined
   writerSelection?.invalidate()
   writerSelection = undefined
   pendingImage = undefined
@@ -221,7 +223,8 @@ function prepareWriterAutoscroll(message) {
     const horizontal = Number(message.x)
     const vertical = Number(message.y)
     const controller = xModel.getCurrentController()
-    const cursor = readonlyWriterSelectionCursor(controller, Math.sign(vertical || horizontal))
+    writerAutoscrollCursor ??= readonlyWriterSelectionCursor(controller, Math.sign(vertical || horizontal))
+    const cursor = writerAutoscrollCursor
     if (cursor) pendingWriterAutoscroll = { requestId: message.requestId, cursor, horizontal, vertical }
   }
   post({ cmd: SELECTION_AUTOSCROLL_READY_COMMAND, requestId: message.requestId })
@@ -692,6 +695,7 @@ function start() {
       case 'paste': insertTransferable(event.data.requestId, event.data.formats, event.data.error); break
       case SELECTION_DRAG_COMMAND:
         selectionDragging = Boolean(event.data.active)
+        writerAutoscrollCursor = undefined
         if (!selectionDragging) pendingWriterAutoscroll = undefined
         cancelSelectionReport()
         if (selectionDragging) post({ cmd: 'selection', selection: { text: '' } })

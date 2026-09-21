@@ -52,7 +52,8 @@ def project(text: str, *, unwrap: bool = False) -> Projection:
         if unwrap
         else set()
     )
-    chars, offsets = [], []
+    chars: list[str] = []
+    offsets: list[tuple[int, int]] = []
     position = 0
     tex_quoted = False
     while position < len(text):

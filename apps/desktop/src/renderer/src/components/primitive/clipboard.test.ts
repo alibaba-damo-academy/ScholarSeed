@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { writeClipboard } from './clipboard.ts'
+import { writeClipboard, writeClipboardContent } from './clipboard.ts'
 
 test('clipboard uses the desktop bridge and reports real native failures', async () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -24,5 +24,28 @@ test('clipboard uses the desktop bridge and reports real native failures', async
       if (descriptor) Object.defineProperty(globalThis, key, descriptor)
       else Reflect.deleteProperty(globalThis, key)
     }
+  }
+})
+
+test('rich clipboard sends Markdown and previewable HTML through the desktop bridge', async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  try {
+    let received: { text: string; html: string } | undefined
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        scholarseed: {
+          writeClipboardContent: async (payload: typeof received) => {
+            received = payload
+            return { ok: true }
+          }
+        }
+      }
+    })
+    await writeClipboardContent('# 报告', '<h1>报告</h1>')
+    assert.deepEqual(received, { text: '# 报告', html: '<h1>报告</h1>' })
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
   }
 })

@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogPortal,
   DialogTitle,
+  FOCUS_SCOPE_EXTENSION_ATTRIBUTE,
   IconButton,
   Tooltip,
   TooltipContent,
@@ -30,11 +31,12 @@ import {
   RECORDER_ROOT_ATTRIBUTE,
   createRecordingSession,
   normalizeNote,
+  requiresDiscardConfirmation,
   type RecorderPhase,
   type RecordingSession,
   type SummaryFields
 } from './model'
-import { installRecorderProbe, type RecorderLease } from './probe'
+import { createInitialPageStep, installRecorderProbe, type RecorderLease } from './probe'
 import {
   buildRecordingReport,
   composeFinalDescription,
@@ -152,10 +154,12 @@ export function Recorder(): React.JSX.Element {
 
   const start = (): void => {
     dispose()
-    const next = createRecordingSession()
+    const created = createRecordingSession()
+    const initialStep = createInitialPageStep(created.startedAtMs)
+    const next = { ...created, steps: [initialStep] }
     sessionRef.current = next
-    latestStepRef.current = undefined
-    stepCountRef.current = 0
+    latestStepRef.current = initialStep
+    stepCountRef.current = next.steps.length
     installProbe(next.startedAtMs)
     setSession(next)
     setPhase('recording')
@@ -190,7 +194,7 @@ export function Recorder(): React.JSX.Element {
       empty: t('feedbackRecorder.summary.empty')
     })
     setSession(stopped)
-    setSummary({ ...blankSummary(), generated, final: generated })
+    setSummary({ ...blankSummary(), generated })
     setPhase('review')
   }
 
@@ -323,7 +327,14 @@ export function Recorder(): React.JSX.Element {
   }
 
   return createPortal((
-    <div ref={rootRef} className="fixed left-0 top-0 z-[var(--vds-z-feedback-recorder)] size-0" {...{ [RECORDER_ROOT_ATTRIBUTE]: 'root' }}>
+    <div
+      ref={rootRef}
+      className="pointer-events-none fixed inset-0 z-[var(--vds-z-feedback-recorder)]"
+      {...{
+        [FOCUS_SCOPE_EXTENSION_ATTRIBUTE]: '',
+        [RECORDER_ROOT_ATTRIBUTE]: 'root'
+      }}
+    >
       {phase === 'idle' ? (
         <TooltipProvider>
           <Tooltip anchorRef={entryRef} portalled>
@@ -332,7 +343,7 @@ export function Recorder(): React.JSX.Element {
                 ref={setEntrySurface}
                 style={floating.style}
                 size="xs"
-                className="fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] touch-none cursor-move !rounded-full !border-[var(--vds-error-light-border)] ![background:var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-error-bg-default)] hover:![background:var(--vds-error-light-bg-default)] hover:shadow-[var(--vds-shadow-focus)] will-change-transform"
+                className="pointer-events-auto fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] touch-none cursor-move !rounded-full !border-[var(--vds-error-light-border)] ![background:var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-error-bg-default)] hover:![background:var(--vds-error-light-bg-default)] hover:shadow-[var(--vds-shadow-focus)] will-change-transform"
                 icon={(
                   <span className="block h-1.5 w-1.5 rounded-full bg-[var(--vds-error-bg-default)]" />
                 )}
@@ -357,6 +368,7 @@ export function Recorder(): React.JSX.Element {
           hasStep={Boolean(latestStepRef.current)}
           note={latestStepRef.current ? session.notes[latestStepRef.current.stepId] || '' : ''}
           paused={phase === 'paused'}
+          requiresCancelConfirmation={requiresDiscardConfirmation(session)}
           screenshotCount={session.screenshots.length}
           stepCount={session.steps.length}
           onCancel={clearSession}

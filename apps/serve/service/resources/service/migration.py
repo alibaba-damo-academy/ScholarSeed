@@ -26,6 +26,7 @@ from service.resources.service.history import ResourceVersionService
 
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 EMPTY_DIGEST = sha256(b"").hexdigest()
+DEFAULT_MEDIA_TYPE = "application/octet-stream"
 
 
 class ResourceReviewMigration:
@@ -75,7 +76,11 @@ class ResourceReviewMigration:
                         (proof.review.candidate, after),
                     ):
                         if snapshot.state is FileState.PRESENT:
-                            object_id = cas.put(data, guess_media_type(snapshot.path))
+                            if data is None:
+                                raise MigrationError(MigrationBlocker.BLOB_INVALID)
+                            object_id = cas.put(
+                                data, guess_media_type(snapshot.path) or DEFAULT_MEDIA_TYPE
+                            )
                             if object_id != snapshot.object_id:
                                 raise MigrationError(MigrationBlocker.BLOB_INVALID)
                     objects = {

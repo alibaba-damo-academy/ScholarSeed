@@ -29,6 +29,7 @@ from service.chat.runtime.activation import (
     SessionActivationError,
 )
 from service.chat.runtime.composition import LiveSessionService
+from service.chat.runtime.timing import ActivationStage, ActivationTiming, TimingStatus
 from service.chat.service.completions import CompletionBridge
 from service.chat.service.models import ModelService, SessionModelUnavailableError
 from service.settings.connections import ModelProfileStore, personal_model_key
@@ -100,6 +101,10 @@ class ProductFixture:
         self.suspensions = 0
         self._active = False
         self.attachment_generation = 0
+        self.measurements = []
+
+    def activation_timing(self, request_id: str) -> ActivationTiming:
+        return ActivationTiming(request_id, self.measurements.append)
 
     def prepare_runtime_attachment(self) -> None:
         self.token_rotations += 1
@@ -140,7 +145,7 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
         self.attached: list[tuple[object, ...]] = []
         self.discarded: list[str] = []
 
-        async def prepare(_live: ProductFixture) -> None:
+        async def prepare(_live: ProductFixture, _timing: object) -> None:
             return None
 
         async def attach(live: ProductFixture, plan: ActivationPlan, _reservation: str) -> None:
@@ -164,6 +169,62 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.activation.aclose()
+
+    async def test_activation_spans_share_request_and_hot_path_does_not_fake_stages(self) -> None:
+        await self.activation.ensure_active(self.live, request_id="cold-request")
+        samples = self.live.measurements
+        root = next(sample for sample in samples if sample.stage == ActivationStage.TOTAL)
+        stages = {sample.stage for sample in samples}
+        self.assertTrue(set(ActivationStage).issubset(stages))
+        self.assertTrue(all(sample.request_id == "cold-request" for sample in samples))
+        self.assertTrue(all(sample.activation_id == root.activation_id for sample in samples))
+        self.assertTrue(all(sample.status is TimingStatus.OK for sample in samples))
+        self.assertTrue(
+            all(sample.parent_span_id == root.span_id for sample in samples if sample is not root)
+        )
+        self.assertIsNotNone(self.provider.requests[0].session_request.timing)
+        self.live.measurements.clear()
+        await self.activation.ensure_active(self.live, request_id="hot-request")
+        self.assertEqual(
+            {sample.stage for sample in self.live.measurements},
+            {ActivationStage.TOTAL, ActivationStage.LOCK_WAIT, ActivationStage.LIFECYCLE_LOCK_WAIT},
+        )
+        self.assertTrue(
+            all(sample.activation_id != root.activation_id for sample in self.live.measurements)
+        )
+
+    async def test_cancelled_lock_wait_records_cancellation_without_releasing_owner(self) -> None:
+        await self.live.activation_lock.acquire()
+        waiter = asyncio.create_task(
+            self.activation.ensure_active(self.live, request_id="cancel-lock")
+        )
+        await asyncio.sleep(0)
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        self.assertTrue(self.live.activation_lock.locked())
+        self.live.activation_lock.release()
+        self.assertEqual(
+            {sample.stage for sample in self.live.measurements},
+            {ActivationStage.TOTAL, ActivationStage.LOCK_WAIT},
+        )
+        self.assertTrue(
+            all(sample.status is TimingStatus.CANCELLED for sample in self.live.measurements)
+        )
+
+    async def test_failed_preparation_preserves_exception_and_records_phase(self) -> None:
+        failure = ValueError("private-credential-material")
+        self.activation._prepare = AsyncMock(side_effect=failure)
+        with self.assertRaises(ValueError) as caught:
+            await self.activation.ensure_active(self.live, request_id="failed-prepare")
+        self.assertIs(caught.exception, failure)
+        self.assertFalse(self.live.activation_lock.locked())
+        skills = next(
+            sample for sample in self.live.measurements if sample.stage == ActivationStage.SKILLS
+        )
+        self.assertEqual(skills.failure_type, "ValueError")
+        self.assertIs(skills.status, TimingStatus.ERROR)
+        self.assertNotIn(str(failure), repr(self.live.measurements))
 
     async def test_wait_is_unlocked_cancellable_and_uses_provider_deadline(self) -> None:
         self.provider.waiting = True

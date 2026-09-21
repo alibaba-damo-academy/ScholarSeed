@@ -324,7 +324,12 @@ def create_app(
     version_supervisor.bind_preparation(resource_activation)
     content.bind_resource_changes(version_supervisor)
     # 项目永久删除时文献域回收其全库面关联: 归档只隐藏关联, 删除才真清理。
-    content.bind_project_forget_sink(LiteratureRepository().drop_project_links)
+    literature_repository = LiteratureRepository()
+
+    def drop_project_links(project_id: str) -> None:
+        literature_repository.drop_project_links(project_id)
+
+    content.bind_project_forget_sink(drop_project_links)
     resource_imports = ResourceImportJobService(content, ImportJobStore(RESOURCE_IMPORTS_DB))
     app = create_chat_app(
         workspace,

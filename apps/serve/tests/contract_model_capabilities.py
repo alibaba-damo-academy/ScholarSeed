@@ -55,6 +55,7 @@ from service.inference.reasoning import (  # noqa: E402
     MINIMUM_CLAMPED,
     NO_REASONING_FORM,
     THINKING_FIXED,
+    default_effort,
     effort_parameters,
     fixed_on,
     minimum_effort,
@@ -655,7 +656,7 @@ def test_minimum_ladder_follows_the_declared_form() -> None:
 
 
 def test_effort_mapping_and_clamping() -> None:
-    """用户选的档位：在集内直发，越界吸附到 default，没有 default 就不发并留痕。"""
+    """档位解析：在集内直发；没选或越界都落到确定默认档（default，未声明取最低档）。"""
     options = [
         {
             "kind": "effort",
@@ -686,9 +687,48 @@ def test_effort_mapping_and_clamping() -> None:
         "xhigh",
     )
     check(
-        "without a default nothing is sent and it is flagged",
-        no_default.parameters == {} and no_default.adjusted is True,
+        "without a declared default an undeclared level clamps to the lowest level",
+        no_default.parameters == {"reasoning_effort": "low"}
+        and no_default.adjusted is True
+        and no_default.reason == MINIMUM_CLAMPED,
         str(no_default),
+    )
+    unselected = effort_parameters(options, CHAT_COMPLETIONS_PROTOCOL, "openai", "")
+    check(
+        "an unselected effort sends the definite declared default",
+        unselected.parameters == {"reasoning_effort": "low"}
+        and unselected.effort == "low"
+        and unselected.adjusted is False,
+        str(unselected),
+    )
+    unselected_no_default = effort_parameters(
+        [{"kind": "effort", "values": ["medium", "high"]}],
+        CHAT_COMPLETIONS_PROTOCOL,
+        "openai",
+        "",
+    )
+    check(
+        "an unselected effort without a declared default falls to the lowest level",
+        unselected_no_default.parameters == {"reasoning_effort": "medium"}
+        and unselected_no_default.adjusted is False,
+        str(unselected_no_default),
+    )
+    unselected_formless = effort_parameters(
+        [{"kind": "toggle", "wire": {"chat_completions": "enable_thinking"}}],
+        CHAT_COMPLETIONS_PROTOCOL,
+        "openai",
+        "",
+    )
+    check(
+        "an unselected effort on a coordinate without an effort form sends nothing",
+        unselected_formless.parameters == {} and unselected_formless.adjusted is False,
+        str(unselected_formless),
+    )
+    check(
+        "the definite default prefers the declared default over the lowest level",
+        default_effort([{"kind": "effort", "values": ["low", "high"], "default": "high"}]) == "high"
+        and default_effort([{"kind": "effort", "values": ["high", "low"]}]) == "low"
+        and default_effort([{"kind": "toggle"}]) == "",
     )
     check(
         "a personal declaration with no wire name uses the protocol's public field",

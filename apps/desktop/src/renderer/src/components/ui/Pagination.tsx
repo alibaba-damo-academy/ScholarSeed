@@ -15,6 +15,7 @@ import { cx } from './utils'
 export interface PaginationProps extends HTMLAttributes<HTMLElement> {
   page: number
   pageCount: number
+  fullPageLimit?: number
   onPageChange: (page: number) => void
   disabled?: boolean
   ariaLabel?: string
@@ -42,6 +43,7 @@ export const Pagination = forwardRef<HTMLElement, PaginationProps>(function Pagi
     onPageChange,
     page,
     pageCount,
+    fullPageLimit,
     ...props
   },
   ref
@@ -68,7 +70,7 @@ export const Pagination = forwardRef<HTMLElement, PaginationProps>(function Pagi
       >
         ‹
       </PaginationButton>
-      {getPaginationItems(currentPage, safePageCount).map((item) =>
+      {getPaginationItems(currentPage, safePageCount, fullPageLimit).map((item) =>
         typeof item === 'number' ? (
           <PaginationButton
             active={item === currentPage}

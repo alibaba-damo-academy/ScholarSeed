@@ -117,7 +117,7 @@ class SessionPlans:
                 "request_digest": digest,
             }
             owner_turn = (
-                previous.vendor_turn_id
+                previous.vendor_turn_id or command.turn_id
                 if command.operation == "release" and previous
                 else command.turn_id
             )

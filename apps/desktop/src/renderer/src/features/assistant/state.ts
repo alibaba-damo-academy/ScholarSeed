@@ -67,7 +67,12 @@ export interface AiPanelState {
   /** 会话下拉菜单开合。 */
   sessionMenuOpen: boolean
   /** 会话搜索命中后，等待历史恢复完成再定位的消息。 */
-  messageFocus: { sessionId: string; turnId?: string | null; itemId?: string | null } | null
+  messageFocus: {
+    sessionId: string
+    turnId?: string | null
+    itemId?: string | null
+    sourceRange?: { unit: string; start: number; end: number } | null
+  } | null
   /** 当前投影对应的 Session；切换 Session 时先清空，避免上下文串线。 */
   sessionId: string | null
   contextState: AssistantContextLoadState

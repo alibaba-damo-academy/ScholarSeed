@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +29,7 @@ from service.chat.constants import (
 )
 from service.chat.persistence.events import ProductEventRecord
 from service.chat.runtime.evidence import SessionTrace
+from service.chat.runtime.timing import ActivationStage, ActivationTiming
 
 SESSION = "evidence-contract"
 RUNTIME = "codex"
@@ -66,7 +70,14 @@ class TraceEvidenceContract(unittest.TestCase):
             )
         )
 
-    def runtime(self, kind: RuntimeEventKind, turn: str, payload: dict) -> None:
+    def runtime(
+        self,
+        kind: RuntimeEventKind,
+        turn: str,
+        payload: dict,
+        *,
+        correlation_id: str = "",
+    ) -> None:
         self.trace.runtime_event(
             RuntimeEvent(
                 schema_version=1,
@@ -80,13 +91,67 @@ class TraceEvidenceContract(unittest.TestCase):
                 kind=kind,
                 delivery=DeliveryClass.MUST_PERSIST,
                 observed_at="2026-09-08T00:00:00Z",
+                correlation_id=correlation_id,
                 payload=payload,
             )
         )
 
     def events(self) -> list[dict]:
         self.trace.close()
-        return TraceStore(self.root, trace_file=self.trace.path, offline=True).all_events()
+        return TraceStore(
+            self.trace.path.parent, trace_file=self.trace.path, offline=True
+        ).all_events()
+
+    def test_activation_timing_has_real_intervals_hierarchy_and_cli_evidence(self) -> None:
+        self.trace.close()
+        self.trace = SessionTrace(
+            SESSION, self.root, runtime_id=RUNTIME, trace_dir=self.root / "logs" / "trace"
+        )
+        self.addCleanup(self.trace.close)
+        timing = self.trace.activation("client-request")
+        with patch(
+            "service.chat.runtime.timing.perf_counter", side_effect=[10.0, 10.1, 10.4, 10.5]
+        ):
+            with timing.measure(ActivationStage.TOTAL):
+                with timing.measure(ActivationStage.SKILLS):
+                    pass
+        rows = self.events()
+        root = next(row for row in rows if row["name"] == ActivationStage.TOTAL)
+        child = next(row for row in rows if row["name"] == ActivationStage.SKILLS)
+        self.assertEqual(root["duration_ms"], 500)
+        self.assertAlmostEqual(child["duration_ms"], 300)
+        self.assertEqual(child["parent_span_id"], root["span_id"])
+        self.assertEqual(root["attributes"]["request_id"], "client-request")
+        elapsed = datetime.fromisoformat(root["ended_at"]) - datetime.fromisoformat(
+            root["started_at"]
+        )
+        self.assertEqual(elapsed.total_seconds(), 0.5)
+        for command in (
+            ["events", "--kind", "runtime.activation", "--session", SESSION],
+            ["span", child["span_id"]],
+            ["slow", "--session", SESSION],
+        ):
+            result = subprocess.run(
+                [sys.executable, "-m", "damoatrace", *command, "--full"],
+                env={**os.environ, "DAMOATRACE_HOME": str(self.root)},
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
+            envelope = json.loads(result.stdout)
+            self.assertFalse(envelope["truncated"])
+            visible = envelope.get("top_spans", envelope["rows"])
+            self.assertTrue(any(row["span_id"] == child["span_id"] for row in visible))
+
+    def test_activation_recording_failure_does_not_replace_business_failure(self) -> None:
+        timing = self.trace.activation("failure-request")
+        failure = ValueError(PRIVATE_CONTENT)
+        with patch.object(EvidenceWriter, "emit", side_effect=OSError("full")):
+            with self.assertRaises(ValueError) as caught:
+                with timing.measure(ActivationStage.SKILLS):
+                    raise failure
+        self.assertIs(caught.exception, failure)
 
     def test_checkpoint_flushes_real_trace_before_release(self) -> None:
         self.trace.resource("granted", reservation_id="reservation")
@@ -215,6 +280,103 @@ class TraceEvidenceContract(unittest.TestCase):
         errors = json.loads(result.stdout)["rows"]
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["span_id"], rows[-1]["span_id"])
+
+    def test_runtime_extension_keeps_safe_kind_and_method_only(self) -> None:
+        self.runtime(
+            RuntimeEventKind.RUNTIME_EXTENSION,
+            "extension-turn",
+            {
+                "extension_kind": "runtime_warning",
+                "rpc_method": "item/started",
+                "private": PRIVATE_CONTENT,
+            },
+        )
+        row = self.events()[0]
+        self.assertEqual(row["attributes"]["extension_kind"], "runtime_warning")
+        self.assertEqual(row["attributes"]["rpc_method"], "item/started")
+        self.assertNotIn(PRIVATE_CONTENT, json.dumps(row))
+
+    def test_model_request_preparation_measures_first_bridge_ingress(self) -> None:
+        client_turn_id = "client-turn"
+        with patch("service.chat.runtime.evidence.perf_counter", side_effect=[10.0, 11.45, 12.0]):
+            self.runtime(
+                RuntimeEventKind.TURN_STARTED,
+                "vendor-turn",
+                {},
+                correlation_id=client_turn_id,
+            )
+            fields = {
+                "phase": "started",
+                "client_user_message_id": client_turn_id,
+                "request_id": "model-request",
+            }
+            self.trace.completion(fields)
+            self.trace.completion(fields)
+        rows = self.events()
+        preparation = [
+            row for row in rows if row["name"] == "runtime.turn.model_request_preparation"
+        ]
+        self.assertEqual(len(preparation), 1)
+        self.assertAlmostEqual(preparation[0]["duration_ms"], 1450)
+        self.assertEqual(
+            preparation[0]["attributes"]["stage"], "turn.started_to_model_bridge_ingress"
+        )
+        self.assertEqual(preparation[0]["attributes"]["vendor_turn_id"], "vendor-turn")
+        self.assertEqual(preparation[0]["attributes"]["evidence_completeness"], "complete")
+        self.assertEqual(preparation[0]["attributes"]["evidence_gaps"], [])
+
+
+class ActivationTimingConcurrency(unittest.IsolatedAsyncioTestCase):
+    async def test_deferred_start_in_another_task_uses_request_root(self) -> None:
+        samples = []
+        timing = ActivationTiming("queued-request", samples.append)
+        other = ActivationTiming("releasing-request", lambda sample: None)
+        grant = asyncio.Event()
+
+        async def deferred_start() -> None:
+            await grant.wait()
+            with other.measure("release"):
+                with timing.measure("process_start"):
+                    pass
+
+        starter = asyncio.create_task(deferred_start())
+        with timing.measure("activation"):
+            with timing.measure("admission"):
+                grant.set()
+                await starter
+        root = next(sample for sample in samples if sample.stage == "activation")
+        startup = next(sample for sample in samples if sample.stage == "process_start")
+        self.assertEqual(startup.parent_span_id, root.span_id)
+        self.assertEqual(startup.activation_id, root.activation_id)
+
+    async def test_concurrent_scopes_do_not_share_parent_or_session(self) -> None:
+        samples = []
+        timing = ActivationTiming("request", samples.append)
+        other_samples = []
+        other = ActivationTiming("other-request", other_samples.append)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def first() -> None:
+            with timing.measure("first"):
+                entered.set()
+                await release.wait()
+
+        async def second() -> None:
+            await entered.wait()
+            with timing.measure("second"):
+                with other.measure("separate-session"):
+                    release.set()
+
+        with timing.measure("root"):
+            await asyncio.gather(first(), second())
+        root = next(sample for sample in samples if sample.stage == "root")
+        self.assertTrue(
+            all(sample.parent_span_id == root.span_id for sample in samples if sample is not root)
+        )
+        self.assertIsNone(other_samples[0].parent_span_id)
+        self.assertNotEqual(root.activation_id, other_samples[0].activation_id)
+        self.assertEqual(other_samples[0].request_id, "other-request")
 
 
 if __name__ == "__main__":

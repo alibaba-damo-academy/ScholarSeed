@@ -180,3 +180,9 @@ export function createRecordingSession(now = Date.now()): RecordingSession {
 export function normalizeNote(value: string): string {
   return value.replace(/\r\n?/g, '\n').trim().slice(0, RECORDER_NOTE_MAX_LENGTH)
 }
+
+export function requiresDiscardConfirmation(session: RecordingSession): boolean {
+  return session.steps.length > 1
+    || Object.values(session.notes).some((note) => Boolean(note.trim()))
+    || session.screenshots.length > 0
+}

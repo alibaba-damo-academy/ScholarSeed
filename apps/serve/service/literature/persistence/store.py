@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import math
 import sqlite3
@@ -169,7 +170,7 @@ def _records(raw: object, model: type, identity: str) -> tuple[dict[str, Any], .
 
 
 def _finite(value: object) -> float:
-    if type(value) not in (int, float) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise LiteratureError(LIBRARY_INVALID)
     return float(value)
 
@@ -405,10 +406,10 @@ class LiteratureRepository:
         tag_ids: tuple[str, ...],
         without_collection: bool,
         without_project: bool = False,
-    ) -> tuple[str, list[Any]]:
+    ) -> tuple[str, builtins.list[Any]]:
         sql = "FROM literature_items i"
-        args: list[Any] = []
-        where: list[str] = []
+        args: builtins.list[Any] = []
+        where: builtins.list[str] = []
         if project_id:
             sql += " JOIN literature_projects p ON p.literature_id=i.id"
             where.append("p.project_id=?")
@@ -715,7 +716,7 @@ class LiteratureRepository:
         with connect(self.database) as c:
             return int(c.execute("SELECT count(*) FROM literature_items").fetchone()[0])
 
-    def attachments(self, literature_id: str) -> list[dict[str, Any]]:
+    def attachments(self, literature_id: str) -> builtins.list[dict[str, Any]]:
         with connect(self.database) as connection:
             return [
                 dict(row)
@@ -1193,7 +1194,7 @@ class LiteratureRepository:
                 projects,
             )
 
-    def collections(self, project_id: str = "") -> list[dict[str, Any]]:
+    def collections(self, project_id: str = "") -> builtins.list[dict[str, Any]]:
         with connect(self.database) as c:
             return [
                 dict(r)
@@ -1235,7 +1236,9 @@ class LiteratureRepository:
         if not project_ids:
             return {}
         placeholders = ",".join("?" for _ in project_ids)
-        navigation = {project_id: {"count": 0, "collections": []} for project_id in project_ids}
+        navigation: dict[str, dict[str, Any]] = {
+            project_id: {"count": 0, "collections": []} for project_id in project_ids
+        }
         with connect(self.database) as c:
             for row in c.execute(
                 "SELECT project_id,count(DISTINCT literature_id) count "
@@ -1258,7 +1261,9 @@ class LiteratureRepository:
             for project in navigation.values()
             for collection in project["collections"]
         )
-        literature_ids = {collection_id: set() for collection_id in collection_ids}
+        literature_ids: dict[str, set[str]] = {
+            collection_id: set() for collection_id in collection_ids
+        }
         if collection_ids:
             collection_placeholders = ",".join("?" for _ in collection_ids)
             with connect(self.database) as c:
@@ -1295,7 +1300,7 @@ class LiteratureRepository:
                 collection["count"] = len(literature_ids[str(collection["id"])])
         return navigation
 
-    def tags(self, project_id: str = "") -> list[dict[str, Any]]:
+    def tags(self, project_id: str = "") -> builtins.list[dict[str, Any]]:
         """标签本身是全库实体, 计数按调用方的项目范围收敛。
 
         空的 project_id 是文献全览, 计全库; 指定项目时只计该项目下的成员关系, 项目内

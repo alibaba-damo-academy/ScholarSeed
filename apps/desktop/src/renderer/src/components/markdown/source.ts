@@ -220,3 +220,26 @@ export function mappedSourceBoundary(element: HTMLElement, offset: number): numb
   if (!Number.isInteger(mapped) || mapped < start || mapped > end) return null
   return mapped
 }
+
+export function sourceOffsetRect(root: HTMLElement, sourceOffset: number): DOMRect | null {
+  for (const leaf of root.querySelectorAll<HTMLElement>('[data-md-source-start]')) {
+    const start = Number(leaf.dataset.mdSourceStart)
+    const end = Number(leaf.dataset.mdSourceEnd)
+    if (sourceOffset < start || sourceOffset >= end) continue
+    const walker = document.createTreeWalker(leaf, NodeFilter.SHOW_TEXT)
+    let textOffset = 0
+    while (walker.nextNode()) {
+      const node = walker.currentNode
+      const length = node.textContent?.length ?? 0
+      for (let offset = 0; offset < length; offset += 1) {
+        if (mappedSourceBoundary(leaf, textOffset + offset) !== sourceOffset) continue
+        const range = document.createRange()
+        range.setStart(node, offset)
+        range.setEnd(node, offset + 1)
+        return range.getClientRects()[0] ?? null
+      }
+      textOffset += length
+    }
+  }
+  return null
+}

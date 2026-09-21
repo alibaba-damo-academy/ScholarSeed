@@ -9,6 +9,23 @@ export async function writeClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text)
 }
 
+export async function writeClipboardContent(text: string, html: string): Promise<void> {
+  const native = window.scholarseed?.writeClipboardContent
+  if (native) {
+    const result = await native({ text, html })
+    if (!result.ok) throw new Error(result.error || 'clipboard_content_write_failed')
+    return
+  }
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    await writeClipboard(text)
+    return
+  }
+  await navigator.clipboard.write([new ClipboardItem({
+    'text/plain': new Blob([text], { type: 'text/plain' }),
+    'text/html': new Blob([html], { type: 'text/html' })
+  })])
+}
+
 export async function writeClipboardImage(blob: Blob): Promise<void> {
   const bytes = new Uint8Array(await blob.arrayBuffer())
   const native = window.scholarseed?.writeClipboardImage

@@ -12,6 +12,11 @@ test('PDF load failure classification distinguishes encrypted documents from gen
   assert.deepEqual(classifyPdfLoadFailure(new EncryptedPdfError()), {
     kind: PDF_LOAD_FAILURE_KIND.encrypted
   })
+  const passwordError = new Error('Password required')
+  passwordError.name = 'PasswordException'
+  assert.deepEqual(classifyPdfLoadFailure(passwordError), {
+    kind: PDF_LOAD_FAILURE_KIND.encrypted
+  })
   assert.deepEqual(classifyPdfLoadFailure(new Error('broken PDF')), {
     kind: PDF_LOAD_FAILURE_KIND.unknown,
     detail: 'broken PDF'

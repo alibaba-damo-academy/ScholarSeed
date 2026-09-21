@@ -6,7 +6,7 @@ import { Icon } from '../../icons'
 import { Markdown } from '../../components/primitive'
 import { writeClipboard } from '../../components/primitive/clipboard'
 import { PromptSettingsGuide } from '../../components/business/PromptSettingsGuide'
-import { selectedSessionModelKey } from '../../catalog'
+import { effectiveSessionModelKey } from '../../catalog'
 import { useApp } from '../../store'
 import { cancelResource, invokeResource, type ResourceAction, type ResourceInput, type ResourceRequest } from './ai'
 import { translationTarget, type TranslationTarget } from './language'
@@ -81,7 +81,7 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
   const request = useRef<ResourceRequest | null>(null)
   const applySnapshot = useRef(onApply)
   const mounted = useRef(true)
-  const selectedModel = selectedSessionModelKey(state.model, state.activeSession, state.threads)
+  const selectedModel = effectiveSessionModelKey(state.catalog.models, state.model, state.activeSession, state.threads)
   const hasModel = state.catalog.models.some(item => item.key === selectedModel && !item.disabled)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; stream.current?.abort() } }, [])
   useEffect(() => { setPosition(null); setAnnotated(false) }, [identity])

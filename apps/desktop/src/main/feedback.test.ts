@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import type { NativeImage, WebContents, WebFrameMain } from 'electron'
+import type { ClipboardItem, NativeImage, WebContents, WebFrameMain } from 'electron'
 
 import { FEEDBACK_SCREENSHOT_MAX_BYTES } from '../feedback.ts'
-import { captureFeedbackScreenshot, isFeedbackCaptureSender } from './feedback.ts'
+import {
+  captureFeedbackScreenshot,
+  isFeedbackCaptureSender,
+  writeFeedbackClipboardImage
+} from './feedback.ts'
 
 function image(bytes: Uint8Array, empty = false): NativeImage {
   return {
@@ -47,4 +51,18 @@ test('feedback capture accepts only the main renderer frame', () => {
   assert.equal(isFeedbackCaptureSender(sender, frame, sender), true)
   assert.equal(isFeedbackCaptureSender(sender, null, sender), false)
   assert.equal(isFeedbackCaptureSender(sender, frame, {} as WebContents), false)
+})
+
+test('feedback image copy uses the supported Electron ClipboardItem array', async () => {
+  const item = {} as ClipboardItem
+  let written: ClipboardItem[] | undefined
+  assert.deepEqual(
+    await writeFeedbackClipboardImage({ write: async (data) => { written = data } }, item),
+    { ok: true }
+  )
+  assert.deepEqual(written, [item])
+  assert.deepEqual(
+    await writeFeedbackClipboardImage({ write: async () => { throw new Error('clipboard rejected') } }, item),
+    { ok: false, error: 'clipboard_image_write_failed' }
+  )
 })

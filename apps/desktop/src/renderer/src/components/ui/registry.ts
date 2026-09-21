@@ -53,7 +53,7 @@ export interface UiComponentEntry {
  * 非组件导出。它们不是可复用的 UI 单元, 但仍从 `index.ts` 暴露,
  * 门禁把它们从覆盖率要求中排除。
  */
-export const NON_COMPONENT_EXPORTS = ['cx', 'getPaginationItems'] as const
+export const NON_COMPONENT_EXPORTS = ['cx', 'FOCUS_SCOPE_EXTENSION_ATTRIBUTE', 'getPaginationItems'] as const
 
 export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Page: {

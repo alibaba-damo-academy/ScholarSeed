@@ -9,7 +9,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Mapping
 
-from scholarseed_runtime.contract import RuntimeEvent, RuntimeEventKind, RuntimePermissionMode
+from scholarseed_runtime.contract import (
+    RuntimeEvent,
+    RuntimeEventKind,
+    RuntimePermissionMode,
+    RuntimeValue,
+)
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.input import InputKind
 from scholarseed_runtime.gateway.driver import RuntimeObservation, RuntimeTurnOutcome
@@ -98,7 +103,7 @@ class AgentOneShotProvider:
             # empty invocation-scoped cwd, not the project directory. This avoids automatic
             # project context, but is not a hard ban on all built-in tools or file reads.
             with TemporaryDirectory(prefix=ONE_SHOT_WORKSPACE_PREFIX) as workspace:
-                inputs = [request.input_text]
+                inputs: list[RuntimeValue] = [request.input_text]
                 for index, part in enumerate(request.attachments):
                     if not part.media_type.startswith("image/"):
                         raise ValueError("temporary runtime only supports image attachments")

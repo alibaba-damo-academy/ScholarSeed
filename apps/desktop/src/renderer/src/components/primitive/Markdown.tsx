@@ -25,7 +25,7 @@ export type { MarkdownAnswerAnnotation }
 const MARKDOWN_CLASS_NAME = [
   'md min-w-0 max-w-full cursor-text select-text font-[var(--font)] text-[15.5px] font-normal leading-[1.62] text-[var(--text)]',
   '[overflow-wrap:anywhere] break-words [&>*:first-child]:mt-0',
-  '[&_[data-scholarseed-citation-claim]]:font-bold [&_strong]:font-semibold [&_strong]:text-[var(--text)] [&_em]:italic',
+  '[&_strong]:font-semibold [&_strong]:text-[var(--text)] [&_em]:italic',
   /* inline code 用 inline-block + max-w-full：inline 非替换元素不受 max-width 约束，
      带 px/border 的长文件路径 code 会溢出行盒（对话区横向滚动条）；成为 inline-block
      后 max-w-full 生效，短 code 仍内联、长 code 在 chip 内折行。 */
@@ -453,8 +453,8 @@ export function Markdown({
     [answersById, citationUrlSet, evidenceById, renderAnswerAnnotationMarker, renderCitation, onOpenSessionFile, renderSessionFileLink]
   )
   const decoration = React.useMemo(
-    () => rehypeScholarSeedDecorations({ source, sourceMapped, evidence, answers: answerAnnotations, emphasizeCitations: Boolean(renderCitation), citationUrls: citationUrlSet }),
-    [answerAnnotations, citationUrlSet, evidence, source, sourceMapped, Boolean(renderCitation)]
+    () => rehypeScholarSeedDecorations({ source, sourceMapped, evidence, answers: answerAnnotations, citationUrls: citationUrlSet }),
+    [answerAnnotations, citationUrlSet, evidence, source, sourceMapped]
   )
   return (
     <MarkdownRenderContext.Provider value={renderOptions}><div className={`${MARKDOWN_CLASS_NAME} ${className ?? ''}`}>

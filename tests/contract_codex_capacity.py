@@ -8,6 +8,8 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from time import time
@@ -34,6 +36,7 @@ from scholarseed_codex.protocol.session import (
 from scholarseed_codex.protocol.state import (
     CODEX_PROCESS_STOP_TIMEOUT_SECONDS,
     AppServerError,
+    CodexActivationStage,
     CodexProcessState,
     CodexThreadAttachmentState,
 )
@@ -72,6 +75,29 @@ TEST_CHILD_RELEASE = b"x"
 TERMINAL_STATES = frozenset(
     {ResourceState.REJECTED, ResourceState.CANCELLED, ResourceState.EXPIRED}
 )
+
+
+class TimingRecorder:
+    def __init__(self) -> None:
+        self.entered: list[str] = []
+        self.finished: list[tuple[str, type[BaseException] | None]] = []
+        self.signals: dict[str, asyncio.Event] = {}
+
+    def signal(self, stage: str) -> asyncio.Event:
+        return self.signals.setdefault(stage, asyncio.Event())
+
+    @contextmanager
+    def measure(self, stage: str) -> Iterator[None]:
+        self.entered.append(stage)
+        self.signal(stage).set()
+        failure = None
+        try:
+            yield
+        except BaseException as error:
+            failure = type(error)
+            raise
+        finally:
+            self.finished.append((stage, failure))
 
 
 class ControlledHost:
@@ -149,6 +175,238 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(pool.aclose(), TEST_TIMEOUT_SECONDS)
         self.host_patch.stop()
         self.probe_patch.stop()
+
+    async def test_shared_control_host_timing_belongs_to_each_request(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        first_timing = TimingRecorder()
+        second_timing = TimingRecorder()
+        first_request = CodexControlRequest(
+            request_id="timed-control-first",
+            runtime_id=TEST_RUNTIME_ID,
+            cwd=Path(tempfile.gettempdir()),
+            executable=TEST_EXECUTABLE,
+            authentication_required=False,
+            timing=first_timing,
+        )
+        first = await pool.acquire_control(first_request)
+        await first.close()
+        first_finished = tuple(first_timing.finished)
+        second = await pool.acquire_control(
+            replace(first_request, request_id="timed-control-second", timing=second_timing)
+        )
+        self.assertIs(first.host, second.host)
+        self.assertEqual(first.host.start_calls, 1)
+        self.assertEqual(tuple(first_timing.finished), first_finished)
+        self.assertEqual(first_timing.entered.count(CodexActivationStage.PROCESS_START), 1)
+        self.assertNotIn(CodexActivationStage.PROCESS_START, second_timing.entered)
+        self.assertIn(CodexActivationStage.PROCESS_READY_WAIT, second_timing.entered)
+        self.assertNotIn(CodexActivationStage.READINESS_PROBE, second_timing.entered)
+        self.assertTrue(all(failure is None for _, failure in second_timing.finished))
+        await second.close()
+
+    async def test_readiness_cache_does_not_replay_probe_timings(self) -> None:
+        pool = self.pool()
+        first_timing = TimingRecorder()
+        second_timing = TimingRecorder()
+        first = await pool.probe_readiness(
+            TEST_EXECUTABLE, process_environment={}, timing=first_timing
+        )
+        repeated = await pool.probe_readiness(
+            TEST_EXECUTABLE, process_environment={}, timing=second_timing
+        )
+        self.assertIs(first, repeated)
+        self.assertEqual(
+            first_timing.entered,
+            [CodexActivationStage.READINESS_LOCK_WAIT, CodexActivationStage.READINESS_PROBE],
+        )
+        self.assertEqual(second_timing.entered, [])
+        pool_module._probe_codex_cli_readiness.assert_awaited_once()
+
+    async def test_concurrent_readiness_waiter_records_wait_not_another_probe(self) -> None:
+        pool = self.pool()
+        first_timing = TimingRecorder()
+        second_timing = TimingRecorder()
+        probe_entered = asyncio.Event()
+        release_probe = asyncio.Event()
+        readiness = pool_module._probe_codex_cli_readiness.return_value
+
+        async def probe(*arguments, **keywords):
+            probe_entered.set()
+            await release_probe.wait()
+            return readiness
+
+        pool_module._probe_codex_cli_readiness.side_effect = probe
+        first = asyncio.create_task(
+            pool.probe_readiness(TEST_EXECUTABLE, process_environment={}, timing=first_timing)
+        )
+        await asyncio.wait_for(probe_entered.wait(), TEST_TIMEOUT_SECONDS)
+        second = asyncio.create_task(
+            pool.probe_readiness(TEST_EXECUTABLE, process_environment={}, timing=second_timing)
+        )
+        try:
+            await asyncio.wait_for(
+                second_timing.signal(CodexActivationStage.READINESS_LOCK_WAIT).wait(),
+                TEST_TIMEOUT_SECONDS,
+            )
+            self.assertFalse(second.done())
+            release_probe.set()
+            results = await asyncio.wait_for(asyncio.gather(first, second), TEST_TIMEOUT_SECONDS)
+            self.assertIs(results[0], results[1])
+            self.assertEqual(second_timing.entered, [CodexActivationStage.READINESS_LOCK_WAIT])
+            self.assertEqual(
+                second_timing.finished, [(CodexActivationStage.READINESS_LOCK_WAIT, None)]
+            )
+            pool_module._probe_codex_cli_readiness.assert_awaited_once()
+        finally:
+            release_probe.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+
+    async def test_concurrent_control_consumers_do_not_share_timing_observers(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        self.host_hook = lambda host: host.start_gate.clear()
+        first_timing = TimingRecorder()
+        second_timing = TimingRecorder()
+        first_request = CodexControlRequest(
+            request_id="timed-concurrent-first",
+            runtime_id=TEST_RUNTIME_ID,
+            cwd=Path(tempfile.gettempdir()),
+            executable=TEST_EXECUTABLE,
+            authentication_required=False,
+            timing=first_timing,
+        )
+        first = asyncio.create_task(pool.acquire_control(first_request))
+        await asyncio.wait_for(
+            first_timing.signal(CodexActivationStage.PROCESS_START).wait(), TEST_TIMEOUT_SECONDS
+        )
+        second = asyncio.create_task(
+            pool.acquire_control(
+                replace(first_request, request_id="timed-concurrent-second", timing=second_timing)
+            )
+        )
+        try:
+            await asyncio.wait_for(
+                second_timing.signal(CodexActivationStage.PROCESS_READY_WAIT).wait(),
+                TEST_TIMEOUT_SECONDS,
+            )
+            self.assertEqual(len(self.hosts), 1)
+            self.assertNotIn(CodexActivationStage.PROCESS_START, second_timing.entered)
+            self.assertFalse(first.done())
+            self.assertFalse(second.done())
+            self.hosts[0].start_gate.set()
+            leases = await asyncio.wait_for(asyncio.gather(first, second), TEST_TIMEOUT_SECONDS)
+            self.assertIs(leases[0].host, leases[1].host)
+            self.assertEqual(first_timing.entered.count(CodexActivationStage.PROCESS_START), 1)
+            for timing in (first_timing, second_timing):
+                self.assertEqual(
+                    timing.finished.count((CodexActivationStage.PROCESS_READY_WAIT, None)), 1
+                )
+            for lease in leases:
+                await lease.close()
+        finally:
+            for host in self.hosts:
+                host.start_gate.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+
+    async def test_process_start_and_consumer_ready_wait_are_distinct_scopes(self) -> None:
+        pool = self.pool()
+        timing = TimingRecorder()
+        self.host_hook = lambda host: host.start_gate.clear()
+        request = replace(self.request("timed-process-wait"), timing=timing)
+        reservation = await pool.reserve(
+            request,
+            role=HostRole.EXECUTION,
+            request_id=request.request_id,
+            deadline=time() + TEST_WAIT_SECONDS,
+        )
+        host = self.hosts[0]
+        await asyncio.wait_for(host.start_entered.wait(), TEST_TIMEOUT_SECONDS)
+        self.assertIn(CodexActivationStage.PROCESS_START, timing.entered)
+        self.assertNotIn(CodexActivationStage.PROCESS_READY_WAIT, timing.entered)
+        consumer = asyncio.create_task(pool.consume(reservation))
+        try:
+            await asyncio.wait_for(
+                timing.signal(CodexActivationStage.PROCESS_READY_WAIT).wait(),
+                TEST_TIMEOUT_SECONDS,
+            )
+            self.assertFalse(consumer.done())
+            self.assertNotIn((CodexActivationStage.PROCESS_START, None), timing.finished)
+            self.assertNotIn((CodexActivationStage.PROCESS_READY_WAIT, None), timing.finished)
+            host.start_gate.set()
+            lease = await asyncio.wait_for(consumer, TEST_TIMEOUT_SECONDS)
+            self.assertIn((CodexActivationStage.PROCESS_START, None), timing.finished)
+            self.assertIn((CodexActivationStage.PROCESS_READY_WAIT, None), timing.finished)
+            await lease.close()
+        finally:
+            host.start_gate.set()
+            await asyncio.gather(consumer, return_exceptions=True)
+
+    async def test_pool_timing_changes_do_not_change_reservation_identity(self) -> None:
+        pool = self.pool()
+        request = replace(self.request("timing-identity"), timing=TimingRecorder())
+        repeated = replace(request, timing=TimingRecorder())
+        self.assertEqual(request, repeated)
+        self.assertEqual(repr(request), repr(repeated))
+        deadline = time() + TEST_WAIT_SECONDS
+        original = await pool.reserve(
+            request, role=HostRole.EXECUTION, request_id=request.request_id, deadline=deadline
+        )
+        duplicate = await pool.reserve(
+            repeated, role=HostRole.EXECUTION, request_id=request.request_id, deadline=deadline
+        )
+        self.assertIs(duplicate, original)
+        await pool.cancel(original)
+
+    async def test_explicit_resource_wait_records_queue_blocking_and_cancellation(self) -> None:
+        for cancel_wait in (False, True):
+            with self.subTest(cancel_wait=cancel_wait):
+                pool = self.pool()
+                owner = await pool.acquire(self.request("timed-queue-owner"))
+                timing = TimingRecorder()
+                request = replace(self.request("timed-queue-waiter", "other"), timing=timing)
+                reservation = await pool.reserve(
+                    request,
+                    role=HostRole.EXECUTION,
+                    request_id=request.request_id,
+                    deadline=time() + TEST_WAIT_SECONDS,
+                )
+                self.assertIs(reservation.state, ResourceState.WAITING)
+                waiter = asyncio.create_task(pool.wait(reservation))
+                try:
+                    await asyncio.wait_for(
+                        timing.signal(CodexActivationStage.RESOURCE_WAIT).wait(),
+                        TEST_TIMEOUT_SECONDS,
+                    )
+                    self.assertFalse(waiter.done())
+                    self.assertNotIn((CodexActivationStage.RESOURCE_WAIT, None), timing.finished)
+                    if cancel_wait:
+                        waiter.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await waiter
+                        self.assertIs(reservation.state, ResourceState.CANCELLED)
+                        self.assertIn(
+                            (CodexActivationStage.RESOURCE_WAIT, asyncio.CancelledError),
+                            timing.finished,
+                        )
+                        self.assertNotIn(CodexActivationStage.PROCESS_START, timing.entered)
+                        self.assertFalse(owner.host.closed)
+                    else:
+                        await owner.close()
+                        receipt = await asyncio.wait_for(waiter, TEST_TIMEOUT_SECONDS)
+                        self.assertIs(receipt.state, ResourceState.GRANTED)
+                        self.assertEqual(
+                            timing.finished.count((CodexActivationStage.RESOURCE_WAIT, None)), 1
+                        )
+                        lease = await pool.consume(reservation)
+                        self.assertEqual(
+                            timing.finished.count((CodexActivationStage.RESOURCE_WAIT, None)), 2
+                        )
+                        await lease.close()
+                finally:
+                    waiter.cancel()
+                    await asyncio.gather(waiter, return_exceptions=True)
+                    await owner.close()
 
     async def test_retry_after_unsubscribe_failure_starts_first_safe_lease_close(self) -> None:
         pool = self.pool()

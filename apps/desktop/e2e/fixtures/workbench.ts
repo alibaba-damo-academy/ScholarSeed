@@ -27,6 +27,7 @@ export const SOURCE_CASES = [
 export const MARKDOWN_SOURCE = '# Acceptance document\n\nOriginal needle paragraph.\n\n## Fold section\n\nA durable paragraph.\n'
 export const PDF_NAME = 'acceptance.pdf'
 export const SECOND_PDF_NAME = 'focus.pdf'
+export const LONG_PDF_NAME = 'long-paper.pdf'
 export const BROKEN_PDF_NAME = 'preview_pdf_1MB.pdf'
 export const NOTE_TEXT = 'Persistent acceptance note'
 export const PDF_LONG_OUTLINE_TITLE = 'Level 1 with a deliberately long title that must remain on one line'
@@ -34,6 +35,7 @@ export const PDF_LONG_UNAVAILABLE_OUTLINE_TITLE = 'Level 2 unavailable with a de
 const PROJECT_NAME = 'Library acceptance'
 const ACTION_TIMEOUT_MS = 15_000
 const PDF_PAGE_COUNT = 3
+const LONG_PDF_PAGE_COUNT = 86
 const PDF_PAGE_SIZE: [number, number] = [612, 792]
 
 function addThreeLevelOutline(pdf: PDFDocument): void {
@@ -112,6 +114,17 @@ export async function seedProject(page: Page, runtime: RuntimePaths): Promise<st
   await selectProject(page)
   await page.getByTestId('resource-refresh').click()
   return resources
+}
+
+export async function seedLongPdf(resources: string): Promise<void> {
+  const pdf = await PDFDocument.create()
+  const font = await pdf.embedFont(StandardFonts.Helvetica)
+  for (let index = 1; index <= LONG_PDF_PAGE_COUNT; index += 1) {
+    const sheet = pdf.addPage(PDF_PAGE_SIZE)
+    sheet.drawText(`Long paper page ${index}`, { x: 72, y: 720, size: 22, font })
+    sheet.drawText(`Lifecycle evidence ${index}.`, { x: 72, y: 660, size: 16, font })
+  }
+  writeFileSync(join(resources, LONG_PDF_NAME), await pdf.save())
 }
 
 export async function selectProject(page: Page): Promise<void> {

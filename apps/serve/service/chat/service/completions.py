@@ -20,7 +20,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-from starlette.types import Receive, Scope, Send
+from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.streams import CompletionDiagnostic, StreamEnd, metadata_token
@@ -165,7 +165,7 @@ class CompletionStream(StreamingResponse):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         reason = StreamEnd.EOF.value
 
-        async def observed_send(message: dict) -> None:
+        async def observed_send(message: Message) -> None:
             await send(message)
             if message["type"] == "http.response.body":
                 self.call.diagnostic.downstream.feed(message.get("body", b""))

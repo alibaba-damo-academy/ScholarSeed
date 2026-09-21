@@ -46,6 +46,7 @@ import {
 import { searchEventText, visibleSearchOutput } from './output'
 import {
   reviewEvidence,
+  searchResultPapers,
   visibleSearchPapers,
   type AccessFilter,
   type DecisionFilter,
@@ -61,7 +62,40 @@ const ELAPSED_TICK_MS = 1_000
 const SECONDS_PER_MINUTE = 60
 const MINUTES_PER_HOUR = 60
 const SEARCH_RESULTS_TABLE_MIN_WIDTH_PX = 852
+const SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX = 730
 const SEARCH_RESULTS_ASIDE_WIDTH = 'max(300px, 38%)'
+const RESULT_BODY_CELL_CLASS =
+  'm-0 min-h-0 min-w-0 max-h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden break-words text-xs leading-5 text-[var(--vds-text-secondary)]'
+
+/**
+ * 结果表列集。两个入口的正文列都是推荐理由，差异只在 AI 检索页没有全文获取列、
+ * 且完全不读摘要。新增一种结果表在这里登记即可。
+ */
+export type ResultColumnSet = 'search' | 'conversation'
+
+interface ResultColumnLayout {
+  grid: string
+  minWidth: number
+  /** 全文获取 / 综述依据列。 */
+  access: boolean
+  /** 详情面板是否展示摘要；AI 检索页的摘要在投影里就已丢弃。 */
+  detailAbstract: boolean
+}
+
+const RESULT_COLUMN_SETS: Record<ResultColumnSet, ResultColumnLayout> = {
+  search: {
+    grid: 'grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)]',
+    minWidth: SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX,
+    access: false,
+    detailAbstract: false
+  },
+  conversation: {
+    grid: 'grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)_110px]',
+    minWidth: SEARCH_RESULTS_TABLE_MIN_WIDTH_PX,
+    access: true,
+    detailAbstract: true
+  }
+}
 const PAPER_LINK_PROTOCOLS = new Set(['https:', 'http:'])
 const DOI_SOURCE_BASE = 'https://doi.org/'
 const ARXIV_SOURCE_BASE = 'https://arxiv.org/abs/'
@@ -451,7 +485,9 @@ function ScopedLiteratureSearchTab({
     return () => controller.abort()
   }, [task?.id])
 
-  const papers = task?.result?.papers ?? []
+  const resultPapers = task?.result?.papers
+  // AI 检索页只认推荐理由, 摘要在投影里就被丢掉, 展示与入库都不会再读到它。
+  const papers = useMemo(() => searchResultPapers(resultPapers ?? []), [resultPapers])
   const running = task?.status === 'pending' || task?.status === 'running'
   useEffect(() => {
     if (running || !papers.length) return
@@ -496,6 +532,7 @@ function ScopedLiteratureSearchTab({
       key={task.id}
       taskId={task.id}
       query={task.query}
+      columnSet="search"
       papers={papers}
       status={task.status}
       output={visibleSearchOutput(task.output)}
@@ -521,6 +558,8 @@ interface LiteratureSearchViewProps {
   streamError?: string
   elapsed?: string
   savedPaperIds?: readonly string[]
+  /** 结果表列集；缺省是对话卡片打开的结果页（保留全文获取列）。 */
+  columnSet?: ResultColumnSet
 }
 
 /** Shared result presentation for a running search task or a saved conversation result. */
@@ -534,9 +573,11 @@ export function LiteratureSearchView({
   warning,
   streamError,
   elapsed,
-  savedPaperIds
+  savedPaperIds,
+  columnSet = 'conversation'
 }: LiteratureSearchViewProps): React.JSX.Element {
   const { t } = useTranslation('literature')
+  const columns = RESULT_COLUMN_SETS[columnSet]
   const { state } = useApp()
   const projectId = state.homeSelectedProjectId ?? undefined
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -710,8 +751,8 @@ export function LiteratureSearchView({
             <section className="flex shrink-0 flex-col overflow-hidden rounded-xl border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]">
               <div className="relative min-h-0 overflow-hidden">
                 <div className="min-w-0 overflow-x-auto">
-                  <div style={{ minWidth: SEARCH_RESULTS_TABLE_MIN_WIDTH_PX }}>
-                    <div className="sticky top-0 z-10 grid grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)_110px] items-center gap-3 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-3 py-2 text-xs font-semibold text-[var(--vds-text-secondary)]">
+                  <div style={{ minWidth: columns.minWidth }}>
+                    <div className={`sticky top-0 z-10 grid ${columns.grid} items-center gap-3 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-3 py-2 text-xs font-semibold text-[var(--vds-text-secondary)]`}>
                       <Checkbox
                         aria-label={t('search.selectAll')}
                         checked={allShownSelected}
@@ -729,12 +770,14 @@ export function LiteratureSearchView({
                         }
                       />
                       <span>{t('search.literature')}</span>
-                      <span>{t('search.abstract')}</span>
-                      <span>
-                        {reviewResults
-                          ? t('searchResult.reviewEvidence')
-                          : t('searchResult.fulltextAccess')}
-                      </span>
+                      <span>{t('search.reason')}</span>
+                      {columns.access ? (
+                        <span>
+                          {reviewResults
+                            ? t('searchResult.reviewEvidence')
+                            : t('searchResult.fulltextAccess')}
+                        </span>
+                      ) : null}
                     </div>
                     {shown.length ? (
                       shown.map((paper) => (
@@ -742,7 +785,7 @@ export function LiteratureSearchView({
                           key={paper.paper_id}
                           data-testid={`search-paper-${paper.paper_id}`}
                           data-active={focusedId === paper.paper_id}
-                          className="grid min-h-28 max-h-[var(--vds-layout-search-row-max-height)] cursor-pointer grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)_110px] grid-rows-[minmax(0,1fr)] items-start gap-3 border-b border-[var(--vds-divider-default)] px-3 py-3 hover:bg-[var(--vds-surface-muted)] data-[active=true]:bg-[var(--vds-surface-muted)]"
+                          className={`grid min-h-28 max-h-[var(--vds-layout-search-row-max-height)] cursor-pointer ${columns.grid} grid-rows-[minmax(0,1fr)] items-start gap-3 border-b border-[var(--vds-divider-default)] px-3 py-3 hover:bg-[var(--vds-surface-muted)] data-[active=true]:bg-[var(--vds-surface-muted)]`}
                           onClick={() => setFocusedId(paper.paper_id)}
                         >
                           <span onClick={(event) => event.stopPropagation()}>
@@ -775,18 +818,17 @@ export function LiteratureSearchView({
                                 : <JoinLibraryMenu papers={[paper]} size="md" onJoined={onJoined} />}
                             </div>
                           </div>
-                          <p
-                            tabIndex={0}
-                            className="m-0 min-h-0 min-w-0 max-h-full overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden break-words text-xs leading-5 text-[var(--vds-text-secondary)]"
-                          >
-                            {paper.abstract || t('search.noAbstract')}
+                          <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
+                            {paper.reason || t('search.detailUnknown')}
                           </p>
-                          <FulltextAccessBadge
-                            access={paper.access}
-                            evidence={reviewEvidence(paper)}
-                            reviewResults={reviewResults}
-                            t={t}
-                          />
+                          {columns.access ? (
+                            <FulltextAccessBadge
+                              access={paper.access}
+                              evidence={reviewEvidence(paper)}
+                              reviewResults={reviewResults}
+                              t={t}
+                            />
+                          ) : null}
                         </div>
                       ))
                     ) : (
@@ -898,14 +940,16 @@ export function LiteratureSearchView({
                   </p>
                 </section>
               ) : null}
-              <section className="shrink-0">
-                <h3 className="mb-2 text-sm font-semibold text-[var(--vds-text-primary)]">
-                  {t('search.abstract')}
-                </h3>
-                <p className="m-0 text-sm leading-6 text-[var(--vds-text-primary)]">
-                  {focused.abstract || t('search.noAbstract')}
-                </p>
-              </section>
+              {columns.detailAbstract ? (
+                <section className="shrink-0">
+                  <h3 className="mb-2 text-sm font-semibold text-[var(--vds-text-primary)]">
+                    {t('search.abstract')}
+                  </h3>
+                  <p className="m-0 text-sm leading-6 text-[var(--vds-text-primary)]">
+                    {focused.abstract || t('search.noAbstract')}
+                  </p>
+                </section>
+              ) : null}
             </div>
           </div>
           <footer className="shrink-0 border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-4">

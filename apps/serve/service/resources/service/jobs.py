@@ -471,10 +471,14 @@ class ResourceImportService:
                 extra={"job_id": job.job_id, "project_id": job.project_id},
             )
             storage_failure = classify_storage_failure(error)
-            failure_code = {
-                StorageFailureKind.FULL: DISK_FULL_ERROR,
-                StorageFailureKind.IO: STORAGE_IO_FAILED_ERROR,
-            }.get(storage_failure, RESOURCE_IMPORT_FAILED)
+            failure_code = (
+                {
+                    StorageFailureKind.FULL: DISK_FULL_ERROR,
+                    StorageFailureKind.IO: STORAGE_IO_FAILED_ERROR,
+                }.get(storage_failure, RESOURCE_IMPORT_FAILED)
+                if storage_failure is not None
+                else RESOURCE_IMPORT_FAILED
+            )
             self._store.mark_pending_sources(
                 job.job_id,
                 self._worker_id,

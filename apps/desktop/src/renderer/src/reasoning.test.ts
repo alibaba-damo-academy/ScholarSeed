@@ -5,7 +5,7 @@ import { createInstance } from 'i18next'
 
 import { buildSessionOpenRequest, setSessionModel } from './api.ts'
 import type { ModelInfo } from './api'
-import { reasoningLabel, reasoningPreference } from './reasoning.ts'
+import { reasoningLabel, reasoningPreference, modelDefaultEffort } from './reasoning.ts'
 
 test('first-turn request carries an explicit effort but leaves model default omitted', () => {
   assert.equal(buildSessionOpenRequest({ modelId: 'model', reasoningEffort: 'high' }).reasoning_effort, 'high')
@@ -16,8 +16,34 @@ test('new conversation preferences are per model and constrained by its capabili
   const model = { key: 'a', reasoning_efforts: ['low', 'high'] } as ModelInfo
   assert.equal(reasoningPreference(model, { a: 'high', b: 'low' }), 'high')
   assert.equal(reasoningPreference({ ...model, key: 'b' }, { a: 'high', b: 'low' }), 'low')
-  assert.equal(reasoningPreference(model, { a: 'xhigh' }), '')
+  // 「模型默认」伪档位已去除：失效偏好回落到模型定义的确定默认档（未声明 default 时取最低档）。
+  assert.equal(reasoningPreference(model, { a: 'xhigh' }), 'low')
   assert.equal(reasoningPreference({ ...model, reasoning_efforts: [] }, { a: 'high' }), '')
+})
+
+test('the definite default is the declared default, else the lowest declared level', () => {
+  const declared = {
+    key: 'a',
+    reasoning_efforts: ['low', 'medium', 'xhigh'],
+    reasoning_options: [{ kind: 'effort', values: ['low', 'medium', 'xhigh'], default: 'medium' }]
+  } as ModelInfo
+  assert.equal(modelDefaultEffort(declared), 'medium')
+  assert.equal(modelDefaultEffort({ key: 'a', reasoning_efforts: ['low', 'medium', 'xhigh'] } as ModelInfo), 'low')
+  // 声明的 default 不在 values 里时防御性回落到最低档，而不是照发未声明的值。
+  const inconsistent = {
+    key: 'a',
+    reasoning_efforts: ['high', 'max'],
+    reasoning_options: [{ kind: 'effort', values: ['high', 'max'], default: 'medium' }]
+  } as ModelInfo
+  assert.equal(modelDefaultEffort(inconsistent), 'high')
+  // 只声明 reasoning_options、没有 reasoning_efforts 投影时同样可解析。
+  const optionsOnly = {
+    key: 'a',
+    reasoning_options: [{ kind: 'effort', values: ['none', 'low', 'high'] }]
+  } as ModelInfo
+  assert.equal(modelDefaultEffort(optionsOnly), 'none')
+  assert.equal(modelDefaultEffort({ key: 'a' } as ModelInfo), '')
+  assert.equal(modelDefaultEffort(undefined), '')
 })
 
 test('model failure reconciles saved intent without turning the failed operation into success', async (t) => {

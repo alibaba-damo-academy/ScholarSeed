@@ -33,6 +33,7 @@
   "runtime": {
     "retrying": "Agent connection interrupted. Recovering…",
     "retryingCount": "Agent connection interrupted. Recovering ({{attempt}}/{{maximum}})…",
+    "providerRetrying": "The model service is retrying",
     "recovered": "Agent connection restored",
     "recoveryFailed": "Agent recovery failed. Check runtime sign-in, version, and network before retrying.",
     "failed": "An Agent runtime event needs attention. Check the current operation and runtime status.",
@@ -58,7 +59,7 @@
   },
   "models": {
     "deferred": "Model and reasoning effort apply next turn.",
-    "effortReset": "The new model does not support the previous reasoning effort. Model defaults have been restored.",
+    "effortReset": "The new model does not support the previous reasoning effort. The model's default level has been restored.",
     "nextTurn": "Model and reasoning effort changes will apply on the next turn."
   },
   "reasoning": {
@@ -87,6 +88,7 @@
   "retry": {
     "attachmentsGone": "The original attachments are unavailable. Select the files again.",
     "contextNotReady": "Conversation context is not ready. Please retry later.",
+    "continueUnknown": "The continuation submission could not be confirmed. Check the result in pending messages.",
     "regenerateUnknown": "The regeneration submission could not be confirmed. Check the result in pending messages.",
     "continueUnconfirmed": "The service did not confirm continuing."
   },

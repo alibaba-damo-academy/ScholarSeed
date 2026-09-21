@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from service.literature.persistence.cards import CARD_DDL, CARD_TABLE
 from service.literature.persistence.store import LITERATURE_DB, connect
@@ -46,7 +47,7 @@ class LiteratureDiscovery:
         matched = " OR ".join(predicates) if predicates else "field = ?"
         coverage = " AND ".join(f"max({predicate})" for predicate in predicates)
         having = f"HAVING {coverage}" if coverage else ""
-        args = list(terms) if terms else [TITLE_FIELD]
+        args: list[object] = list(terms) if terms else [TITLE_FIELD]
         args += [TITLE_FIELD, TITLE_FIELD, TITLE_WEIGHT, FIELD_WEIGHT]
         args += list(terms)
         args += [limit + 1, offset]
@@ -65,7 +66,7 @@ class LiteratureDiscovery:
         with closing(connect(self.database)) as connection:
             connection.execute(CARD_DDL)
             rows = connection.execute(sql, args).fetchall()
-        results = {}
+        results: dict[str, dict[str, Any]] = {}
         for row in rows:
             item = results.setdefault(
                 row["id"], {"id": row["id"], "title": row["title"], "matches": []}

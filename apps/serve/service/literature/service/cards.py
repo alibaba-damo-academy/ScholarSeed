@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 
 LITERATURE_REFERENCES_CARD = "literature-references"
-LITERATURE_REFERENCES_SCHEMA_VERSION = "1.0"
+LITERATURE_REFERENCES_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 LITERATURE_TEXT_CHARS = 2_000
 LITERATURE_SHORT_TEXT_CHARS = 256
 LITERATURE_URL_CHARS = 2_048
@@ -68,6 +68,8 @@ class LiteratureReference(BaseModel):
         try:
             return handler(value)
         except ValidationError:
+            if info.field_name is None:
+                raise
             field = cls.model_fields[info.field_name]
             if field.is_required():
                 raise
@@ -84,7 +86,7 @@ class LiteratureReferences(BaseModel):
 
     @field_validator("schema_version", mode="before")
     @classmethod
-    def normalize_version(cls, _value: Any) -> str:
+    def normalize_version(cls, _value: Any) -> Literal["1.0"]:
         return LITERATURE_REFERENCES_SCHEMA_VERSION
 
     @field_validator("project", "generated_at", mode="wrap")
@@ -93,6 +95,8 @@ class LiteratureReferences(BaseModel):
         try:
             return handler(value)
         except ValidationError:
+            if info.field_name is None:
+                raise
             return cls.model_fields[info.field_name].get_default()
 
     @field_validator("references")
@@ -111,7 +115,7 @@ class LiteratureReferences(BaseModel):
         return values
 
 
-def validate_references_card(value: Any) -> dict[str, Any]:
+def validate_references_card(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate the public v1 literature payload and return JSON values."""
 
     return LiteratureReferences.model_validate(value).model_dump(mode="json")

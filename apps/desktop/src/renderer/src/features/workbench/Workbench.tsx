@@ -79,7 +79,7 @@ export function Workbench(): React.JSX.Element {
       />
     )
   }
-  return <>{viewer.render({ path: tab.id, tabId: tab.id })}</>
+  return <>{viewer.render({ active: true, path: tab.id, tabId: tab.id })}</>
 }
 
 /** 项目总览页（对齐原型截图 1）。 */

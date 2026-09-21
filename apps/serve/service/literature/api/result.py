@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -261,7 +261,7 @@ def register_result_routes(
             )
         return JSONResponse({"ok": True, "artifacts": published})
 
-    async def publish_candidates(live: Any, turn_id: str, run: str) -> JSONResponse:
+    async def publish_candidates(live: LiveSession, turn_id: str, run: str) -> JSONResponse:
         """Show an idea's agentic-search candidates and wait for the product decision in-turn."""
 
         if getattr(live, "active_task_type", "") != ProductTaskType.RESEARCH_IDEA.value:

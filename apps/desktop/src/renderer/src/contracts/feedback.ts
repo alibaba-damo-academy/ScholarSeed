@@ -6,7 +6,7 @@ const FEEDBACK_KEYS = {
     'request.failed': 'none', 'request.authentication': 'none', 'request.httpFailure': 'status', 'request.diagnostic': 'detail',
     'request.resourceReviewRequired': 'none',
     'models.deferred': 'none', 'models.effortReset': 'none', 'models.nextTurn': 'none',
-    'retry.continueUnconfirmed': 'none', 'retry.attachmentsGone': 'none', 'retry.contextNotReady': 'none', 'retry.regenerateUnknown': 'none'
+    'retry.continueUnconfirmed': 'none', 'retry.continueUnknown': 'none', 'retry.attachmentsGone': 'none', 'retry.contextNotReady': 'none', 'retry.regenerateUnknown': 'none'
   } satisfies Partial<Record<ParseKeys<'conversation'>, 'none' | 'status' | 'detail'>>,
   components: {
     'composer.askPermission': 'none', 'composer.autoPermission': 'none', 'composer.fullPermission': 'none', 'composer.modeSelected': 'mode',

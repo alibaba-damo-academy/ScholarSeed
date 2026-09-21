@@ -31,6 +31,14 @@ export function officeWarmupProgress(status: OfficeWarmupStatus): number | null 
   return Math.min(MAX_PROGRESS, Math.round(status.done / status.total * MAX_PROGRESS))
 }
 
+export function shouldShowOfficeWarmup(status: OfficeWarmupStatus, retrying: boolean): boolean {
+  return retrying || status.stage === 'error'
+}
+
+export function shouldShowOfficeWarmupProgress(status: OfficeWarmupStatus, retrying: boolean): boolean {
+  return retrying && status.stage !== 'error' && status.stage !== 'ready'
+}
+
 export function parseOfficeWarmupStatus(message: Record<string, unknown>): OfficeWarmupStatus | null {
   const stage = String(message.stage) as OfficeWarmupStage
   if (!OFFICE_WARMUP_STAGES.has(stage)) return null

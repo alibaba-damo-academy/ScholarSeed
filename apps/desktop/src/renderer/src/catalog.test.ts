@@ -4,6 +4,7 @@ import test from 'node:test'
 import { block } from '../../test-helpers/source-contract.ts'
 
 import {
+  effectiveSessionModelKey,
   hasSelectableModel,
   personalModelId,
   pruneMissingCatalogThreads,
@@ -101,11 +102,12 @@ test('a request model key falls back to the default instead of sending an empty 
   const configured = thread('chat-session')
   configured.runtime = { name: 'codex', model_id: 'deepseek-v4-pro' }
   const threads = { [runtimeless.id]: runtimeless, [configured.id]: configured }
+  const models = [{ key: 'qwen3.8-max' }, { key: 'deepseek-v4-pro' }]
 
-  assert.equal(requestModelKey('qwen3.8-max', runtimeless.id, threads), 'qwen3.8-max')
-  assert.equal(requestModelKey('qwen3.8-max', 'unloaded-session', threads), 'qwen3.8-max')
-  assert.equal(requestModelKey('qwen3.8-max', null, threads), 'qwen3.8-max')
-  assert.equal(requestModelKey('qwen3.8-max', configured.id, threads), 'deepseek-v4-pro')
+  assert.equal(requestModelKey(models, 'qwen3.8-max', runtimeless.id, threads), 'qwen3.8-max')
+  assert.equal(requestModelKey(models, 'qwen3.8-max', 'unloaded-session', threads), 'qwen3.8-max')
+  assert.equal(requestModelKey(models, 'qwen3.8-max', null, threads), 'qwen3.8-max')
+  assert.equal(requestModelKey(models, 'qwen3.8-max', configured.id, threads), 'deepseek-v4-pro')
 })
 
 // 与后端 `parse_personal_model_key` 是同一份契约; 两侧都断言才不会各自漂移。
@@ -179,4 +181,40 @@ test('catalog selection preserves an enabled previous choice before using the fi
   )
   assert.equal(selectableCatalogModelKey('missing', models), 'personal-first:first')
   assert.equal(selectableCatalogModelKey('missing', []), 'missing')
+})
+
+// 登出前开的会话，其 runtime 仍是置灰的内置键：会话面（选择器/文献解释/阅读请求）必须
+// 按目录回落到可用模型，而不是把置灰键当真或原地报「模型不可用」。
+test('a session runtime disabled by the gateway gate falls back to an enabled catalog model', () => {
+  const stale = thread('stale-session')
+  stale.runtime = { name: 'codex', model_id: 'qwen3.8-max' }
+  const threads = { [stale.id]: stale }
+  const personalKey = 'personal-0123456789abcdef0123456789abcdef:qwen3.8-max'
+  const models = [
+    { key: 'qwen3.8-max', disabled: true },
+    { key: personalKey, model_id: 'qwen3.8-max' }
+  ]
+
+  // 会话 runtime 可用时保持不变。
+  const enabled = thread('enabled-session')
+  enabled.runtime = { name: 'codex', model_id: personalKey }
+  assert.equal(
+    effectiveSessionModelKey(models, personalKey, enabled.id, { [enabled.id]: enabled }),
+    personalKey
+  )
+  // 置灰时优先同底层模型的个人连接，其次已切换的默认，最后第一个可用模型。
+  assert.equal(effectiveSessionModelKey(models, 'qwen3.8-max', stale.id, threads), personalKey)
+  assert.equal(effectiveSessionModelKey(models, '', stale.id, threads), personalKey)
+  // 目录整体置灰时如实保留原键，交给既有「模型不可用」引导。
+  const greyed = [{ key: 'qwen3.8-max', disabled: true }]
+  assert.equal(effectiveSessionModelKey(greyed, 'qwen3.8-max', stale.id, threads), 'qwen3.8-max')
+  // 键不在目录里（隐藏/删除的模型）不自动切换，保持「不可用」的诚实展示。
+  const missing = thread('missing-session')
+  missing.runtime = { name: 'codex', model_id: 'hidden-model' }
+  assert.equal(
+    effectiveSessionModelKey(models, personalKey, missing.id, { [missing.id]: missing }),
+    'hidden-model'
+  )
+  // 无会话时回落到默认键。
+  assert.equal(effectiveSessionModelKey(models, personalKey, null, threads), personalKey)
 })

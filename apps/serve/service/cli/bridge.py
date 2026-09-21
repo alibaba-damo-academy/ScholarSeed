@@ -66,12 +66,12 @@ def parser() -> argparse.ArgumentParser:
         "read": '补读消息或最近一页。示例：--json \'{"session_id":"...","limit":5}\'；'
         "也可传 message_id/before/after，或返回的 cursor 继续读取。",
     }
-    for name, request in HISTORY_REQUESTS.items():
+    for name, history_request in HISTORY_REQUESTS.items():
         command = verbs.add_parser(name, help=descriptions[name], description=descriptions[name])
         command.add_argument(
             "--json", required=True, help="请求 JSON；凭证由产品环境提供，不放入参数"
         )
-        command.epilog = json.dumps(request.model_json_schema(), ensure_ascii=False)
+        command.epilog = json.dumps(history_request.model_json_schema(), ensure_ascii=False)
     artifact = groups.add_parser("artifact", help="发布本轮已生成的独立文件产物")
     artifact_verbs = artifact.add_subparsers(dest="operation")
     publish_request, _publish_route = BRIDGE_REQUESTS[("artifact", "publish")]
@@ -88,22 +88,22 @@ def parser() -> argparse.ArgumentParser:
     publish.epilog = json.dumps(publish_request.model_json_schema(), ensure_ascii=False)
     pdf = groups.add_parser("pdf", help="读取本轮获准的 PDF 原文并取得可点击引用")
     pdf_verbs = pdf.add_subparsers(dest="operation")
-    for name, request in PDF_REQUESTS.items():
+    for name, pdf_request in PDF_REQUESTS.items():
         command = pdf_verbs.add_parser(name)
         command.add_argument(
             "--json", required=True, help="list 返回 ref_id；read/search 返回原文及 citation_url"
         )
-        command.epilog = json.dumps(request.model_json_schema(), ensure_ascii=False)
+        command.epilog = json.dumps(pdf_request.model_json_schema(), ensure_ascii=False)
     plan = groups.add_parser("plan", help="读取或更新显式主计划与子计划")
     plan_verbs = plan.add_subparsers(dest="operation")
-    for name, request in PLAN_REQUESTS.items():
+    for name, plan_request in PLAN_REQUESTS.items():
         command = plan_verbs.add_parser(
             name, help="get 取得当前 turn/version；write 提交完整计划树"
         )
         command.add_argument(
             "--json", required=True, help="父节点用 parent_id 明确关联；普通 update 不改变主阶段"
         )
-        command.epilog = json.dumps(request.model_json_schema(), ensure_ascii=False)
+        command.epilog = json.dumps(plan_request.model_json_schema(), ensure_ascii=False)
     plan.set_defaults(capability_parser=plan)
     literature = groups.add_parser(
         "literature", help="列出和读取当前项目文献，或展示检索与综述结果"
@@ -134,7 +134,7 @@ def parser() -> argparse.ArgumentParser:
         ),
         "review": "读取综述工作区标准产物并发布阶段快照；retrieval 会等待产品授权决策。",
     }
-    for name, request in LITERATURE_REQUESTS.items():
+    for name, literature_request in LITERATURE_REQUESTS.items():
         command = literature_verbs.add_parser(
             name,
             help=literature_descriptions[name],
@@ -145,10 +145,10 @@ def parser() -> argparse.ArgumentParser:
             required=True,
             help="请求 JSON；凭证和当前项目由产品会话提供，不放入参数",
         )
-        command.epilog = json.dumps(request.model_json_schema(), ensure_ascii=False)
+        command.epilog = json.dumps(literature_request.model_json_schema(), ensure_ascii=False)
     resource = groups.add_parser("resource", help="列出当前项目资料库文件")
     resource_verbs = resource.add_subparsers(dest="operation")
-    for name, request in RESOURCE_REQUESTS.items():
+    for name, resource_request in RESOURCE_REQUESTS.items():
         command = resource_verbs.add_parser(
             name,
             help="按项目相对路径列出资料库文件",
@@ -159,7 +159,7 @@ def parser() -> argparse.ArgumentParser:
             required=True,
             help="请求 JSON。示例：'{\"limit\":20}'；凭证和当前项目由产品会话提供",
         )
-        command.epilog = json.dumps(request.model_json_schema(), ensure_ascii=False)
+        command.epilog = json.dumps(resource_request.model_json_schema(), ensure_ascii=False)
     literature.set_defaults(capability_parser=literature)
     resource.set_defaults(capability_parser=resource)
     pdf.set_defaults(capability_parser=pdf)

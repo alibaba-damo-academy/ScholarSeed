@@ -6,6 +6,7 @@ import { viewerPolicy } from './policy.ts'
 test('Office-family viewers share one exclusive non-relocatable runtime group', () => {
   for (const viewer of ['office', 'spreadsheet'] as const) {
     assert.deepEqual(viewerPolicy(viewer), {
+      defaultViewKind: 'preview',
       exclusiveGroup: 'office',
       canMove: false,
       canSplit: false,
@@ -16,6 +17,7 @@ test('Office-family viewers share one exclusive non-relocatable runtime group', 
 
 test('ordinary viewers retain layout operations', () => {
   assert.deepEqual(viewerPolicy('markdown'), {
+    defaultViewKind: 'edit',
     exclusiveGroup: null,
     canMove: true,
     canSplit: true,

@@ -799,6 +799,21 @@ test('resource file auto-context requires the AI panel to remain open', () => {
   assert.doesNotMatch(storeSource, /kind: selected\.kind/)
 })
 
+test('resource file auto-context waits for the active session context to become ready', () => {
+  assert.match(
+    storeSource,
+    /const pendingResourceFileContext = useRef<[\s\S]*?requestSeq: number[\s\S]*?sessionId: string[\s\S]*?candidate: AssistantContextCandidate/
+  )
+  assert.match(
+    storeSource,
+    /latest\.aiPanel\.sessionId === sessionId[\s\S]*?latest\.aiPanel\.contextState === 'ready'[\s\S]*?actRef\.current\.addContext\(openedFileContext\)[\s\S]*?pendingResourceFileContext\.current =/
+  )
+  assert.match(
+    storeSource,
+    /pending\.requestSeq !== resourceFileContextSeq\.current[\s\S]*?pending\.sessionId !== state\.activeSession[\s\S]*?pending\.candidate\.source_id !== state\.resource\.selected[\s\S]*?state\.aiPanel\.contextState !== 'ready'[\s\S]*?actRef\.current\.addContext\(pending\.candidate\)/
+  )
+})
+
 test('automatic resource context uses one replaceable current-document slot', () => {
   assert.match(
     storeSource,
@@ -1908,7 +1923,8 @@ test('resource Agent origin lookup preserves the conversation focus target', asy
       source_kind: 'answer',
       session_id: 'session/1',
       turn_id: 'turn 1',
-      item_id: 'item 1'
+      item_id: 'item 1',
+      source_range: { unit: 'utf16_code_unit', start: 12, end: 24 }
     })
   }
   try {
@@ -1922,7 +1938,8 @@ test('resource Agent origin lookup preserves the conversation focus target', asy
       sourceKind: 'answer',
       sessionId: 'session/1',
       turnId: 'turn 1',
-      itemId: 'item 1'
+      itemId: 'item 1',
+      sourceRange: { unit: 'utf16_code_unit', start: 12, end: 24 }
     })
   } finally {
     globalThis.window = originalWindow

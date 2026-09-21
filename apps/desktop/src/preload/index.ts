@@ -15,8 +15,18 @@ import type { SystemPermissionId, SystemPermissionsSnapshot } from '../permissio
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
 import type { ImportPickerTarget } from '../picker'
 import { SKILLS_CHANNEL, type DeviceSkillRequest, type DeviceSkillResponse } from '../skills'
-import { FEEDBACK_CAPTURE_CHANNEL, type FeedbackScreenshotResult } from '../feedback'
-import { CLIPBOARD_PASTE_CHANNEL } from '../clipboard'
+import {
+  FEEDBACK_CAPTURE_CHANNEL,
+  FEEDBACK_CLIPBOARD_IMAGE_CHANNEL,
+  type FeedbackClipboardImageResult,
+  type FeedbackScreenshotResult
+} from '../feedback'
+import {
+  CLIPBOARD_PASTE_CHANNEL,
+  CLIPBOARD_WRITE_CONTENT_CHANNEL,
+  type ClipboardContentPayload,
+  type ClipboardContentResult
+} from '../clipboard'
 
 import { SUBSCRIPTION_CHANNEL, type SubscriptionRequest, type SubscriptionReply } from '../subscriptions'
 
@@ -137,11 +147,14 @@ const bridge = {
   writeClipboard(text: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('scholarseed:write-clipboard', text)
   },
+  writeClipboardContent(payload: ClipboardContentPayload): Promise<ClipboardContentResult> {
+    return ipcRenderer.invoke(CLIPBOARD_WRITE_CONTENT_CHANNEL, payload)
+  },
   pasteClipboard(): Promise<boolean> {
     return ipcRenderer.invoke(CLIPBOARD_PASTE_CHANNEL)
   },
-  writeClipboardImage(bytes: Uint8Array): Promise<{ ok: boolean; error?: string }> {
-    return ipcRenderer.invoke('scholarseed:write-clipboard-image', bytes)
+  writeClipboardImage(bytes: Uint8Array): Promise<FeedbackClipboardImageResult> {
+    return ipcRenderer.invoke(FEEDBACK_CLIPBOARD_IMAGE_CHANNEL, bytes)
   },
   readOfficeClipboard(): Promise<OfficeClipboardResult> {
     return ipcRenderer.invoke('scholarseed:read-office-clipboard')

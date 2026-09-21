@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -38,18 +39,27 @@ class EvidenceWriter:
         error: dict[str, str] | None = None,
         inputs: dict[str, Any] | None = None,
         outputs: dict[str, Any] | None = None,
+        span_id: str | None = None,
+        parent_span_id: str | None = None,
+        started_at: datetime | None = None,
+        duration_ms: float = 0,
     ) -> None:
-        timestamp = datetime.now(timezone.utc).isoformat()
+        if not math.isfinite(duration_ms) or duration_ms < 0:
+            raise ValueError("evidence duration must be finite and nonnegative")
+        started = started_at if started_at is not None else datetime.now(timezone.utc)
+        if started.utcoffset() is None:
+            raise ValueError("evidence start must include a timezone")
+        ended = started + timedelta(milliseconds=duration_ms)
         record: dict[str, Any] = {
             "id": uuid.uuid4().hex,
             "task_run_id": task_run_id,
-            "span_id": uuid.uuid4().hex,
-            "parent_span_id": None,
+            "span_id": span_id or uuid.uuid4().hex,
+            "parent_span_id": parent_span_id,
             "kind": kind,
             "name": name,
-            "started_at": timestamp,
-            "ended_at": timestamp,
-            "duration_ms": 0,
+            "started_at": started.isoformat(),
+            "ended_at": ended.isoformat(),
+            "duration_ms": duration_ms,
             "session_id": session_id,
             "component_id": component_id,
             "artifact_paths": [],

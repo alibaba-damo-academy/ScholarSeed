@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
@@ -20,7 +22,7 @@ STATIC_MEDIA_TYPES = {
 
 
 class ProductStaticFiles(StaticFiles):
-    async def get_response(self, path: str, scope: dict) -> Response:
+    async def get_response(self, path: str, scope: MutableMapping[str, Any]) -> Response:
         response = await super().get_response(path, scope)
         media_type = STATIC_MEDIA_TYPES.get(Path(path).suffix.lower())
         if media_type:

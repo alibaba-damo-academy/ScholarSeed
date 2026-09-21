@@ -6,7 +6,7 @@ import {
   SELECTION_PROMPT_ACTIONS
 } from '../../../../prompts'
 import { profileFailureText, providerPresetText } from './profile'
-import { reasoningLabel } from '../../reasoning'
+import { modelDefaultEffort, reasoningLabel } from '../../reasoning'
 import type { PersonalApiFailure, ModelInfo } from '../../api'
 import { DEFAULT_LANGUAGE, LOCALES } from '../../../../localization/catalog'
 import { createFormatters } from '../../../../localization/format'
@@ -4023,7 +4023,9 @@ function ModelReasoningSetting({
     { messageKey: 'models.loadFailed' } | PersonalApiFailure | null
   >(null)
   const efforts = model.reasoning_efforts ?? []
-  const selected = state.reasoningPreferences[model.key] ?? ''
+  // 「模型默认」伪档位已去除：未选或旧值不在声明档位内时，回落到模型定义的确定默认档。
+  const preferred = state.reasoningPreferences[model.key] ?? ''
+  const selected = efforts.includes(preferred) ? preferred : modelDefaultEffort(model)
   const editable = Boolean(model.profile_id && model.model_id)
 
   const save = async (): Promise<void> => {
@@ -4115,7 +4117,7 @@ function ModelReasoningSetting({
         <div className="flex items-center gap-2">
           {efforts.length ? (
             <Select
-              value={efforts.includes(selected) ? selected : ''}
+              value={selected}
               onValueChange={(value) =>
                 set((current) => ({
                   reasoningPreferences: {
@@ -4133,15 +4135,10 @@ function ModelReasoningSetting({
                 data-testid={`model-reasoning-${model.key}`}
               >
                 <SelectValue>
-                  {efforts.includes(selected)
-                    ? reasoningLabel(selected, conversation)
-                    : conversation('reasoning.default')}
+                  {reasoningLabel(selected, conversation)}
                 </SelectValue>
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">
-                  {conversation('reasoning.default')}
-                </SelectItem>
                 {efforts.map((effort) => (
                   <SelectItem key={effort} value={effort}>
                     {reasoningLabel(effort, conversation)}

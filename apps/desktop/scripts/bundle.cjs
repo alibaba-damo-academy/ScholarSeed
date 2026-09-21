@@ -8,7 +8,6 @@ const PROJECTS = [
   ['runtime', 'packages/runtime'],
   ['damoatrace', 'packages/damoatrace'],
   ['codex', 'packages/adapters/codex'],
-  ['dsh', 'packages/adapters/dsh'],
   ['serve', 'apps/serve']
 ]
 const PYTHON_INDEX = 'https://mirrors.aliyun.com/pypi/simple/'
@@ -100,7 +99,7 @@ async function bundle(context, target, environment) {
   run(python, ['-I', '-B', '-c', [
     'import importlib, json, pathlib, sysconfig',
     'root = pathlib.Path(sysconfig.get_path("purelib")).resolve()',
-    'names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex", "scholarseed_dsh")',
+    'names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex")',
     'assert not list(root.glob("__editable__*")) and not list(root.glob("*.egg-link"))',
     'assert not any(json.loads(item.read_text()).get("dir_info", {}).get("editable") is True for item in root.glob("*.dist-info/direct_url.json"))',
     'assert all(pathlib.Path(importlib.import_module(name).__file__).resolve().is_relative_to(root) for name in names)'

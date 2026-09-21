@@ -92,7 +92,7 @@ export function describeTurnFailure(data: {
   const kind = classified || fallbackKind(frame ? frame.message : rawMessage) || 'unknown'
   const fallback = frame ? 'frame' : data.message ? 'raw' : 'runtime'
   const retry = data.retryable === true && (kind === 'rate_limit' || kind === 'unavailable' || kind === 'unknown')
-    ? { runtimeAction: 'retry_turn' as const, actionState: 'idle' as const }
+    ? { runtimeAction: 'continue_turn' as const, actionState: 'idle' as const }
     : {}
   return {
     kind: 'error', title: '', action: '',

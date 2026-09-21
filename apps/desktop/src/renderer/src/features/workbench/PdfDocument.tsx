@@ -1,7 +1,7 @@
 import { ExternalLink, FileLock2, NotepadText, Undo2 } from 'lucide-react'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { getDocument, GlobalWorkerOptions, type PDFPageProxy, type PDFDocumentLoadingTask } from 'pdfjs-dist/legacy/build/pdf.mjs'
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
 import { openSystemPath } from '../../api'
@@ -57,7 +57,7 @@ import {
 import { useWorkspaceController, selectionViewport, useDocumentWorkspace } from './workspace'
 import { PDF_COMMENT_TOOL, PdfTools, type PdfTool } from './pdf/Tools'
 import { PdfAnnotations } from './pdf/Annotations'
-import { PdfPage, type PdfFocus, type PdfFocusTarget } from './pdf/Page'
+import { PdfPageSlot, type PdfFocus, type PdfFocusTarget } from './pdf/Page'
 import { PdfAnnotation } from './pdf/Annotation'
 import {
   exportAnnotatedPdf,
@@ -72,11 +72,13 @@ import { PdfPanel } from './pdf/Panel'
 import {
   DEFAULT_PDF_MARK_COLOR,
   PDF_RECORD_SCHEMA_VERSION,
+  stagePdfRecords,
   type PdfMarkColor
 } from './pdf/records'
 import './pdf/pdf.css'
 import { PdfBinaryDataFactory } from './pdf/assets'
 import { PdfFonts } from './pdf/fonts'
+import { PdfLifecycle } from './pdf/lifecycle'
 import {
   classifyPdfLoadFailure,
   PDF_LOAD_FAILURE_KIND,
@@ -97,6 +99,8 @@ const PDF_ACTUAL_SCALE = 1
 const PDF_SCROLL_STEP_PX = 64
 const PDF_PAGE_SCROLL_RATIO = 0.9
 const PDF_RECORDS_PANEL_ID = 'pdf-records'
+const PDF_DEFAULT_PAGE_SIZE: Size = { width: 612, height: 792 }
+const PDF_NEAR_PAGE_RADIUS = 1
 
 function logPdfExportFailure(error: unknown): void {
   const cause = error instanceof PdfExportError && error.original instanceof Error ? error.original : null
@@ -193,11 +197,13 @@ function toExcerptSelections(selections: readonly PageSelection[]): LiteratureEx
 }
 
 export function PdfDocument({
+  active,
   documentPanels,
   sessionId,
   tabId,
   onResourceImported
 }: {
+  active: boolean
   documentPanels?: {
     activePanelId: string | null
     context: DocumentPanelContext
@@ -236,11 +242,22 @@ export function PdfDocument({
   const sidebarTab = reading?.sidebarTab === 'pages' || reading?.sidebarTab === 'search'
     ? reading.sidebarTab
     : 'outline'
-  const [pages, setPages] = useState<PDFPageProxy[]>([])
+  const [pageCount, setPageCount] = useState(0)
+  const [loadedPages, setLoadedPages] = useState<Map<number, PDFPageProxy>>(() => new Map())
+  const [estimatedPageSize, setEstimatedPageSize] = useState<Size>(PDF_DEFAULT_PAGE_SIZE)
   const [selectionDragSpan, setSelectionDragSpan] = useState<SelectionDragSpan | null>(null)
   const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
   const [cropBox, setCropBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [fonts, setFonts] = useState(() => new PdfFonts())
+  const [lifecycle] = useState(() => new PdfLifecycle<Uint8Array, PDFDocumentProxy, PDFPageProxy>({
+    createTask: bytes => getDocument({
+      data: new Uint8Array(bytes),
+      BinaryDataFactory: PdfBinaryDataFactory,
+      useWorkerFetch: false,
+      fontExtraProperties: true
+    }),
+    restore: restoreAnnotatedPdf
+  }))
   const [outline, setOutline] = useState<PdfOutlineItem[]>([])
   const [sidecar, setSidecar] = useState<PdfRecordSnapshot | null>(null)
   const paletteLabels = {
@@ -315,6 +332,9 @@ export function PdfDocument({
   const documentRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLTextAreaElement>(null)
   const zoomAnchorRef = useRef<PdfZoomAnchor>()
+  const wheelZoomFrameRef = useRef<number>()
+  const wheelZoomScaleRef = useRef<number>()
+  const wheelZoomEventRef = useRef<WheelEvent>()
   const textCache = useRef(new Map<number, string>())
   const readingRef = useRef(reading)
   readingRef.current = reading
@@ -334,62 +354,90 @@ export function PdfDocument({
   }, [tabId])
 
   useEffect(() => {
-    if (!session?.bytes.length) return
-    let active = true
-    setPages([])
+    setPageCount(0)
+    setLoadedPages(new Map())
     setOutline([])
-    setLoadError(null)
+    destinationResolver.current = undefined
     textCache.current.clear()
+    if (!active || !session?.bytes.length) {
+      void lifecycle.suspend()
+      return
+    }
+    let running = true
+    setLoadError(null)
     const fontOwner = new PdfFonts()
     setFonts(fontOwner)
-    let task: PDFDocumentLoadingTask | undefined
-    void restoreAnnotatedPdf(session.bytes).then(bytes => {
-      if (!active) return null
-      task = getDocument({ data: new Uint8Array(bytes), BinaryDataFactory: PdfBinaryDataFactory, useWorkerFetch: false, fontExtraProperties: true })
-      return task.promise
-    }).then(async pdf => {
-      if (!pdf || !active) return
-      const rawOutline = await pdf.getOutline()
-      const resolvedOutline = await outlineTree(rawOutline, {
+    void lifecycle.open(session.bytes, currentPage).then(opened => {
+      if (!opened || !running) return
+      const pdf = opened.document
+      const initialViewport = opened.page.getViewport({ scale: 1 })
+      setEstimatedPageSize({ width: initialViewport.width, height: initialViewport.height })
+      setPageCount(opened.pageCount)
+      setLoadedPages(new Map([[opened.page.pageNumber, opened.page]]))
+      for (
+        let pageNumber = Math.max(1, opened.page.pageNumber - PDF_NEAR_PAGE_RADIUS);
+        pageNumber <= Math.min(opened.pageCount, opened.page.pageNumber + PDF_NEAR_PAGE_RADIUS);
+        pageNumber += 1
+      ) {
+        if (pageNumber === opened.page.pageNumber) continue
+        void lifecycle.getPage(pageNumber).then(page => {
+          if (!running || !page) return
+          setLoadedPages(current => new Map(current).set(pageNumber, page))
+        })
+      }
+      destinationResolver.current = {
+        namedDestination: name => pdf.getDestination(name),
+        pageIndex: reference => pdf.getPageIndex(reference as Parameters<typeof pdf.getPageIndex>[0]),
+        pageViewport: async targetPage => (await pdf.getPage(targetPage)).getViewport({ scale: 1 })
+      }
+      void pdf.getOutline().then(rawOutline => outlineTree(rawOutline, {
         namedDestination: name => pdf.getDestination(name),
         pageIndex: reference => pdf.getPageIndex(reference as Parameters<typeof pdf.getPageIndex>[0])
+      })).then(resolvedOutline => {
+        if (running) setOutline(resolvedOutline)
+      }).catch(() => {
+        if (running) setOutline([])
       })
-      const loaded: PDFPageProxy[] = []
-      for (let first = 1; first <= pdf.numPages && active; first += SEARCH_BATCH_SIZE) {
-        loaded.push(...await Promise.all(Array.from({ length: Math.min(SEARCH_BATCH_SIZE, pdf.numPages - first + 1) }, (_, offset) => pdf.getPage(first + offset))))
-      }
-      if (active) {
-        destinationResolver.current = {
-          namedDestination: name => pdf.getDestination(name),
-          pageIndex: reference => pdf.getPageIndex(reference as Parameters<typeof pdf.getPageIndex>[0]),
-          pageViewport: async targetPage => (await pdf.getPage(targetPage)).getViewport({ scale: 1 })
-        }
-        setPages(loaded)
-        setOutline(resolvedOutline)
-      }
     }).catch((error: unknown) => {
-      if (active) setLoadError(classifyPdfLoadFailure(error))
+      if (running) setLoadError(classifyPdfLoadFailure(error))
     })
-    return () => { active = false; destinationResolver.current = undefined; fontOwner.dispose(); void task?.destroy() }
-  }, [session?.revision, sessionId])
+    return () => {
+      running = false
+      destinationResolver.current = undefined
+      fontOwner.dispose()
+      void lifecycle.suspend()
+    }
+  }, [active, lifecycle, session?.revision, sessionId])
+
+  const loadPage = useCallback(async (pageNumber: number): Promise<PDFPageProxy | null> => {
+    const page = await lifecycle.getPage(pageNumber)
+    if (page) {
+      setLoadedPages(current => current.get(pageNumber) === page
+        ? current
+        : new Map(current).set(pageNumber, page))
+    }
+    return page
+  }, [lifecycle])
 
   useEffect(() => {
-    if (!session) return
+    if (!active || !session) return
     setSidecar(null)
     if (!recordTargetFor(session.source)) return
-    let active = true
+    let running = true
     let receivedUpdate = false
     const unsubscribe = subscribePdfRecords(session.source, snapshot => {
       receivedUpdate = true
-      if (active) setSidecar(snapshot)
+      if (running) {
+        setSidecar(snapshot)
+      }
     })
     void loadPdfRecords(session.source).then(snapshot => {
-      if (!active || receivedUpdate) return
+      if (!running || receivedUpdate) return
       setSidecar(snapshot)
       if (!snapshot) notifyResult('readFailed')
     })
-    return () => { active = false; unsubscribe() }
-  }, [session?.documentId, session?.revision])
+    return () => { running = false; unsubscribe() }
+  }, [active, session?.documentId, session?.revision])
 
   useLayoutEffect(() => {
     const host = viewportRef.current
@@ -399,7 +447,7 @@ export function PdfDocument({
     return () => observer.disconnect()
   }, [])
 
-  const activePage = pages[pageNumber(currentPage, pages.length) - 1]
+  const activePage = loadedPages.get(pageNumber(currentPage, pageCount))
   const natural = activePage?.getViewport({ scale: 1 })
   const scale = mode === 'custom' ? storedScale : natural && size.width && size.height
     ? fittedScale(mode, natural, { width: Math.max(1, size.width - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
@@ -409,10 +457,10 @@ export function PdfDocument({
   const navigate = useCallback((target: number): void => {
     setFocus(undefined)
     setReturnPosition(null)
-    const page = pageNumber(target, pages.length)
+    const page = pageNumber(target, pageCount)
     update({ page })
     viewportRef.current?.querySelector<HTMLElement>(`[data-testid="pdf-page-${page}"]`)?.scrollIntoView({ block: 'start', inline: 'center' })
-  }, [pages.length, update])
+  }, [pageCount, update])
 
   const navigateInternalLink = useCallback(async (destination: PdfDestination): Promise<void> => {
     const resolver = destinationResolver.current
@@ -459,18 +507,18 @@ export function PdfDocument({
     if (focus?.kind === 'citation' && focus.page === currentPage) {
       requestFocus({ kind: 'citation', page: currentPage, region: focus.region })
     }
-  }, [pages, scale, sidebar])
+  }, [pageCount, scale, sidebar])
   useEffect(() => setPageInput(String(currentPage)), [currentPage])
 
   useEffect(() => {
     const page = citationPages?.[0]?.page
-    if (!page || !pages.length) return
+    if (!page || !pageCount) return
     requestFocus({ kind: 'citation', page })
-  }, [citation, pages, requestFocus])
+  }, [citation, pageCount, requestFocus])
 
   useEffect(() => {
     if (query.trim()) setFocus(undefined)
-    if (!query.trim() || !pages.length) { setHits([]); setSearching(false); return }
+    if (!query.trim() || !pageCount) { setHits([]); setSearching(false); return }
     let active = true
     setSearching(true)
     setSearchError(null)
@@ -479,8 +527,12 @@ export function PdfDocument({
       void (async () => {
         const found: SearchHit[] = []
         let anyText = false
-        for (let first = 0; first < pages.length && active; first += SEARCH_BATCH_SIZE) {
-          const batch = await Promise.all(pages.slice(first, first + SEARCH_BATCH_SIZE).map(async page => {
+        for (let first = 1; first <= pageCount && active; first += SEARCH_BATCH_SIZE) {
+          const batch = await Promise.all(Array.from(
+            { length: Math.min(SEARCH_BATCH_SIZE, pageCount - first + 1) },
+            async (_, offset) => {
+            const page = await loadPage(first + offset)
+            if (!page) return null
             let text = textCache.current.get(page.pageNumber)
             if (text === undefined) {
               const content = await page.getTextContent()
@@ -490,6 +542,7 @@ export function PdfDocument({
             return { page: page.pageNumber, text }
           }))
           for (const item of batch) {
+            if (!item) continue
             anyText ||= Boolean(item.text.trim())
             for (const [ordinal, match] of matchText(item.text, query).entries()) found.push({ page: item.page, text: item.text.slice(match.start, match.end), ordinal })
           }
@@ -508,7 +561,7 @@ export function PdfDocument({
       })
     }, SEARCH_DELAY_MS)
     return () => { active = false; window.clearTimeout(timer) }
-  }, [query, pages, navigate, requestFocus])
+  }, [query, pageCount, loadPage, navigate, requestFocus])
 
   const captureSelection = (applyTool = false): void => {
     setActiveMark(null)
@@ -588,28 +641,39 @@ export function PdfDocument({
     options: { clear?: boolean; focus?: PdfMark; statusCode?: PdfResultCode }
   ): Promise<boolean> => {
     if (!session || !sidecar || saving) return false
+    const previous = sidecar
+    const pendingFocus = options.focus
+    const rollback = (): void => {
+      setSidecar(previous)
+      if (pendingFocus && !previous.records.marks.some(mark => mark.id === pendingFocus.id)) setActiveMark(null)
+    }
     setSaving(true)
+    setSidecar(stagePdfRecords(previous, next))
+    if (options.clear) clearSelection()
+    if (pendingFocus) {
+      setActiveMark(pendingFocus.id)
+      setSelections([{ page: pendingFocus.page, text: pendingFocus.text, quads: pendingFocus.quads }])
+    }
     const saved = await commitPdfRecords(
       session.source,
       next,
-      sidecar.record_revision,
-      sidecar.source_revision
+      previous.record_revision,
+      previous.source_revision
     )
     if (!mounted.current) return false
     setSaving(false)
     if (saved === 'conflict') {
+      rollback()
       notifyResult('conflict')
       const fresh = await loadPdfRecords(session.source)
       if (mounted.current) setSidecar(fresh)
     } else if (saved) {
       setSidecar(saved)
       if (options.statusCode) notifyResult(options.statusCode)
-      if (options.clear) clearSelection()
-      if (options.focus) {
-        setActiveMark(options.focus.id)
-        setSelections([{ page: options.focus.page, text: options.focus.text, quads: options.focus.quads }])
-      }
-    } else notifyResult('saveFailed')
+    } else {
+      rollback()
+      notifyResult('saveFailed')
+    }
     return Boolean(saved && saved !== 'conflict')
   }
 
@@ -795,20 +859,13 @@ export function PdfDocument({
   useEffect(() => {
     const host = viewportRef.current
     if (!host) return
-    const onWheel = (event: WheelEvent): void => {
-      const nextScale = pdfWheelScale({
-        scale: scaleRef.current,
-        minScale: MIN_SCALE,
-        maxScale: MAX_SCALE,
-        deltaY: event.deltaY,
-        deltaMode: event.deltaMode,
-        viewportHeight: host.clientHeight,
-        ctrlKey: event.ctrlKey,
-        metaKey: event.metaKey
-      })
-      if (nextScale === null) return
-      event.preventDefault()
-      if (nextScale === scaleRef.current) return
+    const flushWheelZoom = (): void => {
+      wheelZoomFrameRef.current = undefined
+      const nextScale = wheelZoomScaleRef.current
+      const event = wheelZoomEventRef.current
+      wheelZoomScaleRef.current = undefined
+      wheelZoomEventRef.current = undefined
+      if (nextScale === undefined || !event) return
       const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.vds-pdf-page') : null
       const page = target ?? host.querySelector<HTMLElement>(`[data-testid="pdf-page-${currentPage}"]`)
       if (page) {
@@ -828,8 +885,32 @@ export function PdfDocument({
       scaleRef.current = nextScale
       zoom(nextScale)
     }
+    const onWheel = (event: WheelEvent): void => {
+      const nextScale = pdfWheelScale({
+        scale: wheelZoomScaleRef.current ?? scaleRef.current,
+        minScale: MIN_SCALE,
+        maxScale: MAX_SCALE,
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        viewportHeight: host.clientHeight,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey
+      })
+      if (nextScale === null) return
+      event.preventDefault()
+      if (nextScale === (wheelZoomScaleRef.current ?? scaleRef.current)) return
+      wheelZoomScaleRef.current = nextScale
+      wheelZoomEventRef.current = event
+      if (wheelZoomFrameRef.current === undefined) wheelZoomFrameRef.current = window.requestAnimationFrame(flushWheelZoom)
+    }
     host.addEventListener('wheel', onWheel, { passive: false })
-    return () => host.removeEventListener('wheel', onWheel)
+    return () => {
+      host.removeEventListener('wheel', onWheel)
+      if (wheelZoomFrameRef.current !== undefined) window.cancelAnimationFrame(wheelZoomFrameRef.current)
+      wheelZoomFrameRef.current = undefined
+      wheelZoomScaleRef.current = undefined
+      wheelZoomEventRef.current = undefined
+    }
   }, [currentPage, zoom])
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent): void => {
@@ -852,7 +933,7 @@ export function PdfDocument({
       else if (shortcut.id === 'pdf.previousPage') navigate(currentPage - 1)
       else if (shortcut.id === 'pdf.nextPage') navigate(currentPage + 1)
       else if (shortcut.id === 'pdf.firstPage') navigate(1)
-      else if (shortcut.id === 'pdf.lastPage') navigate(pages.length)
+      else if (shortcut.id === 'pdf.lastPage') navigate(pageCount)
       else if (shortcut.id === 'pdf.goToPage') {
         setGoToPageValue(String(currentPage))
         setGoToPageOpen(true)
@@ -873,7 +954,7 @@ export function PdfDocument({
     }
     window.addEventListener('keydown', onShortcut)
     return () => window.removeEventListener('keydown', onShortcut)
-  }, [activeMark, controller, currentPage, hitIndex, hits, markColors.highlight, navigate, pages.length, scale, selectedText, selections.length, sidebar, sidebarTab, tabId, update, zoom])
+  }, [activeMark, controller, currentPage, hitIndex, hits, markColors.highlight, navigate, pageCount, scale, selectedText, selections.length, sidebar, sidebarTab, tabId, update, zoom])
   const onScroll = (): void => {
     const host = viewportRef.current
     if (!host) return
@@ -921,9 +1002,9 @@ export function PdfDocument({
     setCropBox(null)
   }, [])
   const anchoredMarks = sidecar?.records.marks.filter((mark) => mark.anchor_state === 'anchored') ?? []
-  const analysis = usePdfAnalysis({ literatureId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
+  const analysis = usePdfAnalysis({ active, literatureId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
     projectId: session?.source.kind === 'project' ? session.source.project ?? '' : '', revision: session?.revision ?? '', tabId,
-    page: currentPage, pageCount: pages.length, selection: selections, canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate), onAddComment: addAiComment, onNavigate: navigate,
+    page: currentPage, pageCount, selection: selections, canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate), onAddComment: addAiComment, onNavigate: navigate,
     onLocate: (sourcePage, text) => { navigate(sourcePage); requestFocus({ kind: 'reading', page: sourcePage, text }) },
     onExclusiveSurfaceOpen: () => {
       clearFigureSelection()
@@ -937,13 +1018,14 @@ export function PdfDocument({
   }, [analysis.exitFigureSelection, clearFigureSelection])
   const activeDocumentPanelId = activeDocumentPanel?.id
   useEffect(() => {
+    if (!active) return
     const panelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
     set({
       pdfSidePanelOpen: panelOpen,
       ...(panelOpen ? { modulePanelOpen: false } : {})
     })
-  }, [analysis.panel, recordsOpen, activeDocumentPanelId, set])
-  useEffect(() => () => set({ pdfSidePanelOpen: false }), [set])
+  }, [active, analysis.panel, recordsOpen, activeDocumentPanelId, set])
+  useEffect(() => () => { if (active) set({ pdfSidePanelOpen: false }) }, [active, set])
   const encrypted = loadError?.kind === PDF_LOAD_FAILURE_KIND.encrypted
   const canOpenEncryptedExternally = Boolean(session && isLocatedDocumentSource(session.source))
   const openEncryptedExternally = async (): Promise<void> => {
@@ -969,14 +1051,15 @@ export function PdfDocument({
   }, [analysis.figure, exitFigureSelection])
 
   const requestedPage = Number(goToPageValue)
-  const canGoToPage = Number.isInteger(requestedPage) && requestedPage >= 1 && requestedPage <= pages.length
+  const canGoToPage = Number.isInteger(requestedPage) && requestedPage >= 1 && requestedPage <= pageCount
+  const pageNumbers = useMemo(() => Array.from({ length: pageCount }, (_, index) => index + 1), [pageCount])
   const goToPage = (): void => {
     if (!canGoToPage) return
     navigate(requestedPage)
     setGoToPageOpen(false)
   }
 
-  return <div ref={documentRef} className="vds-pdf-document" data-shortcut-scope="pdf" data-testid="pdf-document" data-ob="pdf-reader" data-ob-document={session?.documentId}>
+  return <div ref={documentRef} className="vds-pdf-document" data-pdf-active={active} data-shortcut-scope="pdf" data-testid="pdf-document" data-ob="pdf-reader" data-ob-document={session?.documentId}>
     {encrypted ? <EncryptedPdfState
       canOpenExternally={canOpenEncryptedExternally}
       opening={externalOpening}
@@ -991,11 +1074,11 @@ export function PdfDocument({
         <IconButton label={t('pdfToolbar.zoomOut')} icon={<Icon name="minus" size={15} />} size="sm" variant="outline" data-testid="pdf-zoom-out" disabled={scale <= MIN_SCALE} onClick={() => zoom(scale - SCALE_STEP)} />
         <PdfScale editLabel={t('pdfToolbar.editScale')} fitPageLabel={t('pdfToolbar.fitPage')} fitWidthLabel={t('pdfToolbar.fitWidth')} mode={mode} scale={scale} onModeChange={(nextMode) => update({ mode: nextMode })} onScaleChange={(nextScale) => zoom(nextScale)} />
         <IconButton label={t('pdfToolbar.zoomIn')} icon={<Icon name="plus" size={15} />} size="sm" variant="outline" data-testid="pdf-zoom-in" disabled={scale >= MAX_SCALE} onClick={() => zoom(scale + SCALE_STEP)} />
-        <IconButton label={t('pdfToolbar.previousPage')} icon={<span className="inline-flex rotate-180"><Icon name="chevron-right" size={15} /></span>} size="sm" variant="outline" data-testid="pdf-previous" disabled={currentPage <= 1 || !pages.length} onClick={() => navigate(currentPage - 1)} />
-        <Input className="w-12 text-center tabular-nums" size="sm" aria-label={t('pdfToolbar.pageNumber')} data-testid="pdf-page-input" type="number" min={1} max={pages.length || 1} value={pageInput}
-          onChange={event => setPageInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') navigate(pageNumber(pageInput, pages.length)) }} onBlur={() => navigate(pageNumber(pageInput, pages.length))} />
-        <span className="whitespace-nowrap tabular-nums">/ {pages.length || '…'}</span>
-        <IconButton label={t('pdfToolbar.nextPage')} icon={<Icon name="chevron-right" size={15} />} size="sm" variant="outline" data-testid="pdf-next" disabled={currentPage >= pages.length} onClick={() => navigate(currentPage + 1)} />
+        <IconButton label={t('pdfToolbar.previousPage')} icon={<span className="inline-flex rotate-180"><Icon name="chevron-right" size={15} /></span>} size="sm" variant="outline" data-testid="pdf-previous" disabled={currentPage <= 1 || !pageCount} onClick={() => navigate(currentPage - 1)} />
+        <Input className="w-12 text-center tabular-nums" size="sm" aria-label={t('pdfToolbar.pageNumber')} data-testid="pdf-page-input" type="number" min={1} max={pageCount || 1} value={pageInput}
+          onChange={event => setPageInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') navigate(pageNumber(pageInput, pageCount)) }} onBlur={() => navigate(pageNumber(pageInput, pageCount))} />
+        <span className="whitespace-nowrap tabular-nums">/ {pageCount || '…'}</span>
+        <IconButton label={t('pdfToolbar.nextPage')} icon={<Icon name="chevron-right" size={15} />} size="sm" variant="outline" data-testid="pdf-next" disabled={currentPage >= pageCount} onClick={() => navigate(currentPage + 1)} />
         <span className="ml-2 inline-flex border-l border-[var(--vds-border-default)] pl-2">
           <PdfTools colors={markColors} disabled={!sidecar || saving || !session?.capabilities.can_annotate} hasSelection={selections.length > 0} onApply={applyMark} onColor={(style, color) => setMarkColors(previous => ({ ...previous, [style]: color }))} onComment={() => setCommentFormOpen(value => !value)} commentOpen={commentFormOpen} activeTool={activeTool} onToggle={tool => { exitFigureSelection(); setActiveTool(previous => previous === tool ? null : tool) }} />
         </span>
@@ -1045,8 +1128,8 @@ export function PdfDocument({
             <PdfOutline items={outline} onNavigate={navigate} />
           </TabsContent>
           <TabsContent value="pages" className="min-h-0 overflow-x-hidden overflow-y-auto">
-            <nav aria-label={t('thumbnails')}>{pages.map(page => <Button key={page.pageNumber} variant="ghost" size="content" data-testid={`pdf-thumbnail-${page.pageNumber}`} aria-label={t('goToPage', { page: page.pageNumber })} aria-current={currentPage === page.pageNumber ? 'page' : undefined} onClick={() => navigate(page.pageNumber)}>
-              <span className="vds-pdf-thumbnail"><PdfPage fonts={fonts} page={page} scale={THUMBNAIL_WIDTH / page.getViewport({ scale: 1 }).width} thumbnail /><span>{page.pageNumber}</span></span>
+            <nav aria-label={t('thumbnails')}>{pageNumbers.map(number => <Button key={number} variant="ghost" size="content" data-testid={`pdf-thumbnail-${number}`} aria-label={t('goToPage', { page: number })} aria-current={currentPage === number ? 'page' : undefined} onClick={() => navigate(number)}>
+              <span className="vds-pdf-thumbnail"><PdfPageSlot estimatedSize={estimatedPageSize} fonts={fonts} initialPage={loadedPages.get(number)} loadPage={loadPage} pageNumber={number} scale={THUMBNAIL_WIDTH / estimatedPageSize.width} thumbnail /><span>{number}</span></span>
             </Button>)}</nav>
           </TabsContent>
           <TabsContent value="search" className="min-h-0 overflow-hidden">
@@ -1111,20 +1194,23 @@ export function PdfDocument({
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
         }} onPointerCancel={() => setSelectionDragSpan(null)}>
-        {!pages.length && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
-        {pages.map(page => <PdfPage
+        {!pageCount && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
+        {pageNumbers.map(number => <PdfPageSlot
+          estimatedSize={estimatedPageSize}
           fonts={fonts}
-          key={page.pageNumber}
-          page={page}
+          initialPage={loadedPages.get(number)}
+          key={number}
+          loadPage={loadPage}
+          pageNumber={number}
           scale={scale}
-          keepRendered={selectionDragSpan !== null && pageInSelectionSpan(page.pageNumber, selectionDragSpan.anchor, selectionDragSpan.focus)}
+          keepRendered={selectionDragSpan !== null && pageInSelectionSpan(number, selectionDragSpan.anchor, selectionDragSpan.focus)}
           search={query}
-          focus={focus?.page === page.pageNumber ? focus : undefined}
-          annotations={anchoredMarks.filter(mark => mark.page === page.pageNumber)}
+          focus={focus?.page === number ? focus : undefined}
+          annotations={anchoredMarks.filter(mark => mark.page === number)}
           selectionQuads={workspace.selectionPresentations[tabId] && session?.selection?.locator.kind === 'pdf'
-            ? selections.find(selection => selection.page === page.pageNumber)?.quads
+            ? selections.find(selection => selection.page === number)?.quads
             : undefined}
-          citationQuads={citationPages?.find(item => item.page === page.pageNumber)?.quads}
+          citationQuads={citationPages?.find(item => item.page === number)?.quads}
           commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
           onAnnotationOpen={(mark) => {
             setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
@@ -1191,14 +1277,14 @@ export function PdfDocument({
       <DialogContent data-testid="pdf-go-to-page-dialog">
         <DialogHeader>
           <DialogTitle>{t('goToPageDialog.title')}</DialogTitle>
-          <DialogDescription>{t('goToPageDialog.description', { count: pages.length })}</DialogDescription>
+          <DialogDescription>{t('goToPageDialog.description', { count: pageCount })}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
           data-testid="pdf-go-to-page-input"
           inputMode="numeric"
           min={1}
-          max={pages.length}
+          max={pageCount}
           type="number"
           value={goToPageValue}
           onChange={(event) => setGoToPageValue(event.target.value)}

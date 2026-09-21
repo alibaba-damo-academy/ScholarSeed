@@ -13,15 +13,10 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, Protocol, cast
 from uuid import uuid4
 
 from fastcdc import fastcdc  # type: ignore[import-untyped]
-
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
 
 from service.platform.storage import NOFOLLOW, canonical_root, open_directory
 from service.resources.persistence.chunks import (
@@ -34,6 +29,23 @@ from service.resources.persistence.chunks import (
     split,
 )
 from service.resources.persistence.codecs import WholeCodec, decode_whole, encode_whole
+
+
+class _WindowsLockApi(Protocol):
+    LK_LOCK: int
+    LK_UNLCK: int
+
+    def locking(self, descriptor: int, mode: int, byte_count: int) -> None: ...
+
+
+if os.name == "nt":
+    import msvcrt as _msvcrt
+
+    windows_lock_api: _WindowsLockApi | None = cast(_WindowsLockApi, _msvcrt)
+else:
+    import fcntl
+
+    windows_lock_api = None
 
 CAS_FORMAT_VERSION = 1
 MANIFEST_VERSION = 1
@@ -69,20 +81,24 @@ _LOCK_DEPTH = threading.local()
 
 def _lock(stream: BinaryIO) -> None:
     if os.name == "nt":
+        if windows_lock_api is None:
+            raise RuntimeError("Windows CAS lock API is unavailable")
         stream.seek(0)
         if not stream.read(1):
             stream.write(b"\0")
             stream.flush()
         stream.seek(0)
-        msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        windows_lock_api.locking(stream.fileno(), windows_lock_api.LK_LOCK, 1)
     else:
         fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
 
 
 def _unlock(stream: BinaryIO) -> None:
     if os.name == "nt":
+        if windows_lock_api is None:
+            raise RuntimeError("Windows CAS lock API is unavailable")
         stream.seek(0)
-        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        windows_lock_api.locking(stream.fileno(), windows_lock_api.LK_UNLCK, 1)
     else:
         fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 

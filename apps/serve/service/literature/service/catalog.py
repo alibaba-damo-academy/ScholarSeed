@@ -273,7 +273,14 @@ def append_items(
 
 #: BibTeX 文本中需转义的特殊字符。大括号和反斜杠不能删除：
 #: Zotero 用大括号保护专有名词大小写，反斜杠承载 LaTeX 命令。
-_BIB_ESCAPE = str.maketrans({"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#"})
+_BIB_ESCAPE_SOURCE: dict[str, str | int | None] = {
+    "&": r"\&",
+    "%": r"\%",
+    "_": r"\_",
+    "#": r"\#",
+}
+_BIB_ESCAPE = str.maketrans(_BIB_ESCAPE_SOURCE)
+_CITE_KEY_STRIP_SOURCE: dict[str, str | int | None] = {"{": "", "}": "", "\\": ""}
 
 
 def _cite_key(item: LiteratureItem) -> str:
@@ -283,9 +290,7 @@ def _cite_key(item: LiteratureItem) -> str:
     if item.authors:
         first = item.authors.split(",")[0].strip()
         parts = first.split()
-        surname = (parts[-1] if parts else first).translate(
-            str.maketrans({"{": "", "}": "", "\\": ""})
-        )
+        surname = (parts[-1] if parts else first).translate(str.maketrans(_CITE_KEY_STRIP_SOURCE))
     surname = "".join(ch for ch in surname if ch.isalnum()) or "ref"
     return f"{surname}{item.year or ''}"
 

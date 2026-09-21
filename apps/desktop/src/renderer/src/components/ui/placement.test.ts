@@ -51,3 +51,13 @@ test('resource menus use shared measured positioning rather than height estimate
   assert.match(source, /position=\{menu\.anchor/)
   assert.doesNotMatch(source, /MENU_HEIGHT|MENU_WIDTH|window\.innerHeight/)
 })
+
+test('resource file menu places version history after copy path and omits version settings', () => {
+  const source = readFileSync(new URL('../../features/resources/NodeMenu.tsx', import.meta.url), 'utf8')
+  const copyPathIndex = source.indexOf("key: 'copy-path'")
+  const versionHistoryIndex = source.indexOf("key: 'version-history'")
+
+  assert.notEqual(copyPathIndex, -1)
+  assert.ok(versionHistoryIndex > copyPathIndex)
+  assert.doesNotMatch(source, /key: 'version-settings'/)
+})

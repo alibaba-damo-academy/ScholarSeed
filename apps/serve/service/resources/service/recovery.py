@@ -20,6 +20,7 @@ from service.platform.resources import (
     DeliveryRestoreResult,
     DeliveryResult,
     FileState,
+    PendingReview,
     PendingSnapshot,
     ResourceAnnotationPort,
     ResourceRetentionPort,
@@ -568,6 +569,7 @@ class ResourceRecoveryService:
 
     def _review_conflict_state(self, project_id: str, file_id: str, *, persist: bool) -> tuple[
         PendingSnapshot,
+        PendingReview,
         tuple[str, str | None, str, str | None, str | None],
         SnapshotIdentity,
         _Observed,
@@ -605,11 +607,11 @@ class ResourceRecoveryService:
                 "disk": asdict(disk),
             }
         )
-        return current, head, working, observed, disk, version_id, token
+        return current, current.review, head, working, observed, disk, version_id, token
 
     def preview_review_conflict(self, project_id: str, file_id: str) -> ReviewConflictPreview:
         with self._cas(project_id).writer():
-            current, _head, _working, _observed, disk, _version, token = (
+            current, review, _head, _working, _observed, disk, _version, token = (
                 self._review_conflict_state(project_id, file_id, persist=False)
             )
             emit_review(
@@ -620,7 +622,7 @@ class ResourceRecoveryService:
                 revision=_head[1],
                 disk_revision=disk.object_id,
             )
-            return ReviewConflictPreview(file_id, current.review.id, current.revision, disk, token)
+            return ReviewConflictPreview(file_id, review.id, current.revision, disk, token)
 
     def reconcile_review(
         self, project_id: str, file_id: str, action: str, token: str, idempotency_key: str
@@ -639,7 +641,7 @@ class ResourceRecoveryService:
                 if existing is not None:
                     self._execute(project_id, existing)
                     return
-                current, head, working, observed, disk, version_id, actual_token = (
+                current, review, head, working, observed, disk, version_id, actual_token = (
                     self._review_conflict_state(project_id, file_id, persist=True)
                 )
                 if actual_token != token:
@@ -652,18 +654,14 @@ class ResourceRecoveryService:
                         result_code="preflight_stale",
                     )
                     raise ResourceRecoveryError("preflight_stale")
-                target = (
-                    disk
-                    if choice is ReviewResolutionChoice.KEEP_CURRENT
-                    else current.review.candidate
-                )
+                target = disk if choice is ReviewResolutionChoice.KEEP_CURRENT else review.candidate
                 if (
                     target.path != working.path
                     and self._revision(project_id, target.path) is not None
                 ):
                     raise ResourceRecoveryError("restore_conflict")
                 resolution = ReviewResolution(
-                    current.review.id, current.revision, choice, working, head[1], version_id
+                    review.id, current.revision, choice, working, head[1], version_id
                 )
                 member = self._cancellation_member(file_id, disk, target, observed)
                 manifest = self._prepare(
@@ -966,6 +964,9 @@ class ResourceRecoveryService:
             if before is None or before.review is None:
                 continue
             review = before.review
+            head = store.head(file_id)
+            if head is None:
+                raise ResourceRecoveryError("file_not_managed")
             emit(
                 _log,
                 (
@@ -979,7 +980,7 @@ class ResourceRecoveryService:
                 session_id=review.session_id,
                 turn_id=review.turn_id,
                 pending_revision=before.revision,
-                revision=store.head(file_id)[1],
+                revision=head[1],
                 transaction_id=transaction.id,
                 result_code=RestoreState.COMMITTED.value,
                 resolution=(
@@ -988,7 +989,7 @@ class ResourceRecoveryService:
                     else None
                 ),
             )
-            emit_pending(_log, project_id, before, store.pending(file_id), store.head(file_id)[1])
+            emit_pending(_log, project_id, before, store.pending(file_id), head[1])
         self._cas(project_id).clear_stage(transaction.id)
         if (
             transaction.completion is RestoreCompletion.VERSION

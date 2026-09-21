@@ -9,6 +9,7 @@ import logging
 import math
 import uuid
 from collections import OrderedDict, deque
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field
 from time import monotonic, time
 from typing import Any, Coroutine, Mapping
@@ -47,7 +48,9 @@ from scholarseed_codex.protocol.state import (
     CODEX_READINESS_CACHE_TTL_SECONDS,
     CODEX_UNAVAILABLE_ERROR,
     AppServerError,
+    CodexActivationStage,
 )
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
     RESOURCE_CANCELLED,
     RESOURCE_LIFECYCLE_LOGGER,
@@ -151,6 +154,7 @@ class PoolReservation:
     _generation: int = 0
     _phase: str = ""
     _released: bool = False
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, repr=False, compare=False)
 
     @property
     def host_id(self) -> str:
@@ -244,6 +248,7 @@ class CodexHostPool:
         authentication_required: bool = False,
         process_environment: Mapping[str, str] | None = None,
         prefer_pooled: bool = False,
+        timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING,
     ) -> CodexRuntimeReadiness:
         """Probe runtime execution capability, folding repeats inside one TTL window."""
 
@@ -255,7 +260,9 @@ class CodexHostPool:
         cached = self._cached_readiness(key)
         if cached is not None:
             return cached
-        async with self._readiness_probe_lock:
+        async with AsyncExitStack() as readiness_scope:
+            with timing.measure(CodexActivationStage.READINESS_LOCK_WAIT):
+                await readiness_scope.enter_async_context(self._readiness_probe_lock)
             # 锁内重查: 并发的重复预检应该收敛成一次真实探测, 而不是排队各跑一遍。
             cached = self._cached_readiness(key)
             if cached is not None:
@@ -263,11 +270,12 @@ class CodexHostPool:
             environment = process_environment
             if environment is None:
                 environment = {CODEX_HOME_ENV: str(prepare_codex_runtime_home())}
-            readiness = await _probe_codex_cli_readiness(
-                executable,
-                authentication_required=authentication_required,
-                process_environment=environment,
-            )
+            with timing.measure(CodexActivationStage.READINESS_PROBE):
+                readiness = await _probe_codex_cli_readiness(
+                    executable,
+                    authentication_required=authentication_required,
+                    process_environment=environment,
+                )
             # 「问不出结论」不进缓存 —— 一次机器繁忙导致的超时不该把未知态钉住一整个 TTL。
             if readiness.safe_error != CODEX_PREFLIGHT_TIMEOUT_ERROR:
                 self._readiness_cache[key] = (monotonic(), readiness)
@@ -464,11 +472,13 @@ class CodexHostPool:
             if warm is not None and warm.state is HostState.READY and warm.host.readiness.ready:
                 readiness = warm.host.readiness
         if readiness is None:
-            readiness = await self.probe_readiness(
-                request.executable,
-                authentication_required=require_authentication,
-                process_environment=environment,
-            )
+            with request.timing.measure(CodexActivationStage.READINESS):
+                readiness = await self.probe_readiness(
+                    request.executable,
+                    authentication_required=require_authentication,
+                    process_environment=environment,
+                    timing=request.timing,
+                )
         if not readiness.ready:
             raise AppServerError(
                 readiness.safe_error or CODEX_UNAVAILABLE_ERROR,
@@ -504,6 +514,7 @@ class CodexHostPool:
                     request_id, role, actual_deadline, key, fingerprint, RESOURCE_QUEUE_FULL
                 )
             reservation = self._new(request_id, role, actual_deadline, key, fingerprint)
+            reservation.timing = request.timing
             reservation.arguments = {
                 "executable": readiness.executable,
                 "version": readiness.version,
@@ -615,7 +626,7 @@ class CodexHostPool:
                 role=reservation.role,
             )
             self._hosts[slot.key] = slot
-            slot.startup = self._background(self._start(slot))
+            slot.startup = self._background(self._start(slot, reservation.timing))
         slot.owners.add(reservation.reservation_id)
         reservation.slot = slot
         reservation.arguments.clear()
@@ -624,9 +635,10 @@ class CodexHostPool:
         if not reservation.future.done():
             reservation.future.set_result(None)
 
-    async def _start(self, slot: _HostSlot) -> None:
+    async def _start(self, slot: _HostSlot, timing: RuntimeTimingPort) -> None:
         try:
-            await slot.host.start()
+            with timing.measure(CodexActivationStage.PROCESS_START):
+                await slot.host.start()
         except BaseException as error:
             slot.startup_error = (
                 error.safe_error
@@ -684,20 +696,20 @@ class CodexHostPool:
             self._grant(reservation)
 
     async def wait(self, reservation: PoolReservation) -> ResourceReceipt:
-        try:
-            if reservation.state in PENDING_RESOURCE_STATES and reservation.deadline <= time():
+        with reservation.timing.measure(CodexActivationStage.RESOURCE_WAIT):
+            try:
+                if reservation.state in PENDING_RESOURCE_STATES and reservation.deadline <= time():
+                    await self.cancel(reservation, expired=True)
+                if reservation.state is ResourceState.WAITING:
+                    await asyncio.wait_for(
+                        asyncio.shield(reservation.future),
+                        timeout=max(0.0, reservation.deadline - time()),
+                    )
+            except asyncio.TimeoutError:
                 await self.cancel(reservation, expired=True)
-            if reservation.state is ResourceState.WAITING:
-                await asyncio.wait_for(
-                    asyncio.shield(reservation.future),
-                    timeout=max(0.0, reservation.deadline - time()),
-                )
-        except asyncio.TimeoutError:
-            await self.cancel(reservation, expired=True)
-        except asyncio.CancelledError:
-            # Cancellation transitions atomically; its close task outlives this caller.
-            await self.cancel(reservation)
-            raise
+            except asyncio.CancelledError:
+                await self.cancel(reservation)
+                raise
         return self.receipt(reservation)
 
     async def consume(self, reservation: PoolReservation) -> HostLease:
@@ -721,7 +733,8 @@ class CodexHostPool:
         try:
             if slot is None or slot.startup is None:
                 raise AppServerError(RESOURCE_RESERVATION_INVALID)
-            await asyncio.shield(slot.startup)
+            with reservation.timing.measure(CodexActivationStage.PROCESS_READY_WAIT):
+                await asyncio.shield(slot.startup)
             if slot.startup_error or slot.state is not HostState.READY:
                 raise AppServerError(
                     slot.startup_error or CODEX_UNAVAILABLE_ERROR,

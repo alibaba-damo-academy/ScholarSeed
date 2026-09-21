@@ -154,6 +154,8 @@ def register_attachment_import(
                     ),
                     "target_record_revision": target_record_revision,
                 }
+            if body.token is None:
+                raise ContentError("import_plan_required")
             receipt = resources.import_payload(
                 body.project,
                 parent,
@@ -194,6 +196,8 @@ def register_attachment_import(
                     if body.replace_path
                     else record_revision(receipt.revision, initial)
                 )
+                if expected is None:
+                    raise ContentError("target_record_revision_required")
                 current = records.commit_asset(
                     body.project,
                     binding.asset.asset_id,

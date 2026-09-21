@@ -104,7 +104,7 @@ def _answer_links(markdown: str) -> list[tuple[str, str]]:
                 if child.type in {"text", "code_inline"}:
                     label.append(child.content)
             title = "".join(label).strip()
-            links.append((href, title))
+            links.append((str(href), title))
     return links
 
 

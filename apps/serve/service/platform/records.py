@@ -163,7 +163,11 @@ def decode_records(payload: bytes | dict[str, Any]) -> dict[str, Any]:
     raw_marks = decoded.get("marks")
     raw_comments = decoded.get("comments")
     raw_notes = decoded.get("notes")
-    if not all(isinstance(value, list) for value in (raw_marks, raw_comments, raw_notes)):
+    if (
+        not isinstance(raw_marks, list)
+        or not isinstance(raw_comments, list)
+        or not isinstance(raw_notes, list)
+    ):
         raise ValueError
 
     marks: list[dict[str, Any]] = []

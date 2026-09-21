@@ -604,12 +604,15 @@ class ResourceDeliveryService:
             members,
         )
         for file_id in dict.fromkeys(member.baseline.file_id for member in members):
+            head = store.head(file_id)
+            if head is None:
+                raise ResourceVersionError("resource_head_not_found")
             emit_pending(
                 _log,
                 project_id,
                 before.get(file_id),
                 store.pending(file_id),
-                store.head(file_id)[1],
+                head[1],
             )
         emit(
             _log,

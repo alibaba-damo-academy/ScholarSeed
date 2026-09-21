@@ -32,6 +32,7 @@ PDF_TEXT_BOX_OBJECT = "textboxhorizontal"
 PDF_VERTICAL_TEXT_BOX_OBJECT = "textboxvertical"
 PDF_TEXT_LINE_OBJECT = "textlinehorizontal"
 PDF_VERTICAL_TEXT_LINE_OBJECT = "textlinevertical"
+PDF_IMAGE_OBJECT_TYPE = int(getattr(pdfium, "FPDF_PAGEOBJ_IMAGE"))
 MAXIMUM_SELECTION_CHARS = 36_000
 TEXT_SHAPE_HASH_KEY = "text_shape_hash"
 HASH_PREFIX_LENGTH = len(REVISION_PREFIX)
@@ -179,7 +180,7 @@ def _metadata_text(value: object) -> str:
 
 def pdf_metadata(payload: bytes) -> PdfMetadata:
     reader, _encrypted = _reader(payload)
-    metadata = reader.metadata or {}
+    metadata: Mapping[str, Any] = reader.metadata or {}
     try:
         xmp = reader.xmp_metadata
         xmp_text = xmp.stream.get_data().decode(UTF8_ENCODING, errors="replace") if xmp else ""
@@ -294,7 +295,7 @@ def pdf_image_bounds(payload: bytes) -> tuple[tuple[PdfRect, ...], ...]:
                 pages.append(
                     tuple(
                         PdfRect(x0, height - y1, x1, height - y0)
-                        for image in page.get_objects(filter=(pdfium.FPDF_PAGEOBJ_IMAGE,))
+                        for image in page.get_objects(filter=(PDF_IMAGE_OBJECT_TYPE,))
                         for x0, y0, x1, y1 in (image.get_bounds(),)
                     )
                 )
@@ -514,20 +515,20 @@ def _pdf_character_selected(bounds: PdfRect, rects: Sequence[PdfRect]) -> bool:
 
 def _pdf_character_text(page: PdfPageLayout, rects: Sequence[PdfRect]) -> str:
     fragments: list[tuple[float, float, float, str]] = []
-    rows: list[list[PdfCharacter]] = []
+    character_rows: list[list[PdfCharacter]] = []
     for character in sorted(page.characters, key=lambda item: (item.bounds.top, item.bounds.x0)):
         if not _pdf_character_selected(character.bounds, rects):
             continue
-        if rows and _same_vertical_band(
-            rows[-1][0].bounds.top,
-            rows[-1][0].bounds.bottom,
+        if character_rows and _same_vertical_band(
+            character_rows[-1][0].bounds.top,
+            character_rows[-1][0].bounds.bottom,
             character.bounds.top,
             character.bounds.bottom,
         ):
-            rows[-1].append(character)
+            character_rows[-1].append(character)
         else:
-            rows.append([character])
-    for row in rows:
+            character_rows.append([character])
+    for row in character_rows:
         ordered = sorted(row, key=lambda item: item.bounds.x0)
         text = "".join(character.text for character in ordered).strip()
         if text:
@@ -540,13 +541,13 @@ def _pdf_character_text(page: PdfPageLayout, rects: Sequence[PdfRect]) -> str:
                 )
             )
 
-    rows: list[str] = []
+    text_rows: list[str] = []
     current: list[tuple[float, str]] = []
     row_top = 0.0
     row_bottom = 0.0
     for top, bottom, text_left, text in fragments:
         if current and not _same_vertical_band(row_top, row_bottom, top, bottom):
-            rows.append(" ".join(value for _, value in sorted(current)))
+            text_rows.append(" ".join(value for _, value in sorted(current)))
             current = []
         if not current:
             row_top = top
@@ -556,8 +557,8 @@ def _pdf_character_text(page: PdfPageLayout, rects: Sequence[PdfRect]) -> str:
             row_bottom = max(row_bottom, bottom)
         current.append((text_left, text))
     if current:
-        rows.append(" ".join(value for _, value in sorted(current)))
-    return "\n".join(rows)
+        text_rows.append(" ".join(value for _, value in sorted(current)))
+    return "\n".join(text_rows)
 
 
 def _pdf_candidates(words: Sequence[PdfWord]) -> tuple[str, ...]:

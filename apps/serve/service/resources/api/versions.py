@@ -391,7 +391,12 @@ def register_version_routes(app: FastAPI) -> None:
         ):
             return _error(ResourceVersionError("invalid_migration_resolution"))
         intent = MigrationResolution(
-            *(payload[field] for field in MIGRATION_RESOLUTION_FIELDS), key
+            source_id=payload["source_id"],
+            path=payload["path"],
+            source_digest=payload["source_digest"],
+            file_id=payload["file_id"],
+            version_id=payload["version_id"],
+            idempotency_key=key,
         )
         try:
             record = await asyncio.to_thread(_migration(request).resolve, project, intent)

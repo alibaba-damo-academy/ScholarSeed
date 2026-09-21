@@ -55,7 +55,7 @@ MAX_SENTENCE_CHARACTERS = 1_200
 
 
 def sentence_ends(text: str) -> list[int]:
-    ends = []
+    ends: list[int] = []
     for index, char in enumerate(text):
         if char == ".":
             if index + 1 < len(text) and not (

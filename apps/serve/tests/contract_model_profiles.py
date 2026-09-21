@@ -28,8 +28,11 @@ from service.chat.schema import PersonalApiRequest  # noqa: E402
 from service.chat.service import models as model_module  # noqa: E402
 from service.chat.service.completions import CompletionBridge  # noqa: E402
 from service.chat.service.models import (  # noqa: E402
+    GATEWAY_LOGIN_REQUIRED_ERROR,
     RETIRED_NATIVE_MODEL_KEY,
+    SUBSCRIPTION_CONNECTION_REQUIRED_CODE,
     ModelService,
+    SessionModelUnavailableError,
 )
 from service.identity.service.account_token import (  # noqa: E402
     CONV_MESSAGE_ID_HEADER,
@@ -37,6 +40,8 @@ from service.identity.service.account_token import (  # noqa: E402
 )
 from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_MACHINE  # noqa: E402
 from service.settings.catalog import (  # noqa: E402
+    DEFAULT_GATEWAY_MODEL_KEY,
+    GATEWAY_VISIBLE_MODEL_KEYS,
     _is_deeprd_gateway,
     converge_gateway_model_config,
 )
@@ -827,6 +832,166 @@ def test_builtin_models_greyed_out_when_signed_out() -> None:
         check("恢复可选时不携带置灰原因", not qwen_in.get("disabled_reason_code"), str(qwen_in))
 
 
+def test_signed_out_default_auto_switches_to_first_available_model() -> None:
+    """未登录且落盘默认指向置灰内置模型时，目录与执行面都自动切到第一个可用模型。
+
+    用户已配置个人连接的场景：选择器（catalog.current_model）、会话执行
+    （session_spec / selected_model_key）与一次性推理（inference_connection）
+    必须解析到同一个可用键，且切换落盘为新的默认模型。
+    """
+
+    store = ModelProfileStore()
+    service, selected = build_service(store)
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    profile = store.upsert(profile_values(models=("personal-model",)))
+    personal_key = personal_model_key(profile["id"], "personal-model")
+    selected["model"] = GATEWAY_MODEL_KEY
+    gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
+    # 未登录形态必须来自磁盘配置与环境（与真实登出一致），不能 patch 掉 _api_key：
+    # 执行面回落后的个人连接分支同样要经过它取回真实凭据。
+    write_config({**UNDECLARED_TEMPLATE})
+    with (
+        patch("service.chat.service.models.available_models", return_value=gateway_catalog),
+        patch.dict(os.environ, {"OPENAI_API_KEY": ""}),
+    ):
+        signed_out = asyncio.run(service.catalog(user_id=LOCAL_USER))
+        check(
+            "未登录目录把 current_model 切到第一个可用模型",
+            signed_out["current_model"] == personal_key,
+            str(signed_out["current_model"]),
+        )
+        check(
+            "自动切换落盘为新的默认模型", selected["model"] == personal_key, str(selected["model"])
+        )
+        spec = service.session_spec(GATEWAY_MODEL_KEY, user_id=LOCAL_USER)
+        check("会话执行从置灰内置键回落到可用模型", spec.key == personal_key, spec.key)
+        check(
+            "selected_model_key 同样回落",
+            service.selected_model_key(GATEWAY_MODEL_KEY, user_id=LOCAL_USER) == personal_key,
+        )
+        connection = service.inference_connection(GATEWAY_MODEL_KEY, user_id=LOCAL_USER)
+        check(
+            "一次性推理回落到个人连接端点",
+            connection["key"] == personal_key and "personal.example.test" in connection["endpoint"],
+            str({key: connection.get(key) for key in ("key", "endpoint")}),
+        )
+        # 登录后（门禁不生效）默认选择不被自动切换触碰。
+        selected["model"] = GATEWAY_MODEL_KEY
+        signed_in = asyncio.run(service.catalog(user_id="u-real"))
+        check(
+            "登录态不触发自动切换",
+            signed_in["current_model"] == GATEWAY_MODEL_KEY
+            and selected["model"] == GATEWAY_MODEL_KEY,
+            str(signed_in["current_model"]),
+        )
+    store.delete(profile["id"])
+    write_builtin_config()
+
+
+def test_signed_out_without_available_models_keeps_the_readable_error() -> None:
+    """目录整体置灰（未登录且无个人连接）时不切换，执行面保留可读登录引导。"""
+
+    store = ModelProfileStore()
+    service, selected = build_service(store)
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    selected["model"] = GATEWAY_MODEL_KEY
+    gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
+    write_config({**UNDECLARED_TEMPLATE})
+    with (
+        patch("service.chat.service.models.available_models", return_value=gateway_catalog),
+        patch.dict(os.environ, {"OPENAI_API_KEY": ""}),
+    ):
+        signed_out = asyncio.run(service.catalog(user_id=LOCAL_USER))
+        check(
+            "无可用模型时保留原默认键",
+            signed_out["current_model"] == GATEWAY_MODEL_KEY
+            and selected["model"] == GATEWAY_MODEL_KEY,
+            str(signed_out["current_model"]),
+        )
+        try:
+            service.session_spec(GATEWAY_MODEL_KEY, user_id=LOCAL_USER)
+        except SessionModelUnavailableError as error:
+            blocked = str(error)
+        else:
+            blocked = ""
+        check("执行面仍给出可读登录引导", blocked == GATEWAY_LOGIN_REQUIRED_ERROR, blocked)
+        try:
+            service.inference_connection(GATEWAY_MODEL_KEY, user_id=LOCAL_USER)
+        except SessionModelUnavailableError as error:
+            refused = str(error)
+        else:
+            refused = ""
+        check("一次性推理不放行无凭据的网关调用", bool(refused), refused)
+    write_builtin_config()
+
+
+class _DisconnectedSubscriptions:
+    """订阅腿报告未连接：订阅模型的置灰原因不是网关门禁，不参与自动切换。"""
+
+    def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        return {"state": "disconnected", "account_label": "", "billing": "subscription"}
+
+    def sync_on_cooldown(self, owner_id: str, connection_id: str) -> bool:
+        return True
+
+
+def test_subscription_disabled_default_is_not_auto_switched() -> None:
+    """订阅连接断开置灰的默认模型不被自动切换：那是用户要显式处理的连接状态。"""
+
+    store = ModelProfileStore(shared_ownership=True)
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    selected = {"model": ""}
+    service = ModelService(
+        SimpleNamespace(  # type: ignore[arg-type]
+            runtime_executable=lambda: "codex",
+            runtime_model=lambda: selected["model"],
+            set_runtime_model=lambda value: selected.__setitem__("model", value),
+        ),
+        CompletionBridge("http://127.0.0.1:9999", shared_ownership=True),
+        profiles=store,
+        subscriptions=_DisconnectedSubscriptions(),  # type: ignore[arg-type]
+        ownership_axis=OWNERSHIP_AXIS_MACHINE,
+    )
+    oauth = store.upsert(
+        {
+            "authentication": "oauth",
+            "oauth_provider": "chatgpt",
+            "selected_models": [{"id": "gpt-5", "label": ""}],
+        },
+        owner_id=LOCAL_USER_ID,
+        user_id="u-real",
+    )
+    personal = store.upsert(profile_values(models=("personal-model",)))
+    subscription_key = personal_model_key(oauth["id"], "gpt-5")
+    selected["model"] = subscription_key
+    gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
+    personal_key = personal_model_key(personal["id"], "personal-model")
+    with patch("service.chat.service.models.available_models", return_value=gateway_catalog):
+        payload = asyncio.run(service.catalog(user_id="u-real"))
+        rows = {row["key"]: row for row in payload["available_models"]}
+        check(
+            "目录里确实存在可用的个人连接回落",
+            personal_key in rows and not rows[personal_key].get("disabled"),
+            str(sorted(rows)),
+        )
+        check(
+            "订阅置灰的默认键保持不变",
+            payload["current_model"] == subscription_key and selected["model"] == subscription_key,
+            str(payload["current_model"]),
+        )
+        row = rows[subscription_key]
+        check(
+            "置灰原因仍是订阅连接门禁",
+            row.get("disabled_reason_code") == SUBSCRIPTION_CONNECTION_REQUIRED_CODE,
+            str(row),
+        )
+    store.delete(personal["id"])
+    store.delete(oauth["id"])
+
+
 class _RecordingSubscriptions:
     """记下订阅腿被问到的归属身份 —— 用来证明它与内置门禁腿喂的不是同一个值。"""
 
@@ -964,10 +1129,15 @@ def test_credential_fields_never_erase_the_builtin_catalog() -> None:
         service, _selected = build_service(store)
         catalog = asyncio.run(service.catalog(user_id=LOCAL_USER))
         keys = [str(row.get("key")) for row in catalog["available_models"]]
-        check(f"填了 {label} 后内置目录仍在", keys == [GATEWAY_MODEL_KEY], str(catalog["reason"]))
+        # 意图是「凭据不得抹空内置目录」: 与产品可见集合比对, 不钉死单个模型。
+        check(
+            f"填了 {label} 后内置目录仍在",
+            set(keys) == set(GATEWAY_VISIBLE_MODEL_KEYS),
+            str(catalog["reason"]) or str(keys),
+        )
         check(
             f"填了 {label} 后当前模型仍可解析",
-            catalog["current_model"] == GATEWAY_MODEL_KEY,
+            catalog["current_model"] == DEFAULT_GATEWAY_MODEL_KEY,
             str(catalog["current_model"]),
         )
     write_builtin_config()
@@ -1007,7 +1177,11 @@ def test_builtin_lane_credential_comes_from_env_not_config() -> None:
             "会话按 env 拿到自配 key",
             model_module._api_key(spec.config) == SELF_CONFIGURED_KEY,
         )
-    check("会话模型是内置可见模型", spec.model_name == GATEWAY_MODEL_KEY, str(spec.model_name))
+    check(
+        "会话模型是内置可见模型",
+        spec.model_name == DEFAULT_GATEWAY_MODEL_KEY,
+        str(spec.model_name),
+    )
     check("会话端点仍是内置网关", spec.config.get("base_url") == GATEWAY_BASE_URL)
     write_builtin_config()
 
@@ -1029,7 +1203,7 @@ def test_product_default_survives_an_undeclared_template_field() -> None:
     )
     check(
         "空 model_name 收敛到当前可见模型",
-        effective.get("model_name") == GATEWAY_MODEL_KEY,
+        effective.get("model_name") == DEFAULT_GATEWAY_MODEL_KEY,
         str(effective.get("model_name")),
     )
     write_builtin_config()
@@ -1063,7 +1237,7 @@ def test_a_retired_top_level_connection_declaration_is_ignored() -> None:
     check("生效配置判为内置网关", _is_deeprd_gateway(effective))
     check(
         "执行面收敛到内置目录提供的模型",
-        effective.get("model_name") == GATEWAY_MODEL_KEY,
+        effective.get("model_name") == DEFAULT_GATEWAY_MODEL_KEY,
         str(effective.get("model_name")),
     )
     check(
@@ -1585,6 +1759,9 @@ def main() -> int:
     test_model_listing_does_not_persist()
     test_product_catalog_hides_concrete_subscription_models()
     test_builtin_models_greyed_out_when_signed_out()
+    test_signed_out_default_auto_switches_to_first_available_model()
+    test_signed_out_without_available_models_keeps_the_readable_error()
+    test_subscription_disabled_default_is_not_auto_switched()
     test_machine_axis_splits_gateway_gate_and_personal_connection_identities()
     test_declared_empty_legacy_connection_uses_product_gateway()
     test_credential_fields_never_erase_the_builtin_catalog()

@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,7 +26,7 @@ from service.literature.service.result import (
 )
 
 REVIEW_CARD = "literature-review"
-REVIEW_VERSION = "1.1"
+REVIEW_VERSION: Literal["1.1"] = "1.1"
 REVIEW_FILE_BYTES = 16 * 1024 * 1024
 REVIEW_SECTIONS = 8
 REVIEW_CHILDREN = 8
@@ -257,7 +257,7 @@ class PreparedReviewSearch:
         )
 
 
-def validate_review_card(value: dict) -> dict:
+def validate_review_card(value: Mapping[str, Any]) -> dict[str, Any]:
     return ReviewSnapshot.model_validate(value).model_dump(mode="json")
 
 
@@ -512,7 +512,7 @@ def _issues(postcheck: dict, retrieval: dict, fast_audit: dict) -> list[ReviewIs
             issues.append(
                 ReviewIssue(
                     title=_text(check.get("title"))
-                    or CHECK_LABELS.get(check.get("id"), "核对问题"),
+                    or CHECK_LABELS.get(_text(check.get("id"), REVIEW_TITLE), "核对问题"),
                     detail=_text(check.get("reason")),
                     paper_ids=_strings(check.get("paper_ids")),
                     affected_content=_text(check.get("affected_content") or check.get("section")),
@@ -669,6 +669,10 @@ def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dic
 
 def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedReview:
     """Read a bounded allowlist, never change the survey or infer missing success."""
+
+    if checkpoint not in {"outline", "result"}:
+        raise ValueError("review_checkpoint_invalid")
+    normalized_checkpoint = cast(Literal["outline", "result"], checkpoint)
     workspace = scoped_relative(workspace)
     values, hashes, files = _load(workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES))
     query = values.get(QUERY, {})
@@ -767,10 +771,10 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     }
     card = ReviewSnapshot(
         workspace=workspace,
-        checkpoint=checkpoint,
+        checkpoint=normalized_checkpoint,
         intent=intent,
         title=_text(outline.get("survey_title"), REVIEW_TITLE) or "文献综述",
-        status=status,
+        status=cast(Literal["outline", "generated", "partial", "incomplete", "failed"], status),
         generation_status=final,
         scope=_scope(query, writing_request or requirements, corpus),
         output=ReviewOutput(
@@ -820,7 +824,9 @@ def _slr_papers(metadata: dict, corpus: dict, report: dict, fulltext: dict) -> l
             raise ValueError("review_metadata_invalid")
         seen.add(identity)
         selected = corpus.get(identity) if isinstance(corpus, dict) else None
-        decision = "included" if isinstance(selected, dict) else "excluded"
+        decision: Literal["included", "excluded", "candidate"] = (
+            "included" if isinstance(selected, dict) else "excluded"
+        )
         dropped_row = dropped.get(identity, {})
         selected_reason = (
             _text((selected or {}).get("selection_reason")) if isinstance(selected, dict) else ""
@@ -967,8 +973,14 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
     metadata = values.get(METADATA)
     corpus = values.get(CORPUS)
     report = values.get(RETRIEVAL)
-    if not all(isinstance(value, dict) for value in (metadata, corpus, report)):
+    if (
+        not isinstance(metadata, dict)
+        or not isinstance(corpus, dict)
+        or not isinstance(report, dict)
+    ):
         raise ValueError("review_retrieval_missing")
+    if not isinstance(query, dict):
+        query = {}
     papers = _slr_papers(metadata, corpus, report, values.get(FULLTEXT, {}))
     papers.sort(
         key=lambda paper: (

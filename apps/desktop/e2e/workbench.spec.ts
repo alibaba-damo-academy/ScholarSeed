@@ -8,7 +8,7 @@ import { MATHEMATICS_SOURCE } from './fixtures/mathematics'
 import { TABLE_MATH_SOURCE } from './fixtures/table-math'
 import { apiBase, DesktopSession, enterWorkbenchShell, waitForFinishedTurn } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
-import { BROKEN_PDF_NAME, fileDigest, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
+import { BROKEN_PDF_NAME, fileDigest, LONG_PDF_NAME, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedLongPdf, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
 
 const SHORTCUT = process.platform === 'darwin' ? 'Meta' : 'Control'
 const NATIVE_SHORTCUT_MODIFIER = process.platform === 'darwin' ? 'meta' : 'control'
@@ -1318,6 +1318,44 @@ test('PDF opens in fit-width mode by default', async ({}, testInfo) => {
   } finally { await desktop.attachArtifacts() }
 })
 
+test('inactive PDF tabs release canvases while an 86-page document paints its first page', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    await seedLongPdf(resources)
+    await page.getByTestId('resource-refresh').click()
+
+    const firstCanvasStartedAt = Date.now()
+    await openFile(page, LONG_PDF_NAME)
+    const longDocument = page.locator('[data-testid="pdf-document"][data-pdf-active="true"]')
+    await expect(longDocument.getByTestId('pdf-page-1')).toHaveAttribute('data-canvas-rendered', 'true')
+    await expect(longDocument.getByTestId('pdf-page-1').locator('canvas')).toBeVisible()
+    const firstCanvasMs = Date.now() - firstCanvasStartedAt
+
+    await openFile(page, SECOND_PDF_NAME)
+    const activeDocument = page.locator('[data-testid="pdf-document"][data-pdf-active="true"]')
+    const inactiveDocument = page.locator('[data-testid="pdf-document"][data-pdf-active="false"]')
+    await expect(activeDocument.getByTestId('pdf-page-1')).toHaveAttribute('data-canvas-rendered', 'true')
+    await expect(inactiveDocument.locator('canvas')).toHaveCount(0)
+    const inactiveCanvasCount = await inactiveDocument.locator('canvas').count()
+
+    await openFile(page, LONG_PDF_NAME)
+    await expect(longDocument.getByTestId('pdf-page-1')).toHaveAttribute('data-canvas-rendered', 'true')
+    writeFileSync(
+      join(runtime.artifacts, 'pdf-lifecycle-evidence.json'),
+      JSON.stringify({ firstCanvasMs, inactiveCanvasCount }, null, 2)
+    )
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-inactive-tab-lifecycle.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
 test('PDF outline navigation preserves scale and keeps the target page visible', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)
@@ -1523,12 +1561,16 @@ test('PDF annotation editor expands directly beneath the selection toolbar', asy
 
 test('PDF selection color menu remains interactive inside its portalled popover', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
     await seedProject(page, runtime)
     await openFile(page, PDF_NAME)
-    await expect(page.getByTestId('pdf-document')).toBeVisible()
+    await expect(page.getByTestId('pdf-document')).toBeVisible({ timeout: TREE_EDITOR_LOAD_TIMEOUT_MS })
     const selected = await selectPdfText(page)
 
     const toolbar = page.getByTestId('selection-action-host')
@@ -1538,10 +1580,19 @@ test('PDF selection color menu remains interactive inside its portalled popover'
     await expect(toolbar).toBeVisible()
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toContain(selected)
 
+    const saved = page.waitForResponse(response =>
+      new URL(response.url()).pathname.endsWith('/records') && response.request().method() === 'PUT'
+    )
     await palette.getByRole('button', { name: '橙色标注', exact: true }).click()
-    await expect(page.locator('.vds-pdf-status')).toContainText('高亮已保存')
-    await expect(page.locator('[data-testid^="pdf-mark-"]').first()).toBeVisible()
-    await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-color-menu.png') })
+    const response = await saved
+    expect(response.ok(), await response.text()).toBe(true)
+    const savedMark = page.locator('[data-testid^="pdf-mark-"]').first()
+    await expect(savedMark).toBeVisible()
+    const firstPage = page.getByTestId('pdf-page-1')
+    await expect.poll(() => firstPage.locator('[data-pdf-highlight-layer]').evaluate(element => getComputedStyle(element).mixBlendMode)).toBe('darken')
+    await expect(firstPage.locator('[data-pdf-annotation-highlight]')).toHaveCount(1)
+    await expect.poll(() => savedMark.evaluate(element => getComputedStyle(element).mixBlendMode)).toBe('normal')
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-highlight-text-color.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -1723,6 +1774,19 @@ test('PDF modifier wheel zoom preserves its pointer anchor', async ({}, testInfo
     const canvas = page.getByTestId('pdf-page-1').locator('canvas').first()
     await viewport.click({ position: { x: 24, y: 24 } })
     await page.keyboard.press(`${SHORTCUT}+0`)
+    const firstPage = page.getByTestId('pdf-page-1')
+    await expect(firstPage).toHaveAttribute('data-canvas-rendered', 'true')
+    await firstPage.evaluate((node) => {
+      node.dataset.canvasReadinessRegressions = '0'
+      const observer = new MutationObserver(() => {
+        if (node.dataset.canvasRendered !== 'true') {
+          node.dataset.canvasReadinessRegressions = String(
+            Number(node.dataset.canvasReadinessRegressions ?? '0') + 1
+          )
+        }
+      })
+      observer.observe(node, { attributeFilter: ['data-canvas-rendered'] })
+    })
     const [canvasBounds, viewportBounds] = await Promise.all([canvas.boundingBox(), viewport.boundingBox()])
     expect(canvasBounds).not.toBeNull()
     expect(viewportBounds).not.toBeNull()
@@ -1740,6 +1804,8 @@ test('PDF modifier wheel zoom preserves its pointer anchor', async ({}, testInfo
     await page.mouse.wheel(0, PDF_WHEEL_ZOOM_DELTA_PX)
     await page.keyboard.up(SHORTCUT)
     await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(wheelWidth)
+    await expect(firstPage).toHaveAttribute('data-canvas-rendered', 'true')
+    expect(await firstPage.getAttribute('data-canvas-readiness-regressions')).toBe('0')
     const anchoredBounds = await canvas.boundingBox()
     expect(anchoredBounds).not.toBeNull()
     expect(Math.abs(anchoredBounds!.x + anchoredBounds!.width * anchor.x - pointer.x)).toBeLessThanOrEqual(PDF_ZOOM_ANCHOR_TOLERANCE_PX)

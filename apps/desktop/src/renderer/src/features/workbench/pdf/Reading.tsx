@@ -70,7 +70,8 @@ function FigureGuide({ t }: { t: (key: string) => string }): React.JSX.Element {
   </div>
 }
 
-export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, revision, tabId, page, pageCount, selection, canAnnotate, onAddComment, onNavigate, onLocate, onExclusiveSurfaceOpen }: {
+export function usePdfAnalysis({ active, literatureId, title, path, assetId, projectId, revision, tabId, page, pageCount, selection, canAnnotate, onAddComment, onNavigate, onLocate, onExclusiveSurfaceOpen }: {
+  active: boolean
   literatureId: string; title: string; path: string; assetId: string; projectId: string; revision: string; tabId: string; page: number; pageCount: number
   selection: PdfSelection[]
   canAnnotate: boolean
@@ -131,8 +132,10 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     const data = await pdfAiApi<Record<string, PdfAiResult>>(`/api/literature/${encodeURIComponent(literatureId)}/ai/results?source_revision=${encodeURIComponent(revision)}`)
     if (currentIdentity.current === identity && sequence === loadSequence.current) setResults(data)
   }
-  useEffect(() => { setResults({}); jobsRef.current = {}; setJobs({}); requests.current = {}; submissions.current = {}; setCropPreview(''); setFigure(false); setFigureGuideOpen(false); figureQueue.current = []; setFigureQueueSize(0); setFloating(null); setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]); setAnnotatedResult(''); setAutomaticTranslation(false); setTranslationAnchorPage(page); setPanel(null); setPanelExpanded(false); void load().catch(() => {}) }, [identity])
+  useEffect(() => { setResults({}); jobsRef.current = {}; setJobs({}); requests.current = {}; submissions.current = {}; setCropPreview(''); setFigure(false); setFigureGuideOpen(false); figureQueue.current = []; setFigureQueueSize(0); setFloating(null); setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]); setAnnotatedResult(''); setAutomaticTranslation(false); setTranslationAnchorPage(page); setPanel(null); setPanelExpanded(false) }, [identity])
+  useEffect(() => { if (active) void load().catch(() => {}) }, [active, identity])
   useEffect(() => {
+    if (!active) return undefined
     let stopped = false
     let polling = false
     const poll = async (): Promise<void> => {
@@ -165,7 +168,7 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     }
     const timer = setInterval(() => void poll(), POLL_MS)
     return () => { stopped = true; clearInterval(timer) }
-  }, [identity])
+  }, [active, identity])
 
   const run = async (kind: PdfAction, module = 'summary', region?: { page: number; rect: number[] }, retry?: PdfAiRequest, language = directions[kind] ?? 'auto', requestedPage?: number, selected = selection, instruction?: string): Promise<void> => {
     const replacing = isBusy(kind)
@@ -175,7 +178,7 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     const request: PdfAiRequest = {
       instruction: retry ? retry.instruction : instruction ?? (SELECTION_PROMPTS[kind] ? state.selectionPrompts[SELECTION_PROMPTS[kind]!] : undefined),
       literature_id: literatureId, path, asset_id: assetId, project_id: projectId, revision,
-      model_key: requestModelKey(state.model, state.activeSession, state.threads), kind, module,
+      model_key: requestModelKey(state.catalog.models, state.model, state.activeSession, state.threads), kind, module,
       page: requestedPage ?? region?.page ?? selected[0]?.page ?? page, text: selected.map(value => value.text).join('\n'),
       rect: region?.rect, quads: selected.filter(value => value.page === (selected[0]?.page ?? page)).flatMap(value => value.quads),
       ...(retry ? { page: retry.page, text: retry.text, rect: retry.rect, quads: retry.quads } : {}),

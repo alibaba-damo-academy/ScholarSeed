@@ -350,6 +350,9 @@ export function formatRuntimeStatus(message: RuntimeStatusMessage, t: TFunction<
 function runtimeIncidentText(data: RuntimeIncidentData): { text: RuntimeStatusMessage; tone: Cognitive } {
   const reason = data.safe_error
   if (data.state === 'retrying') {
+    if (data.kind === 'provider_retry' || data.strategy === 'vendor_retry') {
+      return { text: { key: 'runtime.providerRetrying', reason }, tone: 'inference' }
+    }
     return { text: data.max_attempts > 0
       ? { key: 'runtime.retryingCount', reason, attempt: data.attempt, maximum: data.max_attempts }
       : { key: 'runtime.retrying', reason }, tone: 'inference' }

@@ -8,6 +8,11 @@ const REASONING_KEYS = {
   medium: 'reasoning.medium', high: 'reasoning.high', xhigh: 'reasoning.xhigh',
   max: 'reasoning.max', ultra: 'reasoning.ultra'
 } as const
+/**
+ * Strength order used to pick the lowest declared level. Mirrors the backend's
+ * REASONING_EFFORT_LEVELS (service/inference/reasoning.py) — one order, both ends.
+ */
+const EFFORT_STRENGTH_ORDER = Object.keys(REASONING_KEYS)
 
 export function reasoningLabel(value: string, t: TFunction<'conversation'>, compact = false): string {
   if (value === DEFAULT_REASONING_EFFORT) return t('reasoning.default')
@@ -16,8 +21,33 @@ export function reasoningLabel(value: string, t: TFunction<'conversation'>, comp
     : value
 }
 
+function declaredEffortValues(model: ModelInfo): string[] {
+  if (model.reasoning_efforts?.length) return model.reasoning_efforts
+  const option = (model.reasoning_options ?? []).find((entry) => entry.kind === 'effort')
+  return option?.values ?? []
+}
+
+/**
+ * The model's definite default level: the `default` declared in the model
+ * definition, or the lowest declared level when none is declared. The
+ * "follow the provider default" pseudo-level has been removed from the product,
+ * so every model with declared efforts resolves to a concrete level here.
+ * Returns '' only when the model declares no effort levels at all.
+ */
+export function modelDefaultEffort(model: ModelInfo | undefined): string {
+  if (!model) return DEFAULT_REASONING_EFFORT
+  const values = declaredEffortValues(model)
+  if (!values.length) return DEFAULT_REASONING_EFFORT
+  const option = (model.reasoning_options ?? []).find((entry) => entry.kind === 'effort')
+  const declared = (option?.default ?? '').trim().toLowerCase()
+  if (declared && values.includes(declared)) return declared
+  const lowest = EFFORT_STRENGTH_ORDER.find((level) => values.includes(level))
+  return lowest ?? values[0]
+}
+
 export function reasoningPreference(model: ModelInfo | undefined, preferences: Record<string, string>): string {
   if (!model) return DEFAULT_REASONING_EFFORT
   const effort = preferences[model.key] ?? DEFAULT_REASONING_EFFORT
-  return model.reasoning_efforts?.includes(effort) ? effort : DEFAULT_REASONING_EFFORT
+  if (model.reasoning_efforts?.includes(effort)) return effort
+  return modelDefaultEffort(model)
 }

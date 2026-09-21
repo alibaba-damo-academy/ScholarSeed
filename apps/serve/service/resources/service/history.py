@@ -155,7 +155,10 @@ class ResourceVersionService:
                 raise ResourceVersionError(exc.code) from exc
             if response["version_id"] is None:
                 return None
-            return SealResult(store.version(response["version_id"]), response["unchanged"])
+            version = store.version(response["version_id"])
+            if version is None:
+                raise ResourceVersionError("version_not_found")
+            return SealResult(version, response["unchanged"])
 
     @contextmanager
     def writer(self, project_id: str) -> Iterator[None]:
@@ -221,6 +224,8 @@ class ResourceVersionService:
         cas = self._cas(project_id)
         with cas.writer():
             if idempotency_key is not None:
+                if operation_target is None or request_digest is None:
+                    raise ResourceVersionError("invalid_idempotency_request")
                 try:
                     receipt = store.seal_receipt(idempotency_key, operation_target, request_digest)
                 except VersionStoreConflict as exc:
@@ -249,7 +254,9 @@ class ResourceVersionService:
             descriptor = descriptor if stable else None
             snapshot = SnapshotVersion(
                 path=path,
-                media_type=stable.media_type if stable else guess_media_type(path),
+                media_type=(
+                    stable.media_type if stable else guess_media_type(path) or FALLBACK_MEDIA_TYPE
+                ),
                 revision=stable.revision if stable else None,
                 object_id=object_id,
                 mode_bits=stable.mode_bits if stable else None,
@@ -411,17 +418,17 @@ class ResourceVersionService:
             if baseline.object_id is None or baseline.state is FileState.TOMBSTONE:
                 raise ResourceVersionError("version_is_tombstone")
             with self._cas(project_id).open(baseline.object_id) as source:
-                return source.read(), guess_media_type(baseline.path)
+                return source.read(), guess_media_type(baseline.path) or FALLBACK_MEDIA_TYPE
 
     def review_snapshot(self, project_id: str, snapshot: SnapshotIdentity) -> tuple[bytes, str]:
         """Read one frozen batch snapshot directly from the existing resource CAS."""
 
         if snapshot.state is FileState.TOMBSTONE:
-            return b"", guess_media_type(snapshot.path)
+            return b"", guess_media_type(snapshot.path) or FALLBACK_MEDIA_TYPE
         if snapshot.object_id is None:
             raise ResourceVersionError("version_is_tombstone")
         with self._cas(project_id).open(snapshot.object_id) as source:
-            return source.read(), guess_media_type(snapshot.path)
+            return source.read(), guess_media_type(snapshot.path) or FALLBACK_MEDIA_TYPE
 
     def accept_review_batch(
         self,
@@ -462,7 +469,9 @@ class ResourceVersionService:
                         ),
                         SnapshotVersion(
                             path=review.candidate.path,
-                            media_type=guess_media_type(review.candidate.path),
+                            media_type=(
+                                guess_media_type(review.candidate.path) or FALLBACK_MEDIA_TYPE
+                            ),
                             revision=review.candidate_revision,
                             object_id=review.candidate.object_id,
                             mode_bits=review.candidate.mode_bits,
@@ -519,15 +528,17 @@ class ResourceVersionService:
         review_decision: ReviewDecision | None = None,
         expected_pending_revision: int | None = None,
     ) -> str:
-        fields = (path, origin.value, expected_revision or "", expected_version_id or "")
+        fields = [path, origin.value, expected_revision or "", expected_version_id or ""]
         if review_decision is not None:
-            fields += (
-                review_decision.review_id,
-                str(review_decision.pending_revision),
-                review_decision.outcome.value,
+            fields.extend(
+                (
+                    review_decision.review_id,
+                    str(review_decision.pending_revision),
+                    review_decision.outcome.value,
+                )
             )
         else:
-            fields += (str(expected_pending_revision),)
+            fields.append(str(expected_pending_revision))
         return sha256("\0".join(fields).encode("utf-8")).hexdigest()
 
     def history(self, project_id: str, path: str) -> tuple[VersionRef, ...]:
@@ -1032,16 +1043,16 @@ class ResourceVersionService:
             present: dict[str, tuple[StableContentCapture, str, ObjectDescriptor]] = {}
             for path in candidates:
                 try:
-                    stable = self._capture_object(project_id, path, self._cas(project_id))
+                    captured = self._capture_object(project_id, path, self._cas(project_id))
                 except ContentError as exc:
                     if exc.code == "file_not_found":
                         missing.append(path)
                     elif exc.code not in {"not_a_file", "file_too_large"}:
                         raise
                 else:
-                    present[path] = stable
+                    present[path] = captured
             moved: set[str] = set()
-            for path, (stable, _object_id, _descriptor) in present.items():
+            for path, (stable_capture, _object_id, _descriptor) in present.items():
                 if store.identity(path) is not None:
                     continue
                 matches = [
@@ -1049,7 +1060,7 @@ class ResourceVersionService:
                     for source in missing
                     if source not in moved
                     and baselines.get(source) is not None
-                    and baselines[source].object_id == stable.revision
+                    and baselines[source].object_id == stable_capture.revision
                 ]
                 if len(matches) == 1:
                     source = matches[0]

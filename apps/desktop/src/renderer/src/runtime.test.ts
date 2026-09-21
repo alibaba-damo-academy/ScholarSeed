@@ -123,7 +123,7 @@ test('turn failures map stable provider codes to actionable product guidance', a
     retryable: true
   })
   assert.match(display(rateLimit).message, /请求过于频繁/)
-  assert.equal(rateLimit.runtimeAction, 'retry_turn')
+  assert.equal(rateLimit.runtimeAction, 'continue_turn')
 
   const auth = describeTurnFailure({
     code: 'runtime_not_authenticated',
@@ -826,6 +826,24 @@ test('the same runtime status redraws in either language without changing its di
   for (const reason of ['Vendor 原始 diagnostic', '__proto__', 'toString']) {
     assert.ok(formatRuntimeStatus({ key: 'runtime.failed', reason }, locale.getFixedT(null, 'conversation')).endsWith(reason))
   }
+})
+
+test('provider retries are not presented as agent connection recovery', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  const providerRetry = {
+    ...incident('retrying'),
+    scope: 'provider' as const,
+    kind: 'provider_retry' as const,
+    strategy: 'vendor_retry' as const,
+    safe_error: 'The model provider rejected the request.',
+    max_attempts: 0
+  }
+  const update = reportRuntimeIncident(thread(), providerRetry, 'turn-provider')
+  const status = update.conversation?.find((item) => item.kind === 'status')
+  assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /^模型服务正在重试/)
+  assert.doesNotMatch(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /连接中断/)
 })
 
 

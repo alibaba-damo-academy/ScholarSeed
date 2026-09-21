@@ -97,6 +97,8 @@ export type TooltipSide = 'bottom' | 'left' | 'right' | 'top'
 
 const PAGINATION_EDGE_ITEM_COUNT = 1
 const PAGINATION_SIBLING_ITEM_COUNT = 1
+const PAGINATION_FULL_PAGE_LIMIT = 7
+const PAGINATION_ANCHOR_ITEM_COUNT = 3
 const BUTTON_BASE_CLASS_NAME = [
   'inline-flex items-center justify-center gap-[var(--vds-space-2)]',
   '[border:var(--vds-border-width-1)_solid_transparent] rounded-[var(--vds-control-radius)]',
@@ -1834,11 +1836,28 @@ function range(start: number, end: number): number[] {
 
 export function getPaginationItems(
   page: number,
-  pageCount: number
+  pageCount: number,
+  fullPageLimit = PAGINATION_FULL_PAGE_LIMIT
 ): PaginationItem[] {
   const safePage = Math.min(Math.max(page, 1), Math.max(pageCount, 1))
-  if (pageCount <= 7) {
+  if (pageCount <= fullPageLimit) {
     return range(1, pageCount)
+  }
+
+  if (fullPageLimit < PAGINATION_FULL_PAGE_LIMIT) {
+    const siblingCount = Math.max(0, Math.min(PAGINATION_SIBLING_ITEM_COUNT, Math.floor((fullPageLimit - PAGINATION_ANCHOR_ITEM_COUNT) / 2)))
+    const firstInteriorPage = PAGINATION_EDGE_ITEM_COUNT + 1
+    const lastInteriorPage = pageCount - PAGINATION_EDGE_ITEM_COUNT
+    const interiorPage = Math.min(Math.max(safePage, firstInteriorPage), lastInteriorPage)
+    const firstVisiblePage = Math.max(firstInteriorPage, interiorPage - siblingCount)
+    const lastVisiblePage = Math.min(lastInteriorPage, interiorPage + siblingCount)
+    return [
+      1,
+      ...(firstVisiblePage > firstInteriorPage ? ['ellipsis-left' as const] : []),
+      ...range(firstVisiblePage, lastVisiblePage),
+      ...(lastVisiblePage < lastInteriorPage ? ['ellipsis-right' as const] : []),
+      pageCount
+    ]
   }
 
   const leftSibling = Math.max(

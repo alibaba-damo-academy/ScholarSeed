@@ -76,7 +76,7 @@ function pageContext(eventTarget: EventTarget | null): RecordedStep['page'] {
       .map(normalizedLabel)
       .find(Boolean)
     : undefined
-  const currentDialogLabel = dialogLabel(eventTarget)
+  const currentDialogLabel = eventTarget ? dialogLabel(eventTarget) : undefined
   return {
     url: window.location.href,
     title: document.title,
@@ -149,6 +149,17 @@ function associatedStep(options: RecorderProbeOptions, startedAtMs: number): str
   if (!step) return undefined
   const occurredAt = Date.parse(step.occurredAt)
   return startedAtMs - occurredAt <= REQUEST_STEP_WINDOW_MS ? step.stepId : undefined
+}
+
+export function createInitialPageStep(startedAtMs: number): RecordedStep {
+  return {
+    stepId: id('step'),
+    occurredAt: new Date(startedAtMs).toISOString(),
+    elapsedMs: 0,
+    kind: 'navigation',
+    page: pageContext(null),
+    target: { tag: 'window', role: 'navigation' }
+  }
 }
 
 export function installRecorderProbe(options: RecorderProbeOptions): RecorderLease {

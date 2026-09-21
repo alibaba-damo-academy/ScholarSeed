@@ -430,6 +430,9 @@ declare module 'i18next' {
             "save": "保存",
             "removeAll": "移除全部注释",
             "addConversation": "添加到对话",
+            "copyText": "复制文本",
+            "textCopied": "文本已复制",
+            "textCopyFailed": "复制文本失败，请重试。",
             "importAnswer": "导入回答到资料库",
             "selectionActions": "回答选区操作",
             "comment": "批注内容",
@@ -664,13 +667,14 @@ declare module 'i18next' {
         "feedbackRecorder": {
             "entry": "录制问题反馈",
             "start": "开始录制",
-            "stop": "结束录制",
+            "stop": "提交反馈",
             "pause": "暂停",
             "resume": "继续",
             "cancel": "取消",
             "screenshot": "截图标注",
-            "markProblem": "标记问题",
+            "markProblem": "截图标记",
             "drag": "拖动位置",
+            "guidance": "继续操作会自动记录；遇到问题，填写说明或截图标记。",
             "recording": "录制中 · {{seconds}} 秒",
             "paused": "已暂停 · {{seconds}} 秒",
             "progress": "已记录 {{steps}} 步 · {{screenshots}} 个问题标记",
@@ -733,6 +737,10 @@ declare module 'i18next' {
                 "screenshotNote": "截图说明",
                 "zoomScreenshot": "放大截图",
                 "copyScreenshot": "复制图片",
+                "copyMarkdown": "复制内容",
+                "markdownOperation": "操作",
+                "markdownTarget": "操作对象",
+                "markdownTime": "时间",
                 "copied": "已复制",
                 "deleteScreenshot": "删除截图",
                 "inputValue": "输入内容：",
@@ -1192,6 +1200,7 @@ declare module 'i18next' {
             "task": "本 session 任务",
             "continue": "继续上次",
             "continueInterrupted": "继续",
+            "continuePending": "待确认继续结果",
             "steer": "插话",
             "rewindHere": "回退到这里",
             "fragment": "片段",
@@ -2005,6 +2014,7 @@ declare module 'i18next' {
         "runtime": {
             "retrying": "Agent 连接中断，正在恢复",
             "retryingCount": "Agent 连接中断，正在恢复（{{attempt}}/{{maximum}}）",
+            "providerRetrying": "模型服务正在重试",
             "recovered": "Agent 连接已恢复",
             "recoveryFailed": "Agent 恢复失败。请检查运行时登录、版本与网络后重试。",
             "failed": "Agent 运行时事件需要处理。请检查当前操作与运行时状态。",
@@ -2030,7 +2040,7 @@ declare module 'i18next' {
         },
         "models": {
             "deferred": "模型与思考深度将在下一轮生效。",
-            "effortReset": "新模型不支持之前的思考深度，已恢复模型默认。",
+            "effortReset": "新模型不支持之前的思考深度，已恢复该模型的默认档位。",
             "nextTurn": "模型与思考深度将在下一轮生效。"
         },
         "reasoning": {
@@ -2059,6 +2069,7 @@ declare module 'i18next' {
         "retry": {
             "attachmentsGone": "原附件已经不可用，请重新选择文件。",
             "contextNotReady": "会话上下文尚未就绪，请稍后重试。",
+            "continueUnknown": "继续请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
             "regenerateUnknown": "重新生成请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
             "continueUnconfirmed": "Service 未确认继续操作。"
         },
@@ -2944,6 +2955,7 @@ declare module 'i18next' {
         "list": {
             "noProject": "未关联项目",
             "moreProjects_other": "另有 {{count}} 个项目：{{names}}",
+            "moreTags_other": "另有 {{count}} 个标签：{{names}}",
             "newImport": "本次新导入",
             "select": "选择 {{title}}",
             "collapseAttachments": "收起附件",

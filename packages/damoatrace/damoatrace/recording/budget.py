@@ -77,7 +77,7 @@ class ContentBudget:
         self._files: dict[Path, Inventory] = {}
 
     def _scan(self, path: Path) -> None:
-        bodies = []
+        bodies: list[Body] = []
         with evidence_lock(path), path.open(encoding="utf-8") as source:
             for line in source:
                 try:

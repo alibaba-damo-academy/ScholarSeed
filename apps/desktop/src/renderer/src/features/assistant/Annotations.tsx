@@ -1,7 +1,7 @@
 import { assistantFailureDetail } from './failure'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { MessageCirclePlus } from 'lucide-react'
+import { Copy, MessageCirclePlus, Plus } from 'lucide-react'
 
 import type { ResourceLocationRef } from '../../contracts/resources'
 import { isCitationUrl } from '../../contracts/citations'
@@ -9,6 +9,7 @@ import { Icon } from '../../icons'
 import type { AnswerSource } from '../../model'
 import { activeThread, useApp } from '../../store'
 import { Markdown } from '../../components/primitive/Markdown'
+import { writeClipboard } from '../../components/primitive/clipboard'
 import { mappedSourceBoundary } from '../../components/markdown/source'
 import {
   Button,
@@ -38,7 +39,7 @@ const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
 const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
 const SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX = 16
-const SELECTION_ACTIONS_HEIGHT_PX = 88
+const SELECTION_ACTIONS_HEIGHT_PX = 120
 const ANNOTATION_ERROR_MESSAGES = {
   answer_revision_conflict: 'remaining.revisionConflict',
   answer_quote_mismatch: 'remaining.quoteMismatch',
@@ -53,6 +54,7 @@ interface SelectionDraft {
   startUtf16: number
   endUtf16: number
   previewText: string
+  clipboardText: string
   left: number
   width: number
   top: number
@@ -316,7 +318,8 @@ export function AnnotatedAnswer({
     if (!selectionEnabled || !root || !selection || selection.isCollapsed || selection.rangeCount !== 1 || !answerId) return
     const range = selection.getRangeAt(0)
     if (!root.contains(range.commonAncestorContainer)) return
-    const previewText = selection.toString().trim()
+    const clipboardText = selection.toString()
+    const previewText = clipboardText.trim()
     if (!previewText) return
     let start = sourceBoundary(range.startContainer, range.startOffset, root, 'start')
     let end = sourceBoundary(range.endContainer, range.endOffset, root, 'end')
@@ -344,6 +347,7 @@ export function AnnotatedAnswer({
       startUtf16: start,
       endUtf16: end,
       previewText,
+      clipboardText,
       width: toolbarWidth,
       left: Math.min(
         rootBounds.width - toolbarHalfWidth,
@@ -359,6 +363,17 @@ export function AnnotatedAnswer({
       placement,
       mode: 'actions'
     })
+  }
+
+  const copySelection = async (): Promise<void> => {
+    if (!draft) return
+    try {
+      await writeClipboard(draft.clipboardText)
+      setDraft(current => current === draft ? null : current)
+      toast({ title: a('remaining.textCopied'), tone: 'success' })
+    } catch {
+      toast({ title: a('remaining.textCopyFailed'), tone: 'error' })
+    }
   }
 
   const openSaveDialog = (): void => {
@@ -646,6 +661,15 @@ export function AnnotatedAnswer({
                 <div className="flex w-full flex-col">
                   <Button
                     className={SELECTION_ACTION_CLASS}
+                    icon={<Copy size={14} />}
+                    onClick={() => void copySelection()}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {a('remaining.copyText')}
+                  </Button>
+                  <Button
+                    className={SELECTION_ACTION_CLASS}
                     icon={<MessageCirclePlus size={14} />}
                     onClick={() => setDraft({ ...draft, mode: 'comment' })}
                     size="sm"
@@ -655,7 +679,7 @@ export function AnnotatedAnswer({
                   </Button>
                   <Button
                     className={SELECTION_ACTION_CLASS}
-                    icon={<Icon name="plus" size={14} />}
+                    icon={<Plus size={14} />}
                     disabled={state.projects.length === 0}
                     onClick={openSaveDialog}
                     size="sm"

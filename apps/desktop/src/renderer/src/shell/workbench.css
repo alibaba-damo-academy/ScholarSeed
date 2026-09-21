@@ -4539,5 +4539,5 @@
 .vds-rail-div {
   width: 20px;
   height: 1px;
-  background: var(--vds-divider-default);
+  background: var(--vds-border-default);
 }

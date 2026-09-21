@@ -80,6 +80,17 @@ export function searchPapersBibtex(papers: BibliographyPaper[]): string {
   }).join('\n\n')
 }
 
+/**
+ * AI 检索结果投影：正文列只展示 metadata.json 的 reason，摘要既不展示也不入库。
+ * 在这里就把 abstract 清空，展示与 BibTeX 入库因此都拿不到摘要，
+ * 文献库条目的 abstract 保持空值。
+ */
+export function searchResultPapers(
+  papers: readonly LiteratureSearchPaper[]
+): LiteratureSearchPaper[] {
+  return papers.map((paper) => ({ ...paper, abstract: '' }))
+}
+
 /** Project a saved precise-search result without rerunning or reordering retrieval. */
 export function conversationSearchPapers(papers: readonly ConversationSearchPaper[]): LiteratureSearchPaper[] {
   return papers.map(paper => ({

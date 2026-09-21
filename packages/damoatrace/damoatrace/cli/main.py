@@ -51,6 +51,8 @@ from damoatrace.utils import _parse_since, _parse_ts, _percentile
 # ───────────────────────── 数据选取管道 ─────────────────────────
 
 
+SLOW_SPAN_KINDS = frozenset({"llm", "tool", "turn", "subagent", "hil", "runtime"})
+
 OFFLINE_COMMANDS = frozenset(
     {
         "list",
@@ -515,8 +517,7 @@ def cmd_slow(args) -> int:
     spans = [
         e
         for e in events
-        if e.get("duration_ms")
-        and (e.get("kind") or "").split(".")[0] in ("llm", "tool", "turn", "subagent", "hil")
+        if e.get("duration_ms") and (e.get("kind") or "").split(".")[0] in SLOW_SPAN_KINDS
     ]
     spans.sort(key=lambda e: e.get("duration_ms") or 0, reverse=True)
     top = getattr(args, "top", None) or 10
@@ -1376,7 +1377,10 @@ def cmd_sql(args) -> int:
             "CREATE TEMP TABLE projected AS SELECT unnest(?::JSON[]) AS record",
             [[json.dumps(event, default=str) for event in events]],
         )
-        structure = con.execute("SELECT json_group_structure(record) FROM projected").fetchone()[0]
+        structure_row = con.execute("SELECT json_group_structure(record) FROM projected").fetchone()
+        if structure_row is None:
+            raise RuntimeError("projected trace structure is unavailable")
+        structure = structure_row[0]
         con.execute(
             "CREATE TABLE trace AS SELECT expanded.* FROM "
             "(SELECT from_json(record, ?) AS expanded FROM projected)",

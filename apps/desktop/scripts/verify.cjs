@@ -35,7 +35,7 @@ const SYSTEM_PATHS = process.platform === 'win32'
   : ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
 const RUNTIME_PROBE_SCRIPT = `
 import importlib, json, pathlib, sysconfig
-names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex", "scholarseed_dsh")
+names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex")
 root = pathlib.Path(sysconfig.get_path("purelib")).resolve()
 resolved = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}
 assert all(pathlib.Path(filename).is_relative_to(root) for filename in resolved.values())

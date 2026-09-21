@@ -22,7 +22,7 @@ import {
 } from '../../store'
 import { assistantSourceAvailable } from '../../features/assistant/candidates'
 import type { SessionSurface } from '../../store'
-import { hasSelectableModel, selectedSessionModelKey } from '../../catalog'
+import { effectiveSessionModelKey, hasSelectableModel } from '../../catalog'
 import {
   CLOUD_PAGE_ANCHORS,
   cloudPageUrl,
@@ -852,7 +852,8 @@ export function Composer({
   // 没有队列兜底, 未知态（readiness 尚未加载）同样必须闭门。
   const runtimeReady = runtimeAdmission === 'ready'
     || (runtimeAdmission === 'transient' && Boolean(sidNow))
-  const selectedModelKey = selectedSessionModelKey(
+  const selectedModelKey = effectiveSessionModelKey(
+    state.catalog.models,
     state.model,
     state.activeSession,
     state.threads

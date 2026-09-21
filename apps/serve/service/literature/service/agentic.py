@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
 from service.literature.service.result import (
@@ -51,7 +51,7 @@ def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
-def _access(value: Any) -> str:
+def _access(value: Any) -> Literal["yes", "no", "unknown"]:
     normalized = _text(value, SEARCH_SHORT).lower()
     if normalized in AGENTIC_OPEN_ACCESS:
         return "yes"
@@ -111,15 +111,13 @@ def prepare_agentic_search(workdir: Path, metadata_path: str) -> PreparedAgentic
     papers = project_agentic_papers(metadata)
     summary = metadata.get("search_summary") if isinstance(metadata, dict) else None
     summary = summary if isinstance(summary, dict) else {}
-    report_path: str | None = scoped_relative(scoped_parent(metadata_path), AGENTIC_REPORT_FILE)
-    report_sha256: str | None = None
+    candidate_report_path = scoped_relative(scoped_parent(metadata_path), AGENTIC_REPORT_FILE)
     try:
-        report = read_scoped_file(workdir, report_path, SEARCH_FILE_BYTES)
+        report = read_scoped_file(workdir, candidate_report_path, SEARCH_FILE_BYTES)
         report_sha256 = sha256(report).hexdigest() if report.strip() else None
     except (OSError, ValueError):
         report_sha256 = None
-    if report_sha256 is None:
-        report_path = None
+    report_path = candidate_report_path if report_sha256 is not None else None
     source_counts: dict[str, int] = {}
     for paper in papers:
         for source in paper.sources:

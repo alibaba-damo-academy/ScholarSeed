@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from dataclasses import dataclass
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from scholarseed_runtime.contract import (
@@ -14,6 +15,7 @@ from scholarseed_runtime.contract import (
     RuntimeBinding,
     RuntimeProvider,
 )
+from scholarseed_runtime.contract.evidence import RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
     RESOURCE_CANCELLED,
     RESOURCE_QUEUE_FULL,
@@ -26,6 +28,7 @@ from scholarseed_runtime.contract.resource import (
 )
 from service.chat.provenance import ModelRun
 from service.chat.runtime.live import LiveSession
+from service.chat.runtime.timing import ActivationStage
 
 SESSION_OPEN_UNKNOWN = "runtime_session_open_unknown"
 SESSION_ACTIVATION_CLOSED = "runtime_session_activation_closed"
@@ -73,7 +76,7 @@ class SessionActivation:
         revision: Callable[[LiveSession], tuple[object, ...]],
         attach: Callable[[LiveSession, ActivationPlan, str], Awaitable[None]],
         provider: Callable[[str], RuntimeProvider],
-        prepare: Callable[[LiveSession], Awaitable[None]],
+        prepare: Callable[[LiveSession, RuntimeTimingPort], Awaitable[None]],
         discard: Callable[[LiveSession], None],
         logger: Any,
     ) -> None:
@@ -107,7 +110,11 @@ class SessionActivation:
         deadline: float | None = None,
         on_wait: ResourceWaitObserver | None = None,
     ) -> None:
-        async with live.activation_lock:
+        timing = live.activation_timing(request_id or live.id)
+        async with AsyncExitStack() as activation_scope:
+            activation_scope.enter_context(timing.measure(ActivationStage.TOTAL))
+            with timing.measure(ActivationStage.LOCK_WAIT):
+                await activation_scope.enter_async_context(live.activation_lock)
             task = asyncio.current_task()
             if task is None:
                 raise RuntimeError("session activation requires an asyncio task")
@@ -115,7 +122,9 @@ class SessionActivation:
             expires = deadline
             try:
                 while True:
-                    async with live.lifecycle_lock:
+                    async with AsyncExitStack() as lifecycle_scope:
+                        with timing.measure(ActivationStage.LIFECYCLE_LOCK_WAIT):
+                            await lifecycle_scope.enter_async_context(live.lifecycle_lock)
                         if (
                             self._closed
                             or live.terminated
@@ -125,8 +134,11 @@ class SessionActivation:
                         if live.runtime_session is not None:
                             return
                         preparing_revision = self._revision(live)
-                    await self._prepare(live)
-                    async with live.lifecycle_lock:
+                    with timing.measure(ActivationStage.SKILLS):
+                        await self._prepare(live, timing)
+                    async with AsyncExitStack() as lifecycle_scope:
+                        with timing.measure(ActivationStage.LIFECYCLE_LOCK_WAIT):
+                            await lifecycle_scope.enter_async_context(live.lifecycle_lock)
                         if (
                             self._closed
                             or live.terminated
@@ -138,7 +150,9 @@ class SessionActivation:
                         if self._revision(live) != preparing_revision:
                             continue
                         live.prepare_runtime_attachment()
-                        plan = self._build(live)
+                        with timing.measure(ActivationStage.PLAN):
+                            plan = self._build(live)
+                            plan = replace(plan, request=replace(plan.request, timing=timing))
                     if expires is None:
                         expires = time.time() + plan.provider.resource_policy.wait_seconds
                     # A fresh opaque admission id prevents a changed configuration from
@@ -151,16 +165,19 @@ class SessionActivation:
                         if on_wait is not None:
                             await on_wait(receipt, wait_deadline)
 
-                    receipt = await self.acquire(
-                        plan.provider,
-                        ResourceRequest(admission_id, purpose, expires, plan.request),
-                        on_wait=waiting,
-                    )
+                    with timing.measure(ActivationStage.ADMISSION):
+                        receipt = await self.acquire(
+                            plan.provider,
+                            ResourceRequest(admission_id, purpose, expires, plan.request),
+                            on_wait=waiting,
+                        )
                     if receipt.deadline:
                         expires = min(expires, receipt.deadline)
                     live.trace_resource("granted", receipt)
                     try:
-                        async with live.lifecycle_lock:
+                        async with AsyncExitStack() as lifecycle_scope:
+                            with timing.measure(ActivationStage.LIFECYCLE_LOCK_WAIT):
+                                await lifecycle_scope.enter_async_context(live.lifecycle_lock)
                             if (
                                 self._closed
                                 or live.terminated
@@ -172,7 +189,8 @@ class SessionActivation:
                                 # The granted slot must not launch with stale authorization.
                                 continue
                             live.waiting_resources = False
-                            await self._attach(live, plan, receipt.reservation_id)
+                            with timing.measure(ActivationStage.ATTACH):
+                                await self._attach(live, plan, receipt.reservation_id)
                             return
                     finally:
                         # Consumed reservations make this a no-op; unused grants are freed

@@ -8,7 +8,7 @@ import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
 import { Copy } from 'lucide-react'
 import aiThinking from '../../assets/ai-thinking.gif'
-import { activeThread, useApp, type ComposerReference } from '../../store'
+import { activeThread, useApp } from '../../store'
 import {
   ConvCard,
   ConvItem,
@@ -16,8 +16,7 @@ import {
   SessionArtifact,
   TurnOutcome,
   TurnTiming,
-  type HilResolvedMessage,
-  type MessageReference
+  type HilResolvedMessage
 } from '../../model'
 import { Icon, type IconName } from '../../icons'
 import { TONE } from '../../tone'
@@ -35,6 +34,7 @@ import {
   transcriptPresentationItems
 } from '../../hil'
 import { Markdown, visibleMarkdownText } from '../primitive/Markdown'
+import { sourceOffsetRect } from '../markdown/source'
 import { IconFont } from '../primitive/Iconfont'
 import {
   confirmUnknownTurn,
@@ -122,6 +122,7 @@ const ACTIVITY_ELAPSED_TICK_MS = 1000
 const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
 const HIL_OUTCOME_UNKNOWN_MESSAGE = 'stream.hil.outcomeUnknown'
 const SHOW_SCROLL_TO_BOTTOM_DISTANCE_PX = 140
+const ANSWER_SOURCE_RANGE_UNIT = 'utf16_code_unit'
 const OPENABLE_RESOURCE_CONTEXT_KINDS = new Set(['file', 'resource'])
 const SELECTION_CONTEXT_KIND = 'selection'
 const LITERATURE_CONTEXT_KIND = 'literature'
@@ -211,52 +212,6 @@ const TOOL_RUN_IO_CLASS =
 const ACTIVITY_LINE_CLASS =
   'group/activity my-[var(--vds-space-2)] !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-[var(--vds-space-1)] text-left text-[12.5px] leading-[1.45] !text-[var(--text-3)] shadow-none transition-colors duration-150 hover:!bg-[var(--hover-bg)] hover:!text-[var(--text-2)]'
 
-function retryReferences(
-  references: MessageReference[] | undefined
-): ComposerReference[] | null {
-  const restored: ComposerReference[] = []
-  for (const reference of references ?? []) {
-    if (
-      !reference.path ||
-      (reference.type !== 'file' && reference.type !== 'directory' && reference.type !== 'skill')
-    )
-      return null
-    if (reference.type === 'skill') {
-      restored.push({
-        type: 'skill',
-        id: reference.id,
-        title: reference.title,
-        status: reference.status,
-        path: reference.path,
-        version: reference.status
-      })
-      continue
-    }
-    if (reference.type === 'directory') {
-      restored.push({
-        type: 'directory',
-        id: reference.id,
-        title: reference.title,
-        status: reference.status,
-        path: reference.path,
-        registrationRequired: true
-      })
-      continue
-    }
-    restored.push({
-      type: 'file',
-      id: reference.id,
-      title: reference.title,
-      status: reference.status,
-      path: reference.path,
-      registrationRequired: true,
-      mediaType: reference.mediaType,
-      sha256: reference.sha256,
-      size: reference.size
-    })
-  }
-  return restored
-}
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
 type WebSearchItem = Extract<ConvItem, { kind: 'web_search' }>
 type PaperSearchItem = Extract<ConvItem, { kind: 'paper_search' }>
@@ -397,6 +352,8 @@ export function Stream({
   const pendingHil = pendingHilItems(conv)
   const streamRef = useRef<HTMLDivElement>(null)
   const columnRef = useRef<HTMLDivElement>(null)
+  const focusSpacerRef = useRef<HTMLDivElement>(null)
+  const focusedSessionRef = useRef<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const showScrollToBottomRef = useRef(false)
@@ -440,6 +397,8 @@ export function Stream({
       if (home) return
       const stream = streamRef.current
       if (!stream) return
+      focusedSessionRef.current = null
+      if (focusSpacerRef.current) focusSpacerRef.current.style.height = '0px'
       stream.scrollTo({ top: stream.scrollHeight, behavior })
     },
     [home]
@@ -457,34 +416,23 @@ export function Stream({
     setShowScrollToBottom(visible)
   }, [home])
 
-  const retryTurn = async (
+  const continueTurn = async (
     failure: Extract<ConvItem, { kind: 'error' }>
   ): Promise<void> => {
     const sessionId = thread.sessionId
-    const source = [...thread.conversation]
-      .reverse()
-      .find((item) => item.kind === 'user' && item.turnId === failure.turnId)
-    if (!sessionId || !source || source.kind !== 'user' || busy) return
+    if (!sessionId || busy) return
     const patchFailure = (
       patch: Partial<Extract<ConvItem, { kind: 'error' }>>
     ): void =>
       patchThread(thread.id, (current) => ({
         conversation: current.conversation.map((item) =>
           item.kind === 'error' &&
-          item.runtimeAction === 'retry_turn' &&
+          item.runtimeAction === 'continue_turn' &&
           item.turnId === failure.turnId
             ? { ...item, ...patch }
             : item
         )
       }))
-    const references = retryReferences(source.refs)
-    if (references === null) {
-      patchFailure({
-        actionState: 'failed',
-        actionError: feedback('conversation', 'retry.attachmentsGone')
-      })
-      return
-    }
     if (
       state.aiPanel.sessionId !== sessionId ||
       state.aiPanel.contextState !== 'ready'
@@ -514,7 +462,7 @@ export function Stream({
     }
     let input
     try {
-      input = buildTurnInput(source.text, references)
+      input = buildTurnInput(t('stream.continueInterrupted'), [])
     } catch (error) {
       patchFailure({
         actionState: 'failed',
@@ -573,13 +521,17 @@ export function Stream({
       }))
       patchFailure({
         actionState: 'outcome_unknown',
-        actionError: feedback('conversation', 'retry.regenerateUnknown')
+        actionError: feedback('conversation', 'retry.continueUnknown')
       })
       return
     }
-    patchFailure({ actionState: 'confirmed', actionError: undefined })
     releaseQueuedOutbox(sessionId, clientUserMessageId)
     patchThread(thread.id, (current) => ({
+      conversation: current.conversation.filter((item) => !(
+        item.kind === 'error'
+        && item.runtimeAction === 'continue_turn'
+        && item.turnId === failure.turnId
+      )),
       queuedMessages: settleOptimisticQueuedMessage(
         current.queuedMessages ?? [],
         clientUserMessageId
@@ -588,8 +540,16 @@ export function Stream({
   }
 
   useLayoutEffect(() => {
-    if (!showScrollToBottomRef.current) scrollToBottom(busy ? 'auto' : 'smooth')
-  }, [busy, conv, showWorking, scrollToBottom])
+    if (busy) focusedSessionRef.current = null
+  }, [busy])
+
+  useLayoutEffect(() => {
+    if (
+      !state.aiPanel.messageFocus &&
+      focusedSessionRef.current !== thread.sessionId &&
+      !showScrollToBottomRef.current
+    ) scrollToBottom(busy ? 'auto' : 'smooth')
+  }, [busy, conv, showWorking, scrollToBottom, state.aiPanel.messageFocus, thread.sessionId])
 
   useLayoutEffect(() => {
     const focus = state.aiPanel.messageFocus
@@ -597,7 +557,8 @@ export function Stream({
       home ||
       !focus ||
       focus.sessionId !== thread.sessionId ||
-      !columnRef.current
+      !columnRef.current ||
+      !streamRef.current
     )
       return
     if (thread.resumeState === 'pending') return
@@ -622,21 +583,35 @@ export function Stream({
       target.firstElementChild instanceof HTMLElement
         ? target.firstElementChild
         : target
-    scrollTarget.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    const stream = streamRef.current
+    const sourceRange = focus.sourceRange
+    const bounds = sourceRange?.unit === ANSWER_SOURCE_RANGE_UNIT
+      ? sourceOffsetRect(scrollTarget, sourceRange.start) ?? scrollTarget.getBoundingClientRect()
+      : scrollTarget.getBoundingClientRect()
+    const top = stream.scrollTop + bounds.top - stream.getBoundingClientRect().top - stream.clientTop
+    const spacer = focusSpacerRef.current
+    if (spacer) {
+      const contentHeight = stream.scrollHeight - spacer.offsetHeight
+      spacer.style.height = `${Math.max(0, top + stream.clientHeight - contentHeight)}px`
+    }
+    showScrollToBottomRef.current = true
+    focusedSessionRef.current = thread.sessionId ?? null
+    stream.scrollTo({ top, behavior: 'instant' })
+    updateScrollToBottomVisibility()
     set((current) => ({
       aiPanel: { ...current.aiPanel, messageFocus: null }
     }))
-  }, [conv, home, set, state.aiPanel, thread.resumeState, thread.sessionId])
+  }, [conv, home, set, state.aiPanel, thread.resumeState, thread.sessionId, updateScrollToBottomVisibility])
 
   useEffect(() => {
     if (home || !busy || !columnRef.current) return () => undefined
     const observer = new ResizeObserver(() => {
-      if (!showScrollToBottomRef.current) scrollToBottom('auto')
+      if (focusedSessionRef.current !== thread.sessionId && !showScrollToBottomRef.current) scrollToBottom('auto')
       updateScrollToBottomVisibility()
     })
     observer.observe(columnRef.current)
     return () => observer.disconnect()
-  }, [busy, home, scrollToBottom, updateScrollToBottomVisibility])
+  }, [busy, home, scrollToBottom, thread.sessionId, updateScrollToBottomVisibility])
 
   useEffect(() => {
     const stream = streamRef.current
@@ -711,6 +686,9 @@ export function Stream({
   return (
     <div
       ref={streamRef}
+      onWheel={() => { focusedSessionRef.current = null }}
+      onPointerDown={() => { focusedSessionRef.current = null }}
+      onKeyDown={() => { focusedSessionRef.current = null }}
       className="conversation-stream [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)]"
       style={{
         flex: home ? 'none' : 1,
@@ -801,7 +779,7 @@ export function Stream({
                     : undefined
                 }
                 onRewind={rewindPrompt}
-                onRetry={retryTurn}
+                onContinue={continueTurn}
                 onOpenDelivery={onOpenDelivery}
               />
             </div>
@@ -818,6 +796,7 @@ export function Stream({
         )}
         {showWorking && <Working waiting={thread.status === 'waiting'} />}
         <div ref={endRef} />
+        <div ref={focusSpacerRef} aria-hidden="true" />
       </div>
       {showScrollToBottom && (
         <Button
@@ -955,7 +934,7 @@ function Item({
   turnOutcome,
   turnTiming,
   onRewind,
-  onRetry,
+  onContinue,
   onOpenDelivery
 }: {
   item: ConvItem
@@ -964,7 +943,7 @@ function Item({
   turnOutcome?: TurnOutcome
   turnTiming?: TurnTiming
   onRewind: (anchor: number) => Promise<string | null>
-  onRetry: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
+  onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
   onOpenDelivery?: (member: DeliveryCardMember) => void
 }): React.JSX.Element | null {
   switch (item.kind) {
@@ -1017,7 +996,7 @@ function Item({
         />
       )
     case 'error':
-      return <ErrorCard item={item} onRetry={onRetry} />
+      return <ErrorCard item={item} onContinue={onContinue} />
     case 'tool':
       return item.status === 'running' || item.status === 'error' ? (
         <ActivityRun items={[item]} turnId={item.turnId} />
@@ -4454,10 +4433,10 @@ function NoticeLine({
 
 function ErrorCard({
   item,
-  onRetry
+  onContinue
 }: {
   item: Extract<ConvItem, { kind: 'error' }>
-  onRetry: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
+  onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { state, patchThread } = useApp()
@@ -4564,12 +4543,10 @@ function ErrorCard({
       )
     }))
   }
-  const retrying =
-    item.runtimeAction === 'retry_turn' && item.actionState === 'submitting'
-  const retried =
-    item.runtimeAction === 'retry_turn' && item.actionState === 'confirmed'
-  const retryUnknown =
-    item.runtimeAction === 'retry_turn' &&
+  const continuing =
+    item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
+  const continueUnknown =
+    item.runtimeAction === 'continue_turn' &&
     item.actionState === 'outcome_unknown'
   const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
   if (turnUnknown) {
@@ -4621,21 +4598,19 @@ function ErrorCard({
         >
           {failureText.action}
         </AlertDescription>
-        {item.runtimeAction === 'retry_turn' ? (
+        {item.runtimeAction === 'continue_turn' ? (
           <div>
             <Button
-              data-testid="turn-regenerate"
-              disabled={retrying || retried || retryUnknown}
-              loading={retrying}
+              data-testid="turn-continue"
+              disabled={continuing || continueUnknown}
+              loading={continuing}
               loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-              onClick={() => void onRetry(item)}
+              onClick={() => void onContinue(item)}
               variant="outline"
             >
-              {retried
-                ? t('stream.regenerateSubmitted')
-                : retryUnknown
-                  ? t('stream.regeneratePending')
-                  : t('stream.regenerate')}
+              {continueUnknown
+                ? t('stream.continuePending')
+                : t('stream.continueInterrupted')}
             </Button>
           </div>
         ) : null}
@@ -4643,8 +4618,8 @@ function ErrorCard({
           <div
             className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-error-text-primary)]"
             data-testid={
-              item.runtimeAction === 'retry_turn'
-                ? 'turn-regenerate-error'
+              item.runtimeAction === 'continue_turn'
+                ? 'turn-continue-error'
                 : 'turn-unknown-confirm-error'
             }
           >

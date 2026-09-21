@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryFile
@@ -90,7 +90,7 @@ class PdfIndexService:
             max_workers=PARSER_WORKERS, thread_name_prefix="pdf-index"
         )
         self._lock = threading.Lock()
-        self._jobs: dict[tuple[str, str], object] = {}
+        self._jobs: dict[tuple[str, str], Future[None]] = {}
         self._processes: set[subprocess.Popen] = set()
         self._closed = False
         self._pending_bytes = 0
@@ -113,6 +113,7 @@ class PdfIndexService:
         )
 
     def _database(self, document: CitationDocument):
+        database: Path | str
         if document.storage_scope == LITERATURE_STORAGE:
             database = SERVICE_LITERATURE_DATABASE
             foreign_key = ""

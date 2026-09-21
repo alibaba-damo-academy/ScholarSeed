@@ -33,13 +33,6 @@
           "idle_seconds": 30.0
         }
       }
-    },
-    "dsh": {
-      "adapter": "scholarseed-dsh",
-      "module": "scholarseed_dsh",
-      "enabled": false,
-      "profile": "deepseek_harness",
-      "reported_version": "0.0.0"
     }
   }
 }

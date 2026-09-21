@@ -2006,7 +2006,7 @@ export interface ModelInfo {
   profile_id?: string
   billing?: 'api' | 'subscription'
   reasoning_efforts?: string[] | null
-  reasoning_options?: Array<{ kind: string; wire?: Record<string, string>; values?: string[] }> | null
+  reasoning_options?: Array<{ kind: string; wire?: Record<string, string>; values?: string[]; default?: string | null }> | null
   reasoning?: { supported?: boolean; options?: unknown[] | null } | null
   reasoning_effort?: string
   disabled?: boolean

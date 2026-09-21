@@ -210,6 +210,42 @@ function loader(): DocumentLoader {
   }
 }
 
+test('clean binary sessions share one immutable baseline snapshot', async () => {
+  const pdfSource = { kind: 'project' as const, path: 'paper.pdf' }
+  const workspace = new DocumentWorkspace({
+    async load() {
+      return {
+        documentId: 'project:current:paper.pdf',
+        source: pdfSource,
+        viewer: 'pdf' as const,
+        processor: null,
+        capabilities: {
+          can_preview: true,
+          can_edit: false,
+          can_select: true,
+          can_annotate: true,
+          can_save: true,
+          can_version: true,
+          can_diff: false,
+          pending: []
+        },
+        revision: 'sha256:pdf',
+        mediaType: 'application/pdf',
+        bytes: new Uint8Array([1, 2, 3])
+      }
+    },
+    async commit() {
+      return { ok: false as const, error: 'unavailable' }
+    }
+  })
+
+  const tabId = await workspace.open(pdfSource, 'preview')
+  const session = workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[tabId].sessionId]
+
+  assert.equal(session.bytes, session.savedBytes)
+  assert.deepEqual(Array.from(session.bytes), [1, 2, 3])
+})
+
 test('failed document loads preserve typed evidence and can be retried in place', async () => {
   let attempts = 0
   const successful = loader()

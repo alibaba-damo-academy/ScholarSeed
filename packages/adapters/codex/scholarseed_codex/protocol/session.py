@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Mapping
 
 from scholarseed_codex.protocol.mcp import JsonValue
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.history import MessagePhase, TurnStatus
 from scholarseed_runtime.contract.incident import RuntimeIncident
 
@@ -204,6 +205,7 @@ class CodexSessionOpenRequest:
     network_access: bool = False
     created_at: str | None = None
     ephemeral: bool = False
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
 CodexSessionEventObserver = Callable[[CodexSessionEvent], Awaitable[None] | None]

@@ -23,6 +23,21 @@ from scholarseed_runtime.contract.incident import (
 CODEX_RUNTIME_ID = "codex"
 
 
+class CodexActivationStage(str, Enum):
+    PREPARE_LOCK_WAIT = "codex.prepare_lock_wait"
+    LAUNCH_CREDENTIALS = "codex.launch_credentials"
+    MODEL_CREDENTIALS = "codex.model_credentials"
+    MODEL_CATALOG = "codex.model_catalog"
+    READINESS = "codex.readiness"
+    READINESS_LOCK_WAIT = "codex.readiness_lock_wait"
+    READINESS_PROBE = "codex.readiness_probe"
+    RESOURCE_WAIT = "codex.resource_wait"
+    PROCESS_START = "codex.process_start_handshake"
+    PROCESS_READY_WAIT = "codex.process_ready_wait"
+    SESSION_OPEN = "codex.session_open"
+    SESSION_RESUME = "codex.session_resume"
+
+
 CODEX_DEFAULT_BIN = "codex"
 
 

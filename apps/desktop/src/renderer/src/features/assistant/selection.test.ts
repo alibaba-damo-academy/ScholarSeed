@@ -65,9 +65,9 @@ test('answer selection menu items share one style without a default fill', () =>
   const annotations = readFileSync(new URL('./Annotations.tsx', import.meta.url), 'utf8')
   const menu = annotations.slice(annotations.indexOf('remaining.selectionActions') - 2000, annotations.indexOf('remaining.selectionActions'))
   const items = menu.match(/<Button\b/g) ?? []
-  // 两项必须用同一个常量, 否则其中一项带默认底色会看起来已选中。
-  assert.equal(items.length, 2)
-  assert.equal((menu.match(/className=\{SELECTION_ACTION_CLASS\}/g) ?? []).length, 2)
+  // 每项必须用同一个常量, 否则其中一项带默认底色会看起来已选中。
+  assert.equal(items.length, 3)
+  assert.equal((menu.match(/className=\{SELECTION_ACTION_CLASS\}/g) ?? []).length, 3)
   // 默认态不能上底色; hover 态的 hover:!bg-[...] 是正常高亮。
   assert.doesNotMatch(SELECTION_ACTION_SOURCE(annotations), /(?<!hover:)!bg-\[/)
 })

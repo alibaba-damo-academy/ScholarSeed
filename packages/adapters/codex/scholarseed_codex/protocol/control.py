@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Mapping
 
 from scholarseed_codex.protocol.session import CodexRuntimeIdentity, CodexRuntimeLaunchArgument
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 
 
 @dataclass(frozen=True)
@@ -21,3 +22,4 @@ class CodexControlRequest:
     remove_environment: tuple[str, ...] = ()
     launch_arguments: tuple[CodexRuntimeLaunchArgument, ...] = ()
     authentication_required: bool = True
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)

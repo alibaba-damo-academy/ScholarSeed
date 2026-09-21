@@ -174,6 +174,13 @@ def read(connection: sqlite3.Connection, batch_id: str) -> ReviewBatch | None:
     return _batch(row, members)
 
 
+def _required(connection: sqlite3.Connection, batch_id: str) -> ReviewBatch:
+    batch = read(connection, batch_id)
+    if batch is None:
+        raise ReviewBatchStoreConflict("review_batch_not_found")
+    return batch
+
+
 def _members(connection: sqlite3.Connection, batch_id: str) -> list[sqlite3.Row]:
     return connection.execute(
         """
@@ -249,7 +256,7 @@ class ReviewBatchStore:
         if not self._database.exists():
             return None
         with closing(connect(self._database)) as connection:
-            return read(connection, batch_id)
+            return _required(connection, batch_id)
 
     def reconcile_completed(self, batch_id: str, now: int) -> ReviewBatch:
         """Repair only the batch projection; completed members never replay file writes."""
@@ -267,7 +274,7 @@ class ReviewBatchStore:
                     "UPDATE resources_review_batches SET state = ?, updated_at_ms = ? WHERE batch_id = ?",
                     (ReviewBatchState.COMPLETED.value, now, batch_id),
                 )
-                return read(connection, batch_id)
+                return _required(connection, batch_id)
             return current
 
     def batches(
@@ -344,7 +351,7 @@ class ReviewBatchStore:
                 "UPDATE resources_review_batches SET state = ?, updated_at_ms = ? WHERE batch_id = ?",
                 (state.value, now, batch_id),
             )
-            return read(connection, batch_id)
+            return _required(connection, batch_id)
 
     def begin_request(
         self, batch_id: str, idempotency_key: str, request_digest: str, now: int
@@ -425,7 +432,7 @@ class ReviewBatchStore:
                 "UPDATE resources_review_batches SET state = ?, updated_at_ms = ? WHERE batch_id = ?",
                 (batch_state.value, now, batch_id),
             )
-            return read(connection, batch_id)
+            return _required(connection, batch_id)
 
     def close_resolved(self, batch_id: str, now: int) -> ReviewBatch:
         """Reconcile members whose existing primitive committed before progress writeback."""
@@ -458,7 +465,7 @@ class ReviewBatchStore:
                 "UPDATE resources_review_batches SET state = ?, updated_at_ms = ? WHERE batch_id = ?",
                 (state.value, now, batch_id),
             )
-            return read(connection, batch_id)
+            return _required(connection, batch_id)
 
 
 __all__ = [

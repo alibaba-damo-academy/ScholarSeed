@@ -17,7 +17,7 @@ FONT_ENCODING_KEY = "Encoding"
 def named_encoding(data: bytes) -> dict[int, str]:
     """Use the PostScript tokenizer, never infer a character from a numeric CID."""
     parser = Type1FontHeaderParser(BytesIO(data))
-    result = {}
+    result: dict[int, str] = {}
     while True:
         try:
             cid, name = parser.nextobject()

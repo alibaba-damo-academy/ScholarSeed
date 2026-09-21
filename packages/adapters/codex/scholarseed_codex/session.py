@@ -50,7 +50,7 @@ from scholarseed_codex.protocol.session import (
     CodexSessionOpenRequest,
     CodexToolResponse,
 )
-from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError
+from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
@@ -295,6 +295,7 @@ class CodexRuntimeSession:
                 skill_roots=request.skill_roots,
                 writable_roots=request.permission.writable_roots,
                 network_access=request.permission.network_access,
+                timing=request.timing,
             ),
             on_event=self._on_native_event,
             host_pool=self._host_pool,
@@ -466,7 +467,13 @@ class CodexRuntimeSession:
                 await self._apply_model_connection()
                 self._model_prepared = True
             await self._verify_required_capabilities()
-            await self._native.open()
+            stage = (
+                CodexActivationStage.SESSION_RESUME
+                if self._native.request.resume_session_id
+                else CodexActivationStage.SESSION_OPEN
+            )
+            with self._request.timing.measure(stage):
+                await self._native.open()
             if self._request.initial_history:
                 await self._native.host.seed_history(
                     self._native.session_id, self._request.initial_history
@@ -499,7 +506,8 @@ class CodexRuntimeSession:
     async def _apply_model_connection(self) -> None:
         await self._configure_model_connection()
         request = self._native.request
-        catalog_argument = await model_catalog_argument(self._request.model, request)
+        with self._request.timing.measure(CodexActivationStage.MODEL_CATALOG):
+            catalog_argument = await model_catalog_argument(self._request.model, request)
         self._native.request = replace(
             request, launch_arguments=(*request.launch_arguments, catalog_argument)
         )
@@ -537,7 +545,8 @@ class CodexRuntimeSession:
         if transport.credential_ref:
             if self._request.credential_port is None:
                 raise ValueError("model credential port is required")
-            material = await self._request.credential_port.resolve(transport.credential_ref)
+            with self._request.timing.measure(CodexActivationStage.MODEL_CREDENTIALS):
+                material = await self._request.credential_port.resolve(transport.credential_ref)
         if material.api_key:
             provider["env_key"] = CODEX_MODEL_API_KEY_ENV
             environment[CODEX_MODEL_API_KEY_ENV] = material.api_key

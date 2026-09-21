@@ -15,7 +15,7 @@ export class EncryptedPdfError extends Error {
 }
 
 export function classifyPdfLoadFailure(error: unknown): PdfLoadFailure {
-  return error instanceof EncryptedPdfError
+  return error instanceof EncryptedPdfError || (error instanceof Error && error.name === 'PasswordException')
     ? { kind: PDF_LOAD_FAILURE_KIND.encrypted }
     : {
         kind: PDF_LOAD_FAILURE_KIND.unknown,

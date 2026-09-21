@@ -42,8 +42,8 @@ RESOURCE_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "resource/"
 RESOURCE_DEFAULT_LIMIT = 20
 RESOURCE_MAX_LIMIT = 50
 RESOURCE_CURSOR_CHARS = ARTIFACT_PATH_CHARS
-RESOURCE_SCOPE = "project_resources"
-RESOURCE_UNAVAILABLE_WARNING = "authorized_root_unavailable"
+RESOURCE_SCOPE: Literal["project_resources"] = "project_resources"
+RESOURCE_UNAVAILABLE_WARNING: Literal["authorized_root_unavailable"] = "authorized_root_unavailable"
 
 
 class HistorySearch(BaseModel):
@@ -260,7 +260,7 @@ class LiteratureAnnotations(BaseModel):
 PAPERCARD_REGISTER_OPERATION = "register-card"
 PDF_MATERIALIZE_OPERATION = "materialize"
 ANNOTATIONS_OPERATION = "annotations"
-PDF_REQUESTS = {
+PDF_REQUESTS: dict[str, type[BaseModel]] = {
     name: PdfQuery for name in ("list", "prepare", "status", "read", "search", "library")
 }
 
@@ -350,13 +350,13 @@ class LiteratureReviewPublish(BaseModel):
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
-LITERATURE_READING_REQUESTS = {
+LITERATURE_READING_REQUESTS: dict[str, type[BaseModel]] = {
     "list": LiteratureList,
     "read": LiteratureRead,
     "authorize": LiteratureAuthorize,
     ANNOTATIONS_OPERATION: LiteratureAnnotations,
 }
-LITERATURE_REQUESTS = {
+LITERATURE_REQUESTS: dict[str, type[BaseModel]] = {
     **LITERATURE_READING_REQUESTS,
     "result": LiteratureResultPublish,
     "review": LiteratureReviewPublish,
@@ -418,7 +418,7 @@ class PlanWrite(BaseModel):
     reason: str = Field(default="", max_length=PLAN_TEXT_CHARS)
 
 
-PLAN_REQUESTS = {"get": PlanRead, "write": PlanWrite}
+PLAN_REQUESTS: dict[str, type[BaseModel]] = {"get": PlanRead, "write": PlanWrite}
 BRIDGE_REQUESTS.update(
     {("plan", name): (request, PLAN_ROUTE_PREFIX + name) for name, request in PLAN_REQUESTS.items()}
 )

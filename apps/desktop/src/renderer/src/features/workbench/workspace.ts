@@ -330,6 +330,11 @@ function copyBytes(bytes: Uint8Array): Uint8Array {
   return new Uint8Array(bytes)
 }
 
+function cleanByteState(bytes: Uint8Array): Pick<DocumentSession, 'bytes' | 'savedBytes'> {
+  const snapshot = copyBytes(bytes)
+  return { bytes: snapshot, savedBytes: snapshot }
+}
+
 function canonicalViewKind(
   viewer: ViewerKind,
   requested: DocumentViewKind,
@@ -549,7 +554,7 @@ export class DocumentWorkspace {
 
   async open(
     source: DocumentSource,
-    viewKind: DocumentViewKind,
+    viewKind: DocumentViewKind = viewerPolicy(viewerForPath(source.path)).defaultViewKind,
     title = titleFor(source.path),
     area?: DockArea,
     titleFallback?: DocumentTab['titleFallback']
@@ -745,8 +750,7 @@ export class DocumentWorkspace {
             revision: loaded.revision,
             mediaType: loaded.mediaType,
             contentKind: loaded.contentKind ?? 'unknown',
-            bytes: copyBytes(loaded.bytes),
-            savedBytes: copyBytes(loaded.bytes),
+            ...cleanByteState(loaded.bytes),
             text,
             savedText: text,
             lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
@@ -823,8 +827,7 @@ export class DocumentWorkspace {
       revision: loaded.revision,
       mediaType: loaded.mediaType,
       contentKind: loaded.contentKind ?? 'unknown',
-      bytes: copyBytes(loaded.bytes),
-      savedBytes: copyBytes(loaded.bytes),
+      ...cleanByteState(loaded.bytes),
       text,
       savedText: text,
       lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
@@ -1330,8 +1333,7 @@ export class DocumentWorkspace {
           revision: loaded.revision,
           mediaType: loaded.mediaType,
           contentKind: loaded.contentKind ?? 'unknown',
-          bytes: copyBytes(loaded.bytes),
-          savedBytes: copyBytes(loaded.bytes),
+          ...cleanByteState(loaded.bytes),
           text,
           savedText: text,
           lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
@@ -1954,7 +1956,7 @@ export class DocumentWorkspace {
             ...this.state.sessions,
             [pending.sessionId]: {
               ...session,
-              bytes: copyBytes(session.savedBytes),
+              bytes: session.savedBytes,
               text: session.savedText,
               dirty: false,
               changeVersion: session.changeVersion + 1,
@@ -2089,7 +2091,9 @@ export class DocumentWorkspace {
           ...current,
           revision: result.revision,
           versioning: null,
-          savedBytes: committedBytes,
+          ...(current.changeVersion === committedChangeVersion
+            ? { bytes: committedBytes, savedBytes: committedBytes }
+            : { savedBytes: committedBytes }),
           savedText: committedText,
           dirty: current.changeVersion !== committedChangeVersion,
           saveState: current.changeVersion === committedChangeVersion ? 'clean' : 'dirty'

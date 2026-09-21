@@ -279,7 +279,7 @@ function useMissingDocumentNotice(tab: DocumentTab, title: string, missing: bool
   }, [missing, tab.id, title, t, toast, workspace])
 }
 
-function DocumentView({ tab }: { tab: DocumentTab }): React.JSX.Element {
+function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { t: conversation } = useTranslation('conversation')
   const { t: uiText } = useTranslation('ui')
@@ -362,6 +362,7 @@ function DocumentView({ tab }: { tab: DocumentTab }): React.JSX.Element {
             ? <div className="vds-viewer-empty">{t('dock.deleted')}</div>
             : viewer
             ? viewer.render({
+                active,
                 path: session.source.path,
                 documentSessionId: session.id,
                 tabId: tab.id,
@@ -472,7 +473,7 @@ function LeafView({
                 className="vds-document-view-slot"
                 hidden={candidate.id !== tab.id}
               >
-                <DocumentView tab={candidate} />
+                <DocumentView active={candidate.id === tab.id} tab={candidate} />
               </div>
             )
           })

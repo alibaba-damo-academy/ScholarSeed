@@ -3,6 +3,7 @@ import type { ViewerKind } from '../../contracts/workbench.ts'
 export const OFFICE_EXCLUSIVE_GROUP = 'office' as const
 
 export interface ViewerPolicy {
+  defaultViewKind: 'preview' | 'edit'
   exclusiveGroup: typeof OFFICE_EXCLUSIVE_GROUP | null
   canMove: boolean
   canSplit: boolean
@@ -10,6 +11,7 @@ export interface ViewerPolicy {
 }
 
 const DEFAULT_VIEWER_POLICY: ViewerPolicy = {
+  defaultViewKind: 'preview',
   exclusiveGroup: null,
   canMove: true,
   canSplit: true,
@@ -17,6 +19,7 @@ const DEFAULT_VIEWER_POLICY: ViewerPolicy = {
 }
 
 const OFFICE_VIEWER_POLICY: ViewerPolicy = {
+  defaultViewKind: 'preview',
   exclusiveGroup: OFFICE_EXCLUSIVE_GROUP,
   canMove: false,
   canSplit: false,
@@ -24,6 +27,7 @@ const OFFICE_VIEWER_POLICY: ViewerPolicy = {
 }
 
 const VIEWER_POLICIES: Partial<Record<ViewerKind, ViewerPolicy>> = {
+  markdown: { ...DEFAULT_VIEWER_POLICY, defaultViewKind: 'edit' },
   office: OFFICE_VIEWER_POLICY,
   spreadsheet: OFFICE_VIEWER_POLICY
 }

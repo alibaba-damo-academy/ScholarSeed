@@ -35,7 +35,7 @@ done
 # 注: apps/serve/service/capabilities/skills 是 prebundle 生成物, 由
 # check_import_position.py 的 SKIP_ROOTS 与 pyproject 的 black/isort extend-exclude 排除。
 if [ ${#PATHS[@]} -eq 0 ]; then
-  for p in apps/serve/service apps/serve/tests packages/runtime/scholarseed_runtime packages/damoatrace/damoatrace packages/adapters/codex/scholarseed_codex packages/adapters/dsh/scholarseed_dsh tests scripts; do
+  for p in apps/serve/service apps/serve/tests packages/runtime/scholarseed_runtime packages/damoatrace/damoatrace packages/adapters/codex/scholarseed_codex tests scripts; do
     [ -e "$p" ] && PATHS+=("$p")
   done
 fi

@@ -74,8 +74,9 @@ declare global {
     /** 写系统剪贴板。不走 navigator.clipboard（要求文档聚焦，桌面端易失焦被拒）。 */
     acquireOfficeImage: (source: OfficeImageSource) => Promise<OfficeImageResult>
     writeClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>
+    writeClipboardContent: (payload: import('../../clipboard').ClipboardContentPayload) => Promise<import('../../clipboard').ClipboardContentResult>
     pasteClipboard: () => Promise<boolean>
-    writeClipboardImage: (bytes: Uint8Array) => Promise<{ ok: boolean; error?: string }>
+    writeClipboardImage: (bytes: Uint8Array) => Promise<import('../../feedback').FeedbackClipboardImageResult>
     readOfficeClipboard: () => Promise<OfficeClipboardResult>
     /** 资料导入：按指定范围多选本地资料，取消返回空数组。 */
     pickImport: (target: ImportPickerTarget) => Promise<string[]>

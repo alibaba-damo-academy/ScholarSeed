@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -14,11 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
 
 SEARCH_CARD = "literature-search"
-SEARCH_VERSION = "1.0"
-PRECISE_SEARCH_ORIGIN = "precise-search"
-LITERATURE_REVIEW_ORIGIN = "literature-review"
-LEGACY_LITERATURE_REVIEW_ORIGIN = "slr-codex"
-AGENTIC_SEARCH_ORIGIN = "agentic-search"
+SEARCH_VERSION: Literal["1.0"] = "1.0"
+PRECISE_SEARCH_ORIGIN: Literal["precise-search"] = "precise-search"
+LITERATURE_REVIEW_ORIGIN: Literal["literature-review"] = "literature-review"
+LEGACY_LITERATURE_REVIEW_ORIGIN: Literal["slr-codex"] = "slr-codex"
+AGENTIC_SEARCH_ORIGIN: Literal["agentic-search"] = "agentic-search"
 LITERATURE_REVIEW_ORIGINS = frozenset({LITERATURE_REVIEW_ORIGIN, LEGACY_LITERATURE_REVIEW_ORIGIN})
 SEARCH_FILE_BYTES = 8 * 1024 * 1024
 SEARCH_CARD_PAPERS = 3
@@ -44,6 +44,24 @@ ARTIFACT_REFERENCE_FIELDS = ("artifact_id", "path", "name", "media_type", "size"
 AUTHORIZATION_PAPER_PREFIX = "paper:"
 AUTHORIZATION_ARTIFACT_PREFIX = "artifact:"
 SEARCH_SUCCESS = frozenset(("success", "partial"))
+SearchStatus = Literal[
+    "success",
+    "partial",
+    "no_confident_match",
+    "execution_blocked",
+    "source_failed",
+    "invalid_result",
+]
+SEARCH_STATUSES = frozenset(
+    (
+        "success",
+        "partial",
+        "no_confident_match",
+        "execution_blocked",
+        "source_failed",
+        "invalid_result",
+    )
+)
 SOURCE_SUCCESS = frozenset(("success", "partial"))
 SOURCE_STATUSES = frozenset(
     (
@@ -265,9 +283,13 @@ def project_papers(raw_papers: list[dict]) -> list[SearchPaper]:
             raise ValueError("literature_result_invalid_paper")
         relevance = raw.get("relevance") or {}
         reasons = _strings(relevance.get("reasons"), 10) if isinstance(relevance, dict) else []
+        identity = _text(raw.get("id"), SEARCH_SHORT)
+        title = _text(raw.get("title"))
+        if not identity or not title:
+            raise ValueError("literature_result_invalid_paper")
         paper = SearchPaper(
-            id=raw.get("id"),
-            title=raw.get("title"),
+            id=identity,
+            title=title,
             authors=_strings(raw.get("authors")),
             year=raw.get("year"),
             venue=_text(raw.get("venue")) or None,
@@ -350,9 +372,10 @@ def prepare_result(
         or len(raw_papers) > SEARCH_MAX_PAPERS
     ):
         raise ValueError("literature_result_invalid")
-    status = metadata.get("status")
-    if not isinstance(status, str):
+    status_value = metadata.get("status")
+    if not isinstance(status_value, str) or status_value not in SEARCH_STATUSES:
         raise ValueError("literature_result_status_invalid")
+    status = cast(SearchStatus, status_value)
     if (status in SEARCH_SUCCESS) != bool(raw_papers):
         raise ValueError("literature_result_status_mismatch")
     warnings = _strings(metadata.get("warnings"))

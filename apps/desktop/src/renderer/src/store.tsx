@@ -1071,11 +1071,11 @@ export interface Actions extends AssistantIngress {
   openFilePreview: (target: FilePreviewTarget) => void
   openSession: (
     id: string,
-    focus?: { turnId?: string | null; itemId?: string | null }
+    focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>
   ) => void
   openPanelSession: (
     node: SessionNode,
-    focus?: { turnId?: string | null; itemId?: string | null }
+    focus?: Omit<NonNullable<AiPanelState['messageFocus']>, 'sessionId'>
   ) => void
   /** 统一项目切换：解绑跨项目前台会话，不终止后台任务。 */
   selectProject: (projectId: string) => void
@@ -1502,6 +1502,13 @@ export function StoreProvider({
   const resourcePathRevealSeq = useRef(0)
   /** 连续打开资料文件时，只有最后一次请求可以更新自动上下文。 */
   const resourceFileContextSeq = useRef(0)
+  /** Session 上下文加载期间暂存最后一个自动文档引用，ready 后再持久化。 */
+  const pendingResourceFileContext = useRef<{
+    requestSeq: number
+    sessionId: string
+    projectId: string | null
+    candidate: AssistantContextCandidate
+  } | null>(null)
   /** 文献库重拉的请求代次 (见 reloadLiterature: 丢弃过期响应)。 */
   const literatureReloadSeq = useRef(0)
   /** AI 上下文候选请求代次：输入 @ 连续筛选时只接收最后一次响应。 */
@@ -2033,7 +2040,7 @@ export function StoreProvider({
       const projectId = assistantProject(current).projectId
       const workspace = documentWorkspaces.forProject(projectId)
       const navigationView = mainViewForDocumentSource(source, current.mainView)
-      void workspace.open(source, 'preview', filePreview.title, undefined, filePreview.titleFallback).then((tabId) => {
+      void workspace.open(source, undefined, filePreview.title, undefined, filePreview.titleFallback).then((tabId) => {
         workspace.setTabNavigationView(tabId, navigationView)
         setState((latest) => assistantProject(latest).projectId === projectId ? ({
           ...latest,
@@ -2063,7 +2070,7 @@ export function StoreProvider({
             open: true,
             sessionMenuOpen: false,
             messageFocus: focus
-              ? { sessionId: id, turnId: focus.turnId, itemId: focus.itemId }
+              ? { ...focus, sessionId: id }
               : null
           }
         }
@@ -2113,7 +2120,7 @@ export function StoreProvider({
           open: true,
           sessionMenuOpen: false,
           messageFocus: focus
-            ? { sessionId: id, turnId: focus.turnId, itemId: focus.itemId }
+            ? { ...focus, sessionId: id }
             : null
         },
         sessions,
@@ -2131,7 +2138,7 @@ export function StoreProvider({
         aiPanel: {
           ...activated.aiPanel,
           messageFocus: focus
-            ? { sessionId: node.id, turnId: focus.turnId, itemId: focus.itemId }
+            ? { ...focus, sessionId: node.id }
             : null
         }
       }
@@ -2467,8 +2474,26 @@ export function StoreProvider({
             }
             : {})
         }))
-        if (openedFileContext)
-          void actRef.current.addContext(openedFileContext)
+        if (openedFileContext) {
+          const latest = stateRef.current
+          const sessionId = latest.activeSession
+          if (
+            !sessionId
+            || (
+              latest.aiPanel.sessionId === sessionId
+              && latest.aiPanel.contextState === 'ready'
+            )
+          ) {
+            void actRef.current.addContext(openedFileContext)
+          } else {
+            pendingResourceFileContext.current = {
+              requestSeq: contextRequestSeq,
+              sessionId,
+              projectId: project,
+              candidate: openedFileContext
+            }
+          }
+        }
       })
       setState((current) => ({
         ...current,
@@ -4944,6 +4969,36 @@ export function StoreProvider({
       }
     }))
   }, [state.activeSession, assistantProject(state).projectPath])
+
+  useEffect(() => {
+    const pending = pendingResourceFileContext.current
+    if (!pending) return
+    const projectId = assistantProject(state).projectId
+    const stale =
+      pending.requestSeq !== resourceFileContextSeq.current
+      || pending.sessionId !== state.activeSession
+      || pending.projectId !== projectId
+      || pending.candidate.source_id !== state.resource.selected
+      || !state.aiPanel.open
+    if (stale) {
+      pendingResourceFileContext.current = null
+      return
+    }
+    if (
+      state.aiPanel.sessionId !== pending.sessionId
+      || state.aiPanel.contextState !== 'ready'
+    ) return
+    pendingResourceFileContext.current = null
+    void actRef.current.addContext(pending.candidate)
+  }, [
+    state.activeSession,
+    state.aiPanel.contextState,
+    state.aiPanel.open,
+    state.aiPanel.sessionId,
+    state.homeSelectedProjectId,
+    state.projects,
+    state.resource.selected
+  ])
 
   const value = useMemo(
     () => ({ state, set, closeMenus, act, patchThread, appendThread }),

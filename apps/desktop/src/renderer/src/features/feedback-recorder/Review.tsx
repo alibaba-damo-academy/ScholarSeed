@@ -6,6 +6,7 @@ import {
   Badge,
   Button,
   Card,
+  CopyButton,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -17,19 +18,21 @@ import {
 import {
   RECORDER_NOTE_MAX_LENGTH,
   type RecordedScreenshot,
-  type RecordedStep,
   type RecordingSession,
   type StepKind,
   type SummaryFields
 } from './model'
-import { targetDisplayLabel } from './target'
-import { writeClipboardImage } from '../../components/primitive/clipboard'
+import {
+  composeReviewHtml,
+  composeReviewMarkdown,
+  formatClockTime,
+  reviewTargetLabel,
+  screenshotDataUrls,
+  type ReviewMarkdownLabels
+} from './markdown'
+import { writeClipboardContent, writeClipboardImage } from '../../components/primitive/clipboard'
 
-const CLOCK_PART_WIDTH = 2
-const MILLISECOND_PART_WIDTH = 3
 const STEP_NUMBER_OFFSET = 1
-const UNKNOWN_CLOCK_LABEL = '--:--:--.---'
-const PAGE_LANDMARK_TAGS = new Set(['main', 'section', 'aside'])
 const STEP_ACTION_TONES: Record<StepKind, 'brand' | 'neutral' | 'success' | 'warning'> = {
   click: 'brand',
   input: 'success',
@@ -55,21 +58,6 @@ interface ReviewProps {
   onScreenshotNoteChange: (screenshotId: string, text: string) => void
   onSubmit: () => void
   onSummaryChange: (field: keyof SummaryFields, value: string) => void
-}
-
-function formatClockTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return UNKNOWN_CLOCK_LABEL
-  const hours = String(date.getHours()).padStart(CLOCK_PART_WIDTH, '0')
-  const minutes = String(date.getMinutes()).padStart(CLOCK_PART_WIDTH, '0')
-  const seconds = String(date.getSeconds()).padStart(CLOCK_PART_WIDTH, '0')
-  const milliseconds = String(date.getMilliseconds()).padStart(MILLISECOND_PART_WIDTH, '0')
-  return `${hours}:${minutes}:${seconds}.${milliseconds}`
-}
-
-function reviewTargetLabel(step: RecordedStep): string {
-  if (PAGE_LANDMARK_TAGS.has(step.target.tag) && step.page.label) return step.page.label
-  return targetDisplayLabel(step.target)
 }
 
 interface ScreenshotEditorProps {
@@ -146,6 +134,24 @@ export function Review({
 }: ReviewProps): React.JSX.Element {
   const { t } = useTranslation('components')
   const [editingNoteStepId, setEditingNoteStepId] = React.useState<string | null>(null)
+  const clipboardHtmlRef = React.useRef('')
+  const markdownLabels: ReviewMarkdownLabels = {
+    summary: t('feedbackRecorder.review.summary'),
+    title: t('feedbackRecorder.review.title'),
+    steps: t('feedbackRecorder.review.steps'),
+    action: (kind) => t(STEP_ACTION_LABEL_KEYS[kind]),
+    sourcePage: (page) => t('feedbackRecorder.review.sourcePage', { value: page }),
+    sourceDialog: (page, dialog) => t('feedbackRecorder.review.sourceDialog', { page, dialog }),
+    elapsed: (value) => t('feedbackRecorder.elapsedMs', { value }),
+    note: (value) => t('feedbackRecorder.review.stepNote', { value }),
+    input: t('feedbackRecorder.review.inputValue'),
+    emptyValue: t('feedbackRecorder.review.emptyValue'),
+    screenshots: t('feedbackRecorder.review.linkedScreenshots'),
+    screenshotNote: t('feedbackRecorder.review.screenshotNote'),
+    operation: t('feedbackRecorder.review.markdownOperation'),
+    target: t('feedbackRecorder.review.markdownTarget'),
+    time: t('feedbackRecorder.review.markdownTime')
+  }
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !submitting) onCancel() }}>
       <DialogPortal>
@@ -165,7 +171,7 @@ export function Review({
               {t('feedbackRecorder.review.summaryHint')}
             </p>
             <Textarea
-              label={t('feedbackRecorder.review.final')}
+              aria-label={t('feedbackRecorder.review.final')}
               placeholder={t('feedbackRecorder.review.summaryPlaceholder')}
               rows={6}
               value={summary.final}
@@ -271,6 +277,18 @@ export function Review({
         </div>
         <DialogFooter>
           <Button disabled={submitting} variant="secondary" onClick={onCancel}>{t('feedbackRecorder.cancel')}</Button>
+          <CopyButton
+            copiedLabel={t('feedbackRecorder.review.copied')}
+            disabled={submitting}
+            getValue={async () => {
+              const screenshotSources = await screenshotDataUrls(session.screenshots)
+              clipboardHtmlRef.current = composeReviewHtml(session, summary, markdownLabels, screenshotSources)
+              return composeReviewMarkdown(session, summary, markdownLabels, screenshotSources)
+            }}
+            idleLabel={t('feedbackRecorder.review.copyMarkdown')}
+            size="md"
+            writeText={(text) => writeClipboardContent(text, clipboardHtmlRef.current)}
+          />
           <Button data-testid="feedback-recorder-submit" disabled={!summary.final.trim()} loading={submitting} onClick={onSubmit}>
             {t('feedbackRecorder.review.submit')}
           </Button>

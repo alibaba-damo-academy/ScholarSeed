@@ -301,6 +301,40 @@ class SessionService:
             default_model_id=RETIRED_NATIVE_MODEL_KEY,
         )
 
+    def _recover_selected_model(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        state: SessionModelState,
+        actor_id: str,
+    ) -> str:
+        """把会话存量选择对齐到目录当前可执行的键，发生切换时落盘修复。
+
+        目录解析（``selected_model_key``）自带未登录门禁回落：置灰的内置键会解析成
+        第一个可用模型。解析失败（键已不在目录）时保持原值，让 open 照旧给出可读错误。
+        """
+
+        try:
+            resolved = self._runtime.selected_model_key(state.selected_model_id, user_id=actor_id)
+        except SessionModelUnavailableError:
+            return state.selected_model_id
+        if resolved == state.selected_model_id:
+            return resolved
+        self._access.set_model(
+            session_id,
+            principal,
+            resolved,
+            reasoning_effort=state.selected_reasoning_effort,
+            thinking=state.selected_thinking,
+        )
+        self._logger.info(
+            "session_model_auto_recovered session_id=%s from=%s to=%s",
+            session_id,
+            state.selected_model_id,
+            resolved,
+        )
+        return resolved
+
     def bridge_caller(self, session_id: str) -> LiveSession | None:
         """An active, non-interrupted product caller; each route validates its capability."""
 
@@ -620,7 +654,9 @@ class SessionService:
         recovery_hil = self._access.pending_hil(record.session_id) if was_inflight else ()
         mode = record.policy_id or ASK_PERMISSION_MODE
         resume_state = self._model_state(session_id)
-        resume_model = resume_state.selected_model_id
+        # 登出会让会话存量选择指向被门禁置灰的内置模型；resume 时把会话选择修复到
+        # 目录解析出的生效模型（未登录时为第一个可用模型），避免整条会话卡在不可执行键上。
+        resume_model = self._recover_selected_model(session_id, principal, resume_state, actor_id)
         live: LiveSession | None = None
         try:
             live = await self._runtime.open(
@@ -1465,7 +1501,7 @@ class SessionService:
             )
         references: list[dict[str, Any]] = []
         for path, kind in canonical_paths:
-            reference = {
+            reference: dict[str, Any] = {
                 "reference_id": live.register_local_input_path(path, kind),
                 "path": str(path),
                 "name": path.name,
@@ -1999,7 +2035,14 @@ class SessionService:
                 raise SessionAccessError("session not found")
             selected_mode = record.policy_id or ASK_PERMISSION_MODE
             model_state = self._model_state(live.id)
-            selected_model = model_state.selected_model_id
+            # 与 resume 同一条修复语义：登出后置灰的存量选择在每轮准入前对齐到目录
+            # 当前可执行的键（未登录时为第一个可用模型），发生切换即落盘。
+            selected_model = self._recover_selected_model(
+                live.id,
+                SessionPrincipal(record.principal_id),
+                model_state,
+                live.user_id,
+            )
             environment_changed = dict(desired) != dict(live.process_environment)
             if live.runtime_session is not None:
                 restart = environment_changed or bool(

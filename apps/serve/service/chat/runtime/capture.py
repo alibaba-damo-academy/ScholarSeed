@@ -183,9 +183,12 @@ class SessionCapture:
         if not self.allowed():
             return None, None
         payload = event.payload if isinstance(event.payload, Mapping) else {}
+        raw_observations = payload.get(CONTENT_OBSERVATIONS, [])
+        if not isinstance(raw_observations, list):
+            raw_observations = []
         observations = {
             observation.get("field"): observation
-            for observation in payload.get(CONTENT_OBSERVATIONS, [])
+            for observation in raw_observations
             if isinstance(observation, dict)
         }
         key = (event.kind.value, event.native_item_id or event.event_id)

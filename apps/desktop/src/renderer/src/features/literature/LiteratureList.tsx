@@ -357,17 +357,45 @@ function Row({
     ) : key === 'tags' ? (
       <EllipsisText key={key} tooltip={facetNames(item[key])} tooltipPortalled>
         <span className={CHIP_CELL_CLASS}>
-          {item.tags.length === 0
-            ? EMPTY_CELL
-            : item.tags.map((tag) => (
+          {item.tags.length === 0 ? EMPTY_CELL : (
+            <>
                 <Tag
-                  className={CHIP_CLASS}
-                  color={semanticTagColorFor(tag.id)}
-                  key={tag.id}
+                  className="min-w-0 max-w-full"
+                  color={semanticTagColorFor(item.tags[0].id)}
                 >
-                  {tag.name}
+                  {item.tags[0].name}
                 </Tag>
-              ))}
+                {item.tags.length > 1 ? (
+                  <Tooltip
+                    className="shrink-0"
+                    content={(
+                      <span className="flex flex-wrap gap-1">
+                        {item.tags.slice(1).map((tag) => (
+                          <Tag color={semanticTagColorFor(tag.id)} key={tag.id}>
+                            {tag.name}
+                          </Tag>
+                        ))}
+                      </span>
+                    )}
+                    contentClassName="[--vds-tooltip-bg:var(--vds-bg-white-default)] [--vds-tooltip-color:var(--vds-text-primary)]"
+                    portalled
+                  >
+                    <Badge
+                      aria-label={literature('list.moreTags', {
+                        count: item.tags.length - 1,
+                        names: facetNames(item.tags.slice(1))
+                      })}
+                      className={MORE_CHIP_CLASS}
+                      size="sm"
+                      tabIndex={0}
+                      tone="neutral"
+                    >
+                      +{item.tags.length - 1}
+                    </Badge>
+                  </Tooltip>
+                ) : null}
+            </>
+          )}
         </span>
       </EllipsisText>
     ) : key === 'collections' ? (
@@ -1676,7 +1704,7 @@ export function LiteratureList(): React.JSX.Element {
           </Button>
         </div>
       ) : null}
-      <div className={`lit-body${focusedId ? ' has-detail' : ''} p-4`}>
+      <div className={`lit-body${focusedId ? ' has-detail' : ''} isolate p-4`}>
         <div className="relative flex flex-1 min-w-0">
           <div className="lit-table flex-1 min-w-0 overflow-x-auto overflow-y-auto rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-line-1)] bg-[var(--vds-bg-gray-default)]">
             <div

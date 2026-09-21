@@ -37,6 +37,7 @@ from scholarseed_runtime.contract import (
     TurnRequest,
 )
 from scholarseed_runtime.contract.command import SkillConfiguration, SkillConfigurationRequest
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.inventory import ModelInventory, SkillInventory
 from scholarseed_runtime.contract.resource import ResourcePurpose, ResourceRequest
@@ -299,6 +300,7 @@ class LiveSessionService:
         executable: str = "",
         process_environment: Mapping[str, str] | None = None,
         force_reload: bool = False,
+        timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING,
     ) -> SkillInventory:
         del executable
         launch_secrets, secret_port = _launch_secret_contract(process_environment)
@@ -312,6 +314,7 @@ class LiveSessionService:
                 roots=SERVICE_SKILL_ROOTS,
                 launch_secrets=launch_secrets,
                 secret_port=secret_port,
+                timing=timing,
             ),
             self.runtime_id,
         )
@@ -345,8 +348,14 @@ class LiveSessionService:
             return
         self._prewarm_done = True
 
-    async def configure_skills(self, *, cwd: Path, state: SkillProductState) -> SkillInventory:
-        inventory = await self.skill_inventory(cwd=cwd, force_reload=True)
+    async def configure_skills(
+        self,
+        *,
+        cwd: Path,
+        state: SkillProductState,
+        timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING,
+    ) -> SkillInventory:
+        inventory = await self.skill_inventory(cwd=cwd, force_reload=True, timing=timing)
         plan = self._skills.enablement_plan(inventory, state)
         enabled_by_path = {
             self._skills.manifest(skill.path).expanduser().resolve(): skill.enabled
@@ -359,11 +368,13 @@ class LiveSessionService:
         )
         if configurations:
             receipt = await self._gateway.provider(self.runtime_id).configure_skills(
-                SkillConfigurationRequest(cwd=cwd, roots=SERVICE_SKILL_ROOTS, skills=configurations)
+                SkillConfigurationRequest(
+                    cwd=cwd, roots=SERVICE_SKILL_ROOTS, skills=configurations, timing=timing
+                )
             )
             if receipt.state is not CommandState.APPLIED:
                 raise RuntimeError(receipt.safe_error or "skill configuration was not applied")
-            inventory = await self.skill_inventory(cwd=cwd, force_reload=True)
+            inventory = await self.skill_inventory(cwd=cwd, force_reload=True, timing=timing)
             effective = {
                 self._skills.manifest(skill.path).expanduser().resolve(): skill.enabled
                 for skill in inventory.skills
@@ -436,8 +447,10 @@ class LiveSessionService:
             live, purpose=purpose, request_id=request_id, deadline=deadline, on_wait=on_wait
         )
 
-    async def _prepare_attachment(self, live: LiveSession) -> None:
-        await self.configure_skills(cwd=live.runtime_workdir, state=load_skill_state())
+    async def _prepare_attachment(self, live: LiveSession, timing: RuntimeTimingPort) -> None:
+        await self.configure_skills(
+            cwd=live.runtime_workdir, state=load_skill_state(), timing=timing
+        )
 
     def _discard_attachment(self, live: LiveSession) -> None:
         self._models.release_session(live.id)

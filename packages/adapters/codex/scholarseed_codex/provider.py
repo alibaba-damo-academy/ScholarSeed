@@ -6,6 +6,7 @@ import asyncio
 import re
 import uuid
 import weakref
+from contextlib import AsyncExitStack
 from dataclasses import replace
 from functools import partial
 from hashlib import sha256
@@ -31,7 +32,7 @@ from scholarseed_codex.profile import (
 )
 from scholarseed_codex.protocol.control import CodexControlRequest
 from scholarseed_codex.protocol.session import CodexRuntimeIdentity
-from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError
+from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
@@ -50,6 +51,7 @@ from scholarseed_runtime.contract import (
     RuntimeValue,
 )
 from scholarseed_runtime.contract.command import SkillConfigurationRequest
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
     RESOURCE_RESERVATION_INVALID,
     ResourcePolicy,
@@ -172,10 +174,14 @@ class CodexRuntimeProvider:
             skill_roots=request.skill_roots,
             artifact_directives=request.artifact_directives,
             required_capabilities=resumed_capabilities(binding),
+            timing=request.timing,
         )
 
     async def reserve(self, request: ResourceRequest) -> ResourceReceipt:
-        async with self._prepare_lock:
+        timing = request.session_request.timing
+        async with AsyncExitStack() as preparation:
+            with timing.measure(CodexActivationStage.PREPARE_LOCK_WAIT):
+                await preparation.enter_async_context(self._prepare_lock)
             # Retain only an opaque intent digest with the pool's bounded receipts.
             self._request_fingerprints = {
                 key: value
@@ -198,6 +204,8 @@ class CodexRuntimeProvider:
                         )
                     return self._pool.receipt(reservation)
             open_request = self._open_request(request.session_request)
+            with timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
+                launch_environment = await _resolve_launch_secrets(open_request)
             session = CodexRuntimeSession(
                 open_request,
                 resume_binding=(
@@ -205,7 +213,7 @@ class CodexRuntimeProvider:
                     if isinstance(request.session_request, ResumeSessionRequest)
                     else None
                 ),
-                launch_environment=await _resolve_launch_secrets(open_request),
+                launch_environment=launch_environment,
                 host_pool=self._pool,
             )
             reservation = await session.prepare_resource(request.request_id, request.deadline)
@@ -324,6 +332,7 @@ class CodexRuntimeProvider:
         environment: dict[str, str],
         authentication_required: bool,
         remove_environment: tuple[str, ...] = (),
+        timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING,
     ) -> CodexRuntimeControl:
         executable = configured_codex_executable()
         runtime_home = prepare_codex_runtime_home(native_authentication=authentication_required)
@@ -342,6 +351,7 @@ class CodexRuntimeProvider:
                 process_environment={**environment, CODEX_HOME_ENV: str(runtime_home)},
                 remove_environment=remove_environment,
                 authentication_required=authentication_required,
+                timing=timing,
             ),
             host_pool=self._pool,
         )
@@ -354,6 +364,7 @@ class CodexRuntimeProvider:
             roots=request.roots,
             environment={},
             authentication_required=False,
+            timing=request.timing,
         )
         try:
             for skill in request.skills:
@@ -366,12 +377,15 @@ class CodexRuntimeProvider:
     async def inspect(self, request: RuntimeInspectionRequest) -> RuntimeInventory:
         """Inspect App Server state without creating or resuming a Codex thread."""
 
+        with request.timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
+            environment = await _resolve_launch_secrets(request)
         control = await self._control(
             cwd=request.cwd,
             roots=request.roots,
-            environment=await _resolve_launch_secrets(request),
+            environment=environment,
             remove_environment=request.launch_secrets.remove_environment,
             authentication_required=InventoryKind.MODELS in request.inventory.kinds,
+            timing=request.timing,
         )
         try:
             values: dict[str, RuntimeValue] = {}

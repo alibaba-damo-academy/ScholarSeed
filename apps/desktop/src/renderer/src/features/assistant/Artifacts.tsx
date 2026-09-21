@@ -507,17 +507,6 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
                 </EllipsisText>
               </span>
               <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)]">
-                <Button
-                  aria-label={a('artifactEntry.openName', { name: primary.name })}
-                  disabled={opening}
-                  loading={opening}
-                  onClick={() => void preview(primary)}
-                  title={a('artifactEntry.openName', { name: primary.name })}
-                  size="sm"
-                  variant="outline"
-                >
-                  {a('artifactEntry.open')}
-                </Button>
                 <DropdownMenu open={dropdownMenuOpen} onOpenChange={setDropdownMenuOpen}>
                   <DropdownMenuTrigger asChild>
                     <IconButton
@@ -532,6 +521,17 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
                     <ArtifactMenuItems {...menuProps} kind="dropdown" />
                   </DropdownMenuContent>
                 </DropdownMenu>
+                <Button
+                  aria-label={a('artifactEntry.openName', { name: primary.name })}
+                  disabled={opening}
+                  loading={opening}
+                  onClick={() => void preview(primary)}
+                  title={a('artifactEntry.openName', { name: primary.name })}
+                  size="sm"
+                  variant="outline"
+                >
+                  {a('artifactEntry.open')}
+                </Button>
                 {EXTRA_ARTIFACT_ACTIONS_VISIBLE && literatureEligible ? (
                   <Button data-testid="artifact-import-literature" size="sm" variant="secondary"
                     disabled={!sessionProject || savingLiterature} loading={savingLiterature}

@@ -171,6 +171,10 @@ test('empty, copy, overlay, table and pagination class contracts expose their st
 })
 
 test('pagination item builder keeps edges, current siblings and ellipsis', () => {
+  assert.deepEqual(getPaginationItems(1, 4, 4), [1, 2, 3, 4])
+  assert.deepEqual(getPaginationItems(1, 5, 4), [1, 2, 'ellipsis-right', 5])
+  assert.deepEqual(getPaginationItems(3, 5, 4), [1, 'ellipsis-left', 3, 'ellipsis-right', 5])
+  assert.deepEqual(getPaginationItems(5, 5, 4), [1, 'ellipsis-left', 4, 5])
   assert.deepEqual(getPaginationItems(1, 5), [1, 2, 3, 4, 5])
   assert.deepEqual(getPaginationItems(6, 12), [1, 'ellipsis-left', 5, 6, 7, 'ellipsis-right', 12])
   assert.deepEqual(getPaginationItems(11, 12), [1, 'ellipsis-left', 10, 11, 12])

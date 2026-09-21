@@ -143,7 +143,7 @@ def translate_event(
     """Normalize one observed App Server event without leaking a native frame."""
 
     payload = _payload(event)
-    observations = [
+    observations: list[RuntimeValue] = [
         {
             "version": CONTENT_SCHEMA_VERSION,
             "field": field,

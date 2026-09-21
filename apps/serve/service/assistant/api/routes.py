@@ -89,7 +89,12 @@ from service.chat.service.artifacts import (
     ArtifactReadError,
 )
 from service.chat.service.history import HistoryError, HistoryService
-from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE, ContentError
+from service.content.domain.model import (
+    PREPARED_CONFLICT,
+    PREPARED_UNAVAILABLE,
+    ROOT_UNAVAILABLE_ERROR,
+    ContentError,
+)
 from service.identity.utils import request_owner_id, request_user_id
 from service.literature.domain.model import IMPORT_COLLECTION_UNAVAILABLE
 from service.literature.domain.model import IMPORT_CONFLICT as LITERATURE_IMPORT_CONFLICT
@@ -130,6 +135,7 @@ ASSISTANT_RESOURCE_ERROR_STATUS = {
     IMPORT_UNAVAILABLE: HTTP_409_CONFLICT,
     PREPARED_CONFLICT: HTTP_409_CONFLICT,
     PREPARED_UNAVAILABLE: HTTP_409_CONFLICT,
+    ROOT_UNAVAILABLE_ERROR: HTTP_409_CONFLICT,
     LINK_CONFLICT: HTTP_409_CONFLICT,
     LITERATURE_IMPORT_CONFLICT: HTTP_409_CONFLICT,
     IMPORT_COLLECTION_UNAVAILABLE: HTTP_409_CONFLICT,

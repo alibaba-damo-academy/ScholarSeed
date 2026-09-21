@@ -70,8 +70,8 @@ export function workbenchFeature(): FeatureModule {
       {
         kind: 'pdf',
         toolbar: 'viewer',
-        render: ({ path, documentSessionId, documentPanels, tabId }) => documentSessionId && tabId
-          ? <PdfDocumentHost documentPanels={documentPanels} sessionId={documentSessionId} tabId={tabId} />
+        render: ({ active, path, documentSessionId, documentPanels, tabId }) => documentSessionId && tabId
+          ? <PdfDocumentHost active={active} documentPanels={documentPanels} sessionId={documentSessionId} tabId={tabId} />
           : <UnavailableViewer kind="pdf" path={path} />
       },
       { kind: 'table', render: ({ path }) => <TableViewerHost path={path} /> },
@@ -144,10 +144,12 @@ function TableViewerHost({ path }: { path: string }): React.JSX.Element {
 }
 
 function PdfDocumentHost({
+  active,
   documentPanels,
   sessionId,
   tabId
 }: {
+  active: boolean
   documentPanels?: React.ComponentProps<typeof PdfDocument>['documentPanels']
   sessionId: string
   tabId: string
@@ -155,6 +157,7 @@ function PdfDocumentHost({
   const { act } = useApp()
   return (
     <PdfDocument
+      active={active}
       documentPanels={documentPanels}
       onResourceImported={async () => {
         await act.reloadResourceTree()

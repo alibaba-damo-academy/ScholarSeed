@@ -19,15 +19,27 @@ from dataclasses import dataclass, field
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import AsyncIterator, Iterator
+from types import ModuleType
+from typing import AsyncIterator, Iterator, Protocol, cast
 
+from service.paths import MODEL_CREDENTIAL_LOCKS, MODEL_CREDENTIALS_DB
+
+
+class _WindowsLockApi(Protocol):
+    LK_NBLCK: int
+
+    def locking(self, descriptor: int, mode: int, byte_count: int) -> None: ...
+
+
+fcntl: ModuleType | None
+windows_lock_api: _WindowsLockApi | None = None
 try:
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
     import msvcrt
 
-from service.paths import MODEL_CREDENTIAL_LOCKS, MODEL_CREDENTIALS_DB
+    windows_lock_api = cast(_WindowsLockApi, msvcrt)
 
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
@@ -85,9 +97,11 @@ def _lock_descriptor(descriptor: int) -> None:
     if fcntl is not None:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     else:
+        if windows_lock_api is None:
+            raise RuntimeError("Windows credential lock API is unavailable")
         os.lseek(descriptor, 0, os.SEEK_SET)
         try:
-            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            windows_lock_api.locking(descriptor, windows_lock_api.LK_NBLCK, 1)
         except OSError as error:
             if (
                 error.errno == errno.EACCES

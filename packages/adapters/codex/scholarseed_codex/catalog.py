@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -173,13 +174,25 @@ async def model_catalog_argument(
             async with httpx.AsyncClient(
                 timeout=CATALOG_TIMEOUT_SECONDS, trust_env=False
             ) as client:
-                providers = request.thread_config.get("model_providers") or {}
-                provider = providers.get(request.model_provider) or {}
+                providers_value = request.thread_config.get("model_providers")
+                providers = providers_value if isinstance(providers_value, Mapping) else {}
+                provider_value = providers.get(request.model_provider)
+                provider = provider_value if isinstance(provider_value, Mapping) else {}
+                header_value = provider.get("env_http_headers")
+                environment_headers = header_value if isinstance(header_value, Mapping) else {}
                 headers = {
                     name: request.process_environment[environment_name]
-                    for name, environment_name in (provider.get("env_http_headers") or {}).items()
+                    for name, environment_name in environment_headers.items()
+                    if isinstance(name, str)
+                    and isinstance(environment_name, str)
+                    and environment_name in request.process_environment
                 }
-                api_key = request.process_environment.get(provider.get("env_key"), "")
+                environment_key = provider.get("env_key")
+                api_key = (
+                    request.process_environment.get(environment_key, "")
+                    if isinstance(environment_key, str)
+                    else ""
+                )
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
                 response = await client.get(

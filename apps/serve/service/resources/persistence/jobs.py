@@ -615,9 +615,12 @@ class ImportJobStore:
             " VALUES (?, ?, ?, ?)",
             (job_id, event_type, json.dumps(data, ensure_ascii=False), created_at),
         )
+        event_sequence = cursor.lastrowid
+        if event_sequence is None:
+            raise RuntimeError("resource job event insert did not return a sequence")
         connection.execute(
             f"UPDATE {JOBS_TABLE} SET event_seq = ? WHERE job_id = ?",
-            (int(cursor.lastrowid), job_id),
+            (event_sequence, job_id),
         )
 
     @staticmethod

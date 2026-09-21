@@ -10,11 +10,12 @@ import {
   setSessionModel
 } from '../../api'
 import {
+  effectiveSessionModelKey,
   hasSelectableModel,
-  personalModelId,
-  selectedSessionModelKey
+  personalModelId
 } from '../../catalog'
 import { Icon } from '../../icons'
+import { modelDefaultEffort } from '../../reasoning'
 import { useApp } from '../../store'
 import {
   Button,
@@ -131,7 +132,8 @@ export function ModelMenu({
   const { models, subscriptionGroups } = state.catalog
   const effort = useEffort()
   const [submenu, setSubmenu] = React.useState<'effort' | 'models' | null>(null)
-  const selectedModelKey = selectedSessionModelKey(
+  const selectedModelKey = effectiveSessionModelKey(
+    models,
     state.model,
     state.activeSession,
     state.threads
@@ -196,9 +198,11 @@ export function ModelMenu({
       if (sessionId) {
         const previousEffort =
           state.threads[sessionId]?.runtime?.reasoning_effort ?? ''
+        // 「模型默认」伪档位已去除：旧档位不被新模型支持时，显式回落到新模型定义的
+        // 确定默认档（未声明默认时取最低档），不再发空档让 provider 决定。
         const effort = model.reasoning_efforts?.includes(previousEffort)
           ? previousEffort
-          : ''
+          : modelDefaultEffort(model)
         const result = await setSessionModel(sessionId, model.key, effort)
         if (result?.runtime || (result?.ok && result.model_id)) {
           patchThread(sessionId, (thread) => ({
@@ -221,7 +225,7 @@ export function ModelMenu({
         set({
           foregroundError: null,
           foregroundNotice:
-            previousEffort && !effort
+            previousEffort && effort !== previousEffort
               ? feedback('conversation', 'models.effortReset')
               : result.deferred
                 ? feedback('conversation', 'models.nextTurn')

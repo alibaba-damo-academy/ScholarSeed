@@ -686,7 +686,10 @@ def validate_result(text: str, prepared: PreparedAnalysis) -> dict:
             ),
         )
     if request.kind == ActionKind.WORD_TRANSLATION:
-        verify_translation(result.get("blocks"), request.text)
+        blocks = result.get("blocks")
+        if not isinstance(blocks, list):
+            raise AnalysisError(AnalysisErrorCode.TRANSLATION_ALIGNMENT_MISSING)
+        verify_translation(blocks, request.text)
     return {
         **result,
         "revision": prepared.revision,
@@ -730,15 +733,13 @@ def verify_evidence(
         if not isinstance(anchor, dict):
             continue
         page, quote = anchor.get("page"), anchor.get("quote")
-        page_valid = isinstance(page, int) and 1 <= page <= len(pages)
-        quote_valid = isinstance(quote, str) and bool(quote.strip())
-        located_in_page = (
-            page_valid and quote_valid and normalize(quote) in normalize(pages[page - 1])
-        )
+        if not isinstance(page, int) or not 1 <= page <= len(pages):
+            continue
+        if not isinstance(quote, str) or not quote.strip():
+            continue
+        located_in_page = normalize(quote) in normalize(pages[page - 1])
         located_in_selection = (
-            page_valid
-            and quote_valid
-            and selection is not None
+            selection is not None
             and page == selection[0]
             and normalize(quote) in normalize(selection[1])
         )

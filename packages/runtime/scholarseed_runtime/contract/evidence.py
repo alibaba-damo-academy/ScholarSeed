@@ -1,7 +1,23 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
+from typing import Protocol
+
+
+class RuntimeTimingPort(Protocol):
+    """Request-scoped observation; implementations must preserve operation outcomes."""
+
+    def measure(self, stage: str) -> AbstractContextManager[None]: ...
+
+
+class NoopRuntimeTiming:
+    def measure(self, stage: str) -> AbstractContextManager[None]:
+        return nullcontext()
+
+
+NOOP_RUNTIME_TIMING = NoopRuntimeTiming()
 
 
 class RuntimeProcessEventKind(str, Enum):

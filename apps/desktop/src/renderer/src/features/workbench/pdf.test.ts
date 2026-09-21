@@ -9,6 +9,7 @@ import type { PdfRecordSnapshot } from './api.ts'
 import { buildAnnotatedPdf } from './pdf/export.ts'
 import { evidencePages } from './pdf/evidence.ts'
 import { externalPdfLinks, PDF_ANNOTATION_INTENT } from './pdf/links.ts'
+import { PDF_HIGHLIGHT_VISUAL_CLASS, pdfMarkVisualClass } from './pdf/records.ts'
 
 test('PDF evidence navigation groups duplicate pages without losing supporting quotes', () => {
   const anchors = [{ page: 2, quote: 'B' }, { page: 1, quote: 'A' }, { page: 1, quote: 'A2' }, { page: 1, quote: 'A' }]
@@ -191,10 +192,12 @@ test('PDF selection pins its full drag span and releases the native range before
   const page = readFileSync(new URL('./pdf/Page.tsx', import.meta.url), 'utf8')
 
   assert.match(source, /setSelectionDragSpan\(page \? \{ anchor: page, focus: page \} : null\)/)
-  assert.match(source, /pageInSelectionSpan\(page\.pageNumber, selectionDragSpan\.anchor, selectionDragSpan\.focus\)/)
+  assert.match(source, /pageInSelectionSpan\(number, selectionDragSpan\.anchor, selectionDragSpan\.focus\)/)
   assert.match(source, /if \(selections\.length && selectionDragSpan === null\) window\.getSelection\(\)\?\.removeAllRanges\(\)/)
   assert.match(page, /const renderable = near \|\| keepRendered/)
   assert.match(page, /\{renderable && <canvas/)
+  assert.match(page, /releaseCanvas\(target\)/)
+  assert.match(page, /releaseCanvas\(stagingCanvas\.current\)/)
 })
 
 test('PDF annotation rendering and hit testing share the newest-first overlap projection', () => {
@@ -206,10 +209,17 @@ test('PDF annotation rendering and hit testing share the newest-first overlap pr
   assert.doesNotMatch(page, /\[\.\.\.annotations\]\.reverse\(\)\.find/)
 })
 
+test('PDF highlight compositing preserves text while line annotations stay unblended', () => {
+  assert.match(PDF_HIGHLIGHT_VISUAL_CLASS, /bg-\[var\(--pdf-mark-color\)\]/)
+  assert.equal(pdfMarkVisualClass('highlight'), '')
+  assert.doesNotMatch(pdfMarkVisualClass('underline'), /mix-blend-/)
+  assert.doesNotMatch(pdfMarkVisualClass('strikethrough'), /mix-blend-/)
+})
+
 test('PDF body and annotation sidecar both reload after a restored revision', () => {
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
-  assert.match(source, /\[session\?\.revision, sessionId\]/)
-  assert.match(source, /\[session\?\.documentId, session\?\.revision\]/)
+  assert.match(source, /\[active, lifecycle, session\?\.revision, sessionId\]/)
+  assert.match(source, /\[active, session\?\.documentId, session\?\.revision\]/)
 })
 
 test('PDFs without a record owner stay readable without an unsupported annotation banner', () => {

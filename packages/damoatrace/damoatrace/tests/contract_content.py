@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +30,60 @@ from damoatrace.search.index import TraceIndex
 
 
 class ContentContract(unittest.TestCase):
+    def test_writer_preserves_explicit_interval_and_instant_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "timing.jsonl"
+            started = datetime(2026, 9, 21, tzinfo=timezone.utc)
+            with EvidenceWriter(path) as writer:
+                fields = dict(
+                    session_id="timing-session",
+                    kind="runtime.activation",
+                    name="preflight",
+                    task_run_id="activation",
+                    component_id="test",
+                    attributes={},
+                )
+                writer.emit(
+                    **fields,
+                    span_id="timed-span",
+                    parent_span_id="parent-span",
+                    started_at=started,
+                    duration_ms=125.5,
+                )
+                writer.emit(**fields)
+            rows = TraceStore(root, trace_file=path, offline=True).all_events()
+            timed = next(row for row in rows if row["span_id"] == "timed-span")
+            instant = next(row for row in rows if row["span_id"] != "timed-span")
+            self.assertEqual(timed["started_at"], started.isoformat())
+            self.assertEqual(
+                timed["ended_at"], (started + timedelta(milliseconds=125.5)).isoformat()
+            )
+            self.assertEqual(timed["duration_ms"], 125.5)
+            self.assertEqual(timed["parent_span_id"], "parent-span")
+            self.assertEqual(instant["started_at"], instant["ended_at"])
+            self.assertEqual(instant["duration_ms"], 0)
+            self.assertIsNone(instant["parent_span_id"])
+
+    def test_writer_rejects_invalid_measurements_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "invalid.jsonl"
+            with EvidenceWriter(path) as writer:
+                fields = dict(
+                    session_id="timing-session",
+                    kind="runtime.activation",
+                    name="invalid",
+                    task_run_id="activation",
+                    component_id="test",
+                    attributes={},
+                )
+                for duration in (-1, float("nan"), float("inf")):
+                    with self.subTest(duration=duration), self.assertRaises(ValueError):
+                        writer.emit(**fields, duration_ms=duration)
+                with self.assertRaises(ValueError):
+                    writer.emit(**fields, started_at=datetime(2026, 9, 21))
+            self.assertFalse(path.exists())
+
     def test_secret_echo_is_filtered_in_same_recorder(self) -> None:
         redactor = Redactor()
         redactor.value("假凭据 api_key=diagnostic-fixture-credential，不要联网。")

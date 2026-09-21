@@ -319,9 +319,9 @@ def register_analysis_routes(
             states[key] = {"task_id": key[1], "status": "completed", "result": result}
         except asyncio.CancelledError:
             states[key] = {"task_id": key[1], "status": "cancelled"}
-            record = tasks.get_attempt(key[1], owner)
-            if record:
-                tasks.save(replace(record, status=ModelInvocationStatus.CANCELLED, output_text=""))
+            attempt = tasks.get_attempt(key[1], owner)
+            if attempt:
+                tasks.save(replace(attempt, status=ModelInvocationStatus.CANCELLED, output_text=""))
         except Exception as error:
             failure = failure_detail(error, AnalysisErrorCode.EXECUTION_FAILED)
             states[key] = {
@@ -331,11 +331,11 @@ def register_analysis_routes(
                 "error_code": failure["code"],
                 "error_detail": failure["diagnostic"],
             }
-            record = tasks.get_attempt(key[1], owner)
-            if record:
+            attempt = tasks.get_attempt(key[1], owner)
+            if attempt:
                 tasks.save(
                     replace(
-                        record,
+                        attempt,
                         status=ModelInvocationStatus.FAILED,
                         output_text="",
                         error_code=failure["code"],

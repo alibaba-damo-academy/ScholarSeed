@@ -33,7 +33,11 @@ from scholarseed_runtime.contract import (
     TurnRequest,
 )
 from scholarseed_runtime.contract.artifact import ArtifactRole
-from scholarseed_runtime.contract.evidence import RuntimeProcessEvent, RuntimeRpcEvidence
+from scholarseed_runtime.contract.evidence import (
+    RuntimeProcessEvent,
+    RuntimeRpcEvidence,
+    RuntimeTimingPort,
+)
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
 from scholarseed_runtime.contract.input import InputKind, TurnInput
 from scholarseed_runtime.contract.inventory import SkillInventory
@@ -565,6 +569,9 @@ class LiveSession:
                 ),
             )
         )
+
+    def activation_timing(self, request_id: str) -> RuntimeTimingPort:
+        return self._trace.activation(request_id)
 
     def trace_resource(
         self, action: str, receipt: ResourceReceipt | None = None, **attributes: Any
@@ -1711,7 +1718,7 @@ class LiveSession:
     def _publish_collaboration_lifecycle(
         self, kind: str, data: Mapping[str, Any], turn_id: str, item_id: str, key: str
     ) -> ProductEventRecord:
-        published = []
+        published: list[ProductEventRecord] = []
         with self._events.transaction() as connection:
             records = self._events.turn_records(
                 self.id,
@@ -1720,8 +1727,8 @@ class LiveSession:
                 kinds=COLLABORATION_LIFECYCLE_KINDS,
                 connection=connection,
             )
-            pending = {}
-            completed = {}
+            pending: dict[str, dict[str, Any]] = {}
+            completed: dict[str, ProductEventRecord] = {}
             terminal_kind = ""
             for previous in records:
                 if (previous.runtime_id, previous.vendor_thread_id) != (
@@ -1734,6 +1741,8 @@ class LiveSession:
                 if previous.payload.get("activity_type") != COLLABORATION_ACTIVITY_TYPE:
                     continue
                 identity = previous.vendor_item_id
+                if identity is None:
+                    continue
                 if previous.kind == PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED:
                     pending.pop(identity, None)
                     completed[identity] = previous
@@ -1741,20 +1750,17 @@ class LiveSession:
                     pending[identity] = previous.payload
             if kind in COLLABORATION_EVENT_KINDS and item_id in completed:
                 return completed[item_id]
-            envelope = {
-                "session_id": self.id,
-                "runtime_id": self.runtime_id,
-                "vendor_thread_id": self.vendor_thread_id,
-                "vendor_turn_id": turn_id,
-                "connection": connection,
-            }
             if kind in COLLABORATION_EVENT_KINDS:
                 record = self._events.append(
-                    **envelope,
+                    session_id=self.id,
+                    runtime_id=self.runtime_id,
+                    vendor_thread_id=self.vendor_thread_id,
+                    vendor_turn_id=turn_id,
                     vendor_item_id=item_id or None,
                     kind=kind,
                     payload=dict(data),
                     idempotency_key=key,
+                    connection=connection,
                 )
                 published.append(record)
                 if kind == PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED:
@@ -1768,7 +1774,10 @@ class LiveSession:
                     details = dict(activity.get("details") or {})
                     details[COLLABORATION_CLOSURE_REASON] = terminal_kind
                     closed = self._events.append(
-                        **envelope,
+                        session_id=self.id,
+                        runtime_id=self.runtime_id,
+                        vendor_thread_id=self.vendor_thread_id,
+                        vendor_turn_id=turn_id,
                         vendor_item_id=identity,
                         kind=PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
                         payload={
@@ -1781,15 +1790,20 @@ class LiveSession:
                             f"{INTERNAL_EVENT_KEY_PREFIX}:collaboration-closure:"
                             f"{self.id}:{self.vendor_thread_id}:{turn_id}:{identity}"
                         ),
+                        connection=connection,
                     )
                     published.append(closed)
             if kind not in COLLABORATION_EVENT_KINDS:
                 record = self._events.append(
-                    **envelope,
+                    session_id=self.id,
+                    runtime_id=self.runtime_id,
+                    vendor_thread_id=self.vendor_thread_id,
+                    vendor_turn_id=turn_id,
                     vendor_item_id=item_id or None,
                     kind=kind,
                     payload=dict(data),
                     idempotency_key=key,
+                    connection=connection,
                 )
                 published.append(record)
         for published_record in published:

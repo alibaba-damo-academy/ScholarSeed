@@ -1763,7 +1763,7 @@ class ContentService:
                 if result.plan is None:  # narrowed above; retained for static type checking
                     continue
                 try:
-                    imported = self._execute_copy(
+                    imported_item = self._execute_copy(
                         scope,
                         result.plan,
                         "import_failed",
@@ -1781,9 +1781,11 @@ class ContentService:
                             ContentImportSourceResult(result.source_index, None, error.code)
                         )
                     continue
-                imported_items.append(imported)
+                imported_items.append(imported_item)
                 if result_observer is not None:
-                    result_observer(ContentImportSourceResult(result.source_index, imported, ""))
+                    result_observer(
+                        ContentImportSourceResult(result.source_index, imported_item, "")
+                    )
         imported = tuple(imported_items)
         self._wrote(scope.project.id, *(item.path for item in imported))
         return imported

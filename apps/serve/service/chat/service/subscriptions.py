@@ -258,6 +258,8 @@ class SubscriptionService:
         scope = (owner_id, connection_id)
         connection_epoch = self._connection_epochs.get(scope, 0)
         task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("subscription directory lookup requires an asyncio task")
         self._directories[task] = scope
         try:
             result = await self._models(owner_id, connection_id, complete=complete, fresh=fresh)

@@ -16,6 +16,7 @@ from xlrd import (
     XL_CELL_NUMBER,
     XL_CELL_TEXT,
 )
+from xlrd.biffh import XLRDError
 
 from service.content.service.sheet import (
     SpreadsheetProcessor,
@@ -124,7 +125,7 @@ def _cell_text(book: xlrd.book.Book, cell: xlrd.sheet.Cell) -> str:
     if cell.ctype == XL_CELL_NUMBER:
         return _normalized_decimal(str(cell.value))
     if cell.ctype == XL_CELL_DATE:
-        return xlrd.xldate_as_datetime(cell.value, book.datemode).isoformat()
+        return xlrd.xldate_as_datetime(float(cell.value), book.datemode).isoformat()
     if cell.ctype == XL_CELL_BOOLEAN:
         return str(bool(cell.value))
     if cell.ctype == XL_CELL_ERROR:
@@ -143,12 +144,12 @@ def read_range(
 
     try:
         workbook = xlrd.open_workbook(file_contents=payload, on_demand=True)
-    except (xlrd.XLRDError, OSError) as exc:
+    except (XLRDError, OSError) as exc:
         raise SpreadsheetRangeError("invalid_spreadsheet") from exc
     try:
         try:
             sheet = workbook.sheet_by_name(sheet_name)
-        except (xlrd.XLRDError, IndexError) as exc:
+        except (XLRDError, IndexError) as exc:
             raise SpreadsheetRangeError("spreadsheet_sheet_missing") from exc
         minimum_column, minimum_row, maximum_column, maximum_row = _range_bounds(
             selected_range,

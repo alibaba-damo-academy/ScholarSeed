@@ -15,7 +15,6 @@
 .vds-pdf-page .textLayer .markedContent { display: contents; }
 .vds-pdf-page .textLayer ::selection { background: rgb(52 120 246 / 35%); }
 .vds-pdf-annotation-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.vds-pdf-annotation-layer span { position: absolute; mix-blend-mode: multiply; }
 .vds-pdf-annotation-layer .has-comment::after { content: '“'; position: absolute; right: -12px; top: -10px; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: white; font: 700 12px/1 sans-serif; opacity: 1; }
 .vds-pdf-annotation-text {
   display: -webkit-box;

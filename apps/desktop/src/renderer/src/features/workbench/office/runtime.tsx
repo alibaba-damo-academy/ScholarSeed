@@ -222,6 +222,7 @@ function OfficeHost({
     : `${tab?.id}:${session?.id}:${session?.documentId}:${session?.revision}:${tab?.viewKind}`
   const reveal = documentTextReveal(tab)
   const [frame, setFrame] = useState<OfficeFrameDocument | null>(null)
+  const [frameEpoch, setFrameEpoch] = useState(0)
   const [frameReady, setFrameReady] = useState(false)
   const [runtimeReady, setRuntimeReady] = useState(false)
   const [readyBinding, setReadyBinding] = useState('')
@@ -230,6 +231,7 @@ function OfficeHost({
   const switchingDocument = workspace.pendingExclusiveOpen?.ownerTabId === viewId
     || Boolean(hasDocument && readyBinding && !documentReady)
   const [warmup, setWarmup] = useState<OfficeWarmupStatus>(INITIAL_OFFICE_WARMUP_STATUS)
+  const [showWarmupProgress, setShowWarmupProgress] = useState(false)
   const [palette, setPalette] = useState(() => officePalette(document.documentElement))
   const [bounds, setBounds] = useState<OfficeBounds | null>(null)
   const imageFailureText = useImageFailureText()
@@ -318,7 +320,7 @@ function OfficeHost({
       nextFrame.dispose()
       setFrame((current) => current === nextFrame ? null : current)
     }
-  }, [appState.shortcutOverrides, frameLanguage, i18n])
+  }, [appState.shortcutOverrides, frameEpoch, frameLanguage, i18n])
 
   useLayoutEffect(() => {
     if (!anchor) {
@@ -492,7 +494,10 @@ function OfficeHost({
         console.info('[office-runtime]', JSON.stringify({ hostId: host.id, viewId: host.viewId, ...message.detail }))
       } else if (message.type === 'warmup') {
         const status = parseOfficeWarmupStatus(message)
-        if (status) setWarmup(status)
+        if (status) {
+          setWarmup(status)
+          if (status.stage === 'ready') setShowWarmupProgress(false)
+        }
       } else if (message.type === 'runtime-ready') {
         setRuntimeReady(true)
       } else if (message.type === 'ready') {
@@ -739,7 +744,15 @@ function OfficeHost({
     {bounds && requestedLanguage !== frameLanguage && session && session.saveState !== 'clean' && <div className="fixed z-[var(--vds-z-popover)]" style={{ left: bounds.left, top: bounds.top, width: bounds.width }}><Alert tone="info" title={t('officeDocument.languagePending')} /></div>}
     {imageError && <Toaster toasts={[{ id: 'office-image-error', tone: 'warning', title: imageError.cause instanceof Error && imageError.cause.message === 'office_image_permission' ? officeFailureText(imageError.cause.message, t) : imageFailureText(imageError.cause) }]} onDismiss={() => setImageError(null)} closeLabel={t('officeDocument.close')} />}
     {notice && <Toaster toasts={[{ id: notice.id, tone: 'warning', title: officeFailureText(notice.message, t), description: notice.detail }]} onDismiss={() => setNotice(null)} closeLabel={t('officeDocument.close')} />}
-    <OfficeWarmup status={warmup} onRetry={() => post('retry-warmup')} />
+    <OfficeWarmup
+      status={warmup}
+      visible={showWarmupProgress}
+      onRetry={() => {
+        setShowWarmupProgress(true)
+        setWarmup(INITIAL_OFFICE_WARMUP_STATUS)
+        setFrameEpoch(epoch => epoch + 1)
+      }}
+    />
   </>) : <></>
 }
 

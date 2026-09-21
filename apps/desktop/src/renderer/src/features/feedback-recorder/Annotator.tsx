@@ -13,6 +13,7 @@ import {
   DialogTitle,
   Input
 } from '../../components/ui'
+import { commitActiveTextDraft, type TextDraft } from './draft'
 import { RECORDER_NOTE_MAX_LENGTH, type Annotation, type AnnotationPoint } from './model'
 
 type Tool = Annotation['type']
@@ -34,16 +35,6 @@ interface AnnotatorProps {
   source: File
   onCancel: () => void
   onSave: (result: AnnotatorResult) => void
-}
-
-interface TextDraft {
-  id: number
-  alignRight: boolean
-  color: string
-  point: AnnotationPoint
-  surfaceX: number
-  surfaceY: number
-  value: string
 }
 
 function textAnnotation(draft: TextDraft): Extract<Annotation, { type: 'text' }> | undefined {
@@ -203,7 +194,7 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
       const surface = surfaceRef.current
       if (!surface) return
       const activeTextDraft = textDraftRef.current
-      if (activeTextDraft) commitTextDraft(activeTextDraft)
+      if (commitActiveTextDraft(activeTextDraft, commitTextDraft)) return
       const bounds = surface.getBoundingClientRect()
       const surfaceX = event.clientX - bounds.left + surface.scrollLeft - surface.clientLeft
       const surfaceY = event.clientY - bounds.top + surface.scrollTop - surface.clientTop
@@ -225,6 +216,13 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
       : tool === 'rect'
         ? { type: 'rect', color: annotationColor(), ...origin, width: 0, height: 0 }
         : { type: 'arrow', color: annotationColor(), points: [origin, origin] }
+  }
+
+  const finishTextBeforeCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>): void => {
+    if (tool !== 'text') return
+    if (!commitActiveTextDraft(textDraftRef.current, commitTextDraft)) return
+    event.preventDefault()
+    event.stopPropagation()
   }
 
   const move = (event: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -294,7 +292,7 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
         <DialogHeader>
           <DialogTitle>{t('feedbackRecorder.annotator.title')}</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-wrap items-end gap-[var(--vds-space-2)]">
+        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
           {TOOLS.map((entry) => (
             <Button
               key={entry}
@@ -305,9 +303,10 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
             </Button>
           ))}
           <Input
+            aria-label={t('feedbackRecorder.annotator.noteLabel')}
             className="min-w-52 flex-1"
-            label={t('feedbackRecorder.annotator.noteLabel')}
             maxLength={RECORDER_NOTE_MAX_LENGTH}
+            placeholder={t('feedbackRecorder.annotator.noteLabel')}
             value={note}
             onChange={(event) => setNote(event.currentTarget.value)}
           />
@@ -326,6 +325,7 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
           <canvas
             ref={canvasRef}
             className="mx-auto block max-h-full max-w-full touch-none cursor-crosshair border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] shadow-[var(--vds-shadow-lg)]"
+            onPointerDownCapture={finishTextBeforeCanvasPointer}
             onPointerDown={start}
             onPointerMove={move}
             onPointerUp={finish}

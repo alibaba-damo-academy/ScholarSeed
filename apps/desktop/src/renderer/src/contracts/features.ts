@@ -111,6 +111,7 @@ export interface ViewerPlugin {
   toolbar?: 'workbench' | 'viewer'
   /** 渲染该 viewer。path 是项目内相对路径。 */
   render: (props: {
+    active: boolean
     path: string
     page?: number
     documentSessionId?: string

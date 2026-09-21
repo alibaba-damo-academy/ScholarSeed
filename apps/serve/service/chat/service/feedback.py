@@ -406,7 +406,7 @@ def _session_error_summary(session_id: str) -> bytes:
             attributes = record.get("attributes")
             if not isinstance(attributes, Mapping):
                 continue
-            location = {}
+            location: dict[str, object] = {}
             span_id = record.get("span_id")
             if (
                 isinstance(span_id, str)
@@ -433,7 +433,7 @@ def _session_error_summary(session_id: str) -> bytes:
                     or upstream_end in SESSION_ERROR_SUMMARY_FAILED_STREAM_ENDS
                     or error_seen
                 ):
-                    event = {"kind": "gateway_failure", **location}
+                    event: dict[str, object] = {"kind": "gateway_failure", **location}
                     if rejected:
                         event["http_status"] = status
                     if upstream_end in SESSION_ERROR_SUMMARY_FAILED_STREAM_ENDS:

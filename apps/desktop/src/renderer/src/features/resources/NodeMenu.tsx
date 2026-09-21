@@ -7,7 +7,6 @@ import {
   Link,
   Pencil,
   MessageCirclePlus,
-  Settings,
   Trash2,
   Unlink,
   type LucideIcon
@@ -38,6 +37,8 @@ export function NodeMenu(): React.JSX.Element | null {
   const admissionPending = state.resource.admissionPending?.[`${state.homeSelectedProjectId}:${menu.path}`] ?? false
   const canAdmit = menu.kind === 'file' && !versionState?.manualAdmitted
     && (versionState?.managementState === 'unsupported' || versionState?.managementState === 'ignored' || versionState?.managementState === 'migration_required')
+  const canShowVersionHistory = menu.kind === 'file'
+    && Boolean(versionState?.snapshotState || versionState?.managementState === 'managed')
 
   const items: {
     key: string
@@ -62,8 +63,6 @@ export function NodeMenu(): React.JSX.Element | null {
       })
     },
     ...(canAdmit ? [{ key: 'version-admission', label: t(admissionPending ? 'menu.admittingVersion' : 'menu.admitVersion'), Icon: History, disabled: admissionPending, run: () => void act.admitResourceVersion(menu.path) }] : []),
-    ...(menu.kind === 'file' && (versionState?.snapshotState || versionState?.managementState === 'managed') ? [{ key: 'version-history', label: t('menu.versionHistory'), Icon: History, run: () => void act.openResourceHistory(menu.path) }] : []),
-    ...(menu.kind === 'file' && versionState?.managementState !== 'git' ? [{ key: 'version-settings', label: t('treeStatus.versionSettings'), Icon: Settings, run: () => act.openSettings('files') }] : []),
     ...(!isLinkRoot ? [{
       key: 'rename',
       label: t('menu.rename'),
@@ -84,11 +83,18 @@ export function NodeMenu(): React.JSX.Element | null {
     }] : []),
     {
       key: 'copy-path',
-      separatorAfter: true,
+      separatorAfter: !canShowVersionHistory,
       label: t('menu.copyPath'),
       Icon: Link,
       run: () => void act.copyResourcePath(menu.path)
     },
+    ...(canShowVersionHistory ? [{
+      key: 'version-history',
+      separatorAfter: true,
+      label: t('menu.versionHistory'),
+      Icon: History,
+      run: () => void act.openResourceHistory(menu.path)
+    }] : []),
     ...(linkRoot ? [{
       key: 'unlink',
       label: t('menu.unlink'),

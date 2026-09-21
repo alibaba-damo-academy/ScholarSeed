@@ -300,7 +300,7 @@ test('Office iframe lifetime belongs to one persistent app-level host', () => {
 test('Office selection reports a frame-local point and binds its viewport projection to the tab', () => {
   assert.match(source, /point:selectionAnchorPoint\|\|selectionPoint/)
   assert.match(source, /function captureSelectionAnchor\(event\)[\s\S]*selectionAnchorPoint=selectionPoint/)
-  assert.match(source, /document\.addEventListener\('pointermove',event=>\{selectionPoint=\{x:event\.clientX,y:event\.clientY\};if\(selectionAutoscroll\.move\(event\)&&selectionAutoscrollKind==='writer'\)\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\)\}\}/)
+  assert.match(source, /document\.addEventListener\('pointermove',event=>\{selectionPoint=\{x:event\.clientX,y:event\.clientY\};const edgeActive=selectionAutoscroll\.move\(event\);if\(selectionAutoscrollKind==='writer'\)updateWriterPointerSelection\(event,edgeActive\);if\(\(edgeActive\|\|writerAutoscrollEngaged\)&&selectionAutoscrollKind==='writer'\)\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\)\}\},true\)/)
   assert.doesNotMatch(source, /document\.addEventListener\('pointermove',[\s\S]*selectionAnchorPoint=selectionPoint[\s\S]*selectionAutoscroll\.move\(event\)/)
   assert.match(runtimeSource, /controller\.setSelection\(viewId/)
   assert.match(runtimeSource, /selectionViewport\(/)

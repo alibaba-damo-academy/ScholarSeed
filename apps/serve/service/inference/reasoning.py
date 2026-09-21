@@ -129,35 +129,57 @@ def minimum_effort(options: Sequence[Mapping[str, Any]] | None) -> str:
     return ""
 
 
+def default_effort(options: Sequence[Mapping[str, Any]] | None) -> str:
+    """这条坐标的**确定默认档**：模型定义声明的 ``default``，没声明就取最低档。
+
+    「跟随 provider 默认」这一档已被产品去除：默认思考强度必须是一个可展示、可预期的
+    具体档位。声明了 ``default`` 但不在 ``values`` 里属于录入不自洽（加载期已拒绝），
+    这里仍防御性地回落到最低档而不是发一个模型没声明的值。
+    """
+
+    option = reasoning_option(options, EFFORT_FORM)
+    if option is None:
+        return ""
+    declared = str(option.get("default") or "").strip().lower()
+    values = declared_effort_values(options)
+    if declared and declared in values:
+        return declared
+    return minimum_effort(options)
+
+
 def effort_parameters(
     options: Sequence[Mapping[str, Any]] | None,
     protocol: str,
     family: str,
     requested: str,
 ) -> ThinkingParameters:
-    """把用户选的档位映射成出站参数；越界吸附到声明的 ``default``（§9.4）。
+    """把用户选的档位映射成出站参数；没选或越界都落到**确定默认档**（§9.4）。
 
-    吸附目标只有 ``default``，不学 Codex 那样隐式取列表中间档 —— 用户不可预期的回落
-    比报错更难查。没有 ``default`` 可吸附时不发参数并标 ``adjusted``。
+    确定默认档 = 模型定义声明的 ``default``，没声明取最低可用档（``default_effort``）。
+    「跟随 provider 默认」不再是可达状态：吸附目标必须可展示、可预期，不学 Codex 那样
+    隐式取列表中间档。连默认档都解析不出（无档位形态/该协议没有 wire 名）时不发参数并
+    标 ``adjusted``。
     """
 
     option = reasoning_option(options, EFFORT_FORM)
     values = declared_effort_values(options)
     wanted = str(requested or "").strip().lower()
     name = option_wire(option, protocol, family)
-    if not wanted:
-        # 「没选」= 跟随 provider 默认，与「选了这条坐标没声明的档」是两回事。
-        return ThinkingParameters({})
     if not values or not name:
-        return ThinkingParameters({}, adjusted=True, reason=NO_REASONING_FORM)
-    if wanted in values:
+        if wanted:
+            return ThinkingParameters({}, adjusted=True, reason=NO_REASONING_FORM)
+        # 「没选」且这条坐标没有档位形态可发：保持不发参数（开关/预算形态另有入口）。
+        return ThinkingParameters({})
+    if wanted and wanted in values:
         return ThinkingParameters(wire_parameters(name, wanted), effort=wanted)
-    fallback = str((option or {}).get("default") or "").strip().lower()
-    if fallback and fallback in values:
+    fallback = default_effort(options)
+    if not fallback:
+        return ThinkingParameters({}, adjusted=True, reason=MINIMUM_UNAVAILABLE)
+    if wanted:
         return ThinkingParameters(
             wire_parameters(name, fallback), effort=fallback, adjusted=True, reason=MINIMUM_CLAMPED
         )
-    return ThinkingParameters({}, adjusted=True, reason=MINIMUM_UNAVAILABLE)
+    return ThinkingParameters(wire_parameters(name, fallback), effort=fallback)
 
 
 def outbound_names(

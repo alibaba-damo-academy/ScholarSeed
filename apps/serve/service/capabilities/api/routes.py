@@ -25,6 +25,7 @@ from service.capabilities.service.skills import (
     SkillProductState,
     load_skill_state,
     replace_skill_state,
+    save_skill_state,
 )
 from service.paths import SERVICE_SKILLS_DIR
 

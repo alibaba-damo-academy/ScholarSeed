@@ -678,7 +678,7 @@ test('bundled workspace distributions are installed only from immutable wheels',
   assert.doesNotMatch(BUNDLE_BACKEND_SOURCE, /shell: process\.platform/)
 })
 test('artifact verification imports the packaged runtime and starts its real health endpoint', () => {
-  for (const moduleName of ['scholarseed_runtime', 'damoatrace', 'service.cli.serve', 'scholarseed_codex', 'scholarseed_dsh']) {
+  for (const moduleName of ['scholarseed_runtime', 'damoatrace', 'service.cli.serve', 'scholarseed_codex']) {
     assert.match(RUNTIME_PROBE_SCRIPT, new RegExp(moduleName.replaceAll('.', '\\.')))
   }
   assert.match(RUNTIME_PROBE_SCRIPT, /is_relative_to/)
@@ -882,7 +882,7 @@ test('frozen distribution product policy is product-scoped and HTTPS-only', () =
   assert.equal(PRODUCT_POLICY.credential_profiles.local.key_provider, 'mock_keychain')
   assert.equal(product.runtimes.codex.executable_sha256, REVIEWED_BINARIES.codex.executable_sha256)
   assert.equal(product.default_runtime, 'codex')
-  assert.equal(product.runtimes.dsh.enabled, false)
+  assert.equal(product.runtimes.dsh, undefined)
   assert.throws(
     () => frozenProductConfiguration({ lane: 'local', type: 'preview', channel: 'preview' }, {
       ...REVIEWED_BINARIES,

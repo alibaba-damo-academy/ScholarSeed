@@ -281,12 +281,18 @@ class ModelService:
 
         return owner_id_for(user_id, self._ownership_axis)
 
-    async def catalog(self, *, refresh: bool = False, user_id: str = "") -> dict[str, Any]:
+    async def catalog(
+        self, *, refresh: bool = False, user_id: str = "", auto_switch: bool = True
+    ) -> dict[str, Any]:
         """Project the model menu.
 
         ``user_id`` 是**真实账号**身份：内置模型的网关凭据门禁必须看它（machine 轴下归属
         身份恒为机器级常量，拿它判门禁会让内置模型即使登录也永久置灰）。个人连接一律走
         ``_owner_id`` 投影出的归属身份，因此登录/登出/切号都不影响用户自配连接的可见性。
+
+        ``auto_switch``：落盘默认模型被未登录门禁置灰且目录里还有可用模型时，自动切换为
+        第一个可用模型并落盘。显式选择路径（``select``）关掉它——那次调用刚刚按用户意图
+        落盘，不应在同一次调用里被改写；下一次目录读取仍会执行切换。
         """
 
         if refresh:
@@ -297,7 +303,8 @@ class ModelService:
         models = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(models, config, user_id)
         self._mark_subscription_gate(models, owner_id)
-        if self._subscriptions is not None:
+        subscriptions = self._subscriptions
+        if subscriptions is not None:
             profiles = {
                 item["profile_id"]
                 for item in models
@@ -318,7 +325,7 @@ class ModelService:
                 # 显式 refresh = 配置时刻：并行重拉上游并落快照；读路径本身不打上游。
                 async def resync(profile_id: str) -> tuple[str, bool]:
                     try:
-                        await self._subscriptions.sync_directory(owner_id, profile_id)
+                        await subscriptions.sync_directory(owner_id, profile_id)
                         return profile_id, True
                     except OAuthFailure:
                         return profile_id, False
@@ -369,7 +376,13 @@ class ModelService:
         return {
             "configured": bool(models),
             "runtime_id": RUNTIME_ID,
-            "current_model": self._selected_key(config, models),
+            # 默认键被未登录门禁置灰时这里会切换并落盘为第一个可用模型，所有读
+            # current_model 的消费方（选择器、invocation、harness）拿到同一个生效键。
+            "current_model": (
+                self._auto_switched_default(config, models)
+                if auto_switch
+                else self._selected_key(config, models)
+            ),
             "available_models": models,
             # 管理页专用的另一半分区: 关掉显示的模型绝不进 available_models, 否则对话框又能
             # 选到它们; 但管理页必须仍能看到它们, 才谈得上恢复。
@@ -381,12 +394,13 @@ class ModelService:
     def _schedule_directory_sync(self, owner_id: str, profile_id: str) -> None:
         """读路径发现缺快照时后台补拉（配置时加载），不阻塞本次读。"""
 
-        if self._subscriptions.sync_on_cooldown(owner_id, profile_id):
+        subscriptions = self._subscriptions
+        if subscriptions is None or subscriptions.sync_on_cooldown(owner_id, profile_id):
             return  # 上游最近在失败，冷却期内不重复锤
 
         async def run() -> None:
             try:
-                await self._subscriptions.sync_directory(owner_id, profile_id)
+                await subscriptions.sync_directory(owner_id, profile_id)
             except Exception as error:  # 后台自愈失败只记日志，不影响读路径
                 LOGGER.warning(
                     "subscription_directory_background_sync_failed profile=%s error=%s",
@@ -462,6 +476,48 @@ class ModelService:
                 item["disabled_reason"] = GATEWAY_CREDENTIAL_REQUIRED_REASON
                 item["disabled_reason_code"] = GATEWAY_CREDENTIAL_REQUIRED_CODE
 
+    @staticmethod
+    def _first_selectable_key(models: list[dict[str, Any]]) -> str:
+        """目录顺序里第一个未置灰的模型键；全灰时返回空串。"""
+
+        return next((str(row.get("key") or "") for row in models if not row.get("disabled")), "")
+
+    @classmethod
+    def _gateway_blocked(cls, row: Mapping[str, Any] | None) -> bool:
+        """该行是否因未登录网关门禁而不可执行（只认这一个原因码）。
+
+        订阅连接断开等其他置灰原因不参与自动切换：那是用户要显式处理的连接状态，
+        静默换模型会掩盖「去连接 ChatGPT」的引导。
+        """
+
+        return row is not None and str(row.get("disabled_reason_code") or "") == (
+            GATEWAY_CREDENTIAL_REQUIRED_CODE
+        )
+
+    def _auto_switched_default(self, config: dict[str, Any], models: list[dict[str, Any]]) -> str:
+        """落盘默认模型被未登录门禁置灰时，自动切换为第一个可用模型并落盘。
+
+        幂等：切换后 ``runtime_model()`` 即指向可用键，后续读路径不再触发写入。
+        只处理网关凭据门禁；目录整体不可用（无任何可选行）时保留原键，
+        让执行面照旧给出「请先登录或配置自有模型」的可读错误。
+        """
+
+        selected = self._selected_key(config, models)
+        row = next((item for item in models if str(item.get("key") or "") == selected), None)
+        if not self._gateway_blocked(row):
+            return selected
+        fallback = self._first_selectable_key(models)
+        if not fallback or fallback == selected:
+            return selected
+        self._settings.set_runtime_model(fallback)
+        LOGGER.info(
+            "model_default_auto_switched reason=%s from=%s to=%s",
+            GATEWAY_CREDENTIAL_REQUIRED_CODE,
+            selected,
+            fallback,
+        )
+        return fallback
+
     async def select(self, model_key: str, *, persist: bool, user_id: str = "") -> dict[str, Any]:
         requested = model_key.strip()
         config = self._config()
@@ -474,7 +530,10 @@ class ModelService:
             )
         if persist:
             self._settings.set_runtime_model(requested)
-        return {**await self.catalog(refresh=False, user_id=user_id), "current_model": requested}
+        return {
+            **await self.catalog(refresh=False, user_id=user_id, auto_switch=False),
+            "current_model": requested,
+        }
 
     def profiles(self, *, user_id: str = "") -> dict[str, Any]:
         """Return the redacted personal connection inventory."""
@@ -497,9 +556,23 @@ class ModelService:
         config = self._config()
         document = self._profiles.list(owner_id=self._owner_id(user_id))
         rows = self._catalog_models(config, document)
+        self._mark_gateway_credential_gate(rows, config, user_id)
         row = next((item for item in rows if item["key"] == model_key), None)
         if row is None:
             raise SessionModelUnavailableError("请先在设置 → 模型服务配置并选择模型。")
+        # 一次性推理（图表解释 / Office 文案 / PDF）与目录投影同一条自动切换语义：
+        # 请求键被未登录门禁置灰且目录里还有可用模型时，回落到第一个可用模型。
+        if self._gateway_blocked(row):
+            fallback = next((item for item in rows if not item.get("disabled")), None)
+            if fallback is not None:
+                LOGGER.info(
+                    "model_invocation_auto_switched reason=%s from=%s to=%s",
+                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    model_key,
+                    fallback["key"],
+                )
+                row = fallback
+                model_key = str(fallback["key"])
         if row.get("billing") == SUBSCRIPTION_BILLING:
             return {
                 "key": model_key,
@@ -681,12 +754,18 @@ class ModelService:
         """Resolve account-visible model intent without registering execution credentials."""
         config = self._config()
         document = self._profiles.list(owner_id=self._owner_id(user_id))
-        return self._available_key(model_key, config, document)
+        return self._available_key(model_key, config, document, user_id=user_id)
 
     def _available_key(
-        self, model_key: str, config: dict[str, Any], document: Mapping[str, Any]
+        self,
+        model_key: str,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        *,
+        user_id: str = "",
     ) -> str:
         models = self._catalog_models(config, document)
+        self._mark_gateway_credential_gate(models, config, user_id)
         selected = model_key.strip() or self._selected_key(config, models)
         available = {str(row.get("key") or "") for row in models}
         if not selected:
@@ -695,6 +774,20 @@ class ModelService:
             raise SessionModelUnavailableError(
                 f"selected ScholarSeed model is unavailable: {selected}; select a configured model connection"
             )
+        # 会话/执行链路拿着已被未登录门禁置灰的键进来时（登出前开的会话、过期缓存），
+        # 回落到第一个可用模型而不是把必然失败的网关调用放行；目录全灰时保持原键，
+        # 让下游照旧给出可读错误。
+        row = next(item for item in models if str(item.get("key") or "") == selected)
+        if self._gateway_blocked(row):
+            fallback = self._first_selectable_key(models)
+            if fallback and fallback != selected:
+                LOGGER.info(
+                    "model_resolution_auto_switched reason=%s from=%s to=%s",
+                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    selected,
+                    fallback,
+                )
+                return fallback
         return selected
 
     def session_spec(
@@ -727,7 +820,7 @@ class ModelService:
         config = self._config()
         owner_id = self._owner_id(user_id)
         document = self._profiles.list(owner_id=owner_id)
-        selected = self._available_key(model_key, config, document)
+        selected = self._available_key(model_key, config, document, user_id=user_id)
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )

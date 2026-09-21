@@ -98,6 +98,7 @@ export interface ResourceAgentOrigin {
   sessionId: string
   turnId: string | null
   itemId: string | null
+  sourceRange?: { unit: string; start: number; end: number } | null
 }
 
 /** 资料搜索命中（对齐 service/content/service/search.py 的 ResourceHit）。 */
@@ -957,13 +958,15 @@ export async function fetchResourceAgentOrigin(
       session_id: string
       turn_id: string | null
       item_id: string | null
+      source_range?: ResourceAgentOrigin['sourceRange']
     } | null
     if (!payload?.session_id || !['answer', 'artifact'].includes(payload.source_kind)) return null
     return {
       sourceKind: payload.source_kind,
       sessionId: payload.session_id,
       turnId: payload.turn_id,
-      itemId: payload.item_id
+      itemId: payload.item_id,
+      ...(payload.source_range ? { sourceRange: payload.source_range } : {})
     }
   } catch {
     return null

@@ -949,7 +949,7 @@ def main() -> int:
     declared_options = [
         {"kind": "effort", "values": ["low", "medium", "high"], "default": "medium"}
     ]
-    for selected, expected in (("high", "high"), ("", None), ("ultra", "medium")):
+    for selected, expected in (("high", "high"), ("", "medium"), ("ultra", "medium")):
         _, requests = forward_contract(
             reasoning_input,
             b'{"choices": [{"message": {"content": "ok"}}]}',

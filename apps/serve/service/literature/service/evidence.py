@@ -71,6 +71,10 @@ def normalized(text: str) -> str:
     return "".join(unicodedata.normalize("NFKC", text).split())
 
 
+def searchable_text(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+
 class LiteratureEvidenceService:
     def __init__(
         self,
@@ -127,7 +131,7 @@ class LiteratureEvidenceService:
                 fields = {
                     "title": item.title,
                     "authors": item.authors,
-                    "publication": item.publication,
+                    "publication": item.journal or item.venue,
                     "doi": item.doi,
                     "abstract": item.abstract,
                 }
@@ -247,7 +251,7 @@ class LiteratureEvidenceService:
 
     def annotations(self, project_id: str, source_id: str, offset: int, limit: int) -> dict:
         item = self._scoped_item(project_id, source_id)
-        entries = []
+        entries: list[dict[str, object]] = []
         revision_state: list[dict[str, object]] = []
         for note in self._repository.notes(item.id) or ():
             revision_state.append({"id": note.id, "version": note.version})

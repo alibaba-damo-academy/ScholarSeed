@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { loadConversationSearch, createLiteratureSearch, LiteratureApiError, streamLiteratureSearch } from './api.ts'
-import { conversationSearchPapers, presentedSearchArtifacts, searchPapersBibtex, visibleSearchPapers } from './result.ts'
+import { conversationSearchPapers, presentedSearchArtifacts, searchPapersBibtex, searchResultPapers, visibleSearchPapers } from './result.ts'
 import { literatureSearchTab, openLiteratureSearchTabs } from '../workbench/tabs.ts'
 
 const papers = [
@@ -40,8 +40,18 @@ test('literature search content fills the available workbench width', () => {
   const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
   assert.match(source, /className="flex min-h-0 w-full min-w-0 flex-1 flex-col/)
   assert.match(source, /aria-label=\{t\('search.selectAll'\)\}\s+checked=\{allShownSelected\}/)
-  assert.ok(source.includes("paper.abstract || t('search.noAbstract')"))
+  // 正文列是推荐理由, 全文获取列与详情摘要由列集配置决定, 结果表不再读摘要
+  assert.ok(source.includes("paper.reason || t('search.detailUnknown')"))
+  assert.match(source, /\$\{columns\.grid\}/)
+  assert.ok(!source.includes('paper.abstract ||'))
+})
 
+test('AI search results drop abstracts so the library import stays without one', () => {
+  const projected = searchResultPapers(papers)
+  assert.deepEqual(projected.map((paper) => paper.abstract), ['', ''])
+  assert.deepEqual(projected.map((paper) => paper.title), ['Zeta', 'Alpha'])
+  assert.ok(!searchPapersBibtex(projected).includes('abstract ='))
+  assert.ok(searchPapersBibtex(papers).includes('abstract = {A \\{test\\}}'))
 })
 
 test('submitted searches and conversation results share the query summary header', () => {

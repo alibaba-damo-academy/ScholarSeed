@@ -61,6 +61,7 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     assert.equal(await page.locator('body').getAttribute('data-opened-session-file'), 'outputs/report one.md')
     await assert.equal((await page.locator('body').textContent())?.includes('scholarseed-ref'), false)
     assert.equal(await page.getByTestId('wrapped-web-citation').textContent(), '网页来源新华网银联')
+    assert.equal(await page.getByTestId('wrapped-web-citation').locator('strong').count(), 0)
     assert.deepEqual(await page.getByTestId('web-citation').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-original'))), [
       '[新华网](https://example.com/source)',
       '[银联](https://example.com/unionpay)'
@@ -80,19 +81,12 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     assert.equal(await page.locator('strong').filter({ hasText: '“中文方案”' }).count(), 1)
     assert.equal(await page.locator('code').filter({ hasText: '**代码：**BERT' }).count(), 1)
 
-    const claims = page.getByTestId('citation-claims')
-    const emphasized = await claims.locator('[data-scholarseed-citation-claim]').allTextContents()
-    const emphasizedText = emphasized.join('')
-    for (const expected of ['样本量为 30；损失为 2.8 dB', '另一个结论', 'The result is 0.42.', '原文第一句。原文包含 ', '[CLS]', '句子对', '使用编码器', '论文报告有提升']) {
-      assert.ok(emphasizedText.includes(expected), expected)
-    }
-    for (const excluded of ['未验证的推断', '仍需实验', 'Unverified assumption', '实验尚未完成', '普通', '代码中的']) {
-      assert.equal(emphasizedText.includes(excluded), false, excluded)
-    }
-    assert.equal(await claims.getByTestId('claim-link').count(), 7)
-    assert.equal(await claims.getByTestId('claim-link').first().getAttribute('data-original'), '[1](scholarseed-cite:numeric)')
-    assert.equal(await claims.getByTestId('claim-link').last().getAttribute('data-original'), '[7](scholarseed-cite:list)')
-    assert.equal(await claims.locator('[data-scholarseed-citation-claim]').first().evaluate(node => getComputedStyle(node).fontWeight), '700')
+    const citationContent = page.getByTestId('citation-content')
+    assert.equal(await citationContent.locator('[data-scholarseed-citation-claim]').count(), 0)
+    assert.deepEqual(await citationContent.locator('strong').allTextContents(), ['句子对'])
+    assert.equal(await citationContent.getByTestId('claim-link').count(), 7)
+    assert.equal(await citationContent.getByTestId('claim-link').first().getAttribute('data-original'), '[1](scholarseed-cite:numeric)')
+    assert.equal(await citationContent.getByTestId('claim-link').last().getAttribute('data-original'), '[7](scholarseed-cite:list)')
 
     const originalCitation = await page.getByTestId('pdf-citation').elementHandle()
     await page.getByRole('button', { name: '刷新父组件 0' }).click()
@@ -102,6 +96,24 @@ test('Markdown renders GFM safely and preserves AI answer annotations', async ()
     const sourceLeaf = page.locator('code [data-md-source-start]').first()
     await assert.equal(await sourceLeaf.getAttribute('data-md-source-start'), '9')
     await assert.equal(await sourceLeaf.getAttribute('data-md-source-end'), '17')
+    const focusedSource = await sourceLeaf.evaluate((leaf) => {
+      const resolve = (window as unknown as {
+        sourceOffsetRect: (root: HTMLElement, offset: number) => DOMRect | null
+      }).sourceOffsetRect
+      const root = leaf.closest<HTMLElement>('.md')!
+      const range = document.createRange()
+      range.setStart(leaf.firstChild!, 2)
+      range.setEnd(leaf.firstChild!, 3)
+      const expected = range.getBoundingClientRect()
+      const actual = resolve(root, 11)
+      return {
+        expected: { top: expected.top, left: expected.left },
+        actual: actual && { top: actual.top, left: actual.left },
+        missing: resolve(root, -1)
+      }
+    })
+    assert.deepEqual(focusedSource.actual, focusedSource.expected)
+    assert.equal(focusedSource.missing, null)
 
     const evidence = page.getByTestId('evidence-reference')
     assert.equal(await evidence.getAttribute('aria-label'), '支持充分，引用 [1]')

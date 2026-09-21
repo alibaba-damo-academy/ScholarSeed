@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import os
 import re
@@ -33,7 +34,7 @@ from service.paths import (
 )
 
 SEARCH_SKILL_ID = "builtin:fast-search"
-SEARCH_PROMPT_TEMPLATE = '''
+SEARCH_PROMPT_TEMPLATE = """
 ### Search Protocol Instructions
 
 This is a **one-time, quick retrieval** via the search bar. Users have **no entry point for multi-turn dialogue**, and the keywords are **finalized by the user**. Even if the scope is broad, **do not ask follow-up questions**.
@@ -60,7 +61,7 @@ The content wrapped between `<<<` and `>>>` will be **displayed to the user**. Y
 4.  **Language Matching:** Your output language must match the **user's keyword language**.
 
 **Search Keywords:** `{query}`
-'''
+"""
 
 SEARCH_RESULT_FILENAME = "metadata.json"
 SEARCH_SCHEMA_VERSION = 1
@@ -128,8 +129,8 @@ class LiteratureSearchService:
         )
         return self._public(state)
 
-    def list(self, *, owner_id: str) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
+    def list(self, *, owner_id: str) -> builtins.list[dict[str, Any]]:
+        items: builtins.list[dict[str, Any]] = []
         for workspace in self._workspaces():
             state = self._read_state(workspace)
             if state is None or state.get("owner_id") != owner_id:
@@ -152,9 +153,10 @@ class LiteratureSearchService:
             for event in events:
                 next_seq = max(next_seq, int(event["seq"]))
                 yield event
-            state = self._read_state(workspace)
-            if state is None:
+            refreshed_state = self._read_state(workspace)
+            if refreshed_state is None:
                 return
+            state = refreshed_state
             if state.get("status") != "running" and next_seq >= int(state.get("last_seq", 0)):
                 return
             await asyncio.sleep(SEARCH_EVENT_POLL_SECONDS)
@@ -288,7 +290,7 @@ class LiteratureSearchService:
             except FileExistsError:
                 timestamp += 1
 
-    def _workspaces(self) -> list[Path]:
+    def _workspaces(self) -> builtins.list[Path]:
         rows = [
             child
             for child in self._root.iterdir()
@@ -296,7 +298,14 @@ class LiteratureSearchService:
             and not child.is_symlink()
             and SEARCH_TASK_PATTERN.fullmatch(child.name)
         ]
-        return sorted(rows, key=lambda row: int(SEARCH_TASK_PATTERN.fullmatch(row.name).group(1)))
+
+        def task_sequence(row: Path) -> int:
+            match = SEARCH_TASK_PATTERN.fullmatch(row.name)
+            if match is None:
+                raise LiteratureSearchError("literature_search_workspace_invalid")
+            return int(match.group(1))
+
+        return sorted(rows, key=task_sequence)
 
     def _owned(self, task_id: str, owner_id: str) -> tuple[Path, dict[str, Any]]:
         if SEARCH_TASK_PATTERN.fullmatch(task_id) is None:
@@ -376,12 +385,12 @@ class LiteratureSearchService:
             os.fsync(handle.fileno())
 
     @staticmethod
-    def _read_events(workspace: Path, after_seq: int) -> list[dict[str, Any]]:
+    def _read_events(workspace: Path, after_seq: int) -> builtins.list[dict[str, Any]]:
         try:
             lines = (workspace / LITERATURE_SEARCH_EVENTS_FILENAME).read_text("utf-8").splitlines()
         except OSError:
             return []
-        events: list[dict[str, Any]] = []
+        events: builtins.list[dict[str, Any]] = []
         for line in lines:
             try:
                 event = json.loads(line)

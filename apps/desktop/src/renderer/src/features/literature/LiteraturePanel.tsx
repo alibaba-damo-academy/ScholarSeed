@@ -615,7 +615,7 @@ export function LiteraturePanel(): React.JSX.Element {
             <div className="flex h-full shrink-0 items-end">
               <Button
                 aria-label={t('panel.search')}
-                className="!size-[var(--vds-control-height-sm)] !min-h-0 !min-w-[var(--vds-control-height-sm)] !p-0 [&_svg]:!size-[var(--vds-icon-7)]"
+                className="!size-[var(--vds-control-height-xs)] !min-h-0 !min-w-[var(--vds-control-height-xs)] !p-0 [&_svg]:!size-[var(--vds-icon-7)]"
                 disabled={searching || !discovery.trim()}
                 icon={
                   searching ? (

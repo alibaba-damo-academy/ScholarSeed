@@ -1,3 +1,5 @@
+import type { PdfRecordSnapshot, PdfRecords } from '../../../contracts/workbench'
+
 export const PDF_RECORD_SCHEMA_VERSION = 1
 export const PDF_HIGHLIGHT_OPACITY = 0.32
 export const PDF_SEARCH_HIGHLIGHT_OPACITY = 0.4
@@ -19,12 +21,27 @@ export const PDF_MARK_PALETTE = [
 export type PdfMarkColor = typeof PDF_MARK_PALETTE[number]['name']
 
 export const DEFAULT_PDF_MARK_COLOR: PdfMarkColor = 'yellow'
+export const PDF_HIGHLIGHT_VISUAL_CLASS = 'absolute bg-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
+
+export function stagePdfRecords(
+  snapshot: PdfRecordSnapshot,
+  records: PdfRecords
+): PdfRecordSnapshot {
+  return { ...snapshot, records }
+}
 
 export type PdfMarkCategory = 'all' | 'highlight' | 'underline' | 'strikethrough' | 'comment'
 
 interface CategorizedMark {
   id: string
   style: 'highlight' | 'underline' | 'strikethrough'
+}
+
+export function pdfMarkVisualClass(style: CategorizedMark['style']): string {
+  if (style === 'underline') {
+    return 'border-b-[length:var(--pdf-mark-thickness)] border-b-[var(--pdf-mark-color)] opacity-[var(--pdf-mark-opacity)]'
+  }
+  return ''
 }
 
 interface MarkComment {

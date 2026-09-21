@@ -104,6 +104,39 @@ def test_records_v1_is_canonical_and_source_bound() -> None:
     }
 
 
+def test_attachment_content_reads_managed_payload_once() -> None:
+    root = Path(tempfile.mkdtemp())
+    files = root / "files"
+    files.mkdir()
+    repository = LiteratureRepository(root / "literature.sqlite3")
+    repository.save(LiteratureItem(id="paper", title="Paper"))
+    attachment = _stage_attachment(
+        repository,
+        files,
+        "paper",
+        "paper.pdf",
+        b"%PDF-1.4\nonce\n",
+        kind="pdf",
+        role=AttachmentRole.PRIMARY,
+        media_type=PDF_MEDIA_TYPE,
+    )
+    content = LiteratureAttachmentContent(repository)
+
+    with (
+        patch.object(literature_files, "SERVICE_LITERATURE_FILES_DIR", files),
+        patch(
+            "service.literature.service.attachment.read_attachment",
+            wraps=literature_files.read_attachment,
+        ) as read,
+    ):
+        payload, media_type, revision = content.read_attachment("paper", attachment["id"])
+
+    assert payload == b"%PDF-1.4\nonce\n"
+    assert media_type == PDF_MEDIA_TYPE
+    assert revision == attachment["revision"]
+    assert read.call_count == 1
+
+
 def test_attachment_records_are_isolated_and_cascade_with_owner() -> None:
     database = Path(tempfile.mkdtemp()) / "literature.sqlite3"
     repository = LiteratureRepository(database)
@@ -534,6 +567,7 @@ def run() -> None:
     test_embedded_records_initialize_both_owners_without_overwriting_edits()
     test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking()
     test_records_v1_is_canonical_and_source_bound()
+    test_attachment_content_reads_managed_payload_once()
     test_attachment_records_are_isolated_and_cascade_with_owner()
     test_exact_attachment_routes_enforce_parent_media_and_two_revisions()
     test_startup_cutover_preserves_catalogue_and_removes_obsolete_records()

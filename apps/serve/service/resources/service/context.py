@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from service.resources.persistence.version import VersionStore
 
@@ -22,7 +23,7 @@ def resource_turn_context(store: VersionStore, session_id: str) -> str:
     states = store.capability_states(store.session_review_paths(session_id))
     if not states:
         return ""
-    rows = []
+    rows: list[dict[str, Any]] = []
     for path, state in sorted(states.items()):
         pending = state.pending
         review = pending.review if pending else None

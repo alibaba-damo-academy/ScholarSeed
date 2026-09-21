@@ -4,12 +4,6 @@ import { isCitationUrl } from '../../contracts/citations'
 import type { EvidenceAnnotation } from '../../model'
 import { encodedBoundaries, sourceLeaf, type SourceLeaf } from './source'
 
-const CITATION_BLOCKS = new Set(['p', 'td', 'th', 'li'])
-const CITATION_SENTENCES = new Intl.Segmenter(undefined, { granularity: 'sentence' })
-// DOM 属性名统一连写 scholarseed: hast 的 camelCase 属性经 react-markdown 序列化后会变成
-// 带连字符的 data-scholar-seed-*, 与 Markdown/Annotations 消费侧及渲染测试的
-// data-scholarseed-* 选择器失配, 因此这里直接以连写形式声明属性键。
-const CITATION_CLAIM = 'data-scholarseed-citation-claim'
 const CITATION_PARENTHESES = new Map([['(', ')'], ['（', '）']])
 const CITATION_SEPARATOR = /^[\t \u00a0、,，]+$/
 
@@ -32,9 +26,7 @@ export interface MarkdownAnswerAnnotation {
 interface DecorationOptions {
   source: string
   sourceMapped: boolean
-  emphasizeCitations?: boolean
   citationUrls?: ReadonlySet<string>
-  citations?: Range[]
   evidence: EvidenceAnnotation[]
   answers: MarkdownAnswerAnnotation[]
 }
@@ -221,54 +213,6 @@ function unwrapCitationParentheses(
   ))
 }
 
-/** Presentation only: emphasize the sentence adjoining a citation, never alter source offsets. */
-function citationClaims(tree: Root, source: string, cache: OffsetCache, citationUrls: ReadonlySet<string>): Range[] {
-  const claims: Range[] = []
-  function block(parent: Root | Element, ancestors: Element[]): void {
-    let text = ''
-    let offsets: (number | null)[] = []
-    const reset = (): void => { text = ''; offsets = [] }
-    function inline(node: ElementContent, parents: Element[]): void {
-      if (node.type === 'text') {
-        const leaf = mappedLeaf(source, node, parents, cache)
-        text += node.value
-        offsets.push(...(leaf ? leaf.boundaries.slice(0, -1) : Array(node.value.length).fill(null)))
-        return
-      }
-      if (node.type !== 'element' || node.tagName === 'pre') return
-      if (CITATION_BLOCKS.has(node.tagName)) {
-        reset()
-        block(node, [...parents, node])
-        return
-      }
-      const href = String(node.properties.href ?? '')
-      if (node.tagName === 'a' && (isCitationUrl(href) || citationUrls.has(href))) {
-        const quoted = parents.some(parent => parent.tagName === 'blockquote')
-        const sentence = quoted && text.trim() ? { index: 0, segment: text }
-          : [...CITATION_SENTENCES.segment(text)].filter(part => part.segment.trim()).at(-1)
-        if (sentence) {
-          const beginning = sentence.index
-          const leading = text.slice(beginning).search(/\S/)
-          const start = leading < 0 ? null : offsets[beginning + leading]
-          const end = positionOffset(node, 'start')
-          if (start !== null && start !== undefined && end !== null && start < end) {
-            claims.push({ id: String(start), start, end })
-          }
-        }
-        reset()
-        return
-      }
-      if (node.tagName === 'br') { text += '\n'; offsets.push(null) }
-      for (const child of node.children) inline(child, [...parents, node])
-    }
-    for (const child of parent.children) {
-      if (child.type !== 'doctype') inline(child, ancestors)
-    }
-  }
-  block(tree, [])
-  return claims
-}
-
 function element(tagName: string, properties: Record<string, string | number>, children: ElementContent[]): Element {
   return { type: 'element', tagName, properties, children }
 }
@@ -279,7 +223,6 @@ function activeRanges<T extends Range>(ranges: T[], start: number, end: number):
 
 function decorateLeaf(node: Text, leaf: SourceLeaf, options: DecorationOptions): ElementContent[] {
   const ranges: Range[] = [
-    ...(options.citations ?? []),
     ...options.evidence.map((annotation) => ({
       id: annotation.claim_ref,
       start: annotation.start_utf16,
@@ -319,9 +262,6 @@ function decorateLeaf(node: Text, leaf: SourceLeaf, options: DecorationOptions):
         [SOURCE_END]: rawEnd,
         ...(boundaries ? { [SOURCE_BOUNDARIES]: boundaries } : {})
       }, [child])
-    }
-    if (activeRanges(options.citations ?? [], rawStart, rawEnd).length) {
-      child = element('strong', { [CITATION_CLAIM]: 'true' }, [child])
     }
     const evidence = activeRanges(
       options.evidence.map((annotation) => ({ ...annotation, id: annotation.claim_ref, start: annotation.start_utf16, end: annotation.end_utf16 })),
@@ -376,7 +316,7 @@ function transformChildren(parent: Root | Element, parents: Element[], options: 
       continue
     }
     const leaf = mappedLeaf(options.source, child, parents, cache)
-    if (!leaf || (!options.sourceMapped && !options.evidence.length && !options.answers.length && !options.citations?.length)) {
+    if (!leaf || (!options.sourceMapped && !options.evidence.length && !options.answers.length)) {
       next.push(child)
       continue
     }
@@ -390,11 +330,6 @@ export function rehypeScholarSeedDecorations(options: DecorationOptions): () => 
   return () => (tree: Root): void => {
     const cache: OffsetCache = new Map()
     unwrapCitationParentheses(tree, options.source, [], options.citationUrls ?? new Set())
-    transformChildren(tree, [], {
-      ...options,
-      citations: options.emphasizeCitations
-        ? citationClaims(tree, options.source, cache, options.citationUrls ?? new Set())
-        : []
-    }, cache)
+    transformChildren(tree, [], options, cache)
   }
 }

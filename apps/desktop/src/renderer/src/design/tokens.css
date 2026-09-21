@@ -98,7 +98,7 @@
     /* Warning (警示色) */
     --vds-warning-1: #fff9f5;
     --vds-warning-2: #fcf1e3;
-    --vds-warning-3: #ffe4c8;
+    --vds-warning-3: #f4d8bf;
     --vds-warning-4: #f29555;
     --vds-warning-5: #e17725;
     --vds-warning-6: #d46300;
@@ -277,7 +277,7 @@
     --vds-warning-light-bg-default: #fff9f5;
     --vds-warning-light-bg-hover: #fcf1e3;
     --vds-warning-light-bg-active: #ffe4c8;
-    --vds-warning-light-border: #ffe4c8;
+    --vds-warning-light-border: #f4d8bf;
     --vds-warning-text-primary: #b95600;
     --vds-warning-text-placeholder: #f29555;
 
@@ -399,7 +399,11 @@
       #357a4f 46%,
       #c2932c 100%
     );
-    --vds-brand-gold-gradient-alert: linear-gradient(115deg, #7a5a28 0%, #b4532e 100%);
+    --vds-brand-gold-gradient-alert: linear-gradient(
+      115deg,
+      #7a5a28 0%,
+      #b4532e 100%
+    );
     --vds-brand-gold-glow: radial-gradient(
       circle,
       rgba(255, 235, 180, 0.35),
@@ -442,7 +446,8 @@
     --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.1);
     --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.04);
     --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.06);
-    --vds-shadow-pop-brand: 0px 12px 32px 0px rgba(30, 60, 40, 0.16),
+    --vds-shadow-pop-brand:
+      0px 12px 32px 0px rgba(30, 60, 40, 0.16),
       0px 2px 8px 0px rgba(30, 60, 40, 0.08);
 
     /* Focus rings (focus) */
@@ -692,8 +697,8 @@
     --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.5);
     --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.15);
     --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.25);
-    --vds-shadow-pop-brand: 0px 12px 32px 0px rgba(0, 0, 0, 0.45),
-      0px 2px 8px 0px rgba(0, 0, 0, 0.3);
+    --vds-shadow-pop-brand:
+      0px 12px 32px 0px rgba(0, 0, 0, 0.45), 0px 2px 8px 0px rgba(0, 0, 0, 0.3);
 
     /* Semantic - Warm alert */
     --vds-alert-warm-bg: #3a2a1c;
@@ -851,7 +856,8 @@
       --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.5);
       --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.15);
       --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.25);
-      --vds-shadow-pop-brand: 0px 12px 32px 0px rgba(0, 0, 0, 0.45),
+      --vds-shadow-pop-brand:
+        0px 12px 32px 0px rgba(0, 0, 0, 0.45),
         0px 2px 8px 0px rgba(0, 0, 0, 0.3);
 
       /* Semantic - Warm alert */

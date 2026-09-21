@@ -125,6 +125,7 @@
   "list": {
     "noProject": "未关联项目",
     "moreProjects_other": "另有 {{count}} 个项目：{{names}}",
+    "moreTags_other": "另有 {{count}} 个标签：{{names}}",
     "newImport": "本次新导入",
     "select": "选择 {{title}}",
     "collapseAttachments": "收起附件",

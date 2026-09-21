@@ -125,7 +125,7 @@ def responses_body(
 def chat_body(
     request: ModelInvocationRequest, connection: Mapping[str, Any], thinking: Mapping[str, Any]
 ) -> dict:
-    content = [{"type": "text", "text": request.input_text}]
+    content: list[dict[str, Any]] = [{"type": "text", "text": request.input_text}]
     for part in request.attachments:
         data = f"data:{part.media_type};base64,{part.data}"
         content.append(

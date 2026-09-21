@@ -33,6 +33,7 @@
   "runtime": {
     "retrying": "Agent 连接中断，正在恢复",
     "retryingCount": "Agent 连接中断，正在恢复（{{attempt}}/{{maximum}}）",
+    "providerRetrying": "模型服务正在重试",
     "recovered": "Agent 连接已恢复",
     "recoveryFailed": "Agent 恢复失败。请检查运行时登录、版本与网络后重试。",
     "failed": "Agent 运行时事件需要处理。请检查当前操作与运行时状态。",
@@ -58,7 +59,7 @@
   },
   "models": {
     "deferred": "模型与思考深度将在下一轮生效。",
-    "effortReset": "新模型不支持之前的思考深度，已恢复模型默认。",
+    "effortReset": "新模型不支持之前的思考深度，已恢复该模型的默认档位。",
     "nextTurn": "模型与思考深度将在下一轮生效。"
   },
   "reasoning": {
@@ -87,6 +88,7 @@
   "retry": {
     "attachmentsGone": "原附件已经不可用，请重新选择文件。",
     "contextNotReady": "会话上下文尚未就绪，请稍后重试。",
+    "continueUnknown": "继续请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
     "regenerateUnknown": "重新生成请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
     "continueUnconfirmed": "Service 未确认继续操作。"
   },

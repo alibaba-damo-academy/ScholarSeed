@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { readOfficeClipboard, type OfficeClipboardSource } from './clipboard.ts'
+import type { ClipboardItem } from 'electron'
+
+import { readOfficeClipboard, writeClipboardContent, type OfficeClipboardSource } from './clipboard.ts'
 
 function source(values: Partial<Record<'html' | 'rtf' | 'text', string>>): OfficeClipboardSource {
   return {
@@ -35,4 +37,14 @@ test('Office clipboard rejects oversized rich payloads before crossing IPC', asy
     ok: false,
     error: 'clipboard_too_large'
   })
+})
+
+test('rich clipboard writes one item containing plain and HTML representations', async () => {
+  const item = {} as ClipboardItem
+  let written: ClipboardItem[] | undefined
+  assert.deepEqual(
+    await writeClipboardContent({ write: async (items) => { written = items } }, item),
+    { ok: true }
+  )
+  assert.deepEqual(written, [item])
 })

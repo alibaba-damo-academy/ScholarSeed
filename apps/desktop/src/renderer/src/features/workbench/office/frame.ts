@@ -121,7 +121,7 @@ let port, filename, processor, expectedDocumentKind, bytes, palette, editable=fa
 let startupStartedAt=0,runtimeReadyAt=0,documentReadonlyReason='',viewportRequestSequence=0,layoutPaintRequestId=0;
 let selectionPoint,selectionAnchorPoint,selectionPointAt=0;
 let writer=false,selectionAutoscrollKind='',selectionDragging=false;
-let selectionAutoscrollRequestSequence=0,writerAutoscrollPendingRequest=0,writerAutoscrollCommitFrame=0,writerAutoscrollPaintFrame=0,writerAutoscrollDirectionX=0,writerAutoscrollDirectionY=0,writerAutoscrollNextAt=0;
+let selectionAutoscrollRequestSequence=0,writerAutoscrollPendingRequest=0,writerAutoscrollCommitFrame=0,writerAutoscrollPaintFrame=0,writerAutoscrollPointerFrame=0,writerAutoscrollDirectionX=0,writerAutoscrollDirectionY=0,writerAutoscrollNextAt=0,writerAutoscrollSelectionY=0,writerAutoscrollTargetY=0,writerAutoscrollShouldScroll=false,writerAutoscrollEngaged=false;
 const selectionCommitCommand='selection_commit';
 const selectionDragCommand='selection_drag';
 const selectionAutoscrollCommand='selection_autoscroll';
@@ -130,7 +130,7 @@ const selectionAutoscrollCommitCommand='selection_autoscroll_commit';
 const selectionAutoscrollAppliedCommand='selection_autoscroll_applied';
 const primaryPointerButton=0;
 const hostDocument=parent.document;
-function resetSelectionAutoscroll(){cancelAnimationFrame(writerAutoscrollCommitFrame);cancelAnimationFrame(writerAutoscrollPaintFrame);writerAutoscrollPendingRequest=0;writerAutoscrollCommitFrame=0;writerAutoscrollPaintFrame=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;writerAutoscrollNextAt=0}
+function resetSelectionAutoscroll(){cancelAnimationFrame(writerAutoscrollCommitFrame);cancelAnimationFrame(writerAutoscrollPaintFrame);cancelAnimationFrame(writerAutoscrollPointerFrame);writerAutoscrollPendingRequest=0;writerAutoscrollCommitFrame=0;writerAutoscrollPaintFrame=0;writerAutoscrollPointerFrame=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;writerAutoscrollNextAt=0;writerAutoscrollSelectionY=0;writerAutoscrollTargetY=0;writerAutoscrollShouldScroll=false;writerAutoscrollEngaged=false}
 function dispatchWriterLineScroll(directionY){
   if(!directionY)return;
   const bounds=canvas.getBoundingClientRect();
@@ -142,23 +142,57 @@ function dispatchWriterLineScroll(directionY){
 function finishWriterAutoscroll(requestId){
   if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
   writerAutoscrollPaintFrame=0;writerAutoscrollPendingRequest=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;
+  scheduleWriterPointerSelection();
 }
 function commitWriterAutoscroll(requestId){
   if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
   writerAutoscrollCommitFrame=0;
   writerAutoscrollNextAt=performance.now()+ScholarSeedOfficeAutoscroll.SELECTION_LINE_INTERVAL_MS;
-  dispatchWriterLineScroll(writerAutoscrollDirectionY);
+  if(writerAutoscrollShouldScroll)dispatchWriterLineScroll(writerAutoscrollDirectionY);
   port?.postMessage({cmd:selectionAutoscrollCommitCommand,requestId});
 }
 function paintWriterAutoscroll(requestId){
   if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
   writerAutoscrollPaintFrame=requestAnimationFrame(()=>finishWriterAutoscroll(requestId));
 }
-function advanceWriterAutoscroll(speed){
+function requestWriterAutoscroll(speed,shouldScroll){
   if(!selectionDragging||!port||writerAutoscrollPendingRequest||writerAutoscrollCommitFrame||writerAutoscrollPaintFrame||performance.now()<writerAutoscrollNextAt)return false;
+  if(shouldScroll&&!writerAutoscrollEngaged){
+    const bounds=canvas.getBoundingClientRect();
+    writerAutoscrollSelectionY=speed.y<0?bounds.top+ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX:bounds.bottom-ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX;
+    writerAutoscrollTargetY=writerAutoscrollSelectionY;writerAutoscrollEngaged=true;
+  }
   writerAutoscrollDirectionX=Math.sign(speed.x);writerAutoscrollDirectionY=Math.sign(speed.y);
+  writerAutoscrollShouldScroll=shouldScroll;
   const requestId=++selectionAutoscrollRequestSequence;writerAutoscrollPendingRequest=requestId;
   port.postMessage({cmd:selectionAutoscrollCommand,requestId,x:writerAutoscrollDirectionX,y:writerAutoscrollDirectionY});
+  return true;
+}
+function scheduleWriterPointerSelection(){
+  if(!selectionDragging||!writerAutoscrollEngaged||writerAutoscrollPointerFrame)return;
+  const distance=writerAutoscrollTargetY-writerAutoscrollSelectionY;
+  if(Math.abs(distance)<ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX)return;
+  writerAutoscrollPointerFrame=requestAnimationFrame(()=>{
+    writerAutoscrollPointerFrame=0;
+    const remaining=writerAutoscrollTargetY-writerAutoscrollSelectionY;
+    if(Math.abs(remaining)<ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX)return;
+    if(requestWriterAutoscroll({x:0,y:Math.sign(remaining)},false))writerAutoscrollSelectionY+=Math.sign(remaining)*ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX;
+    else scheduleWriterPointerSelection();
+  });
+}
+function updateWriterPointerSelection(event,edgeActive){
+  if(!selectionDragging||!writerAutoscrollEngaged)return;
+  const bounds=canvas.getBoundingClientRect();
+  writerAutoscrollTargetY=Math.max(bounds.top+ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX,Math.min(event.clientY,bounds.bottom-ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX));
+  if(!edgeActive)scheduleWriterPointerSelection();
+}
+function advanceWriterAutoscroll(speed){
+  const distance=writerAutoscrollTargetY-writerAutoscrollSelectionY;
+  if(writerAutoscrollEngaged&&Math.abs(distance)>=ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX){
+    if(requestWriterAutoscroll({x:0,y:Math.sign(distance)},false))writerAutoscrollSelectionY+=Math.sign(distance)*ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX;
+    return false;
+  }
+  requestWriterAutoscroll(speed,true);
   return false;
 }
 const selectionAutoscroll=ScholarSeedOfficeAutoscroll.create({bottomInset:()=>selectionAutoscrollKind==='writer'?ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX:0,element:canvas,onSelectionFrame:speed=>{
@@ -345,11 +379,11 @@ retry.addEventListener('click',()=>void start());
 void start();
 window.addEventListener('focus',()=>post('focus'));
 document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAnchorPoint=selectionPoint;selectionPointAt=0;post('focus');if(documentKind===selectionAutoscrollKind&&event.isPrimary&&event.button===primaryPointerButton){selectionDragging=true;resetSelectionAutoscroll();diagnostic('selection-drag',{active:true,eventType:event.type});selectionAutoscroll.start(event);port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
-document.addEventListener('pointermove',event=>{selectionPoint={x:event.clientX,y:event.clientY};if(selectionAutoscroll.move(event)&&selectionAutoscrollKind==='writer'){event.preventDefault();event.stopImmediatePropagation()}},true);
+document.addEventListener('pointermove',event=>{selectionPoint={x:event.clientX,y:event.clientY};const edgeActive=selectionAutoscroll.move(event);if(selectionAutoscrollKind==='writer')updateWriterPointerSelection(event,edgeActive);if((edgeActive||writerAutoscrollEngaged)&&selectionAutoscrollKind==='writer'){event.preventDefault();event.stopImmediatePropagation()}},true);
 function suppressWriterEdgeMousemove(event){
   if(!selectionDragging||selectionAutoscrollKind!=='writer')return;
   const speed=ScholarSeedOfficeAutoscroll.velocity({x:event.clientX,y:event.clientY},canvas.getBoundingClientRect(),ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX);
-  if(speed.x||speed.y){event.preventDefault();event.stopImmediatePropagation()}
+  if(speed.x||speed.y||writerAutoscrollEngaged){event.preventDefault();event.stopImmediatePropagation()}
 }
 document.addEventListener('mousemove',suppressWriterEdgeMousemove,true);
 function captureSelectionAnchor(event){

@@ -46,7 +46,6 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server
 | `apps/serve/` | FastAPI 产品后端与 `scholarseed` 发行包 |
 | `packages/runtime/` | 中立运行时契约、Provider 发现和事件驱动 Gateway |
 | `packages/adapters/codex/` | Codex App Server 进程接入与原生协议转换 |
-| `packages/adapters/dsh/` | 预留的 DeepSeek Harness 适配边界，目前尚未实现 Provider |
 | `packages/damoatrace/` | 独立的 trace 契约、记录、存储、查询与 CLI |
 | `skills/community/` | 随产品编译的科研技能源码 |
 | `tests/` | 跨包契约、集成测试、验收测试与发行门禁 |

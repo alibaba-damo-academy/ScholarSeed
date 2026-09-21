@@ -33,6 +33,7 @@ dev = [
     "dmgbuild==1.6.7; sys_platform == 'darwin'",
     "isort>=5",
     "jsonschema>=4",
+    "lxml-stubs>=0.5,<1",
     "mypy>=1.15,<2",
     "pyright[nodejs]==1.1.414",
     "ruff==0.16.8",
@@ -41,6 +42,7 @@ dev = [
     "reportlab>=4.4,<6",
     "types-PyYAML>=6.0.12",
     "types-openpyxl>=3.1",
+    "types-xlrd>=2.0",
 ]  # 格式化、静态检查与测试运行器 (npm run fmt / npm run lint / npm run python:typecheck / pytest)
 # pytest 只存在于 dev extra: DMG 的 Python 依赖由 scripts/dependencies.py 用
 # `uv export --extra serve --group desktop --no-default-groups` 导出, 不含 dev extra。
@@ -52,14 +54,12 @@ members = [
     "packages/runtime",
     "packages/damoatrace",
     "packages/adapters/codex",
-    "packages/adapters/dsh",
 ]
 
 [tool.uv.sources]
 scholarseed-runtime = { workspace = true }
 damoatrace = { workspace = true }
 scholarseed-codex = { workspace = true }
-scholarseed-dsh = { workspace = true }
 paper-fulltext-dl = { path = "skills/community/precise-literature-search/vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl" }
 
 [tool.uv]
@@ -87,7 +87,6 @@ default = true
 scholarseed-runtime = { editable_mode = "compat" }
 damoatrace = { editable_mode = "compat" }
 scholarseed-codex = { editable_mode = "compat" }
-scholarseed-dsh = { editable_mode = "compat" }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -125,7 +124,7 @@ explicit_package_bases = true
 # `packages.adapters.codex.scholarseed_codex.appserver` 又是 `scholarseed_codex.appserver`
 # (两个 adapter 带 py.typed 后可从已安装包解析), 报 "found twice under different
 # module names" 并中断整个检查。
-mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex", "packages/adapters/dsh"]
+mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex"]
 plugins = ["pydantic.mypy"]
 exclude = '''(?x)(
     ^apps/desktop/
@@ -142,6 +141,10 @@ exclude = '''(?x)(
   | ^tmp/
   | (^|/)(dist|build)/
 )'''
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+follow_untyped_imports = true
 
 [tool.ruff]
 target-version = "py312"
@@ -192,7 +195,6 @@ known_first_party = [
     "scholarseed_runtime",
     "damoatrace",
     "scholarseed_codex",
-    "scholarseed_dsh",
     "service",
 ]
 skip_glob = [

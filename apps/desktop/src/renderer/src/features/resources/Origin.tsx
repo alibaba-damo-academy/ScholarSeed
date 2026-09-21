@@ -43,7 +43,8 @@ export function ResourceAgentOriginAction({
       icon={<Icon name="talk" size={14} />}
       onClick={() => act.openPanelSession(sourceSession, {
         turnId: origin.turnId,
-        itemId: origin.itemId
+        itemId: origin.itemId,
+        sourceRange: origin.sourceRange
       })}
       size="sm"
       title={origin.sourceKind === 'artifact' ? t('origin.artifact') : t('origin.answer')}

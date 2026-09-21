@@ -3,12 +3,19 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  INITIAL_OFFICE_WARMUP_STATUS,
   officeWarmupProgress,
+  shouldShowOfficeWarmup,
+  shouldShowOfficeWarmupProgress,
   type OfficeWarmupStatus
 } from './progress.ts'
 
 const warmupSource = readFileSync(
   new URL('./Warmup.tsx', import.meta.url),
+  'utf8'
+)
+const runtimeSource = readFileSync(
+  new URL('./runtime.tsx', import.meta.url),
   'utf8'
 )
 
@@ -56,14 +63,23 @@ test('catalog and runtime initialization remain indeterminate', () => {
 })
 
 test('Office warmup stays hidden during normal initialization', () => {
-  assert.match(warmupSource, /if \(status\.stage !== 'error'\) return null/)
-  assert.doesNotMatch(warmupSource, /<Collapsible/)
-  assert.doesNotMatch(warmupSource, /<ProgressBar/)
-  assert.doesNotMatch(warmupSource, /<Spinner/)
+  assert.equal(shouldShowOfficeWarmup(INITIAL_OFFICE_WARMUP_STATUS, false), false)
+  assert.equal(shouldShowOfficeWarmupProgress(INITIAL_OFFICE_WARMUP_STATUS, false), false)
 })
 
 test('Office warmup keeps failure recovery visible', () => {
+  const failed: OfficeWarmupStatus = { ...INITIAL_OFFICE_WARMUP_STATUS, stage: 'error' }
+  assert.equal(shouldShowOfficeWarmup(failed, false), true)
+  assert.equal(shouldShowOfficeWarmupProgress(failed, false), false)
+  assert.match(warmupSource, /className="pointer-events-auto /)
   assert.match(warmupSource, /data-testid="office-font-warmup"/)
   assert.match(warmupSource, /officeWarmup\.error/)
   assert.match(warmupSource, /officeWarmup\.retry/)
+})
+
+test('retry rebuilds the WASM frame and enables progress', () => {
+  assert.equal(shouldShowOfficeWarmup(INITIAL_OFFICE_WARMUP_STATUS, true), true)
+  assert.equal(shouldShowOfficeWarmupProgress(INITIAL_OFFICE_WARMUP_STATUS, true), true)
+  assert.match(runtimeSource, /setFrameEpoch\(epoch => epoch \+ 1\)/)
+  assert.match(runtimeSource, /setShowWarmupProgress\(true\)/)
 })

@@ -111,7 +111,7 @@ def verify_diagnostic_directory(directory: Path) -> float | None:
     """Validate our optional bundle manifest without following arbitrary manifest paths."""
     manifest_path = directory / MANIFEST_FILENAME
     if not manifest_path.exists():
-        return
+        return None
     if manifest_path.is_symlink():
         raise ValueError("diagnostic manifest must be a local file")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

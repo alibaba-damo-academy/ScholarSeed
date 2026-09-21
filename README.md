@@ -46,7 +46,6 @@ Runtime Gateway ──► Codex Adapter ──► Codex App Server
 | `apps/serve/` | FastAPI product backend and the `scholarseed` distribution |
 | `packages/runtime/` | Runtime-neutral contracts, provider discovery, and the event-driven gateway |
 | `packages/adapters/codex/` | Codex App Server process integration and native protocol translation |
-| `packages/adapters/dsh/` | Reserved DeepSeek Harness adapter boundary; no provider is implemented yet |
 | `packages/damoatrace/` | Independent trace contracts, recording, storage, query, and CLI |
 | `skills/community/` | Research skills compiled into the product |
 | `tests/` | Cross-package contracts, integration tests, acceptance tests, and release gates |

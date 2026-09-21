@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -10,6 +10,7 @@ from scholarseed_runtime.contract.artifact import ArtifactDirectiveSpec
 from scholarseed_runtime.contract.binding import RuntimeBinding
 from scholarseed_runtime.contract.capability import RuntimeCapabilityName
 from scholarseed_runtime.contract.event import RuntimeValue
+from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.history import HistoryEntry
 from scholarseed_runtime.contract.model import ModelCredentialPort, ModelIntent
 from scholarseed_runtime.contract.permission import PermissionIntent
@@ -68,6 +69,7 @@ class OpenSessionRequest:
     ephemeral: bool = False
     reservation_id: str = ""
     initial_history: tuple[HistoryEntry, ...] = ()
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,7 @@ class ResumeSessionRequest:
     skill_roots: tuple[Path, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     reservation_id: str = ""
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -173,6 +176,7 @@ class SkillConfigurationRequest:
     cwd: Path
     skills: tuple[SkillConfiguration, ...]
     roots: tuple[Path, ...] = ()
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,7 @@ class RuntimeInspectionRequest:
     roots: tuple[Path, ...] = ()
     launch_secrets: LaunchSecretIntent = LaunchSecretIntent()
     secret_port: RuntimeSecretPort | None = None
+    timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

@@ -274,7 +274,7 @@ def _pdf_attachments(rows: tuple[dict[str, Any], ...]) -> dict[str, dict[str, An
 def _tree(
     collections: dict[str, tuple[str, str | None]], rows: tuple[dict[str, Any], ...]
 ) -> tuple[tuple[dict[str, Any], ...], int]:
-    direct = {key: set() for key in collections}
+    direct: dict[str, set[str]] = {key: set() for key in collections}
     unfiled = 0
     for row in rows:
         data = _data(row)

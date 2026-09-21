@@ -215,6 +215,11 @@ class _Runtime:
             process_state="ready",
         )
 
+    def selected_model_key(self, model_id: str, *, user_id: str = "") -> str:
+        # 会话 resume 会把存量选择经目录解析对齐（未登录门禁回落）；本桩没有目录，
+        # 恒等解析即可 —— 与其他 runtime 桩（contract_codex_service）同一形状。
+        return model_id
+
     async def open(self, **values: Any) -> _Live:
         self.opens.append(dict(values))
         resume = str(values.get("resume_vendor_thread_id") or "")

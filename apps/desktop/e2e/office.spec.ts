@@ -27,6 +27,9 @@ const SELECTION_AUTOSCROLL_FRAME_SAMPLES = 3
 const WRITER_AUTOSCROLL_EDGE_OFFSET_PX = 1
 const WRITER_AUTOSCROLL_SELECTION_X_RATIO = 0.15
 const WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.1
+const WRITER_AUTOSCROLL_REVERSE_Y_RATIO = 0.45
+const WRITER_AUTOSCROLL_REVERSE_HOLD_MS = 1_800
+const WRITER_AUTOSCROLL_REVERSE_SETTLE_MS = 1_800
 const LEGACY_DOC_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.35
 const CALC_AUTOSCROLL_SELECTION_X_RATIO = 0.15
 const CALC_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.25
@@ -80,6 +83,17 @@ function autoscrollDocumentArchive(): Uint8Array {
     '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
     '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
     'word/document.xml': `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${pages}<w:sectPr/></w:body></w:document>`
+  })
+}
+
+function bidirectionalAutoscrollDocumentArchive(): Uint8Array {
+  const lines = Array.from({ length: 160 }, (_, index) => (
+    `<w:p><w:r><w:t>Bidirectional line ${index + 1} evidence.</w:t></w:r></w:p>`
+  )).join('')
+  return archive({
+    '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    'word/document.xml': `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${lines}<w:sectPr/></w:body></w:document>`
   })
 }
 
@@ -647,6 +661,59 @@ test('DOCX selection autoscroll starts from the bottom line inside the workspace
     await expect(quote).toContainText('Autoscroll page 1 evidence.')
     await expect(quote).toContainText('Autoscroll page 2 evidence.')
     await page.screenshot({ path: join(runtime.artifacts, 'office-docx-selection-autoscroll.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('DOCX selection autoscroll retracts when the pointer moves upward', async ({}, testInfo) => {
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS * 2)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const files = [
+    { filename: 'selection-autoscroll-down.docx', reverse: false },
+    { filename: 'selection-autoscroll-reverse.docx', reverse: true }
+  ] as const
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    for (const file of files) writeFileSync(join(resources, file.filename), bidirectionalAutoscrollDocumentArchive())
+    await page.getByTestId('resource-refresh').click()
+    const selectedLastLines: number[] = []
+    for (const file of files) {
+      await openFile(page, file.filename)
+      const frame = page.locator(`iframe[data-testid="office-editor"][title="${file.filename}"]`)
+      await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+      const canvas = frame.contentFrame().locator('#qtcanvas')
+      const bounds = await canvas.boundingBox()
+      if (!bounds) throw new Error(`${file.filename} canvas bounds unavailable`)
+      const x = bounds.x + bounds.width * WRITER_AUTOSCROLL_SELECTION_X_RATIO
+      await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO)
+      await page.mouse.down()
+      await page.mouse.move(x, bounds.y + bounds.height - WRITER_AUTOSCROLL_EDGE_OFFSET_PX, { steps: 24 })
+      await page.waitForTimeout(WRITER_AUTOSCROLL_REVERSE_HOLD_MS)
+      if (file.reverse) {
+        await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_REVERSE_Y_RATIO, { steps: 24 })
+        await page.waitForTimeout(WRITER_AUTOSCROLL_REVERSE_SETTLE_MS)
+        await page.screenshot({ path: join(runtime.artifacts, 'office-docx-selection-autoscroll-reverse.png') })
+      }
+      await page.mouse.up()
+      const menu = page.getByTestId('selection-action-host')
+      await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
+      await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+      await page.getByTitle(`${file.filename} · 选区`, { exact: true }).hover()
+      const quoteText = await page.getByTestId('assistant-selection-quote').innerText()
+      const selectedLines = [...quoteText.matchAll(/Bidirectional line (\d+) evidence\./g)]
+        .map(match => Number(match[1]))
+      expect(selectedLines.length).toBeGreaterThan(1)
+      selectedLastLines.push(Math.max(...selectedLines))
+    }
+    expect(selectedLastLines[1]).toBeLessThan(selectedLastLines[0])
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

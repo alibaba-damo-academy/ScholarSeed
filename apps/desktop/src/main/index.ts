@@ -13,6 +13,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   ipcMain,
   Menu,
@@ -37,8 +38,14 @@ import {
   backendHostProcessKey,
   HOST_PROCESS_HEADER
 } from './backend'
-import { FEEDBACK_CAPTURE_CHANNEL, FEEDBACK_CAPTURE_ERROR } from '../feedback'
-import { captureFeedbackScreenshot, isFeedbackCaptureSender } from './feedback'
+import {
+  FEEDBACK_CAPTURE_CHANNEL,
+  FEEDBACK_CAPTURE_ERROR,
+  FEEDBACK_CLIPBOARD_IMAGE_CHANNEL,
+  FEEDBACK_CLIPBOARD_IMAGE_ERROR,
+  FEEDBACK_SCREENSHOT_MIME_TYPE
+} from '../feedback'
+import { captureFeedbackScreenshot, isFeedbackCaptureSender, writeFeedbackClipboardImage } from './feedback'
 import {
   REFRESH_AHEAD_SECONDS,
   REFRESH_CHECK_INTERVAL_MS,
@@ -76,7 +83,7 @@ import { installOfficeFontPermission } from './fonts'
 import { acquireOfficeImage } from './images'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
 import { requiresSingleInstanceLock, resolveDeveloperToolsEnabled } from './environment'
-import { readOfficeClipboard } from './clipboard'
+import { readOfficeClipboard, writeClipboardContent } from './clipboard'
 import { canCopySelection, SELECTION_COPY_ROLE } from './contextmenu'
 import { openSystemPermission, readSystemPermissions } from './permissions'
 import type { SystemPermissionId } from '../permissions'
@@ -91,7 +98,11 @@ import {
   type ImportPickerTarget
 } from '../picker'
 import { TRASH_NOT_COMPLETED_ERROR, waitForTrashCompletion } from './trash'
-import { CLIPBOARD_PASTE_CHANNEL } from '../clipboard'
+import {
+  CLIPBOARD_PASTE_CHANNEL,
+  CLIPBOARD_WRITE_CONTENT_CHANNEL,
+  type ClipboardContentPayload
+} from '../clipboard'
 
 const STARTUP_BUILD_NUMBER = startupBuildNumber(new Date())
 
@@ -991,6 +1002,18 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
+  ipcMain.handle(CLIPBOARD_WRITE_CONTENT_CHANNEL, async (event, payload: ClipboardContentPayload) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      return { ok: false, error: 'clipboard_forbidden' }
+    }
+    const text = String(payload?.text ?? '')
+    const html = String(payload?.html ?? '')
+    const item = new ClipboardItem({
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+      'text/html': new Blob([html], { type: 'text/html' })
+    })
+    return writeClipboardContent(clipboard, item)
+  })
   ipcMain.handle(CLIPBOARD_PASTE_CHANNEL, (event) => {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
       return false
@@ -998,14 +1021,16 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     event.sender.paste()
     return true
   })
-  ipcMain.handle('scholarseed:write-clipboard-image', async (_e, bytes: Uint8Array) => {
+  ipcMain.handle(FEEDBACK_CLIPBOARD_IMAGE_CHANNEL, async (_e, bytes: Uint8Array) => {
     try {
       const image = nativeImage.createFromBuffer(Buffer.from(bytes))
-      if (image.isEmpty()) return { ok: false, error: 'clipboard_image_empty' }
-      clipboard.writeImage(image)
-      return { ok: true }
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+      if (image.isEmpty()) return { ok: false, error: FEEDBACK_CLIPBOARD_IMAGE_ERROR.empty }
+      const item = new ClipboardItem({
+        [FEEDBACK_SCREENSHOT_MIME_TYPE]: new Blob([bytes], { type: FEEDBACK_SCREENSHOT_MIME_TYPE })
+      })
+      return await writeFeedbackClipboardImage(clipboard, item)
+    } catch {
+      return { ok: false, error: FEEDBACK_CLIPBOARD_IMAGE_ERROR.failed }
     }
   })
 

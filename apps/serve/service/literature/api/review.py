@@ -26,6 +26,8 @@ from service.literature.service.review import (
     METADATA,
     RETRIEVAL,
     REVIEW_CARD,
+    PreparedReview,
+    PreparedReviewSearch,
     prepare_review,
     prepare_review_search,
     review_retrieval_run,
@@ -74,6 +76,8 @@ def register_literature_review_routes(
         try:
             command = LiteratureReviewPublish.model_validate(json.loads(raw))
             checkpoint = command.checkpoint
+            prepared: PreparedReview | PreparedReviewSearch
+            retrieval_prepared: PreparedReviewSearch | None = None
             if command.checkpoint == "retrieval":
                 expected_hashes: dict[str, str] = {}
                 if command.manifest or command.manifest_sha256:
@@ -110,6 +114,7 @@ def register_literature_review_routes(
                     command.workspace,
                     run_id,
                 )
+                retrieval_prepared = prepared
                 if any(
                     expected_hashes.get(source.path) != source.digest
                     for source in prepared.files
@@ -133,7 +138,7 @@ def register_literature_review_routes(
                     if source.path not in card_sources:
                         continue
                     require_turn()
-                    artifact = await live.publish_artifact(
+                    published_artifact = await live.publish_artifact(
                         source.path,
                         RETRIEVAL_REFERENCE_ROLE,
                         turn_id=turn_id,
@@ -142,27 +147,27 @@ def register_literature_review_routes(
                     require_turn()
                     references.append(
                         {
-                            **{key: artifact.get(key) for key in ARTIFACT_REFERENCE_FIELDS},
+                            **{
+                                key: published_artifact.get(key)
+                                for key in ARTIFACT_REFERENCE_FIELDS
+                            },
                             "title": source.title,
                         }
                     )
 
-                def artifact(name: str) -> dict:
-                    return next(
-                        (
-                            reference
-                            for reference in references
-                            if reference["path"] == name or reference["path"].endswith(f"/{name}")
-                        ),
-                        {},
-                    )
+                def find_artifact(name: str) -> dict:
+                    for reference in references:
+                        path = reference.get("path")
+                        if isinstance(path, str) and (path == name or path.endswith(f"/{name}")):
+                            return reference
+                    return {}
 
                 update = {
                     "session_id": live.id,
-                    "metadata": artifact(METADATA),
-                    "selection": artifact(CORPUS),
-                    "report": artifact(RETRIEVAL),
-                    "fulltext": artifact(FULLTEXT),
+                    "metadata": find_artifact(METADATA),
+                    "selection": find_artifact(CORPUS),
+                    "report": find_artifact(RETRIEVAL),
+                    "fulltext": find_artifact(FULLTEXT),
                 }
                 card_type = SEARCH_CARD
             else:
@@ -174,7 +179,7 @@ def register_literature_review_routes(
                 card_type, DisplayCardContent(data=content), turn_id=turn_id
             )
             authorization = None
-            if command.checkpoint == "retrieval" and prepared.authorization_refs:
+            if retrieval_prepared is not None and retrieval_prepared.authorization_refs:
                 if authorizer is None:
                     raise ValueError("fulltext_authorization_unavailable")
                 challenge, disposition, decision = await authorize_sources(
@@ -183,7 +188,7 @@ def register_literature_review_routes(
                     turn_id=turn_id,
                     snapshot_id=live.active_assistant_snapshot_id,
                     authorization_type=LITERATURE_REVIEW_FULLTEXT,
-                    refs=prepared.authorization_refs,
+                    refs=retrieval_prepared.authorization_refs,
                 )
                 if decision is not None:
                     require_turn()
@@ -192,7 +197,7 @@ def register_literature_review_routes(
                     "scope_digest": challenge.scope_digest,
                     "sources": [
                         {"id": source.id, "title": source.title}
-                        for source in prepared.authorization_sources
+                        for source in retrieval_prepared.authorization_sources
                     ],
                     "disposition": disposition.value,
                 }

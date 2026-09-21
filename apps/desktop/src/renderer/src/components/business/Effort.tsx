@@ -2,9 +2,9 @@ import { useTranslation } from 'react-i18next'
 import React from 'react'
 
 import { getSessionModel, requestFailureFeedback, setSessionModel } from '../../api'
-import { selectedSessionModelKey } from '../../catalog'
+import { effectiveSessionModelKey } from '../../catalog'
 import {
-  DEFAULT_REASONING_EFFORT,
+  modelDefaultEffort,
   reasoningLabel,
   reasoningPreference
 } from '../../reasoning'
@@ -16,7 +16,8 @@ export function useEffort() {
   const { t } = useTranslation('conversation')
   const { state, set, patchThread } = useApp()
   const sessionId = state.activeSession
-  const modelKey = selectedSessionModelKey(
+  const modelKey = effectiveSessionModelKey(
+    state.catalog.models,
     state.model,
     sessionId,
     state.threads
@@ -28,8 +29,9 @@ export function useEffort() {
     )
   const runtime = sessionId ? state.threads[sessionId]?.runtime : undefined
   const running = Boolean(sessionId && state.threads[sessionId]?.running)
+  // 「模型默认」伪档位已去除：会话运行时没上报档位（存量会话）时回显模型定义的确定默认档。
   const value = sessionId
-    ? (runtime?.reasoning_effort ?? DEFAULT_REASONING_EFFORT)
+    ? (runtime?.reasoning_effort || modelDefaultEffort(model))
     : reasoningPreference(model, state.reasoningPreferences)
   const declaredEfforts = model?.reasoning_efforts ??
     (model?.reasoning_options ?? [])
@@ -93,10 +95,6 @@ export function useEffort() {
 
   const selectedLabel = reasoningLabel(value, t, true)
   const options = [
-    {
-      value: DEFAULT_REASONING_EFFORT,
-      label: t('reasoning.default')
-    },
     ...efforts.map((effort) => ({
       value: effort,
       label: reasoningLabel(effort, t)

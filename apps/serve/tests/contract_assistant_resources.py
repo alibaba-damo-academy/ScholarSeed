@@ -47,7 +47,7 @@ from service.chat.service.answers import ProductAnswerSource
 from service.chat.service.artifacts import ArtifactService
 from service.chat.service.attachments import AttachmentService
 from service.chat.service.publication import SessionArtifactStorage
-from service.content.domain.model import ContentError
+from service.content.domain.model import ROOT_UNAVAILABLE_ERROR, ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.assets import rename_node
 from service.content.service.native import (
@@ -489,6 +489,11 @@ class AssistantResourceContract(unittest.TestCase):
                 "session_id": SESSION_ID,
                 "turn_id": "turn-contract",
                 "item_id": "answer-item-contract",
+                "source_range": {
+                    "unit": "utf16_code_unit",
+                    "start": 0,
+                    "end": len(ANSWER_SELECTION),
+                },
             },
         )
 
@@ -1223,6 +1228,12 @@ class AssistantResourceContract(unittest.TestCase):
     def test_link_query_requires_existing_accessible_session(self) -> None:
         response = self.client.get("/api/assistant/sessions/unknown-session/resources/links")
         self.assertEqual(response.status_code, 404)
+
+    def test_link_query_reports_unavailable_project_root(self) -> None:
+        shutil.rmtree(self.project.root)
+        response = self.client.get(f"/api/assistant/sessions/{SESSION_ID}/resources/links")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["detail"], ROOT_UNAVAILABLE_ERROR)
 
     def test_projectless_session_has_no_destination_links(self) -> None:
         for destination in ("resources", "literature"):

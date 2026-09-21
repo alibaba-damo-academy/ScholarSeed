@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { installRecorderProbe } from './probe.ts'
+import { createInitialPageStep, installRecorderProbe } from './probe.ts'
 import type { NetworkRecord, RecordedStep } from './model.ts'
 
 class FakeXhr extends EventTarget {
@@ -15,6 +15,44 @@ class FakeXhr extends EventTarget {
   send(): void {}
   getResponseHeader(): string | null { return null }
 }
+
+test('recording starts with the current page as its first step', () => {
+  const startedAtMs = Date.parse('2026-09-21T06:30:00.000Z')
+  const documentTarget = {
+    title: '书深',
+    querySelector: (selector: string) => selector === '[role="tab"][aria-selected="true"]'
+      ? { textContent: '文献库' }
+      : null
+  }
+  const windowTarget = {
+    location: {
+      href: 'http://127.0.0.1:5173/literature?scope=all#list',
+      pathname: '/literature',
+      search: '?scope=all',
+      hash: '#list'
+    }
+  }
+  Object.defineProperties(globalThis, {
+    window: { configurable: true, value: windowTarget },
+    document: { configurable: true, value: documentTarget }
+  })
+  try {
+    const step = createInitialPageStep(startedAtMs)
+    assert.equal(step.kind, 'navigation')
+    assert.equal(step.occurredAt, '2026-09-21T06:30:00.000Z')
+    assert.equal(step.elapsedMs, 0)
+    assert.deepEqual(step.page, {
+      url: 'http://127.0.0.1:5173/literature?scope=all#list',
+      title: '书深',
+      path: '/literature?scope=all#list',
+      label: '文献库'
+    })
+    assert.deepEqual(step.target, { tag: 'window', role: 'navigation' })
+  } finally {
+    delete (globalThis as Record<string, unknown>).window
+    delete (globalThis as Record<string, unknown>).document
+  }
+})
 
 test('probe owns one lease and restores every wrapped browser API', () => {
   const originalFetch = async (): Promise<Response> => new Response('{}')

@@ -199,6 +199,7 @@ export {
   type DrawerTitleProps
 } from './Drawer'
 export { FloatingToolbar, type FloatingToolbarProps } from './FloatingToolbar'
+export { FOCUS_SCOPE_EXTENSION_ATTRIBUTE } from './focus'
 export {
   Divider,
   Separator,

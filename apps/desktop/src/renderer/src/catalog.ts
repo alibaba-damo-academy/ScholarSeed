@@ -51,6 +51,28 @@ export function selectedSessionModelKey(
 }
 
 /**
+ * Resolve the model key a session surface must act on.
+ *
+ * A session opened before signing out keeps its durable built-in selection, which
+ * the gated catalogue projects as disabled. Surfaces must neither keep sending that
+ * key nor refuse to work while the catalogue still offers enabled models: fall back
+ * through the same policy as the default-model recovery. A key that is *missing*
+ * from the catalogue keeps its honest "unavailable" treatment — that transition is
+ * the user's decision, not an automatic switch.
+ */
+export function effectiveSessionModelKey(
+  models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled'>>,
+  defaultModel: string,
+  activeSession: string | null,
+  threads: Record<string, Thread>
+): string {
+  const sessionKey = selectedSessionModelKey(defaultModel, activeSession, threads)
+  const row = models.find((model) => model.key === sessionKey)
+  if (!row?.disabled) return sessionKey || defaultModel
+  return selectableCatalogModelKey(sessionKey, models, defaultModel)
+}
+
+/**
  * Resolve the model key to send with a request, never an empty one.
  *
  * The picker above reports the active session's *true* runtime and yields '' while a
@@ -60,11 +82,14 @@ export function selectedSessionModelKey(
  * "无法准备阅读任务". Requests therefore fall back to the configured default model.
  */
 export function requestModelKey(
+  models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled'>>,
   defaultModel: string,
   activeSession: string | null,
   threads: Record<string, Thread>
 ): string {
-  return selectedSessionModelKey(defaultModel, activeSession, threads) || defaultModel
+  return (
+    effectiveSessionModelKey(models, defaultModel, activeSession, threads) || defaultModel
+  )
 }
 
 /** Personal catalogue keys are `personal-<uuid>:<model id>`; see `connections.py`. */

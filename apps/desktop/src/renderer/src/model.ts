@@ -395,7 +395,7 @@ export type ApplicationRequestFailure = {
 }
 
 export type RuntimeStatusMessage = (
-  | { key: 'runtime.closed' | 'context.compacting' | 'context.compacted' | 'artifactFailure.missing' | 'artifactFailure.changed' | 'artifactFailure.conflict' | 'artifactFailure.invalid' | 'resume.reconnected' | 'resume.reconnect' | 'resume.stopped' | 'runtime.retrying' | 'runtime.recovered' | 'runtime.recoveryFailed' | 'runtime.failed' | 'runtime.detected' | 'runtime.transportRetrying' | 'runtime.transportRecovered' }
+  | { key: 'runtime.closed' | 'context.compacting' | 'context.compacted' | 'artifactFailure.missing' | 'artifactFailure.changed' | 'artifactFailure.conflict' | 'artifactFailure.invalid' | 'resume.reconnected' | 'resume.reconnect' | 'resume.stopped' | 'runtime.retrying' | 'runtime.providerRetrying' | 'runtime.recovered' | 'runtime.recoveryFailed' | 'runtime.failed' | 'runtime.detected' | 'runtime.transportRetrying' | 'runtime.transportRecovered' }
   | { key: 'runtime.retryingCount' | 'resume.retrying'; attempt: number; maximum: number }
 ) & { reason?: string | ApplicationRequestFailure }
 
@@ -440,7 +440,7 @@ export type ConvItem = TurnOwned & (
       action: string
       turnUnknown?: { reason?: 'timeout' | 'transportLost' | 'processExit' | 'unconfirmed' }
       incidentId?: string
-      runtimeAction?: 'confirm_turn_unknown' | 'retry_turn'
+      runtimeAction?: 'confirm_turn_unknown' | 'continue_turn'
       actionSessionId?: string
       actionTurnId?: string
       actionState?: 'idle' | 'submitting' | 'confirmed' | 'failed' | 'outcome_unknown'
