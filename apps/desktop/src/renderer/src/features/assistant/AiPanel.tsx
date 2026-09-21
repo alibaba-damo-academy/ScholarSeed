@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -30,6 +31,7 @@ import {
 } from '../../api'
 import { createFormatters } from '../../../../localization/format'
 import { Composer } from '../../components/business/Composer'
+import { LoginPrompt } from '../../components/business/LoginPrompt'
 import { ComposerRefChip } from '../../components/business/RefChip'
 import {
   ConversationControls,
@@ -78,17 +80,18 @@ const FLOATING_PANEL_MARGIN_PX = 12
 /**
  * 历史对话浮层：与「打开项目」浮层同族 —— 白底气泡 + 顶部搜索 + 单行列表。
  *
- * 宽度、行高、字号全部取设计 token（页面不写死视觉值）；列表滚动高度由
- * CommandList 自己的 --vds-command-list-max-height 拥有，这里不重复声明。
- * 右对齐由 PopoverContent 的 align="end" 负责：浮层右缘与历史按钮右缘齐平，
- * 贴近视口右边时再由浮层定位层收回可视区。
+ * 行高、字号、内边距取设计 token；列表滚动高度由 CommandList 自己的
+ * --vds-command-list-max-height 拥有，这里不重复声明。
+ * 水平方向不再用固定宽度：与输入框同宽同左（浮层收在会话区域内、
+ * 宽度随区域自适应，区域过宽时同输入框一起被内容列宽封顶并居中），
+ * 经 PopoverContent 的 inline style 覆盖定位层；垂直方向仍贴历史按钮下方（side="bottom"）。
  */
 const SESSION_FLYOUT_CLASS_NAME =
-  'w-[var(--vds-popover-width-md)] gap-[var(--vds-space-1)] ![padding:var(--vds-space-2)]'
+  'gap-[var(--vds-space-1)] ![padding:var(--vds-space-2)] !max-w-none'
 /* 行 hover/选中背景与左侧菜单（lit-nav-row 等）对齐：同取 --vds-bg-gray-hover，
    不用品牌浅绿底，避免浮层内颜色突兀。 */
 const SESSION_ROW_CLASS_NAME =
-  'group flex min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] hover:[background:var(--vds-bg-gray-hover)]'
+  'group relative flex min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] hover:[background:var(--vds-bg-gray-hover)]'
 const SESSION_ROW_ACTIVE_CLASS_NAME =
   '![background:var(--vds-bg-gray-hover)] hover:![background:var(--vds-bg-gray-hover)]'
 const SESSION_ITEM_CLASS_NAME =
@@ -97,15 +100,20 @@ const SESSION_TITLE_CLASS_NAME =
   'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]'
 const SESSION_TITLE_ACTIVE_CLASS_NAME = '!text-[var(--vds-brand-bg-default)]'
 const SESSION_TIME_CLASS_NAME =
-  'flex-none text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]'
-/** 行内「更多」默认隐身，悬停/聚焦/菜单展开才显现；始终占位，避免行内容左右跳动。 */
+  'flex-none text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] transition-[opacity] duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)] group-hover:opacity-0'
+/** 该行操作菜单展开时，时间与悬停态同样让位给「更多」。 */
+const SESSION_TIME_HIDDEN_CLASS_NAME = 'opacity-0'
+/** 行内「更多」绝对叠在时间槽上：默认不占位也不可见，悬停/聚焦/菜单展开才显现并替换时间。 */
 const SESSION_MORE_CLASS_NAME = [
-  'flex-none opacity-0 transition-[opacity]',
+  'absolute right-0 top-1/2 -translate-y-1/2',
+  'opacity-0 pointer-events-none transition-[opacity]',
   'duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)]',
-  'group-hover:[opacity:var(--vds-opacity-full)] focus-visible:[opacity:var(--vds-opacity-full)]',
-  'aria-expanded:[opacity:var(--vds-opacity-full)]'
+  'group-hover:[opacity:var(--vds-opacity-full)] group-hover:pointer-events-auto',
+  'focus-visible:[opacity:var(--vds-opacity-full)] focus-visible:pointer-events-auto',
+  'aria-expanded:[opacity:var(--vds-opacity-full)] aria-expanded:pointer-events-auto'
 ].join(' ')
-const SESSION_MORE_VISIBLE_CLASS_NAME = '[opacity:var(--vds-opacity-full)]'
+const SESSION_MORE_VISIBLE_CLASS_NAME =
+  '![opacity:var(--vds-opacity-full)] !pointer-events-auto'
 const SESSION_ACTION_MENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} gap-[var(--vds-space-1)]`
 const SESSION_ACTION_ITEM_CLASS_NAME = 'w-full justify-start'
 const SESSION_ACTION_DANGER_CLASS_NAME =
@@ -178,8 +186,16 @@ export function AiPanel(): React.JSX.Element {
     top: number
   } | null>(null)
   const floatingDrag = useRef<FloatingDrag | null>(null)
+  const panelRef = useRef<HTMLElement | null>(null)
+  // 输入框所在的会话内容列（由 Composer 透传）：历史浮层据此对齐，做到与输入框同宽同左。
+  const composerInputBoxRef = useRef<HTMLDivElement | null>(null)
+  const [sessionFlyoutBounds, setSessionFlyoutBounds] = useState<{
+    left: number
+    width: number
+  } | null>(null)
   const sessionListRequest = useRef(0)
   const taskStarterRequest = useRef(0)
+  const [loginSkill, setLoginSkill] = useState<string | null>(null)
   const renameCancelled = useRef(false)
   const projectPath = assistantProject(state).projectPath
 
@@ -202,7 +218,7 @@ export function AiPanel(): React.JSX.Element {
     if (request !== taskStarterRequest.current) return
     const result = resolveTaskStarterSkill(skills, starter.skillName)
     if (result.failure === 'login_required') {
-      set({ loginOpen: true })
+      setLoginSkill(t(starter.titleKey))
       return
     }
     if (result.failure) {
@@ -299,6 +315,40 @@ export function AiPanel(): React.JSX.Element {
     }
     void loadProjectSessions()
   }, [ai.sessionMenuOpen, loadProjectSessions])
+
+  // 历史浮层水平方向与输入框内容列对齐：同宽同左，宽度随会话区域自适应（区域过宽时
+  // 同输入框一起被内容列宽封顶并居中）。垂直方向仍由浮层定位层贴历史按钮下方，这里只覆盖 left/width。
+  // 观察面板而非内容列：内容列被封顶后宽度不再变、但面板变宽会改变其居中 left，ResizeObserver 需盯面板才能捕获。
+  useLayoutEffect(() => {
+    if (!ai.sessionMenuOpen) {
+      setSessionFlyoutBounds(null)
+      return undefined
+    }
+    const panel = panelRef.current
+    if (!panel) return undefined
+    const update = (): void => {
+      const box = composerInputBoxRef.current
+      if (!box) return
+      const rect = box.getBoundingClientRect()
+      const left = rect.left
+      const width = rect.width
+      setSessionFlyoutBounds((current) =>
+        current && current.left === left && current.width === width
+          ? current
+          : { left, width }
+      )
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(panel)
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [ai.sessionMenuOpen])
 
   useEffect(() => {
     const refresh = (): void => {
@@ -569,8 +619,10 @@ export function AiPanel(): React.JSX.Element {
     <aside
       className={`vds-ai-panel${ai.docked ? ' is-docked' : ' is-floating'}${ai.cover ? ' is-cover' : ''}`}
       data-testid="ai-panel"
+      ref={panelRef}
       style={!ai.docked && floatingPosition ? floatingPosition : undefined}
     >
+      <LoginPrompt open={loginSkill !== null} onOpenChange={(open) => { if (!open) setLoginSkill(null) }} skill={loginSkill ?? undefined} />
       <div
         className="vds-ai-head"
         onPointerDown={startFloatingDrag}
@@ -617,6 +669,14 @@ export function AiPanel(): React.JSX.Element {
               className={SESSION_FLYOUT_CLASS_NAME}
               data-testid="ai-session-flyout"
               side="bottom"
+              style={
+                sessionFlyoutBounds
+                  ? {
+                    left: sessionFlyoutBounds.left,
+                    width: sessionFlyoutBounds.width
+                  }
+                  : undefined
+              }
             >
               <SearchBox
                 aria-label={t('panel.searchLabel')}
@@ -649,6 +709,8 @@ export function AiPanel(): React.JSX.Element {
                     const row = sessionRowsById.get(node.id)
                     const displayName = sessionDisplayTitle(node, t) || t('panel.untitled')
                     const isActive = node.id === state.activeSession
+                    // 默认只展示时间；仅在该行操作菜单展开时强制让位给「更多」。
+                    const moreForced = sessionActionPopoverId === node.id
                     const updatedLabel = sessionTimeLabel(row?.mtime, sessionTimeFormat)
                     return (
                       <div
@@ -722,7 +784,10 @@ export function AiPanel(): React.JSX.Element {
                             {updatedLabel ? (
                               <span
                                 aria-label={t('panel.updated', { time: updatedLabel })}
-                                className={SESSION_TIME_CLASS_NAME}
+                                className={cx(
+                                  SESSION_TIME_CLASS_NAME,
+                                  moreForced && SESSION_TIME_HIDDEN_CLASS_NAME
+                                )}
                               >
                                 {updatedLabel}
                               </span>
@@ -738,7 +803,7 @@ export function AiPanel(): React.JSX.Element {
                               <IconButton
                                 className={cx(
                                   SESSION_MORE_CLASS_NAME,
-                                  isActive && SESSION_MORE_VISIBLE_CLASS_NAME
+                                  moreForced && SESSION_MORE_VISIBLE_CLASS_NAME
                                 )}
                                 data-testid={`ai-session-actions-${node.id}`}
                                 icon={<EllipsisVertical size={16} />}
@@ -897,7 +962,11 @@ export function AiPanel(): React.JSX.Element {
             <TodoPanel compact currentTurnOnly />
           </div>
         </div>
-        <Composer surface="assistant" contextTray={contextWorkspace} />
+        <Composer
+          surface="assistant"
+          contextTray={contextWorkspace}
+          inputBoxRef={composerInputBoxRef}
+        />
       </ConversationControls>
     </aside>
   )

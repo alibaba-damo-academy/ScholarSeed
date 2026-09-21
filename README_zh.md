@@ -1,160 +1,160 @@
 <div align="center">
 
-# 书深 ScholarSeed
+# ScholarSeed · 书深
 
-**面向科学研究与研发全周期的本地桌面 Agent 平台。**
+[English](README.md) · **中文**
 
-[English](README.md) · [简体中文](README_zh.md)
+**让每一次阅读与思考，生长为下一步研究。**
 
-[![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-black)
-![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4)
-![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
-![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
+[为什么选择书深](#为什么选择书深) · [从文献到成果](#从文献到成果) · [快速开始](#快速开始) · [安装](#安装) · [本地开发](#本地开发) · [社区与支持](#社区与支持)
 
 </div>
 
-书深 ScholarSeed 是一款本地优先的科研与研发桌面 Agent 应用。它将 Electron 桌面产品、Python 服务、中立的 Agent 运行时契约、可插拔运行时适配器、科研技能和可审计的执行记录组合在一起。
+书深是一款以研究项目为中心的 AI 科研工作台，将文献检索、阅读批注、AI 讨论与成果写作连接在一起。从一篇论文、一个问题开始，让分散的资料与思考逐步积累为有依据、可继续推进的研究成果。
 
-## 核心功能
 
-<!-- 产品团队：在此补充审核后的核心功能列表。 -->
+## 为什么选择书深
 
-## 产品截图
+- **一体化工作台，让研究连贯发生。** 在同一工作空间里查文献、读论文、记笔记、与 AI 讨论和修改文稿。围绕课题组织材料，减少工具切换与反复搬运上下文。
+- **引用可溯源，让判断有据可查。** 查看 AI 回答的文献来源与证据片段，回到可定位的原文核对。将阅读、分析与写作连接到具体依据，方便检查和修正。
+- **带着上下文，陪研究一起生长。** 将已有文献、笔记、项目资料和历史对话带入讨论，让 AI 接着你的研究往下想。每一次阅读、追问与修改，都可以成为下一步工作的基础。
+- **本地优先，让研究积累留在自己手中。** 在本地保存和管理研究资料与产出，支持连接自己的模型服务。使用云端模型或联网检索时，相关请求由所配置的服务处理。
+- **科研 Skills，让常用研究流程可复用。** 通过文献检索、综述写作、研究想法探索等技能推进任务，也支持扩展适合自己研究方式的工作流。
 
-<!-- 产品团队：在此补充审核后的产品截图。 -->
+## 从文献到成果
 
-## 技术架构
+### 精读文献
 
-ScholarSeed 采用多包单仓结构。根目录 `pyproject.toml` 负责编排 uv workspace，各应用与包独立拥有源码、依赖和发行边界。
+导入本地 PDF 或 Zotero 中已有的文献，也可以描述研究问题，让 AI 查找、筛选相关论文。把值得继续阅读的材料汇集到研究项目中。
+![精读文献](assets/literature-search-cropped.png)
 
-```text
-Electron / React
-      │ HTTP + SSE
-      ▼
-ScholarSeed Serve
-      │ 命令 + 事件
-      ▼
-Runtime Gateway ──► Codex Adapter ──► Codex App Server
-      │
-      └────────────► DamoATrace 证据记录
-```
+### 留下思考
 
-| 目录 | 职责 |
-| --- | --- |
-| `apps/desktop/` | Electron + React 桌面应用 |
-| `apps/serve/` | FastAPI 产品后端与 `scholarseed` 发行包 |
-| `packages/runtime/` | 中立运行时契约、Provider 发现和事件驱动 Gateway |
-| `packages/adapters/codex/` | Codex App Server 进程接入与原生协议转换 |
-| `packages/damoatrace/` | 独立的 trace 契约、记录、存储、查询与 CLI |
-| `skills/community/` | 随产品编译的科研技能源码 |
-| `tests/` | 跨包契约、集成测试、验收测试与发行门禁 |
+边读边高亮、批注和记录笔记，借助 AI 理解方法、公式与图表。把一时的疑问与理解留在文献旁，为后续比较和讨论积累线索。
+![留下思考](assets/reading-notes-cropped.png)
 
-ScholarSeed 当前包含的可执行 Agent Provider 是 Codex。Runtime 通过 `scholarseed_runtime.providers` entry point 发现 Provider，产品通过 `product.json` 控制启用范围。已经移除的自研 Harness 和历史 `damoagent` 命名空间不属于本仓库。
+### 展开讨论
 
-## 环境要求
+带着文献、笔记和项目资料继续追问：比较不同方法，梳理研究分歧，结合自己的条件探索值得验证的想法。
+![展开讨论](assets/research-discussion-cropped.png)
 
-- Git 与 Git LFS
-- Node.js `24.16.0`
-- npm `11.13.0`
-- Python `3.12+`
-- uv `0.12.11+`
-- 目标平台对应的原生构建工具
+### 回看依据
 
-安装包需要分别在 macOS arm64、macOS x86_64 或 Windows x86_64 原生环境构建，不支持跨平台打包。
+从回答中的引用查看来源和证据，回到原文核对关键表述。将 AI 的分析与论文实际结论对照，形成自己的判断。
+![回看依据](assets/citation-source-cropped.png)
 
-## 从源码运行
+### 写成进展
 
-请使用 Git 克隆而不是直接下载源码 ZIP，以确保 Git LFS 资源完整：
+将研究积累整理为带引用的综述、相关工作章节或研究报告。继续补充材料、调整结构与修改表达，让成果作为项目文件保留下来，衔接下一轮研究。
+![写成成果](assets/research-output-cropped.png)
+
+## 快速开始
+
+安装并启动书深后，配置自己的模型服务，或登录书深账号使用已开通的服务能力。
+
+1. 创建项目，导入一篇论文或一组研究资料。
+2. 选择模型，将相关材料加入 AI 对话。
+3. 描述研究问题，检查回答中的引用，保存笔记或生成的文稿。
+
+## 工作原理
+
+ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构，科研 Skills 在此基础上组织任务流程。
+
+- **桌面客户端**：基于 Electron、React 和 TypeScript，提供项目工作台、文献阅读、文件浏览与 AI 对话。
+- **本地服务**：基于 FastAPI，连接桌面交互、项目数据和任务执行。
+- **Agent 运行时**：通过统一 Runtime 接口与 Gateway 调度任务，当前使用 Codex 适配器连接执行引擎。
+- **科研 Skills**：封装文献检索、综述和想法探索等工作流，调用模型、文献服务及相关工具。
+- **执行追踪**：通过 ATrace 记录运行过程，为任务排查和开发调试提供支持。
+
+## 安装
+
+### 从源码运行
+
+环境要求：Git、Git LFS、Node.js **24.16.0**、npm **11.13.0**、uv **≥ 0.12.11**，以及 `make` 和目标平台的构建工具。
+
+克隆本仓库后，在仓库根目录执行：
 
 ```bash
-git clone <repository-url>
-cd Scholarseed
 git lfs install
 git lfs pull
-npm ci
-npm run dev
+make install
+make build
+make config-template
+make desktop
 ```
 
-`npm run dev` 会先准备仓库锁定的 Python 运行时和开发环境，再启动 Electron。通常不需要手动安装 workspace 中的 Python 包。
+大文件通过 Git LFS 管理，请完整拉取运行资源。Python 与 Codex 运行时由仓库工具链统一准备。
 
-在 macOS 和 Windows 上，`npm run dev` 默认启用 DevTools 和复制会话 ID 按钮。设置 `SCHOLARSEED_DEVTOOLS=0` 可关闭这些开发功能。
+启动后，在设置中配置模型连接，或登录书深账号。文献检索与全文获取需要对应服务和访问权限。
 
-## 模型与服务配置
+`make config` 提供交互式配置。`make config-template` 及依赖它的启动命令会更新配置，已有配置时请先备份。
 
-ScholarSeed 需要配置你有权使用的模型连接。请在应用设置中填写 Provider 地址、模型名称和凭据。本地 HTTP 鉴权和模型授权是不同概念：本地服务健康不代表模型账号已经获得授权。
-
-可选的开发和服务变量见 [`.env.example`](.env.example)。不要把 API Key、访问令牌、用户配置、会话数据、证书或私钥提交到仓库。
-
-`UPLOAD_BASE_URL` 用于启用可选的论文卡片上传服务。未配置时，ScholarSeed 会明确提示配置缺失，不会连接内部或历史服务地址。
-
-## 本地数据与隐私
-
-默认用户数据目录为 `~/.scholarseed`，可通过 `SCHOLARSEED_HOME` 指定其他位置。
-
-- 用户级配置、凭据、项目注册表、会话目录和文献数据由 `SCHOLARSEED_HOME` 管理。
-- 项目自有数据保存在 `<project>/.scholarseed/`，会随项目目录一起迁移。
-- Codex 状态默认隔离在 ScholarSeed 用户目录下，除非显式配置来源目录。
-- DamoATrace 记录产品可见的诊断事件，供开发者排障；这不代表它能够读取执行器未公开的内部信息。
-
-请勿将用户数据和凭据放进代码仓库；分享诊断包前应先检查其中内容。
-
-## 开发与验证
-
-常用仓库命令统一由根目录 `package.json` 暴露：
+## 本地开发
 
 ```bash
-# 构建桌面应用
-npm run build
+# 检查开发环境
+make doctor
 
-# 运行桌面确定性测试
-npm run desktop:test
+# 启动桌面开发环境
+make desktop-dev
 
-# 检查 Python 类型
-npm run python:typecheck
+# 构建桌面端
+make build
 
-# 检查格式与 import 规则
-npm run fmt-check
+# 运行桌面测试与类型检查
+npm --prefix apps/desktop test
+npm --prefix apps/desktop run typecheck
 
-# 检查本机工具链和运行时
-npm run doctor
+# 检查 Python 代码
+make check
 ```
 
-`npm run check` 只代表静态检查，不能替代真实 Electron、后端、模型和工具链路验收。
+科研技能源码位于 `skills/community/`。修改后可通过 `make skills-install` 构建技能包，通过 `make skills-verify` 检查与源码的一致性。
 
-## 构建安装包
-
-安装包必须在对应的原生操作系统上构建：
+## 打包
 
 ```bash
-# 构建并验证 unpacked App，不签名、不生成安装包
-npm run package:check
+# 构建开发版安装包
+npm --prefix apps/desktop run package:installer
 
-# 构建本机开发安装包
-npm run package
-
-# 构建正式安装包；签名和公证凭据由 CI 注入
-npm run package:dist
+# 查看平台、架构和发布选项
+node apps/desktop/scripts/build.cjs --help
 ```
 
-| 目标 | 原生构建环境 | 安装包 |
-| --- | --- | --- |
-| macOS arm64 | Apple Silicon macOS | DMG |
-| macOS x86_64 | Intel macOS | DMG |
-| Windows x86_64 | Windows x64 | NSIS EXE |
+默认生成 `dev` 开发包。`preview` 和 `release` 发布构建需配置更新服务和平台签名；macOS 签名发布还需配置公证凭据。
 
-正式发布凭据必须通过受保护的 CI 变量或本机安全凭据存储提供。证书、私钥、公证凭据和内部上传地址不得进入仓库。
+## 项目地图
+
+| 路径 | 用途 |
+| --- | --- |
+| `apps/desktop/` | Electron 桌面客户端与研究工作台 |
+| `apps/serve/` | FastAPI 本地服务 |
+| `packages/runtime/` | Runtime 接口与 Gateway |
+| `packages/adapters/` | Agent 运行时适配层 |
+| `packages/damoatrace/` | 执行追踪与调试工具 |
+| `skills/community/` | 科研技能与工作流 |
+| `scripts/` | 工具链、配置和构建脚本 |
+| `tests/` | 跨包集成与验收测试 |
+| `product.json` | 产品与运行时配置 |
+
+## 安全与数据
+
+- 用户数据默认保存在 `~/.scholarseed`，可通过 `SCHOLARSEED_HOME` 指定目录。
+- 模型调用、文献检索及联网工具会与所配置的外部服务通信。
+- 根据任务选择权限模式，并在需要时确认工具执行与文件操作。
+- 提交代码或反馈日志时，请移除 API Key、个人配置和私有研究材料。
 
 ## 社区与支持
 
-<!-- 产品团队：在此补充审核后的社区、问题反馈和支持渠道。 -->
+欢迎通过 GitHub Issues 反馈问题、提出功能建议，通过 Pull Requests 贡献代码、科研 Skills、文档和使用案例。
 
-## 许可证
+报告问题时，请附上系统与应用版本、复现步骤和预期结果。提交改动时，请说明解决的问题与验证方式，界面改动可附截图。
 
-ScholarSeed 的原创源码采用 [Apache License 2.0](LICENSE) 授权。
+如果 ScholarSeed 对你的研究有帮助，欢迎点亮 Star，也欢迎分享你希望它解决的科研问题。
 
-第三方软件、素材和随包运行时继续遵循各自的许可证，不会被 Apache-2.0 替代。现有声明包括：
+<!-- 发布素材：确认公开 GitHub 仓库后，在此接入 Star History 图表。 -->
+<!-- 许可证：确认仓库许可范围并补齐 LICENSE 后，在此添加许可证章节与链接。 -->
 
-- [Desktop 依赖及对应源码声明](apps/desktop/resources/notices/README.md)
-- [Office Viewer 第三方声明](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
-- [`paper-fulltext-dl` 第三方声明](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)
+---
+
+由 ScholarSeed 团队开发维护。

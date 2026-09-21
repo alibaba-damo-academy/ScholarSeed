@@ -2,7 +2,7 @@
 """Machine-local self-configuration for the search tools.
 
 Reads an optional, machine-specific config file selected by
-AGENTIC_SEARCH_CONFIG, or tools/search_config.json as a compatibility fallback,
+FAST_SEARCH_CONFIG, or tools/search_config.json as a compatibility fallback,
 and applies it to the process environment at import time, so the tools "just work"
 when invoked as `scholarseed-skill-python tools/paperhub.py ...` with no shell setup — no reliance
 on the agent remembering to export env vars, and no changes to the global shell
@@ -37,12 +37,12 @@ _applied = False
 
 def _user_config_path():
     root = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(root, "agentic-search", "search_config.json")
+    return os.path.join(root, "fast-search", "search_config.json")
 
 
 def config_source():
     """Return the highest-priority config path, including bundled defaults."""
-    explicit = os.environ.get("AGENTIC_SEARCH_CONFIG")
+    explicit = os.environ.get("FAST_SEARCH_CONFIG")
     if explicit:
         return os.path.abspath(os.path.expanduser(explicit))
     for path in (_user_config_path(), _LOCAL_CFG_PATH, _BUNDLED_CFG_PATH):

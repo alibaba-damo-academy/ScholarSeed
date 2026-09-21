@@ -19,19 +19,19 @@ codex --search -s workspace-write \
 
 `web-search` skill 的 native provider 是托管工具，不走 Python/shell 的
 `HTTP_PROXY`；其 official provider 与 PaperHub 是本地 Python 命令发出的 HTTP 请求，
-会继承 Worker 启动时的网络环境。这两类路径需要分别判断。Worker 会从 agentic-search
+会继承 Worker 启动时的网络环境。这两类路径需要分别判断。Worker 会从 fast-search
 同级目录、`.agents/skills/web-search`、用户 skill 目录或 `WEB_SEARCH_SKILL_PATH` 查找
 该独立 skill；找不到时启动即失败，不会绕过它直接调用原生 Web Search。
 这是 Worker 的启动依赖检查；Skill 方式则必须在同一 turn 显式加载
-`$agentic-search` 与 `$web-search`，不能依赖隐式 skill 发现。
+`$fast-search` 与 `$web-search`，不能依赖隐式 skill 发现。
 
 ## PaperHub
 
 无需配置时，工具使用仓库内 `tools/search_config.default.json` 的当前直连地址。覆盖优先级是：
 
 1. 环境变量（如 `PAPERHUB_URL`、`PAPERHUB_PROXY_MODE`）；
-2. `AGENTIC_SEARCH_CONFIG` 指向的 JSON；
-3. `~/.config/agentic-search/search_config.json`；
+2. `FAST_SEARCH_CONFIG` 指向的 JSON；
+3. `~/.config/fast-search/search_config.json`；
 4. skill 内兼容文件 `tools/search_config.json`；
 5. 仓库自带 `tools/search_config.default.json`。
 
@@ -56,7 +56,8 @@ PaperHub Bearer token 只从环境变量读取。必须在启动 Codex 的同一
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 ```
 
-不要把真实 key 写入仓库、`search_config.json`、Codex profile、命令参数或共享日志。官方 endpoint 使用 HTTPS；自定义服务也应使用加密连接。
+不要把真实 key 写入仓库、`search_config.json`、Codex profile、命令参数或共享日志。当前
+ScholarSeed endpoint 使用 HTTPS；只有显式配置本地 SSH 隧道时才使用 localhost HTTP。
 
 环境变量只会在 Codex 启动时被继承。若 `export SCHOLARSEED_API_KEY=...` 发生在 session 启动之后，请退出并重新启动 Codex；若全局 Codex 配置自定义了 `shell_environment_policy`，还要确认它没有过滤 `SCHOLARSEED_API_KEY`、代理变量或 `PATH`。
 
@@ -109,11 +110,14 @@ PaperHub 主机加入 allowlist。仓库代码不能替用户修改云端组织�
 - `references`：发送 `cited_by` 列表，返回“这些论文各自引用了哪些论文”，不是返回引用这些论文的后续文献；
 - `papers`：发送 `ids` 列表批量获取论文详情。
 
-新服务暂不支持 semantic search；`paperhub.py semantic ...` 会明确返回 `PAPERHUB_UNSUPPORTED_MODE`，skill 工作流只使用 keyword、title 和 citation tracking。keyword/title 默认要求 abstract；确需保留无摘要结果时可加 `--allow-missing-abstract`，年份过滤可用 `--year-start` 与 `--year-end`。
+新服务暂不支持 semantic search；`paperhub.py semantic ...` 会明确返回 `PAPERHUB_UNSUPPORTED_MODE`，skill 工作流只使用 keyword、title 和 citation tracking。keyword/title 默认请求 abstract 供当前进程内相关性判断，但所有持久化边界都会删除摘要；确实不需要内存摘要时可加 `--allow-missing-abstract`，年份过滤可用 `--year-start` 与 `--year-end`。
 
 ### 可复现实验缓存
 
 普通用户保持 `cache_mode: "off"` 即可。做策略 A/B 时，可用查询缓存固定 PaperHub 响应：
+
+新写入的缓存会删除所有摘要字段。升级前已经存在的旧缓存和历史结果不
+会由运行时代码批量改写，部署方应按法务保留策略单独清理。
 
 - `readwrite`：命中则回放，未命中则实时请求并记录；
 - `refresh`：强制实时请求并覆盖旧记录；
@@ -133,12 +137,12 @@ PaperHub 主机加入 allowlist。仓库代码不能替用户修改云端组织�
 
 - 符号链接安装：更新本仓库后即可获得新代码，再更新 `SCHOLARSEED_API_KEY` 和用户配置并重启 Codex；
 - copy 安装：安装器不会覆盖现有 skill，请先把旧目录移动到备份位置，再以 `--mode copy` 重新安装；
-- 安装器不会覆盖已有的 `~/.config/agentic-search/search_config.json`，发现旧默认 URL 时只会提示；运行时兼容迁移不会改写该文件。
-- 产品运行参数统一由 `config/agentic-search-veryfast.json`、部署配置和启动参数管理。
+- 安装器不会覆盖已有的 `~/.config/fast-search/search_config.json`，发现旧默认 URL 时只会提示；运行时兼容迁移不会改写该文件。
+- 产品运行参数统一由 `config/fast-search-veryfast.json`、部署配置和启动参数管理。
 
 ## web-search skill
 
-常驻 Worker 启动 App Server 时自动加 `--search`，并把 agentic-search 与已安装的
+常驻 Worker 启动 App Server 时自动加 `--search`，并把 fast-search 与已安装的
 web-search 一起作为结构化 skill input 注入。公网 batch 必须先从 web-search skill
 开始；`--search` 为其 native provider 提供能力。偶发但成功的 direct native 调用可
 作为兼容结果，失败时必须在同一 turn 回到 web-search official 路径。official provider
@@ -149,7 +153,7 @@ web-search，并用 `codex --search` 或用户级配置为其 native provider �
 
 ### 使用边界
 
-本分支只提供 Veryfast。产品后端需要托管下面的 Worker，而不是为每个请求重新启动
+本仓库只提供 `fast-search` 的 Veryfast 工作流。产品后端需要托管下面的 Worker，而不是为每个请求重新启动
 一个交互式 Codex：
 
 ```bash
@@ -169,7 +173,7 @@ https://developers.openai.com/codex/app-server/
 
 ### 统一配置
 
-仓库默认文件是 `config/agentic-search-veryfast.json`：
+仓库默认文件是 `config/fast-search-veryfast.json`：
 
 ```json
 {
@@ -190,9 +194,9 @@ https://developers.openai.com/codex/app-server/
 
 ```bash
 scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
-  --config /etc/agentic-search/veryfast.json
+  --config /etc/fast-search/veryfast.json
 
-export AGENTIC_SEARCH_VERYFAST_CONFIG=/etc/agentic-search/veryfast.json
+export FAST_SEARCH_VERYFAST_CONFIG=/etc/fast-search/veryfast.json
 scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
 
@@ -203,14 +207,14 @@ PaperHub/缓存项；模型、effort 和 service tier 使用配置文件或启�
 
 ```bash
 scholarseed-skill-python tools/appserver_quick.py --print-effective-config \
-  --config /etc/agentic-search/veryfast.json
+  --config /etc/fast-search/veryfast.json
 ```
 
 所有 Worker 启动参数都可以覆盖配置文件，例如账号没有默认模型或 priority 权限时：
 
 ```bash
 scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
-  --config /etc/agentic-search/veryfast.json \
+  --config /etc/fast-search/veryfast.json \
   --model <账号可用的模型> \
   --effort low \
   --service-tier default

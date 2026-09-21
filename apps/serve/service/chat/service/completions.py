@@ -9,10 +9,13 @@ import errno as errno_module
 import json
 import logging
 import os
+import random
 import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
+from http import HTTPStatus
 from io import BytesIO
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
 
@@ -76,6 +79,12 @@ ITEM_REFERENCE_TYPE = "item_reference"
 MODEL_BRIDGE_INVALID_TOOL_INPUT = "model_bridge_invalid_tool_input"
 MODEL_BRIDGE_CREDENTIAL_REQUIRED = "model_bridge_credential_required"
 MODEL_UPSTREAM_STREAM_ERROR = "model_upstream_stream_error"
+UPSTREAM_RATE_LIMIT_STATUS = HTTPStatus.TOO_MANY_REQUESTS
+UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS = 3
+UPSTREAM_RATE_LIMIT_BASE_DELAY_SECONDS = 1.0
+UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS = 8.0
+UPSTREAM_RATE_LIMIT_JITTER_RATIO = 0.2
+UPSTREAM_RETRY_AFTER_HEADER = "retry-after"
 
 # 账号腿脱敏分支把上游 >=400 一律折成该码：上游体内可能带厂商内部信息或凭据片段，
 # 不能进 Codex 子进程与 renderer。
@@ -850,15 +859,43 @@ class CompletionBridge:
             trust_env=upstream.trust_env,
         )
         call.client = client
-        request = client.build_request(
-            "POST",
-            endpoint,
-            json=chat_request,
-            headers=headers,
-        )
         send_started_at = time.perf_counter()
+        attempt = 1
         try:
-            response = await client.send(request, stream=True)
+            while True:
+                request = client.build_request(
+                    "POST",
+                    endpoint,
+                    json=chat_request,
+                    headers=headers,
+                )
+                response = await client.send(request, stream=True)
+                if call.revoked:
+                    await response.aclose()
+                    raise asyncio.CancelledError()
+                if response.status_code == UPSTREAM_RATE_LIMIT_STATUS:
+                    body = await response.aread()
+                    if (
+                        attempt < UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS
+                        and _retryable_internal_rate_limit(upstream, body)
+                    ):
+                        delay = _upstream_retry_delay(response, attempt)
+                        logger.warning(
+                            "model_bridge_upstream_retry session_id=%s status=%d "
+                            "attempt=%d max_attempts=%d delay_seconds=%.3f",
+                            upstream.session_id,
+                            response.status_code,
+                            attempt,
+                            UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS,
+                            delay,
+                        )
+                        await response.aclose()
+                        attempt += 1
+                        await asyncio.sleep(delay)
+                        if call.revoked or not upstream.active:
+                            raise asyncio.CancelledError()
+                        continue
+                break
             call.response = response
             call.diagnostic.status_code = response.status_code
             call.diagnostic.content_type = metadata_token(
@@ -868,9 +905,6 @@ class CompletionBridge:
                 response.headers.get("x-request-id", "")
             )
             call.diagnostic.emit("headers")
-            if call.revoked:
-                await response.aclose()
-                raise asyncio.CancelledError()
         except Exception as exc:  # noqa: BLE001 - translate transport failure at HTTP boundary
             call.diagnostic.upstream_end = StreamEnd.TRANSPORT_ERROR.value
             call.diagnostic.failure_type = type(exc).__name__
@@ -1229,6 +1263,41 @@ def _upstream_error_summary(body: bytes) -> dict[str, str]:
         "param": str(error.get("param") or "")[:UPSTREAM_ERROR_MESSAGE_LIMIT],
         "message": str(error.get("message") or "")[:UPSTREAM_ERROR_MESSAGE_LIMIT],
     }
+
+
+def _retryable_internal_rate_limit(upstream: CompletionUpstream, body: bytes) -> bool:
+    if upstream.credential_resolver is not None or upstream.token_provider is None:
+        return False
+    if _product_error_code(body):
+        return False
+    try:
+        document = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return True
+    return not (isinstance(document, Mapping) and isinstance(document.get("error"), Mapping))
+
+
+def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = str(response.headers.get(UPSTREAM_RETRY_AFTER_HEADER) or "").strip()
+    if retry_after:
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            try:
+                delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+            except (TypeError, ValueError, OverflowError):
+                delay = -1.0
+        if delay >= 0:
+            return min(delay, UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS)
+    base = min(
+        UPSTREAM_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1)),
+        UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS,
+    )
+    jitter = base * UPSTREAM_RATE_LIMIT_JITTER_RATIO
+    return min(
+        random.uniform(max(0.0, base - jitter), base + jitter),
+        UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS,
+    )
 
 
 def _product_error_code(body: bytes) -> str:

@@ -1504,18 +1504,26 @@ class AssistantTurnContract(unittest.TestCase):
 
         async def exercise() -> None:
             deadlines = []
+            retry_started = asyncio.Event()
+            continue_retry = asyncio.Event()
             waiting = asyncio.Event()
             grant = asyncio.Event()
             renewed_deadline = 23456.0
 
             async def prepare(live, *, request_id, deadline, on_wait):
                 deadlines.append(deadline)
+                if len(deadlines) == 1:
+                    await on_wait(
+                        ResourceReceipt(request_id, "", ResourceState.WAITING),
+                        12345.0,
+                    )
+                    raise SessionActivationError(RESOURCE_WAIT_TIMEOUT)
+                retry_started.set()
+                await continue_retry.wait()
                 await on_wait(
                     ResourceReceipt(request_id, "", ResourceState.WAITING),
-                    12345.0 if len(deadlines) == 1 else renewed_deadline,
+                    renewed_deadline,
                 )
-                if len(deadlines) == 1:
-                    raise SessionActivationError(RESOURCE_WAIT_TIMEOUT)
                 waiting.set()
                 await grant.wait()
 
@@ -1537,15 +1545,26 @@ class AssistantTurnContract(unittest.TestCase):
             self.assertEqual(len(deadlines), 1)
             response, status = await turns.send_queued(SESSION_ID, "renew-resource")
             self.assertEqual(status, 202, response)
+            retry_task = self.live.resource_task
+            await asyncio.wait_for(retry_started.wait(), 1)
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, "renew-resource").state,
+                QueuedMessageState.FAILED,
+            )
+            duplicate_response, duplicate_status = await turns.send_queued(
+                SESSION_ID, "renew-resource"
+            )
+            self.assertEqual(duplicate_status, 202, duplicate_response)
+            self.assertIs(self.live.resource_task, retry_task)
+            continue_retry.set()
             await asyncio.wait_for(waiting.wait(), 1)
             self.assertEqual(deadlines, [None, None])
             self.assertEqual(
                 self.catalog.queued_message(SESSION_ID, "renew-resource").deadline,
                 renewed_deadline,
             )
-            task = self.live.resource_task
             grant.set()
-            await task
+            await retry_task
             self.assertEqual(len(self.adapter.inputs), 1)
             self.assertEqual(
                 self.catalog.queued_message(SESSION_ID, "renew-resource").state,

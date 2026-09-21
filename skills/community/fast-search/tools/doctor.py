@@ -1,5 +1,5 @@
 #!/usr/bin/env scholarseed-skill-python
-"""Report local agentic-search/Codex network readiness; optionally test APIs."""
+"""Report local fast-search/Codex network readiness; optionally test APIs."""
 
 import argparse
 import json
@@ -43,7 +43,7 @@ def _paperhub_live_check(search=None, max_attempts=2):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Diagnose agentic-search connectivity")
+    parser = argparse.ArgumentParser(description="Diagnose fast-search connectivity")
     parser.add_argument("--live", action="store_true", help="make a small PaperHub request")
     args = parser.parse_args()
 

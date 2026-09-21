@@ -1,4 +1,12 @@
 {
+  "loginPrompt": {
+    "title": "登录后使用书深云端服务",
+    "description": "登录后可使用云端模型及需登录的技能。本机内容和启用偏好不受影响。",
+    "skillTitle": "登录后使用「{{name}}」",
+    "skillDescription": "该技能依赖书深云端服务，请先登录后使用。",
+    "cancel": "暂不",
+    "confirm": "登录书深"
+  },
   "artifacts": {
     "title": "会话产物",
     "empty": "暂无已归属到本会话的产物",

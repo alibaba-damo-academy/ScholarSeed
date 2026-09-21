@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 
 import type { SkillInfo } from '../../api.ts'
 import {
@@ -47,6 +48,20 @@ test('ready task starter skill becomes a typed composer reference', () => {
       version: undefined
     }
   })
+})
+
+test('every research starter is login-gated by the product catalog', () => {
+  const catalog = JSON.parse(readFileSync(new URL('../../../../../../serve/service/capabilities/catalog.json', import.meta.url), 'utf8'))
+  for (const starter of AI_TASK_STARTERS) {
+    assert.ok(catalog.requires_login.includes(starter.skillName), starter.skillName)
+    const restricted = skill({
+      name: starter.skillName,
+      requires_login: true,
+      active: false,
+      unavailable_reason: 'login_required'
+    })
+    assert.deepEqual(resolveTaskStarterSkill([restricted], starter.skillName), { failure: 'login_required' })
+  }
 })
 
 test('task starter skill failures stay explicit', () => {

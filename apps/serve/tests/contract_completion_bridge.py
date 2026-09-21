@@ -77,6 +77,7 @@ def forward_contract(
     api_key: str = "contract-key",
     token_provider: Callable[[str], str] | None = None,
     owner_id: str = "",
+    upstream_responses: tuple[tuple[int, bytes, dict[str, str]], ...] = (),
 ):
     """Exercise the public bridge route against a deterministic upstream transport."""
     captured: list[httpx.Request] = []
@@ -85,6 +86,15 @@ def forward_contract(
         captured.append(request)
         if send_exc is not None:
             raise send_exc
+        if upstream_responses:
+            response_status, response_body, response_headers = upstream_responses[
+                min(len(captured) - 1, len(upstream_responses) - 1)
+            ]
+            return httpx.Response(
+                response_status,
+                content=response_body,
+                headers=response_headers,
+            )
         return httpx.Response(status, content=body)
 
     app = FastAPI()
@@ -192,6 +202,57 @@ def test_native_errors_and_nonstream_responses_are_preserved() -> None:
         response.status_code == 400
         and response.json()["error"]["code"] == MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED
         and not captured,
+    )
+
+
+def test_internal_unstructured_rate_limit_retries_before_returning() -> None:
+    payload = {
+        "model": "alias",
+        "stream": False,
+        "input": "Search",
+        "tools": [{"type": "web_search"}],
+    }
+    success = b'{"id":"response-1","output":[]}'
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
+        response, captured = forward_contract(
+            payload,
+            success,
+            token_provider=lambda _owner: "account.token",
+            owner_id="account-owner",
+            upstream_responses=(
+                (429, b'{"detail":"temporarily limited"}', {"Retry-After": "0"}),
+                (429, b'{"detail":"temporarily limited"}', {"Retry-After": "0"}),
+                (200, success, {}),
+            ),
+        )
+    check(
+        "internal unstructured 429 is retried inside one bridge call",
+        response.status_code == 200 and response.content == success and len(captured) == 3,
+        f"status={response.status_code} calls={len(captured)}",
+    )
+
+    product_error = b'{"detail":{"error":"credit_balance_exhausted"}}'
+    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
+        response, captured = forward_contract(
+            payload,
+            success,
+            token_provider=lambda _owner: "account.token",
+            owner_id="account-owner",
+            upstream_responses=(
+                (429, product_error, {}),
+                (200, success, {}),
+            ),
+        )
+    check(
+        "registered product 429 remains terminal without bridge retry",
+        response.status_code == 429
+        and response.json()["error"]["code"] == "credit_balance_exhausted"
+        and len(captured) == 1,
+        f"status={response.status_code} calls={len(captured)} body={response.text}",
     )
 
 
@@ -1016,6 +1077,7 @@ def main() -> int:
     )
     test_native_tools_preserve_request_and_response()
     test_native_errors_and_nonstream_responses_are_preserved()
+    test_internal_unstructured_rate_limit_retries_before_returning()
     test_transport_failure_is_attributable()
     test_function_only_calls_keep_chat_conversion()
     test_native_protocol_rejection_is_independent_of_effort()

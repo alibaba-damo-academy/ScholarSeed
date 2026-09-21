@@ -46,9 +46,17 @@ test('Assistant selection references use an Assistant-owned composition of publi
   assert.match(panel, /import \{ referenceBaseLabel, referenceLabel, sessionTimeLabel \} from '\.\/text'/)
   assert.doesNotMatch(panel, /function sessionUpdatedLabel/)
   assert.match(panel, /\{updatedLabel \? \(/)
-  // 浮层视觉值全部取设计 token，页面不写死宽度/透明度等数值。
-  assert.match(panel, /w-\[var\(--vds-popover-width-md\)\]/)
+  // 浮层视觉值全部取设计 token，页面不写死透明度等数值；水平方向不再固定宽度，
+  // 而是与输入框同宽同左（宽度随会话区域自适应、区域过宽时同输入框被内容列宽封顶），
+  // 经 PopoverContent 的 inline style 覆盖定位层的 left/width。
   assert.match(panel, /opacity:var\(--vds-opacity-full\)/)
+  assert.doesNotMatch(panel, /w-\[var\(--vds-popover-width-md\)\]/)
+  // 浮层边界必须由输入框内容列测量而来（而非面板），以保证与输入框对齐。
+  assert.match(panel, /inputBoxRef=\{composerInputBoxRef\}/)
+  assert.match(panel, /const box = composerInputBoxRef\.current/)
+  assert.match(panel, /width: sessionFlyoutBounds\.width/)
+  // Popover 基类带 320px max-width 钳制，浮层必须解除它才能让 inline width 生效。
+  assert.match(panel, /!max-w-none/)
   assert.doesNotMatch(panel, /SESSION_[A-Z_]*CLASS_NAME[\s\S]{0,400}?\d+px/)
   // 历史浮层整族手写 CSS 已迁到 Tailwind + token：不允许再回到 workbench.css。
   assert.doesNotMatch(workbenchCss, /\.vds-ai-session-(?:popover|list|row|main|title|time|more|actions|action-item|error|menu|new)/)

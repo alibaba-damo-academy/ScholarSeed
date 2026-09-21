@@ -31,7 +31,7 @@ class FakeInvocations:
 
     async def stream(self, prepared):
         workspace = self.prepared[-1]["trusted_workspace"].path
-        result = workspace / "agentic-search-results" / "topic"
+        result = workspace / "fast-search-results" / "topic"
         result.mkdir(parents=True)
         (result / "metadata.json").write_text(
             json.dumps(
@@ -72,7 +72,7 @@ class TranscriptInvocations(FakeInvocations):
 
     async def stream(self, prepared):
         workspace = self.prepared[-1]["trusted_workspace"].path
-        result = workspace / "agentic-search-results" / "topic"
+        result = workspace / "fast-search-results" / "topic"
         result.mkdir(parents=True)
         (result / "metadata.json").write_text(
             json.dumps(

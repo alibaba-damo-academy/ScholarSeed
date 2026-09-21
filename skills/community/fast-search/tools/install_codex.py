@@ -14,7 +14,7 @@ import shutil
 import sys
 
 
-SKILL_NAME = "agentic-search"
+SKILL_NAME = "fast-search"
 SOURCE_DIR = Path(__file__).resolve().parent.parent
 SEARCH_CONFIG_SOURCE = SOURCE_DIR / "tools" / "search_config.default.json"
 
@@ -83,7 +83,7 @@ def _install_skill(target, mode, dry_run=False):
 
     ignored = shutil.ignore_patterns(
         ".git", ".agents", ".codex", "__pycache__", "*.pyc",
-        "agentic-search-results", "runs", "work_*", "session",
+        "fast-search-results", "runs", "work_*", "session",
         "search_config.json", "tests", "api.md",
     )
     shutil.copytree(str(SOURCE_DIR), str(target), ignore=ignored)
@@ -118,7 +118,7 @@ def _paths(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Install agentic-search for Codex")
+    parser = argparse.ArgumentParser(description="Install fast-search for Codex")
     parser.add_argument("--scope", choices=("user", "repo"), default="user")
     parser.add_argument("--repo", help="Target repository for --scope repo (default: cwd)")
     parser.add_argument("--mode", choices=("symlink", "copy"), default="symlink")
@@ -151,7 +151,7 @@ def main():
     print("  export SCHOLARSEED_API_KEY=<your PaperHub API key>")
     print("  codex --search -s workspace-write \\")
     print("    -c sandbox_workspace_write.network_access=true")
-    print("  Then invoke: $agentic-search <your literature-search request>")
+    print("  Then invoke: $fast-search <your literature-search request>")
     print("  For the low-latency product path, run tools/appserver_quick.py --serve-jsonl")
     if args.mode == "symlink":
         print(f"  Keep the source checkout: {SOURCE_DIR}")

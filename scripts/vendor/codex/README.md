@@ -18,18 +18,18 @@ codex-<version>-win32-x64.tgz
 npm view @openai/codex@latest version
 ```
 
-假设版本为 `0.153.4`，下载地址为：
+假设版本为 `0.155.1`，下载地址为：
 
 ```text
-https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-darwin-arm64.tgz
-https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-darwin-x64.tgz
-https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-win32-x64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-darwin-arm64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-darwin-x64.tgz
+https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-win32-x64.tgz
 ```
 
 也可以直接下载：
 
 ```bash
-VERSION=0.153.4
+VERSION=0.155.1
 
 curl -fL --retry 3 \
   "https://registry.npmjs.org/@openai/codex/-/codex-${VERSION}-darwin-arm64.tgz" \
@@ -49,7 +49,7 @@ curl -fL --retry 3 \
 从 npm 元数据读取官方 SHA-512 integrity：
 
 ```bash
-VERSION=0.153.4
+VERSION=0.155.1
 npm view "@openai/codex@${VERSION}-darwin-arm64" dist.integrity
 npm view "@openai/codex@${VERSION}-darwin-x64" dist.integrity
 npm view "@openai/codex@${VERSION}-win32-x64" dist.integrity

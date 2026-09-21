@@ -56,7 +56,7 @@ test('vendored manifest selects only reviewed platforms', () => {
   const mac = artifact(desktop, 'darwin', 'arm64')
   const intelMac = artifact(desktop, 'darwin', 'x64')
   const windows = artifact(desktop, 'win32', 'x64')
-  assert.equal(mac.version, '0.153.4')
+  assert.equal(mac.version, '0.155.1')
   assert.equal(mac.target, 'aarch64-apple-darwin')
   assert.equal(intelMac.target, 'x86_64-apple-darwin')
   assert.equal(windows.target, 'x86_64-pc-windows-msvc')
@@ -93,5 +93,5 @@ test('installed selection has no external fallback', () => {
 test('Intel macOS runtime probe tolerates Rosetta bootstrap latency', async () => {
   const desktop = path.resolve(__dirname, '..')
   const runtime = await resolveVendoredCodex(desktop, 'darwin', 'x64')
-  assert.equal(runtime.reported_version, '0.153.4')
+  assert.equal(runtime.reported_version, '0.155.1')
 })

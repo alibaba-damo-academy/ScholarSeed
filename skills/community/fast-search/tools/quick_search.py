@@ -98,8 +98,7 @@ def main():
     parser.add_argument("--time-budget-minutes", type=float, default=1.0)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=45)
-    # Kept as a hidden no-op for callers created before abstracts became part
-    # of the required metadata schema.
+    # Compatibility-only no-op. Abstract persistence is prohibited.
     parser.add_argument(
         "--include-abstract", action="store_true", help=argparse.SUPPRESS,
     )
@@ -180,8 +179,10 @@ def main():
             workers=args.workers,
             timeout=args.timeout,
             titles_per_query=0,
+            retain_papers_in_memory=True,
         )
         round_result, status = search_round.run_round(round_args)
+        papers_in_memory = round_result.pop("_in_memory_papers", None)
         if status or round_result.get("error") or round_result.get("budget_stop"):
             raise ValueError("Veryfast retrieval failed: %s" % json.dumps(
                 round_result, ensure_ascii=False,
@@ -193,6 +194,7 @@ def main():
             count=args.count,
             best_title=best_title,
             require_best_target=required_best_target,
+            papers_override=papers_in_memory,
         )
     except ValueError as exc:
         parser.error(str(exc))

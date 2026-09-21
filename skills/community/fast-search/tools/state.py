@@ -20,12 +20,12 @@ import json
 import os
 import re
 import sys
-import tempfile
 import time
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import search_policy  # noqa: E402
+import privacy  # noqa: E402
 
 
 DEFAULT_STATE = {
@@ -84,21 +84,8 @@ def write_pool(session_dir, pool):
 
 
 def _atomic_json_write(path, value):
-    """Replace a JSON file atomically so interrupted runs keep valid state."""
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    temp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=directory, delete=False,
-        ) as f:
-            temp_path = f.name
-            json.dump(value, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(temp_path, path)
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            os.unlink(temp_path)
+    """Replace JSON atomically after removing non-persistable abstracts."""
+    privacy.atomic_json_write(path, value)
 
 
 def _budget_profile(total_seconds):

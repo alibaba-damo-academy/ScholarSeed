@@ -555,6 +555,14 @@ declare module 'i18next' {
         }
     },
     "components": {
+        "loginPrompt": {
+            "title": "登录后使用书深云端服务",
+            "description": "登录后可使用云端模型及需登录的技能。本机内容和启用偏好不受影响。",
+            "skillTitle": "登录后使用「{{name}}」",
+            "skillDescription": "该技能依赖书深云端服务，请先登录后使用。",
+            "cancel": "暂不",
+            "confirm": "登录书深"
+        },
         "artifacts": {
             "title": "会话产物",
             "empty": "暂无已归属到本会话的产物",
@@ -5182,6 +5190,8 @@ declare module 'i18next' {
             "label": "技能分类"
         },
         "loginRequired": "需登录",
+        "loginAvailable": "登录后可用",
+        "localPreference": "在本机启用此技能",
         "loginRequiredHint": "登录后才能使用此技能，未登录也可管理启用偏好。",
         "paused": "已暂停",
         "loadFailed": "技能加载失败，请重试。",

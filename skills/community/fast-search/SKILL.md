@@ -2,24 +2,29 @@
 name: fast-search
 description: Low-latency academic paper discovery for search-bar queries. Infer hidden entities, use one logical batch through the installed web-search skill to resolve likely paper titles, run one bounded PaperHub keyword/title/citation graph, and return up to 20 precision-first papers in metadata.json. Use when a user or product needs the Veryfast paper-search workflow rather than iterative literature research.
 description_zh: "面向搜索框式查询的低延迟学术论文发现。推断查询背后的隐含实体，用一次经由已安装 web-search 技能的逻辑批量公网搜索解析出候选论文标题，再跑一次有预算约束的 PaperHub 关键词/标题/引用图，最终在 metadata.json 中返回至多 20 篇精准优先的论文。用于用户或产品需要 Veryfast 极速论文检索场景，而非迭代式文献研究。"
-version: "1.1.0"
+version: "1.2.0"
 metadata:
   invocation:
     permission: full-access
 ---
 
-# Veryfast Academic Search
+# Fast Search
 
 Return 5–20 relevant papers in `metadata.json`. This skill exposes exactly one
 workflow: Veryfast. It does not perform iterative gap filling or generate a
 narrative report.
+
+Never persist a paper abstract. Abstracts may be used transiently inside the
+single runner process for relevance scoring, but `metadata.json`, session state,
+round traces, plans, caches, and diagnostic artifacts must omit the `abstract`
+field and its text. Do not copy an abstract into another field.
 
 ## Paths and connectivity
 
 1. `SKILL_DIR` is the absolute directory containing this file. Use absolute
    paths for bundled tools.
 2. `WORK_DIR` is the user's current working directory. Write only under
-   `WORK_DIR/agentic-search-results/<short-topic>/`; append a timestamp rather
+   `WORK_DIR/fast-search-results/<short-topic>/`; append a timestamp rather
    than overwrite existing results.
 3. PaperHub authentication comes only from `SCHOLARSEED_API_KEY`; configuration is
    loaded by `tools/localconf.py`.
@@ -159,11 +164,9 @@ ID, DOI, or full title is explicitly present in the user query, then an
 agent-declared `--best-title`, and otherwise the highest relevance score. The
 declared target never promotes a Tier 2/3 paper or changes tier membership.
 Remaining Tier 1 members retain their existing order. It writes compact
-`metadata.json` with an `abstract`
-field for every paper and does not generate a report. When PaperHub has no
-abstract for an individual record, preserve that field as an empty string. On
-success, return the metadata path and paper count without rereading the file or
-running another command.
+`metadata.json` without abstracts and does not generate a report. On success,
+return the metadata path and paper count without rereading the file or running
+another command.
 
 The low-latency target assumes the persistent Worker and its bundled default
 model configuration. A direct invocation inside an already-running interactive

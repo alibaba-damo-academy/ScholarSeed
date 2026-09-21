@@ -5,8 +5,9 @@ Problem: PaperHub (ES) and web search can return different results for the same
 request across runs. That non-determinism makes A/B comparison of prompt/strategy
 changes noisy — a recall delta could be the change or just data drift.
 
-Solution: cache each (namespace, request) -> response on disk, keyed by a hash of
-the request. Identical requests replay the identical response.
+Solution: cache each (namespace, request) -> privacy-safe response on disk,
+keyed by a hash of the request. Abstracts stay in the live process but are
+removed from cache entries; replay therefore uses abstract-free metadata.
 
 Controlled by env vars (caching is OFF unless SEARCH_CACHE_DIR is set):
     SEARCH_CACHE_DIR    directory to store cache entries (unset => passthrough, no cache)
@@ -35,6 +36,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import localconf  # noqa: E402,F401  (self-configures SEARCH_CACHE_DIR/MODE on import)
+import privacy  # noqa: E402
 
 
 def _root():
@@ -107,7 +109,7 @@ def recorded_wall(entry):
 
 
 def put(namespace, payload, response, metadata=None):
-    """Store a response. No-op when disabled, in readonly mode, or on error responses."""
+    """Store a response without abstracts; leave the live value unchanged."""
     if not enabled() or _mode() in {"readonly", "replay"}:
         return False
     if isinstance(response, dict):
@@ -115,16 +117,13 @@ def put(namespace, payload, response, metadata=None):
             return False
     path = _path(namespace, make_key(namespace, payload))
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump({
-            "schema_version": 2,
-            "namespace": namespace,
-            "payload": payload,
-            "response": response,
-            "metadata": metadata or {},
-        }, f, ensure_ascii=False)
-    os.replace(tmp, path)
+    privacy.atomic_json_write(path, {
+        "schema_version": 3,
+        "namespace": namespace,
+        "payload": payload,
+        "response": response,
+        "metadata": metadata or {},
+    }, indent=None)
     return True
 
 

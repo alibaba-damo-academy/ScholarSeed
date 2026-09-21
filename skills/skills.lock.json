@@ -225,68 +225,68 @@
         {
           "mode": 420,
           "path": ".scholarseed-package.json",
-          "sha256": "e51a57e1b7d97ead5b50551a267a3409949e2c19df63b7ea29f644a2492bd19d",
-          "size": 4139
+          "sha256": "55dd46f6513936925e981d952d34c6f59a53312882802ce8253bd6622469586c",
+          "size": 3733
         },
         {
           "mode": 420,
           "path": "README.md",
-          "sha256": "1da7c05f3c5ee4fbe0878f706ab9d99051fbe649cc4bb360608d059acadde22d",
-          "size": 10249
+          "sha256": "bfa7ab2a1d859ca30142166f3822bf842943cb8c8cce21182be829936a095fa1",
+          "size": 10306
         },
         {
           "mode": 420,
           "path": "SETUP.md",
-          "sha256": "c8c123d9c4f4bee7dc7def3c7589dc2ce5f7bbd57f61c4abdc93246fcd7c69f2",
-          "size": 16265
+          "sha256": "a952f3bca656ce90860eaefcd664b2c98f927c1612c54d09c9f173d1a6df6ab1",
+          "size": 16516
         },
         {
           "mode": 420,
           "path": "SKILL.md",
-          "sha256": "3e3b0e00317977899db497ac00b32eede878eb0431885921910d11312a12af33",
-          "size": 9919
+          "sha256": "840ee73c0a2b4ce8824003a9bcc0a2876d4fb213cbf557a3408dd68fea52c0b8",
+          "size": 10086
         },
         {
           "mode": 420,
           "path": "agents/openai.yaml",
-          "sha256": "05400a994ca533208f0f61e5b7a7edf79ef01deb09b0cbfb8a57dc3c6afafc0c",
-          "size": 360
+          "sha256": "2253ee52653cb93660d0cb3063a11314e0e88859eb631c5f44a1eaccec3e88b3",
+          "size": 347
         },
         {
           "mode": 420,
-          "path": "config/agentic-search-veryfast.json",
+          "path": "config/fast-search-veryfast.json",
           "sha256": "228dea4f1a324a90bdcd440056e6e4175032168a6dae6bea3b14ff43819f02c7",
           "size": 467
         },
         {
           "mode": 493,
           "path": "tools/appserver_quick.py",
-          "sha256": "d676b37fac98efe447c3f0ad1f538021a23355736d37c535d67b8809c6c24ef9",
-          "size": 40389
+          "sha256": "5939af35cbf5a38d0e9a5de255b7150333b84059e8646683cb9892e85a00a934",
+          "size": 40415
         },
         {
           "mode": 420,
           "path": "tools/cache.py",
-          "sha256": "6458d5fbbb879072d20fdb638cf78ab5fa26f446e08c753beee1f10c1bbf5b86",
-          "size": 5324
+          "sha256": "667f8c89942bfce277d694965cd8e9e8e81f4c8fdb13cb17f50b92e1b253546c",
+          "size": 5325
         },
         {
           "mode": 420,
           "path": "tools/doctor.py",
-          "sha256": "e5a0d7f70cd38d8fa9dae774399c570101d79aaeb94d99bbaed3e6ce6982076d",
-          "size": 3507
+          "sha256": "8594971290d45edadcd8026ef1b92321d183ef98d1f30c4d97d0facfa7d49ffb",
+          "size": 3501
         },
         {
           "mode": 420,
           "path": "tools/install_codex.py",
-          "sha256": "d66ec3bc4b6197c7cef9bfd76316bddc1e61e880435145e0752b464015732d0a",
-          "size": 6161
+          "sha256": "4bd018fbb24d8c16111fc97314c9279dc60fa0c4aa3646aebfeac2e34274eca6",
+          "size": 6149
         },
         {
           "mode": 420,
           "path": "tools/localconf.py",
-          "sha256": "d656be080b1938b142d9a6e9014aac85ea11b92ea090b769678a9592bdba3eb0",
-          "size": 4401
+          "sha256": "ccc36f63dc529833a1d1763efee20dc57085bdef29113200fd17972221e9b0ae",
+          "size": 4392
         },
         {
           "mode": 420,
@@ -296,15 +296,21 @@
         },
         {
           "mode": 420,
+          "path": "tools/privacy.py",
+          "sha256": "32bc891acc8c027c97de0bbcabfb253b1bcf174b373f3fac52020681e0ebc15e",
+          "size": 1674
+        },
+        {
+          "mode": 420,
           "path": "tools/quick_finalize.py",
-          "sha256": "cf158a753b0e943b84531820060c6888845c5ae5a56003f4206279d75df09bf6",
-          "size": 14738
+          "sha256": "415691386e0b9ab019d6ebe3c8785b1989728228d3202aaae47bbcaba012ecc1",
+          "size": 14549
         },
         {
           "mode": 420,
           "path": "tools/quick_search.py",
-          "sha256": "37ad75985547dbdc2562651c07bdfd4ff99e204362165103966ea5926b958f67",
-          "size": 8387
+          "sha256": "ea17852673c5130d74033140541f33b61825cfde8e7292380e75af8f4ee3dba2",
+          "size": 8497
         },
         {
           "mode": 420,
@@ -315,14 +321,14 @@
         {
           "mode": 420,
           "path": "tools/search_config.default.json",
-          "sha256": "c0c7a7f9ef055d0df2f72f72ba169186feb477aa500a795d5abe37cd4677a7fd",
-          "size": 459
+          "sha256": "d8c13d42c64a9dd35791915447b51fdce0e6c192857bf96538902b4084b29b9f",
+          "size": 453
         },
         {
           "mode": 420,
           "path": "tools/search_config.example.json",
-          "sha256": "1ef1bec965ae84f36e3bfec7b5fffc9cd056bb58d010902aa4e6ce4f5bd0922d",
-          "size": 504
+          "sha256": "42a96b31752a1437fece2ec65edc13aa649dff12fe695988e1b3b8ca430f357e",
+          "size": 498
         },
         {
           "mode": 420,
@@ -333,20 +339,20 @@
         {
           "mode": 420,
           "path": "tools/search_round.py",
-          "sha256": "e52f2cfc8b37d22133f895b08e8f6bf0786bfeebf0e29239508b17883bf920b9",
-          "size": 29852
+          "sha256": "54324dfd47cf8e1afcf8b73b0385cfc5401e2903edf222808fa946766d67bfeb",
+          "size": 30207
         },
         {
           "mode": 420,
           "path": "tools/state.py",
-          "sha256": "d65fb68ab4121a2dd6498d237cf5807601617c8416a954fb5dd196e6454dc021",
-          "size": 14965
+          "sha256": "54e46cede9a1cc5d728607b9e6bbaf6c1953d3409195597d9d88e6d55320ba8d",
+          "size": 14513
         }
       ],
       "namespace": "scholarseed",
-      "payload_sha256": "2ecb5e4a96366250aa3844c67660a4fe4d6fa78b8bef6f8c108ba1f44e91a4ad",
+      "payload_sha256": "634db558b7e47ebc3edbdb07fe37fe424f2780aa70afe7a3b3ffc8ca5b791ecf",
       "slug": "fast-search",
-      "version": "1.1.0"
+      "version": "1.2.0"
     },
     {
       "files": [

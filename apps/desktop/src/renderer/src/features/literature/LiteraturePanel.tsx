@@ -10,6 +10,7 @@ import {
   Folder,
   FolderOpen,
   Link,
+  LockKeyhole,
   MonitorDown,
   Pencil,
   Search,
@@ -595,11 +596,11 @@ export function LiteraturePanel(): React.JSX.Element {
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="border-0 bg-transparent p-0 text-[var(--vds-text-secondary)] shadow-none">
-          <div className="flex h-[76px] max-h-[280px] self-stretch items-start gap-2 rounded-[12px] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-3 shadow-none">
+          <div data-testid="literature-search-box" className={`flex flex-col self-stretch gap-[var(--vds-space-2)] rounded-[var(--vds-radius-5)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] shadow-none focus-within:border-[var(--vds-brand-light-border)]${authenticated ? '' : ' !rounded-b-none'}`}>
             <Textarea
               unstyled
               aria-label={t('panel.discover')}
-              className="min-h-0 flex-1 resize-none border-0 bg-transparent p-0 font-['PingFang_SC'] text-[14px] font-normal leading-5 text-[var(--vds-text-primary)] outline-none placeholder:font-['PingFang_SC'] placeholder:text-[14px] placeholder:font-normal placeholder:text-[var(--vds-text-5)]"
+              className="min-h-[var(--vds-control-height-standard)] w-full resize-none border-0 bg-transparent p-0 font-[family-name:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] outline-none placeholder:text-[var(--vds-text-5)]"
               placeholder={t('panel.searchPlaceholder')}
               rows={2}
               value={discovery}
@@ -615,10 +616,11 @@ export function LiteraturePanel(): React.JSX.Element {
                 void startSearch()
               }}
             />
-            <div className="flex h-full shrink-0 items-end">
+            <div className="flex shrink-0 justify-end">
               <Button
                 aria-label={t('panel.search')}
-                className="!size-[var(--vds-control-height-xs)] !min-h-0 !min-w-[var(--vds-control-height-xs)] !p-0 [&_svg]:!size-[var(--vds-icon-7)]"
+                className="!size-[var(--vds-control-height-sm)] !min-h-0 !min-w-[var(--vds-control-height-sm)] !p-0 [&_svg]:!size-[var(--vds-icon-7)] disabled:!bg-[var(--vds-brand-light-bg-default)] disabled:!text-[var(--vds-text-5)] disabled:!opacity-[var(--vds-opacity-full)]"
+                data-testid="literature-search-submit"
                 disabled={!authenticated || searching || !discovery.trim()}
                 icon={
                   searching ? (
@@ -632,9 +634,10 @@ export function LiteraturePanel(): React.JSX.Element {
               />
             </div>
           </div>
-          {!authenticated && <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]" data-testid="literature-search-login">
-            <span>{t('panel.loginRequired')}</span>
-            <Button variant="ghost" size="sm" onClick={() => set({ loginOpen: true })}>{t('panel.login')}</Button>
+          {!authenticated && <div className="flex items-center gap-[var(--vds-space-2)] rounded-b-[var(--vds-radius-5)] border border-t-0 border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-brand-text-primary)]" data-testid="literature-search-login">
+            <LockKeyhole className="size-[var(--vds-icon-7)] shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1">{t('panel.loginRequired')}</span>
+            <Button size="xs" className="shrink-0" onClick={() => set({ loginOpen: true })}>{t('panel.login')}</Button>
           </div>}
         </CollapsibleContent>
       </Collapsible>

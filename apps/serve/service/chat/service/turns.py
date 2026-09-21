@@ -695,6 +695,7 @@ class TurnService:
                 if queued is not None and queued.state in (
                     QueuedMessageState.QUEUED,
                     QueuedMessageState.WAITING_RESOURCES,
+                    QueuedMessageState.FAILED,
                 ):
                     return self._queue_receipt(live, queued_message_id), HTTP_ACCEPTED
             task = self._schedule_locked(live, queued_message_id, retry_failed=True)

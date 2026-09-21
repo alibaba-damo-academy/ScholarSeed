@@ -24,12 +24,14 @@ from typing import Any, Callable, Iterable
 import quick_finalize
 
 
+SKILL_NAME = "fast-search"
+SERVICE_NAME = "fast_search_quick"
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SKILL_PATH = SKILL_DIR / "SKILL.md"
 DEFAULT_RUNNER_PATH = SKILL_DIR / "tools" / "quick_search.py"
 WEB_SEARCH_SKILL_PATH_ENV = "WEB_SEARCH_SKILL_PATH"
-DEFAULT_CONFIG_PATH = SKILL_DIR / "config" / "agentic-search-veryfast.json"
-CONFIG_PATH_ENV = "AGENTIC_SEARCH_VERYFAST_CONFIG"
+DEFAULT_CONFIG_PATH = SKILL_DIR / "config" / "fast-search-veryfast.json"
+CONFIG_PATH_ENV = "FAST_SEARCH_VERYFAST_CONFIG"
 SECRET_SHAPE = re.compile(r"(?:ssk|sk|pplx)-[A-Za-z0-9_-]+")
 CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 PROGRESS_STAGE_BY_EVENT = {
@@ -322,7 +324,7 @@ class CodexAppServer:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "agentic-search",
+                    "name": SKILL_NAME,
                     "title": "Veryfast Academic Search Worker",
                     "version": "1.0.0",
                 },
@@ -468,7 +470,7 @@ class CodexAppServer:
 
 
 def quick_prompt(query: str, output_dir: Path, runner_path: Path) -> str:
-    return f"""$fast-search
+    return f"""${SKILL_NAME}
 $web-search
 
 Use the Veryfast workflow for this academic-paper search and write paper-only metadata.json
@@ -481,7 +483,7 @@ quick_search.py runner call. Do not choose direct runtime Web Search in place of
 an available skill route. A successfully completed runtime Web Search that
 occurs despite this priority is an acceptable compatibility result; do not
 repeat that query through another provider. Do not open result pages, generate
-a report, or continue after the runner succeeds. Use 3-4 --keyword flags and no
+a report, persist abstracts, or continue after the runner succeeds. Use 3-4 --keyword flags and no
 more than 8 --title flags;
 keyword plus title must not exceed 12. The runner call must also include `--query`
 with the full user query, `--concepts` with a comma-separated list of 3-6 distinct
@@ -503,7 +505,7 @@ the injected web-search skill's official provider route; do not terminate the
 request or start a second logical web batch.
 
 For any native-profile fallback, request exactly the marker-delimited
-`shushen.web_search.v1` object specified by the injected agentic-search skill;
+`shushen.web_search.v1` object specified by the injected fast-search skill;
 do not accept an unmarked or differently shaped model response.
 
 If the runner shell call yields a running session id, poll that same session until the
@@ -565,7 +567,7 @@ def run_quick_query(
         "sandbox": "workspace-write",
         "ephemeral": True,
         "experimentalRawEvents": True,
-        "serviceName": "agentic_search_quick",
+        "serviceName": SERVICE_NAME,
         "runtimeWorkspaceRoots": [str(SKILL_DIR), str(web_search_skill_path.parent)],
     }
     if service_tier:
@@ -588,7 +590,7 @@ def run_quick_query(
             {"type": "text", "text": prompt},
             {
                 "type": "skill",
-                "name": "agentic-search",
+                "name": SKILL_NAME,
                 "path": str(skill_path),
             },
             {
@@ -660,8 +662,8 @@ def run_quick_query(
     papers = document.get("papers") if isinstance(document, dict) else None
     if not isinstance(papers, list) or not 5 <= len(papers) <= 20:
         raise AppServerError("Veryfast output must contain 5-20 papers")
-    if any(not isinstance(paper.get("abstract"), str) for paper in papers):
-        raise AppServerError("each Veryfast paper must contain an abstract field")
+    if any("abstract" in paper for paper in papers):
+        raise AppServerError("Veryfast output must not persist paper abstracts")
     tier1 = [paper for paper in papers if paper.get("tier") == 1]
     if not tier1 or papers[0] is not tier1[0]:
         raise AppServerError("Veryfast output must place a Tier 1 paper first")

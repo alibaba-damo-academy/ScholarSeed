@@ -1,4 +1,12 @@
 {
+  "loginPrompt": {
+    "title": "Sign in to use ScholarSeed cloud services",
+    "description": "Sign in to use cloud models and skills that require an account. Your local content and skill preferences remain unchanged.",
+    "skillTitle": "Sign in to use “{{name}}”",
+    "skillDescription": "This skill relies on ScholarSeed cloud services. Please sign in before using it.",
+    "cancel": "Not now",
+    "confirm": "Sign in to ScholarSeed"
+  },
   "artifacts": {
     "title": "Session artifacts",
     "empty": "No artifacts belong to this session yet",

@@ -7,6 +7,8 @@
   },
   "loadFailed": "Could not load skills. Please retry.",
   "loginRequired": "Sign-in required",
+  "loginAvailable": "Sign in to use",
+  "localPreference": "Enable this skill on this device",
   "loginRequiredHint": "Sign in to use this skill. You can manage its enabled preference without signing in.",
   "paused": "Paused",
   "toggleFailed": "Could not update skill status. Please retry.",

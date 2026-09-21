@@ -6,6 +6,8 @@
     "label": "技能分类"
   },
   "loginRequired": "需登录",
+  "loginAvailable": "登录后可用",
+  "localPreference": "在本机启用此技能",
   "loginRequiredHint": "登录后才能使用此技能，未登录也可管理启用偏好。",
   "paused": "已暂停",
   "loadFailed": "技能加载失败，请重试。",

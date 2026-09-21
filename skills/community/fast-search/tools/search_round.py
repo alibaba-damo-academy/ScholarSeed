@@ -1,9 +1,8 @@
 #!/usr/bin/env scholarseed-skill-python
 """Run the bounded PaperHub graph used by one Veryfast search.
 
-The complete responses are stored under SESSION/rounds and merged into the
-persistent pool. Stdout stays compact so an agent can inspect progress without
-loading every abstract into its context.
+Privacy-safe responses are stored under SESSION/rounds and merged into the
+persistent pool. Abstracts remain available only inside the running process.
 
 Plan schema:
 {
@@ -701,6 +700,11 @@ def run_round(args):
         raw_document["auto_citation"] = auto_citation
     search_state._atomic_json_write(raw_path, raw_document)
 
+    # Preserve full current-run records only in memory. The persistent pool is
+    # privacy-sanitized, while the one-shot ranker still uses fetched abstracts.
+    in_memory_pool = search_state.read_pool(args.session)
+    search_state._merge_papers(in_memory_pool, papers)
+
     state_payload = {
         "queries": successful_query_keys,
         "papers": papers,
@@ -734,6 +738,8 @@ def run_round(args):
     }
     if auto_citation is not None:
         output["auto_citation"] = auto_citation
+    if getattr(args, "retain_papers_in_memory", False):
+        output["_in_memory_papers"] = list(in_memory_pool.values())
     budget_after = search_state.budget_status(args.session)
     if budget_after.get("enabled"):
         output["budget"] = budget_after

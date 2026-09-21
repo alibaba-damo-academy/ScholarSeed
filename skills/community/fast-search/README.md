@@ -1,4 +1,4 @@
-# Veryfast Academic Search（Codex）
+# Fast AI Search
 
 面向搜索栏场景的低延迟学术论文检索。它通过另行安装的 `$web-search` skill 解析潜在论文实体，
 再以 PaperHub 完成一次有界的关键词、题名和参考文献检索，最终返回 5–20 篇论文的
@@ -6,9 +6,10 @@
 `best_target` 并把它作为精确 PaperHub title 查询；目标未进入候选池或 Tier 1 时会明确失败，
 不会用一组泛相关论文伪装成功。Tier 1 中依次优先用户查询的显式标识、agent 声明的
 `best_target` 和既有确定性相关性得分；它不会把 Tier 2/3 论文强行提级。这一步不增加
-模型回合，普通主题检索的候选和分层逻辑不变。每篇论文都包含 `abstract` 字段；若上游
-确实没有摘要，则该字段为空字符串。
-本分支只提供 Veryfast 及其部署入口，不生成长报告。
+模型回合，普通主题检索的候选和分层逻辑不变。摘要只在单次 runner 进程内参与相关性
+计算，不会写入 `metadata.json`、session、round trace 或检索缓存。
+本仓库只提供名为 `fast-search` 的 Veryfast 检索 Skill 及其部署入口，不生成长报告，
+也不会注册或覆盖其他检索 Skill。
 
 ## 先选择使用方式
 
@@ -17,7 +18,7 @@
 
 | 方式 | 适合场景 | 优点 | 需要注意 |
 |---|---|---|---|
-| Codex Skill | 个人检索、交互式使用、开发调试 | 安装后可直接用 `$agentic-search` 调用，接入最简单 | 每个新 Codex 进程仍有启动、skill 加载和无关能力初始化开销 |
+| Codex Skill | 个人检索、交互式使用、开发调试 | 安装后可直接用 `$fast-search` 调用，接入最简单 | 每个新 Codex 进程仍有启动、skill 加载和无关能力初始化开销 |
 | 常驻 App Server Worker | 搜索栏、服务端集成、重复请求 | 复用 Codex 进程和鉴权，提供结构化进度事件，通常延迟更低、更稳定 | 需要后端托管 Worker、隔离输出目录并实现超时与进程健康管理 |
 
 两种方式使用同一个 `SKILL.md`、同一个 `quick_search.py` 和相同的
@@ -53,7 +54,7 @@ codex --search -s workspace-write \
 ### 3. 调用
 
 ```text
-$agentic-search $web-search 检索“检索增强生成中的引用可靠性评估”相关论文
+$fast-search $web-search 检索“检索增强生成中的引用可靠性评估”相关论文
 ```
 
 两个 skill 必须显式加载到同一个 turn，不依赖隐式发现。交互式调用会在实体解析开始、
@@ -79,7 +80,7 @@ codex --search -s workspace-write \
 这只是推荐起点，不是所有账号都可用的固定组合。更换为更强模型或提高 effort 可能改善
 复杂实体解析，也会增加延迟和 token；应把每种组合当作独立版本重新评测。Skill 方式的
 配置应放在 Codex 用户配置或 profile 中，PaperHub 地址、代理和缓存仍由
-`~/.config/agentic-search/search_config.json` 管理。
+`~/.config/fast-search/search_config.json` 管理。
 
 ### 仓库级安装
 
@@ -89,9 +90,9 @@ codex --search -s workspace-write \
 scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/target-repo
 ```
 
-它会创建 `/path/to/target-repo/.agents/skills/agentic-search`。`web-search` 仍需另行安装到
+它会创建 `/path/to/target-repo/.agents/skills/fast-search`。`web-search` 仍需另行安装到
 同级 `.agents/skills/web-search`。产品后端直接运行 Worker 时会注入仓库内的
-agentic-search 与已安装的 web-search；不会复制或下载后者。
+fast-search 与已安装的 web-search；不会复制或下载后者。
 
 ## 方式二：常驻 App Server Worker
 
@@ -103,7 +104,7 @@ agentic-search 与已安装的 web-search；不会复制或下载后者。
 
 ```bash
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
-# 仅当 web-search 不在标准 skill 目录或 agentic-search 的同级目录时需要：
+# 仅当 web-search 不在标准 skill 目录或 fast-search 的同级目录时需要：
 export WEB_SEARCH_SKILL_PATH="/absolute/path/to/web-search"
 scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
@@ -133,18 +134,18 @@ scholarseed-skill-python tools/appserver_quick.py \
 
 ### Worker 方式的性能配置
 
-默认配置位于 `config/agentic-search-veryfast.json`。部署时建议复制到仓库外，通过
-`--config` 或 `AGENTIC_SEARCH_VERYFAST_CONFIG` 加载；启动参数优先级最高：
+默认配置位于 `config/fast-search-veryfast.json`。部署时建议复制到仓库外，通过
+`--config` 或 `FAST_SEARCH_VERYFAST_CONFIG` 加载；启动参数优先级最高：
 
 ```bash
 scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
-  --config /etc/agentic-search/veryfast.json \
+  --config /etc/fast-search/veryfast.json \
   --model <账号可用的模型> --effort low --service-tier default
 ```
 
 ```bash
 scholarseed-skill-python tools/appserver_quick.py --print-effective-config \
-  --config /etc/agentic-search/veryfast.json
+  --config /etc/fast-search/veryfast.json
 ```
 
 默认的 `gpt-5.6-luna + low + priority + enable_apps=false` 是当前低延迟验证组合。
@@ -182,9 +183,9 @@ scholarseed-skill-python tools/doctor.py --live
 ## 目录结构
 
 ```text
-agentic-search/
+fast-ai-search/
 ├── agents/openai.yaml                    # Codex UI 与调用元数据
-├── config/agentic-search-veryfast.json   # 常驻 Worker 默认配置
+├── config/fast-search-veryfast.json      # 常驻 Worker 默认配置
 ├── SKILL.md                              # Veryfast 权威工作流
 ├── SETUP.md                              # 网络与部署配置
 └── tools/
@@ -198,7 +199,7 @@ agentic-search/
     └── install_codex.py                  # 可选的交互式 skill 安装器
 ```
 
-agentic-search 自带的 Python 工具只使用标准库；独立 `web-search` skill 的依赖由其
+fast-search 自带的 Python 工具只使用标准库；独立 `web-search` skill 的依赖由其
 自身安装包负责。产品调用方通过每次请求的
 `output_dir` 指定结果目录；交互式调用则写入当前工作区下的新结果目录。
 

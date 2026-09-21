@@ -57,6 +57,7 @@ import {
 } from '../../api'
 import { COMPOSER_FOCUS_EVENT } from '../../reference'
 import { ModelMenu } from './ModelMenu'
+import { LoginPrompt } from './LoginPrompt'
 import { reasoningPreference } from '../../reasoning'
 import { ContextOption } from './Context'
 import { ReferencePicker } from './References'
@@ -434,6 +435,7 @@ export function Composer({
   home = false,
   homeExtras,
   contextTray,
+  inputBoxRef,
   surface = 'conversation'
 }: {
   home?: boolean
@@ -441,6 +443,12 @@ export function Composer({
   homeExtras?: React.ReactNode
   /** Session context queue rendered inside the composer card above the draft text. */
   contextTray?: React.ReactNode
+  /**
+   * 外部对齐锚点：透传到输入框所在的会话内容列（readingColumnClass 那一列，
+   * 窄时贴合面板、宽时被 --vds-conversation-content-width 封顶并居中）。
+   * 历史浮层等需要「与输入框同宽同左」的层据此测量，不再各自复刻内容列布局。
+   */
+  inputBoxRef?: React.Ref<HTMLDivElement>
   /** Preserve the owning product surface when a new Session is created. */
   surface?: SessionSurface
 }): React.JSX.Element {
@@ -544,6 +552,7 @@ export function Composer({
   const attachmentInputRef = React.useRef<HTMLInputElement>(null)
   const dragDepthRef = React.useRef(0)
   const [attaching, setAttaching] = React.useState(false)
+  const [loginPromptOpen, setLoginPromptOpen] = React.useState(false)
   const [draggingFiles, setDraggingFiles] = React.useState(false)
   const [queuedActionId, setQueuedActionId] = React.useState<string | null>(
     null
@@ -2296,7 +2305,8 @@ export function Composer({
     <div
       className={`relative z-20 isolate flex-none border-t-0 bg-transparent ${composerRootPaddingClass(home, surface)}`}
     >
-      <div className={readingColumnClass(home)}>
+      <LoginPrompt open={loginPromptOpen} onOpenChange={setLoginPromptOpen} />
+      <div ref={inputBoxRef} className={readingColumnClass(home)}>
         {/* Live Status Strip (proposal 65 v10): 真实 live 态 (运行 / 记忆命中 / 约束 / 成本) */}
         <StatusStrip />
 
@@ -2355,7 +2365,7 @@ export function Composer({
               unstyled
               className={NO_MODEL_HINT_LINK_CLASS}
               data-testid="composer-no-model-login"
-              onClick={() => set({ loginOpen: true })}
+              onClick={() => setLoginPromptOpen(true)}
             >
               {t('composer.noModelLogin')}
             </Button>
@@ -2364,7 +2374,7 @@ export function Composer({
 
         {!selectedSkillsReady && <div role="status" className={NO_MODEL_HINT_CLASS} data-testid="composer-skill-unavailable">
           <span>{t('composer.selectedSkillUnavailable')}</span>
-          {!authenticated && <Button variant="ghost" size="sm" onClick={() => set({ loginOpen: true })}>{t('composer.noModelLogin')}</Button>}
+          {!authenticated && <Button variant="ghost" size="sm" onClick={() => setLoginPromptOpen(true)}>{t('composer.noModelLogin')}</Button>}
           <Button variant="ghost" size="sm" onClick={() => act.openSettings('skills')}>{t('composer.manageSkills')}</Button>
         </div>}
         <div className={composerInputShellClass(surface)}>

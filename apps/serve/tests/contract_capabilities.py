@@ -84,9 +84,7 @@ def main() -> int:
         settings = client.get("/api/capabilities/skills?surface=settings")
         assert settings.status_code == 200, settings.text
         settings_skills = {item["name"]: item for item in settings.json()["skills"]}
-        assert set(settings_skills) == CONVERSATION_SKILLS | {"demo-skill", "fast-search"}, set(
-            settings_skills
-        )
+        assert set(settings_skills) == CONVERSATION_SKILLS | {"demo-skill"}, set(settings_skills)
         assert settings_skills["demo-skill"]["active"] is True
         assert client.get("/api/capabilities/skills?surface=unknown").status_code == 422
 
@@ -105,11 +103,10 @@ def main() -> int:
         assert fast_search["active"] is False
         assert fast_search["requires_login"] is True
         assert fast_search["unavailable_reason"] == "login_required"
-        assert fast_search["toggleable"] is True
-        paused_toggle = client.delete("/api/capabilities/skills/fast-search/activate")
-        assert paused_toggle.status_code == 200, paused_toggle.text
-        assert "fast-search" in load_skill_state().disabled_skills
-        assert client.post("/api/capabilities/skills/fast-search/activate").status_code == 200
+        assert fast_search["toggleable"] is False
+        immutable_toggle = client.delete("/api/capabilities/skills/fast-search/activate")
+        assert immutable_toggle.status_code == 409, immutable_toggle.text
+        assert "fast-search" not in load_skill_state().disabled_skills
 
         builtin = skills["agentic-search"]
         state = load_skill_state()

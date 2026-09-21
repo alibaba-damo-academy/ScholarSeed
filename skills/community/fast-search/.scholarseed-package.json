@@ -8,92 +8,86 @@
     {
       "mode": 420,
       "path": "README.md",
-      "sha256": "7ef1b3765cb5df76491cbabcc5ef42ed0dbac204b47be1de19c2ae5184342759",
-      "size": 10080
+      "sha256": "bfa7ab2a1d859ca30142166f3822bf842943cb8c8cce21182be829936a095fa1",
+      "size": 10306
     },
     {
       "mode": 420,
       "path": "SETUP.md",
-      "sha256": "5529d4578bf0100060b722ef729291fdd0977fe080dcfc35f516e92d27f2f491",
-      "size": 16095
+      "sha256": "a952f3bca656ce90860eaefcd664b2c98f927c1612c54d09c9f173d1a6df6ab1",
+      "size": 16516
     },
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "69692cc66cc74f442242d10b34149541d08f2ba5c7c55ebdaf32ab52bed4d5c1",
-      "size": 9902
+      "sha256": "840ee73c0a2b4ce8824003a9bcc0a2876d4fb213cbf557a3408dd68fea52c0b8",
+      "size": 10086
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "05400a994ca533208f0f61e5b7a7edf79ef01deb09b0cbfb8a57dc3c6afafc0c",
-      "size": 360
+      "sha256": "2253ee52653cb93660d0cb3063a11314e0e88859eb631c5f44a1eaccec3e88b3",
+      "size": 347
     },
     {
       "mode": 420,
-      "path": "config/agentic-search-veryfast.json",
+      "path": "config/fast-search-veryfast.json",
       "sha256": "228dea4f1a324a90bdcd440056e6e4175032168a6dae6bea3b14ff43819f02c7",
       "size": 467
     },
     {
-      "mode": 420,
-      "path": "docs/PAPERHUB_WEB_SEARCH_PRODUCT_MIGRATION.md",
-      "sha256": "f7d54e96d797e27e4a728fa3064d9478373b175122ff5acf6fa370822252cc48",
-      "size": 9110
-    },
-    {
-      "mode": 420,
-      "path": "docs/VERYFAST_RUNTIME_RISKS.md",
-      "sha256": "09ca9d6683b9cf0cb19110d365ed8cb5a5063d3afffbd08be29e10847681ec82",
-      "size": 11214
-    },
-    {
       "mode": 493,
       "path": "tools/appserver_quick.py",
-      "sha256": "7c51739fe8099c743307e720d776456c1fbd067d66236c73fd0738f80c76aba7",
-      "size": 40355
+      "sha256": "5939af35cbf5a38d0e9a5de255b7150333b84059e8646683cb9892e85a00a934",
+      "size": 40415
     },
     {
       "mode": 420,
       "path": "tools/cache.py",
-      "sha256": "db9b4dbfce74e83a3bc3ecf573107dcffdcdf5ec1679d8a3c55a49f80cdaffb4",
-      "size": 5307
+      "sha256": "667f8c89942bfce277d694965cd8e9e8e81f4c8fdb13cb17f50b92e1b253546c",
+      "size": 5325
     },
     {
       "mode": 420,
       "path": "tools/doctor.py",
-      "sha256": "aafcd3406620002a88010998a045491da414f4157e62ad3a8b627dee00419d93",
-      "size": 3490
+      "sha256": "8594971290d45edadcd8026ef1b92321d183ef98d1f30c4d97d0facfa7d49ffb",
+      "size": 3501
     },
     {
       "mode": 420,
       "path": "tools/install_codex.py",
-      "sha256": "c2ccfeddf69ab35e3ef18d4099adab6495c0a92f47393f4efa95844aa6fda105",
-      "size": 6110
+      "sha256": "4bd018fbb24d8c16111fc97314c9279dc60fa0c4aa3646aebfeac2e34274eca6",
+      "size": 6149
     },
     {
       "mode": 420,
       "path": "tools/localconf.py",
-      "sha256": "bede41f901b1c069acad8a724f112a3d0a05f7d5c1bf117a610585bcf904e73c",
-      "size": 4367
+      "sha256": "ccc36f63dc529833a1d1763efee20dc57085bdef29113200fd17972221e9b0ae",
+      "size": 4392
     },
     {
       "mode": 420,
       "path": "tools/paperhub.py",
-      "sha256": "afedefc8492ac985fb93a1fdf6181200bb91dddb6e3ee4b7b90e20ea82997584",
-      "size": 20607
+      "sha256": "9d18c76a8cd22e3a2dd6c72242d303cff8875683de80eebfc18cefeb78bab766",
+      "size": 20692
+    },
+    {
+      "mode": 420,
+      "path": "tools/privacy.py",
+      "sha256": "32bc891acc8c027c97de0bbcabfb253b1bcf174b373f3fac52020681e0ebc15e",
+      "size": 1674
     },
     {
       "mode": 420,
       "path": "tools/quick_finalize.py",
-      "sha256": "30ddde1af86f3115d7680e2c548afe57f03b64bccfe2fe72517735e3c5087a28",
-      "size": 14721
+      "sha256": "415691386e0b9ab019d6ebe3c8785b1989728228d3202aaae47bbcaba012ecc1",
+      "size": 14549
     },
     {
       "mode": 420,
       "path": "tools/quick_search.py",
-      "sha256": "69f547b4176b13491ab3a72fc85be106d73a7f5706b4763f1d3c6c8f4059e99d",
-      "size": 8370
+      "sha256": "ea17852673c5130d74033140541f33b61825cfde8e7292380e75af8f4ee3dba2",
+      "size": 8497
     },
     {
       "mode": 420,
@@ -104,38 +98,32 @@
     {
       "mode": 420,
       "path": "tools/search_config.default.json",
-      "sha256": "c0c7a7f9ef055d0df2f72f72ba169186feb477aa500a795d5abe37cd4677a7fd",
-      "size": 459
+      "sha256": "d8c13d42c64a9dd35791915447b51fdce0e6c192857bf96538902b4084b29b9f",
+      "size": 453
     },
     {
       "mode": 420,
       "path": "tools/search_config.example.json",
-      "sha256": "1ef1bec965ae84f36e3bfec7b5fffc9cd056bb58d010902aa4e6ce4f5bd0922d",
-      "size": 504
+      "sha256": "42a96b31752a1437fece2ec65edc13aa649dff12fe695988e1b3b8ca430f357e",
+      "size": 498
     },
     {
       "mode": 420,
       "path": "tools/search_policy.py",
-      "sha256": "af3f258e52fadaacb968048cc56b5168e8f32f70aa7bc7a4f33dfc31e79401aa",
-      "size": 4422
+      "sha256": "8c3fb99b5f8c7866ba407882ffb51401d77fa06193406f26637d56cddbbd0d48",
+      "size": 4439
     },
     {
       "mode": 420,
       "path": "tools/search_round.py",
-      "sha256": "b92f37f12718dc4ca55fd32f7a45a7acdc283281585c572444d6839225ac886d",
-      "size": 29835
+      "sha256": "54324dfd47cf8e1afcf8b73b0385cfc5401e2903edf222808fa946766d67bfeb",
+      "size": 30207
     },
     {
       "mode": 420,
       "path": "tools/state.py",
-      "sha256": "014c73aa630aa88bf902d20b02069894fd3e8ed1affa4b6ce56a3cca12005095",
-      "size": 14778
-    },
-    {
-      "mode": 420,
-      "path": "tools/tests/test_product_contracts.py",
-      "sha256": "cd6d8d98a2592b8857dd2c7c1abf1e79b295074dd70f9f702e60b57f3de6b04a",
-      "size": 12306
+      "sha256": "54e46cede9a1cc5d728607b9e6bbaf6c1953d3409195597d9d88e6d55320ba8d",
+      "size": 14513
     }
   ],
   "name": "fast-search",
@@ -143,6 +131,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "69692cc66cc74f442242d10b34149541d08f2ba5c7c55ebdaf32ab52bed4d5c1",
-  "version": "1.1.0"
+  "source_document_sha256": "840ee73c0a2b4ce8824003a9bcc0a2876d4fb213cbf557a3408dd68fea52c0b8",
+  "version": "1.2.0"
 }

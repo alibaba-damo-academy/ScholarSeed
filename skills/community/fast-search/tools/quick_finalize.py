@@ -150,11 +150,6 @@ def _public_paper(paper, tier, concepts):
         "influential_citation_count", "publication_types", "source", "found_by",
     )
     output = {field: paper.get(field) for field in fields if field in paper}
-    # ``abstract`` is part of the public metadata contract. PaperHub searches
-    # request abstracts by default; retain the field even when an individual
-    # record has no available abstract so downstream consumers see one stable
-    # schema.
-    output["abstract"] = paper.get("abstract") or ""
     output["access"] = (
         "open" if paper.get("is_open_access") is True else "closed_or_unknown"
     )
@@ -256,6 +251,7 @@ def _promote_tier1_best(selected, tier1_count, query="", best_title=""):
 def finalize_quick(
     session_dir, output_dir, concepts_text=None, count=None,
     diversity_weight=0.2, best_title="", require_best_target=False,
+    papers_override=None,
 ):
     """Finalize one Veryfast session and return a compact result summary."""
     state = search_state.read_state(session_dir)
@@ -271,7 +267,10 @@ def finalize_quick(
         raise ValueError("diversity_weight must be between 0 and 1")
 
     pool = search_state.read_pool(session_dir)
-    papers = list(pool.values()) if isinstance(pool, dict) else list(pool)
+    if papers_override is None:
+        papers = list(pool.values()) if isinstance(pool, dict) else list(pool)
+    else:
+        papers = list(papers_override)
     if not papers:
         raise ValueError("search pool is empty")
     cutoff = _exclusive_cutoff_year(state.get("query", ""))

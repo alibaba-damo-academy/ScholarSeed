@@ -673,6 +673,20 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(terminal.payload["safe_error"], PROVIDER_CREDITS_MESSAGE)
         self.assertEqual(terminal.payload["retryability"], RuntimeRetryability.TERMINAL.value)
 
+    async def test_unstructured_429_uses_http_status_as_rate_limit_fallback(self) -> None:
+        failure = provider_failure(
+            {
+                "message": (
+                    "unexpected status 429 Too Many Requests: " '{"detail":"temporarily limited"}'
+                )
+            }
+        )
+        self.assertEqual(failure.code, "rate_limit_exceeded")
+        self.assertEqual(failure.diagnostic_code, "rate_limit_exceeded")
+        self.assertEqual(failure.http_status, 429)
+        self.assertEqual(failure.retryability, RuntimeRetryability.USER_RETRYABLE)
+        self.assertEqual(failure.message, "The model provider rate limit was reached.")
+
     async def test_recovered_provider_retry_does_not_contaminate_later_failure(self) -> None:
         self.state.active_turn_id = "retry-turn"
         await self.state.notification(

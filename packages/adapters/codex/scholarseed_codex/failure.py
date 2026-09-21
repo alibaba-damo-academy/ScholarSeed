@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any
 
 from scholarseed_runtime.contract.incident import RuntimeRetryability
@@ -94,6 +95,9 @@ _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
     PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
 }
+_CODE_BY_HTTP_STATUS = {
+    HTTPStatus.TOO_MANY_REQUESTS: "rate_limit_exceeded",
+}
 _SAFE_MESSAGES = {
     **dict.fromkeys(_CONTENT_POLICY_CODES, PROVIDER_CONTENT_POLICY_MESSAGE),
     **dict.fromkeys(_QUOTA_CODES, PROVIDER_QUOTA_MESSAGE),
@@ -142,6 +146,8 @@ def provider_failure(value: Any) -> ProviderFailure:
         message = nested_message or message
     if not code:
         code = _CODE_BY_MESSAGE.get(message.casefold(), "")
+    if not code and http_status is not None:
+        code = _CODE_BY_HTTP_STATUS.get(http_status, "")
     code = _canonical_provider_code(code, message)
     normalized = code.casefold()
     message = _safe_message(code)

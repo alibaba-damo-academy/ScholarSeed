@@ -1,13 +1,15 @@
 import React from 'react'
+import { LockKeyhole } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
 import { SkillDocumentError, SkillCatalogError, deleteSkill, getSkillDocument, getSkills, setSkillActive, SKILL_ERROR_DUPLICATE, type SkillInfo, uploadSkillFile } from '../../api'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { Icon } from '../../icons'
-import { productSkillGroup, skillActivationControl, skillDescription, skillDocumentBody, skillIcon, SKILL_GROUPS, SKILL_LOGIN_REQUIRED, type SkillInstallNotice, skillMutationMessage, type SkillMutationMessage } from '../../skill'
+import { productSkillGroup, skillActivationControl, skillDescription, skillDocumentBody, SKILL_GROUPS, SKILL_LOGIN_REQUIRED, type SkillInstallNotice, skillMutationMessage, type SkillMutationMessage } from '../../skill'
 import { useApp } from '../../store'
 import { useAccountAccess } from './access'
+import { LoginPrompt } from './LoginPrompt'
 import { Markdown } from '../primitive/Markdown'
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogPortal, AlertDialogTitle, Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPortal, DialogTitle, Input, Switch, Tabs, TabsList, TabsTrigger, useToast } from '../ui'
 
@@ -17,7 +19,6 @@ const PAGE_CLASS = 'relative flex h-full min-h-0 max-w-[880px] flex-col'
 const LIST_SCROLL_CLASS = 'min-h-0 flex-1 overflow-y-auto pr-[6px]'
 const GRID_CLASS = 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3'
 const CARD_CLASS = 'flex min-h-[148px] flex-col gap-2'
-const SKILL_ICON_CLASS = 'grid size-[26px] flex-none place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-brand-light-bg-default)] text-[var(--vds-brand-text-primary)]'
 const DIALOG_CLASS = 'w-[min(720px,90vw)]'
 
 function groupLabel(skill: SkillInfo, t: TFunction<'skills'>): string {
@@ -43,7 +44,7 @@ function SkillNotice({ notice }: { notice: SkillPageNotice | string }): React.JS
 
 export function Skills(): React.JSX.Element {
   const { state } = useApp()
-  const { revision } = useAccountAccess(state.backendReady)
+  const { authenticated, revision } = useAccountAccess(state.backendReady)
   const { t, i18n } = useTranslation('skills')
   const { t: ui } = useTranslation('ui')
   const { toast } = useToast()
@@ -57,6 +58,7 @@ export function Skills(): React.JSX.Element {
   const [detail, setDetail] = React.useState<{ skill: SkillInfo; document: string } | null>(null)
   const [adding, setAdding] = React.useState(false)
   const [removing, setRemoving] = React.useState<SkillInfo | null>(null)
+  const [loginSkill, setLoginSkill] = React.useState<string | null>(null)
 
   const load = React.useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -115,6 +117,7 @@ export function Skills(): React.JSX.Element {
   const keyword = query.trim().toLocaleLowerCase()
   const visible = skills.filter((skill) => (tab === TAB_ALL || skill.group === tab)
     && (!keyword || `${skill.name}\n${skillDescription(skill, language)}`.toLocaleLowerCase().includes(keyword)))
+  const detailSkill = detail ? skills.find((skill) => skill.name === detail.skill.name) ?? detail.skill : null
 
   return (
     <section className={PAGE_CLASS} data-testid="skills-page">
@@ -140,22 +143,22 @@ export function Skills(): React.JSX.Element {
               <div className={GRID_CLASS}>
                 {visible.filter((skill) => skill.group === group.id).map((skill) => {
                   const control = skillActivationControl(skill)
+                  const loginRequired = !authenticated && skill.requires_login
                   const description = skillDescription(skill, language) || t('description')
                   return <Card key={skill.name} className={CARD_CLASS} data-testid={`skill-card-${skill.name}`} data-skill-group={skill.group} data-toggleable={skill.toggleable}>
                     <CardHeader className="mb-0">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className={SKILL_ICON_CLASS}><Icon name={skillIcon(skill.icon)} size={15} color="currentColor" /></span>
-                        <CardTitle className="flex-1 truncate">{skillName(skill)}</CardTitle>
-                        <Switch checked={control.checked} disabled={control.disabled || toggling === skill.name} label={control.disabled ? t('alwaysOn', { name: skillName(skill) }) : skill.enabled ? t('disable', { name: skillName(skill) }) : t('enable', { name: skillName(skill) })} title={control.disabled ? t('alwaysOnHint') : undefined} onCheckedChange={() => void toggle(skill)} data-testid={`skill-toggle-${skill.name}`} />
+                      <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+                        <CardTitle className="flex-1 break-words">{skillName(skill)}</CardTitle>
+                        {loginRequired ? <Button variant="outline" size="xs" className="shrink-0 !border-[var(--vds-brand-light-border)] !bg-[var(--vds-brand-light-bg-default)] !text-[var(--vds-brand-text-primary)] hover:!border-[var(--vds-brand-bg-default)]" icon={<LockKeyhole className="size-[var(--vds-icon-6)]" />} onClick={() => setLoginSkill(skill.name)} data-testid={`skill-login-${skill.name}`}>{t('loginAvailable')}</Button>
+                          : <Switch checked={control.checked} disabled={control.disabled || toggling === skill.name} label={control.disabled ? t('alwaysOn', { name: skillName(skill) }) : skill.enabled ? t('disable', { name: skillName(skill) }) : t('enable', { name: skillName(skill) })} title={control.disabled ? t('alwaysOnHint') : undefined} onCheckedChange={() => void toggle(skill)} data-testid={`skill-toggle-${skill.name}`} />}
                       </div>
                     </CardHeader>
                     <CardContent className="flex-1"><CardDescription className="line-clamp-3" title={description}>{description}</CardDescription>
-                      {skill.unavailable_reason && <p className="text-sm text-[var(--vds-text-secondary)]">{skill.unavailable_reason === SKILL_LOGIN_REQUIRED ? t('loginRequiredHint') : skill.unavailable_reason}</p>}
+                      {!loginRequired && skill.enabled && skill.unavailable_reason && skill.unavailable_reason !== SKILL_LOGIN_REQUIRED && <p className="text-sm text-[var(--vds-text-secondary)]">{skill.unavailable_reason}</p>}
                     </CardContent>
                     <CardFooter className="mt-0 gap-1 border-t border-[var(--vds-line-1)] pt-[6px]">
                       <Badge size="sm" variant="secondary">{groupLabel(skill, t)}</Badge>
-                      {skill.requires_login && <Badge size="sm" variant="outline">{t('loginRequired')}</Badge>}
-                      {!skill.enabled && <Badge size="sm" variant="secondary">{t('paused')}</Badge>}
+                      {!loginRequired && !skill.enabled && <Badge size="sm" variant="secondary">{t('paused')}</Badge>}
                       <span className="flex-1" />
                       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void view(skill)} data-testid={`skill-view-${skill.name}`}>{t('view')}</Button>
                       {skill.group === 'user' && skill.removable && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setRemoving(skill)} data-testid={`skill-remove-${skill.name}`}>{t('delete')}</Button>}
@@ -168,9 +171,14 @@ export function Skills(): React.JSX.Element {
           ))}
         </>}
       </div>
+      <LoginPrompt open={loginSkill !== null} onOpenChange={(open) => { if (!open) setLoginSkill(null) }} skill={loginSkill ?? undefined} />
       <Dialog open={detail !== null} onOpenChange={(open) => { if (!open) setDetail(null) }}>
         <DialogPortal><DialogContent className={`${DIALOG_CLASS} !z-[var(--vds-z-modal-nested)]`} overlayClassName="!z-[var(--vds-z-modal-nested-overlay)]" data-testid="skill-detail">
           {detail && <><DialogHeader><DialogTitle>{skillName(detail.skill)}</DialogTitle><DialogDescription>{groupLabel(detail.skill, t)} · {detail.skill.version ? t('version', { version: detail.skill.version }) : t('noVersion')}</DialogDescription></DialogHeader>
+            {detailSkill && <div className="flex items-center justify-between gap-[var(--vds-space-3)]" data-testid="skill-detail-preference">
+              <span className="text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]">{t('localPreference')}</span>
+              <Switch checked={skillActivationControl(detailSkill).checked} disabled={skillActivationControl(detailSkill).disabled || toggling === detailSkill.name} label={detailSkill.enabled ? t('disable', { name: detailSkill.name }) : t('enable', { name: detailSkill.name })} onCheckedChange={() => void toggle(detailSkill)} data-testid={`skill-detail-toggle-${detailSkill.name}`} />
+            </div>}
             <div className="min-w-0 max-h-[60vh] overflow-auto pr-2 text-[13px] leading-relaxed [overflow-wrap:anywhere] [&_pre]:max-w-full [&_pre]:overflow-x-auto" data-testid="skill-document"><Markdown text={skillDocumentBody(detail.document)} /></div>
             <DialogFooter><Button variant="outline" onClick={() => setDetail(null)}>{t('back')}</Button></DialogFooter></>}
         </DialogContent></DialogPortal>
