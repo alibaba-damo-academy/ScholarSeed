@@ -21,6 +21,32 @@ export const MAX_TRACKED_RECENT_LITERATURE = 10
 export const MAX_SHORTCUT_OVERRIDES = 100
 export const MAX_SHORTCUT_KEY_LENGTH = 32
 
+const RETIRED_SHORTCUT_COMMAND_IDS = new Set([
+  'workbench.globalSearch',
+  'workbench.toggleModulePanel',
+  'workbench.toggleAiPanel',
+  'code.quickOpen',
+  'code.copyLineUp',
+  'code.copyLineDown',
+  'code.moveLineUp',
+  'code.moveLineDown',
+  'code.deleteLine',
+  'code.blockComment',
+  'pdf.openLink',
+  'pdf.toggleOutline',
+  'office.save',
+  'office.find',
+  'office.paste',
+  'office.selectAll',
+  'office.bold',
+  'office.copy',
+  'office.italic',
+  'office.underline',
+  'office.cut',
+  'office.undo',
+  'office.redo'
+])
+
 export type PreferenceShortcutModifier = 'primary' | 'shift' | 'alt'
 
 export interface PreferenceShortcutBinding {
@@ -368,7 +394,7 @@ export function sanitizeShortcutOverrides(value: unknown): PreferenceShortcutOve
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const overrides: PreferenceShortcutOverrides = {}
   for (const [commandId, candidate] of Object.entries(value).slice(0, MAX_SHORTCUT_OVERRIDES)) {
-    if (!commandId || commandId.length > MAX_SHORTCUT_KEY_LENGTH * 4) continue
+    if (!commandId || commandId.length > MAX_SHORTCUT_KEY_LENGTH * 4 || RETIRED_SHORTCUT_COMMAND_IDS.has(commandId)) continue
     if (candidate === null) {
       overrides[commandId] = null
       continue

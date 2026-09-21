@@ -39,11 +39,13 @@ const {
   DARWIN_UNIX_SOCKET_PATH_BYTES,
   productPath,
   RUNTIME_PROBE_SCRIPT,
-  unsignedPackageCheck
+  unsignedPackageCheck,
+  bestEffortRemoveTemporary
 } = require('./verify.cjs')
 const { sha256, sha512, executableDigest } = require('./digest.cjs')
 const { OFFICE_BUILD_DIRECTORY, verifyOfficeAssets } = require('./office-assets.cjs')
 const { ownedExecutable } = require('./windows-sign.cjs')
+const desktopPackage = require('./package.cjs')
 const {
   developmentDisplayName,
   resolveGitIdentity,
@@ -106,7 +108,8 @@ test('macOS development protocol registration uses a stable checkout-specific bu
   registerMacDevelopmentBundle('/tmp/other/Electron.app/Contents/Info.plist', 'darwin', run)
   assert.notEqual(calls[6][1][3], firstId)
 })
-const MAKEFILE_SOURCE = fs.readFileSync(path.join(REPO_ROOT, 'Makefile'), 'utf8')
+const ROOT_PACKAGE = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'))
+const WORKSPACE_SOURCE = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'workspace.cjs'), 'utf8')
 const BUNDLE_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, 'bundle.cjs'), 'utf8')
 test('backend bundling uses current runtime and product configuration owners', () => {
   assert.ok(BUNDLE_BACKEND_SOURCE.includes("'runtime', 'packages/runtime'"))
@@ -122,6 +125,15 @@ const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'i
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
 const UPDATE_FEATURE_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'updates', 'state.ts'), 'utf8')
+const PRELOAD_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.ts'), 'utf8')
+const BRIDGE_TYPES_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'), 'utf8')
+const BROWSER_BRIDGE_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'), 'utf8')
+const UPDATE_PANEL_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'UpdatePanel.tsx'), 'utf8')
+const ACCOUNT_PANEL_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'AccountPanel.tsx'), 'utf8')
 const PRODUCT_POLICY = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'resources', 'product.json')))
 const DEFAULT_RUNTIME_POLICY = PRODUCT_POLICY.runtimes[PRODUCT_POLICY.default_runtime]
 const REVIEWED_BINARIES = {
@@ -509,6 +521,34 @@ test('progress publication clears the previous failure so a retry is not shown a
   assert.match(UPDATER_SOURCE, /errorOrigin: 'install'/)
 })
 
+test('opening an update surface refreshes silently through the background check path', () => {
+  // 上一次检查与用户点「重启完成更新」之间的窗口（上界 = 30min 周期复查间隔）里发布的新包，
+  // 会让安装点击装掉旧包、重启后才发现新的（Aone 87009973 修复后的残留窗口）。收敛方式：
+  // 更新表面打开时静默刷新一次，把状态在用户点安装**之前**刷新到位，安装点击保持秒级可预测。
+  //
+  // 必须复用背景检查路径而不是手动 update-check：后者先设 'checking' 相位，
+  // updateActionOf('checking') = 'none'，ready 相位的安装按钮会当场消失再出现。
+  // 静默路径的投影仍是 publishUpdateCheckResult 那一份（in-flight 闸、安装失败结果保护、
+  // supersede、announcedKey 保留全部生效），刷新天然安全。
+  assert.match(
+    SHELL_SOURCE,
+    /ipcMain\.handle\('scholarseed:update-refresh', \(\): void => \{\n    runBackgroundUpdateCheck\(\)\n  \}\)/)
+
+  // 三个安装入口一个都不能漏。UpdatePanel 挂载 == 卡片被打开：工作台活动栏火箭与 0.1 侧栏
+  // 药丸两个入口表面都只在展开时渲染它，挂这一处即同时覆盖；AccountPanel 关于页自带
+  // 「重启安装」按钮且不渲染 UpdatePanel，必须单独挂。空依赖数组钉住「只在挂载时刷一次」，
+  // 每次 render 都发一遍检查不是本不变量的语义。
+  const mountRefresh = /React\.useEffect\(\(\) => \{\n    void window\.scholarseed\.refreshUpdate\(\)\n  \}, \[\]\)/
+  assert.match(UPDATE_PANEL_SOURCE, mountRefresh)
+  assert.match(ACCOUNT_PANEL_SOURCE, mountRefresh)
+
+  // 桥接三件套缺一 typecheck 红：preload 实现、typed contract、浏览器模式桩。
+  // web 形态没有更新通路（恒 upToDate、从不带候选包），静默刷新如实无操作。
+  assert.match(PRELOAD_SOURCE, /ipcRenderer\.invoke\('scholarseed:update-refresh'\)/)
+  assert.match(BRIDGE_TYPES_SOURCE, /refreshUpdate: \(\) => Promise<void>/)
+  assert.match(BROWSER_BRIDGE_SOURCE, /refreshUpdate: async \(\) => \{\},/)
+})
+
 test('macOS candidates do not require signing credentials', () => {
   const parsed = options(['--platform', 'darwin', '--arch', 'arm64', '--type', 'preview',
     '--candidate', '--update-base-url', 'https://updates.example.test'])
@@ -526,6 +566,42 @@ test('macOS candidate dir checks stop before codesigning', () => {
   assert.equal(unsignedPackageCheck({
     platform: 'win32', stage: 'dir', candidate: true, signingRequired: false
   }), false)
+})
+
+test('npm package check maps to unsigned dir build without signing credentials', () => {
+  const args = desktopPackage.buildArguments('check')
+  assert.equal(args[args.indexOf('--stage') + 1], 'dir')
+  assert.equal(args[args.indexOf('--type') + 1], 'release')
+  assert.ok(args.includes('--candidate'))
+  assert.equal(args[args.indexOf('--update-base-url') + 1], 'https://updates.example.com/')
+  assert.equal(args.includes('--team-id'), false)
+  assert.equal(args.includes('--windows-publisher'), false)
+})
+
+test('npm release build requires CI-injected update and signing metadata', () => {
+  const previousUpdate = process.env.SCHOLARSEED_UPDATE_BASE_URL
+  const previousTeam = process.env.SCHOLARSEED_MACOS_TEAM_ID
+  const previousAppleTeam = process.env.APPLE_TEAM_ID
+  try {
+    delete process.env.SCHOLARSEED_UPDATE_BASE_URL
+    delete process.env.SCHOLARSEED_MACOS_TEAM_ID
+    delete process.env.APPLE_TEAM_ID
+    assert.throws(() => desktopPackage.buildArguments('release'), /SCHOLARSEED_UPDATE_BASE_URL/)
+    process.env.SCHOLARSEED_UPDATE_BASE_URL = 'https://updates.example.test/'
+    if (process.platform === 'darwin') {
+      process.env.SCHOLARSEED_MACOS_TEAM_ID = 'ABCDEFGHIJ'
+      const args = desktopPackage.buildArguments('release')
+      assert.equal(args[args.indexOf('--stage') + 1], 'installer')
+      assert.equal(args[args.indexOf('--team-id') + 1], 'ABCDEFGHIJ')
+    }
+  } finally {
+    if (previousUpdate === undefined) delete process.env.SCHOLARSEED_UPDATE_BASE_URL
+    else process.env.SCHOLARSEED_UPDATE_BASE_URL = previousUpdate
+    if (previousTeam === undefined) delete process.env.SCHOLARSEED_MACOS_TEAM_ID
+    else process.env.SCHOLARSEED_MACOS_TEAM_ID = previousTeam
+    if (previousAppleTeam === undefined) delete process.env.APPLE_TEAM_ID
+    else process.env.APPLE_TEAM_ID = previousAppleTeam
+  }
 })
 
 test('distribution inputs require only an update URL', () => {
@@ -619,6 +695,29 @@ test('package-check diagnostics preserve process output and failure metadata', (
     assert.match(output, /AttributeError: AF_UNIX/)
   } finally { fs.rmSync(directory, { recursive: true, force: true }) }
 })
+test('package-check temporary cleanup is best-effort after successful verification', () => {
+  const warn = console.warn
+  const rmSync = fs.rmSync
+  const directory = path.join(os.tmpdir(), `scholarseed-package-check-locked-${crypto.randomUUID()}`)
+  try {
+    const warnings = []
+    console.warn = message => warnings.push(message)
+    fs.rmSync = candidate => {
+      if (candidate === directory) {
+        const error = new Error('EPERM: operation not permitted')
+        error.code = 'EPERM'
+        throw error
+      }
+      return rmSync(candidate, { recursive: true, force: true })
+    }
+    assert.doesNotThrow(() => bestEffortRemoveTemporary(directory, 0))
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0], /could not remove temporary directory/)
+  } finally {
+    fs.rmSync = rmSync
+    console.warn = warn
+  }
+})
 test('artifact verification keeps the macOS local bridge below the Unix socket path limit', () => {
   const endpoint = path.join(
     fs.realpathSync(artifactTemporaryRoot('darwin')),
@@ -656,12 +755,14 @@ test('packaged default runtime carries the complete Serve product metadata', () 
   }
 })
 test('developer entry points share locked dependency installation', () => {
-  assert.match(MAKEFILE_SOURCE, /node scripts\/toolchain.cjs ensure/)
-  for (const target of ['run', 'desktop', 'desktop-dev', 'health']) {
-    assert.match(MAKEFILE_SOURCE, new RegExp(`^${target}:[^\\n]*\\bui-deps\\b`, 'm'))
+  for (const script of ['dev', 'build', 'test', 'typecheck', 'package:check', 'package:dist']) {
+    assert.match(ROOT_PACKAGE.scripts[script], /scripts\/desktop\.cjs|npm run package/)
   }
-  assert.doesNotMatch(MAKEFILE_SOURCE, /RESOLVE_LOCAL_CODEX|command -v codex|shasum/)
-  assert.match(MAKEFILE_SOURCE, /codex="\$\$\(node scripts\/toolchain.cjs codex\)"/)
+  for (const script of ['desktop', 'health', 'serve']) {
+    assert.match(ROOT_PACKAGE.scripts[script], /scripts\/workspace\.cjs/)
+  }
+  assert.doesNotMatch(WORKSPACE_SOURCE, /RESOLVE_LOCAL_CODEX|command -v codex|shasum/)
+  assert.match(WORKSPACE_SOURCE, /scripts\/toolchain\.cjs', 'codex'/)
 })
 
 const PACKAGING_ENTRY = path.join(__dirname, 'build.cjs')

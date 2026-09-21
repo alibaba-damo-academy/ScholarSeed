@@ -818,6 +818,7 @@ export const BACKEND_FAILURE_EVENT = 'scholarseed:backend-failure'
 export const BACKEND_ADMISSION_FAILURE = 'admission'
 const SESSION_INTERRUPTING_ERROR = 'session_interrupting'
 const TURN_STEER_OUTCOME_UNKNOWN_ERROR = 'runtime_turn_steer_outcome_unknown'
+const QUEUED_MESSAGE_NOT_SENDABLE_ERROR = 'queued_message_not_sendable'
 
 function turnErrorCode(error: unknown): string {
   if (typeof error === 'string') {
@@ -831,6 +832,11 @@ function turnErrorCode(error: unknown): string {
   const record = error as { code?: unknown; error?: unknown; detail?: unknown }
   if (typeof record.code === 'string') return record.code
   return turnErrorCode(record.error ?? record.detail)
+}
+
+export function isQueuedMessageNotSendable(error: unknown): boolean {
+  return error === QUEUED_MESSAGE_NOT_SENDABLE_ERROR
+    || turnErrorCode(error) === QUEUED_MESSAGE_NOT_SENDABLE_ERROR
 }
 
 function turnErrorText(error: unknown): string {
@@ -995,11 +1001,15 @@ export async function postSide(
       if (turnErrorCode(error) === TURN_STEER_OUTCOME_UNKNOWN_ERROR) {
         return { ok: false, reason: TURN_STEER_OUTCOME_UNKNOWN_ERROR, unknownOutcome: true }
       }
-      publishBackendFailure(sid, error, undefined, failure.applicationFailure)
+      if (!isQueuedMessageNotSendable(failure.code) && !isQueuedMessageNotSendable(error)) {
+        publishBackendFailure(sid, error, undefined, failure.applicationFailure)
+      }
       return { ok: false, reason: error, ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}) }
     }
     const response = (await r.json()) as { ok?: boolean; queued_depth?: number; reason?: string }
-    if (response.ok === false) publishBackendFailure(sid, response.reason)
+    if (response.ok === false && !isQueuedMessageNotSendable(response.reason)) {
+      publishBackendFailure(sid, response.reason)
+    }
     return response
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
@@ -1023,11 +1033,13 @@ export async function sendQueuedMessage(
       if (turnErrorCode(error) === SESSION_INTERRUPTING_ERROR) {
         return { ok: false, error, blocked: 'interrupting' }
       }
-      publishBackendFailure(sid, error, BACKEND_ADMISSION_FAILURE, failure.applicationFailure)
+      if (!isQueuedMessageNotSendable(failure.code) && !isQueuedMessageNotSendable(error)) {
+        publishBackendFailure(sid, error, BACKEND_ADMISSION_FAILURE, failure.applicationFailure)
+      }
       return { ok: false, error, ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}) }
     }
     const response = (await r.json()) as QueuedMessageSendResponse
-    if (response.ok === false || response.error != null) {
+    if ((response.ok === false || response.error != null) && !isQueuedMessageNotSendable(response.error)) {
       publishBackendFailure(sid, response.error, BACKEND_ADMISSION_FAILURE)
     }
     return response

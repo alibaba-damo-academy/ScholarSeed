@@ -6,7 +6,9 @@ globalThis.ScholarSeedOfficeAutoscroll = (() => {
   const MAXIMUM_DISTANCE_PX = 160
   const MAXIMUM_SPEED_PX_PER_FRAME = 1
   const PIXEL_DELTA_MODE = 0
+  const SCROLLBAR_ARROW_INSET_PX = 2
   const SELECTION_COLUMN_STEP_PX = 8
+  const SELECTION_LINE_INTERVAL_MS = 120
   const SELECTION_LINE_STEP_PX = 20
 
   function axisVelocity(position, start, end) {
@@ -20,20 +22,25 @@ globalThis.ScholarSeedOfficeAutoscroll = (() => {
     return Math.sign(overflow) * ratio * MAXIMUM_SPEED_PX_PER_FRAME
   }
 
-  function velocity(point, bounds) {
+  function verticalVelocity(position, start, end, bottomInset) {
+    const inset = Math.max(0, Math.min(bottomInset, end - start))
+    if (!inset || position <= end - inset) return axisVelocity(position, start, end)
+    const ratio = Math.min((position - (end - inset)) / inset, 1)
+    return ratio * MAXIMUM_SPEED_PX_PER_FRAME
+  }
+
+  function velocity(point, bounds, bottomInset = 0) {
     return {
       x: axisVelocity(point.x, bounds.left, bounds.right),
-      y: axisVelocity(point.y, bounds.top, bounds.bottom),
+      y: verticalVelocity(point.y, bounds.top, bounds.bottom, bottomInset),
     }
   }
 
-  function create({ element, onSelectionStep }) {
+  function create({ bottomInset = () => 0, element, onSelectionFrame }) {
     let active = false
     let frame = 0
     let point
     let pointerId
-    let selectionDistanceX = 0
-    let selectionDistanceY = 0
 
     function cancel() {
       cancelAnimationFrame(frame)
@@ -48,24 +55,18 @@ globalThis.ScholarSeedOfficeAutoscroll = (() => {
       frame = 0
       if (!active || !point) return
       const bounds = element.getBoundingClientRect()
-      const speed = velocity(point, bounds)
+      const speed = velocity(point, bounds, bottomInset())
       if (!speed.x && !speed.y) return
-      element.dispatchEvent(new WheelEvent('wheel', {
-        bubbles: true,
-        cancelable: true,
-        deltaMode: PIXEL_DELTA_MODE,
-        deltaX: speed.x,
-        deltaY: speed.y,
-      }))
-      selectionDistanceX += Math.abs(speed.x)
-      selectionDistanceY += Math.abs(speed.y)
-      const step = {
-        x: selectionDistanceX >= SELECTION_COLUMN_STEP_PX ? Math.sign(speed.x) : 0,
-        y: selectionDistanceY >= SELECTION_LINE_STEP_PX ? Math.sign(speed.y) : 0,
+      const accepted = onSelectionFrame?.(speed) !== false
+      if (accepted) {
+        element.dispatchEvent(new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          deltaMode: PIXEL_DELTA_MODE,
+          deltaX: speed.x,
+          deltaY: speed.y,
+        }))
       }
-      if (step.x) selectionDistanceX -= SELECTION_COLUMN_STEP_PX
-      if (step.y) selectionDistanceY -= SELECTION_LINE_STEP_PX
-      if (step.x || step.y) onSelectionStep?.(step)
       schedule()
     }
 
@@ -73,29 +74,24 @@ globalThis.ScholarSeedOfficeAutoscroll = (() => {
       active = true
       pointerId = event.pointerId
       point = { x: event.clientX, y: event.clientY }
-      selectionDistanceX = 0
-      selectionDistanceY = 0
       if (typeof element.setPointerCapture === 'function') element.setPointerCapture(pointerId)
     }
 
     function move(event) {
-      if (!active || event.pointerId !== pointerId) return
+      if (!active || event.pointerId !== pointerId) return false
       point = { x: event.clientX, y: event.clientY }
-      const speed = velocity(point, element.getBoundingClientRect())
+      const speed = velocity(point, element.getBoundingClientRect(), bottomInset())
       if (speed.x || speed.y) schedule()
       else {
-        selectionDistanceX = 0
-        selectionDistanceY = 0
         cancel()
       }
+      return Boolean(speed.x || speed.y)
     }
 
     function stop(event) {
       if (!active || (event && event.pointerId !== pointerId)) return
       active = false
       point = undefined
-      selectionDistanceX = 0
-      selectionDistanceY = 0
       cancel()
       try {
         if (
@@ -118,6 +114,10 @@ globalThis.ScholarSeedOfficeAutoscroll = (() => {
   return Object.freeze({
     MAXIMUM_DISTANCE_PX,
     MAXIMUM_SPEED_PX_PER_FRAME,
+    SCROLLBAR_ARROW_INSET_PX,
+    SELECTION_COLUMN_STEP_PX,
+    SELECTION_LINE_INTERVAL_MS,
+    SELECTION_LINE_STEP_PX,
     create,
     velocity,
   })

@@ -22,7 +22,7 @@ import {
   CircleCheck,
   CircleQuestionMark,
   Files,
-  Keyboard,
+  // Keyboard,
   Mail,
   Plug,
   RotateCw,
@@ -164,7 +164,7 @@ import { cx } from '../ui/utils'
 import { writeClipboard } from '../primitive/clipboard'
 import { PreferenceControls } from './Preferences'
 import { Skills } from './Skills'
-import { Shortcuts } from './Shortcuts'
+// import { Shortcuts } from './Shortcuts'
 import { SettingsPage } from './Settings'
 import type { ProjectRef } from '../../contracts/content'
 import {
@@ -281,7 +281,8 @@ const NAV_ITEMS: {
   { id: 'skills', labelKey: 'skills', lucideIcon: Plug },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
   { id: 'files', labelKey: 'files', lucideIcon: Files },
-  { id: 'shortcuts', labelKey: null, lucideIcon: Keyboard },
+  // TODO: 暂时隐藏「键盘快捷键」页面，恢复时一并恢复 Keyboard / Shortcuts。
+  // { id: 'shortcuts', labelKey: null, lucideIcon: Keyboard },
   { id: 'archives', labelKey: 'archives', lucideIcon: Archive },
   { id: 'about', labelKey: 'about', lucideIcon: CircleQuestionMark }
 ]
@@ -489,6 +490,13 @@ function AboutPage(): React.JSX.Element {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // 关于书页打开时静默刷新一次更新态：本页自带「重启安装」按钮且不渲染 UpdatePanel，
+  // 不单独挂就会留着「上一次检查之后发布的新包看不见、点安装装掉旧包」的窗口。
+  // 与背景检查同一路径（不进 'checking' 相位），与右侧显式「检查更新」按钮互不干扰。
+  React.useEffect(() => {
+    void window.scholarseed.refreshUpdate()
   }, [])
 
   React.useEffect(() => {
@@ -4907,7 +4915,7 @@ export function AccountPanel({
         )}
         {activePage === 'developer' && <DeveloperPage />}
         {activePage === 'files' && <FileVersionPage />}
-        {activePage === 'shortcuts' && <Shortcuts />}
+        {/* {activePage === 'shortcuts' && <Shortcuts />} */}
         {activePage === 'archives' && <ArchivedProjectsPage />}
         {activePage === 'about' && <AboutPage />}
         {activePage === 'notifications' && <NotificationsPage />}

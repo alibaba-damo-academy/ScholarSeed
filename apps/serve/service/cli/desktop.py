@@ -164,7 +164,7 @@ def _print_banner(*, attach_url: Optional[str], trace_ui: Optional[str], mode: s
     lines = [
         "────────────── scholarseed ──────────────",
         f" home     {SCHOLARSEED_HOME}",
-        f" config   {'ok' if CONFIG_PATH.exists() else 'MISSING (run make config)'}"
+        f" config   {'ok' if CONFIG_PATH.exists() else 'MISSING (run npm run config)'}"
         f"  model={cfg.get('model_name') or '—'}"
         f"  provider={cfg.get('provider') or '—'}",
         f" base_url {cfg.get('base_url') or '—'}",

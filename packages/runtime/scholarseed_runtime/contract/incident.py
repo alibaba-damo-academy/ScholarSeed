@@ -69,3 +69,5 @@ class RuntimeIncident:
     rpc_latency_ms: int = 0
     process_exit_code: int | None = None
     ambiguous_commit: bool = False
+    provider_error_code: str = ""
+    provider_http_status: int | None = None

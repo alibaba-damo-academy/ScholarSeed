@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "provider": "moonshot",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "kimi-k2.6": {
+      "limits": {
+        "context": 262144,
+        "max_input": 229376,
+        "max_output": 16384,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/kimi-k2-6",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-04-21",
+      "last_updated": "2026-04-21",
+      "notes": [
+        "冲突未决：百炼默认关闭思考、月之暗面直连默认开启；官方 max_tokens 写 32768、百炼写 16384。",
+        "2026-09-21 核对：models.dev/LiteLLM(月之暗面直连)列 max_output 262144，OpenRouter 列 235929；与百炼 16384、官方旧口径 32768 冲突未决。"
+      ]
+    },
+    "kimi-k2.7-code": {
+      "limits": {
+        "context": 262144,
+        "max_input": 229376,
+        "max_output": 16384,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/kimi-k2-7-code",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-06-12",
+      "last_updated": "2026-06-12",
+      "notes": [
+        "仅思考、不可关闭且无可调档（supported:true + options:[]）。聚合注册表 models.dev 的 20 个 provider 给出三种互斥形态，故不得从注册表反推。",
+        "2026-09-21 核对：models.dev/LiteLLM 列 max_output 262144，OpenRouter 列 235929；与百炼 16384 冲突未决。"
+      ]
+    },
+    "kimi-k2-thinking": {
+      "limits": {
+        "context": 262144,
+        "max_input": 229376,
+        "max_output": 16384,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "status": "deprecated",
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/kimi-k2-thinking",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2025-11-06",
+      "last_updated": "2025-11-06",
+      "notes": [
+        "厂商已下线：MoonShot 官方模型页标注 kimi-k2 系列 2026-05-25 撤除且无数值栏，本条只作百炼托管口径并保留供旧会话解析。",
+        "日期取自 models.dev(alibaba-cn 条目, 2026-09-21)；moonshotai 规范 provider 未收录该 id。"
+      ]
+    },
+    "kimi-k3": {
+      "limits": {
+        "context": 1048576,
+        "max_input": null,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/moonshotai/kimi-k3",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-16",
+      "last_updated": "2026-07-16",
+      "notes": [
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    },
+    "kimi-k2.7-code-highspeed": {
+      "limits": {
+        "context": 262144,
+        "max_input": null,
+        "max_output": 262144,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/moonshotai/kimi-k2.7-code-highspeed",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-06-12",
+      "last_updated": "2026-06-12",
+      "notes": [
+        "models.dev reasoning_options 为空集，按思考固定开启、无可调档登记(supported:true + options:[])。knowledge cutoff 2025-01。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    }
+  }
+}

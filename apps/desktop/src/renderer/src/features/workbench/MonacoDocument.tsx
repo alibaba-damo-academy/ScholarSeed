@@ -21,6 +21,7 @@ import {
 import { useApp } from '../../store'
 import {
   effectiveShortcutBindings,
+  matchesBinding,
   shortcutBindings,
   type ShortcutBinding,
   type ShortcutCommandId,
@@ -76,19 +77,15 @@ function editorSelectionViewport(
 
 const FIND_ACTION = 'actions.find'
 const REPLACE_ACTION = 'editor.action.startFindReplaceAction'
-const COPY_LINE_UP_ACTION = 'editor.action.copyLinesUpAction'
-const COPY_LINE_DOWN_ACTION = 'editor.action.copyLinesDownAction'
-const MOVE_LINE_UP_ACTION = 'editor.action.moveLinesUpAction'
-const MOVE_LINE_DOWN_ACTION = 'editor.action.moveLinesDownAction'
-const DELETE_LINE_ACTION = 'editor.action.deleteLines'
 const GO_TO_LINE_ACTION = 'editor.action.gotoLine'
 const LINE_COMMENT_ACTION = 'editor.action.commentLine'
-const BLOCK_COMMENT_ACTION = 'editor.action.blockComment'
 const INDENT_ACTION = 'editor.action.indentLines'
 const OUTDENT_ACTION = 'editor.action.outdentLines'
+const COPY_ACTION = 'editor.action.clipboardCopyAction'
 const UNDO_COMMAND = 'undo'
 const REDO_COMMAND = 'redo'
 const HISTORY_ACTION_SOURCE = 'markdown-source-toolbar'
+const SHORTCUT_ACTION_SOURCE = 'shortcut-command'
 const FIND_WIDGET_SELECTOR = '.find-widget'
 const CLOSE_FIND_WIDGET_COMMAND = 'closeFindWidget'
 const FIND_WIDGET_BLUR_SOURCE = 'find-widget-blur'
@@ -143,22 +140,20 @@ function monacoShortcut(id: ShortcutCommandId, overrides: ShortcutOverrides): nu
 const CODE_ACTIONS: Readonly<Partial<Record<ShortcutCommandId, string>>> = {
   'code.find': FIND_ACTION,
   'code.replace': REPLACE_ACTION,
-  'code.copyLineUp': COPY_LINE_UP_ACTION,
-  'code.copyLineDown': COPY_LINE_DOWN_ACTION,
-  'code.moveLineUp': MOVE_LINE_UP_ACTION,
-  'code.moveLineDown': MOVE_LINE_DOWN_ACTION,
-  'code.deleteLine': DELETE_LINE_ACTION,
   'code.goToLine': GO_TO_LINE_ACTION,
   'code.lineComment': LINE_COMMENT_ACTION,
-  'code.blockComment': BLOCK_COMMENT_ACTION,
   'code.indent': INDENT_ACTION,
   'code.outdent': OUTDENT_ACTION
 }
+const CODE_EDIT_ACTION_COMMANDS = [
+  'code.lineComment',
+  'code.indent',
+  'code.outdent'
+] as const satisfies readonly ShortcutCommandId[]
 
 const CODE_COMMANDS = [
   'code.save',
   'code.saveAll',
-  'code.quickOpen',
   'code.undo',
   'code.redo',
   ...Object.keys(CODE_ACTIONS)
@@ -337,6 +332,23 @@ export function MonacoDocument({
       })
     }
     host.addEventListener('focusout', handleFindWidgetFocusOut)
+    const handleEditActionShortcut = (event: KeyboardEvent): void => {
+      if (editor.getOption(monaco.editor.EditorOption.readOnly)) return
+      for (const commandId of CODE_EDIT_ACTION_COMMANDS) {
+        if (!effectiveShortcutBindings(commandId, appState.shortcutOverrides).some(binding => matchesBinding(event, binding))) continue
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        editor.trigger(SHORTCUT_ACTION_SOURCE, CODE_ACTIONS[commandId]!, null)
+        return
+      }
+    }
+    host.addEventListener('keydown', handleEditActionShortcut, true)
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => {
+      editor.trigger(SHORTCUT_ACTION_SOURCE, COPY_ACTION, null)
+    })
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => {
+      void window.scholarseed.pasteClipboard()
+    })
     for (const commandId of CODE_COMMANDS) {
       const effective = effectiveShortcutBindings(commandId, appState.shortcutOverrides)
       const nativeBindings = CODE_NATIVE_BINDINGS[commandId] ?? shortcutBindings(commandId)
@@ -347,10 +359,10 @@ export function MonacoDocument({
       }
       const shortcut = monacoShortcut(commandId, appState.shortcutOverrides)
       if (shortcut === undefined) continue
+      if ((CODE_EDIT_ACTION_COMMANDS as readonly ShortcutCommandId[]).includes(commandId)) continue
       editor.addCommand(shortcut, () => {
         if (commandId === 'code.save') void controller.save(sessionId)
         else if (commandId === 'code.saveAll') void controller.saveAll()
-        else if (commandId === 'code.quickOpen') set({ globalSearchOpen: true, globalSearchMode: 'files' })
         else if (commandId === 'code.goToLine') {
           setGoToLineValue(String(editor.getPosition()?.lineNumber ?? 1))
           setGoToLineOpen(true)
@@ -363,7 +375,7 @@ export function MonacoDocument({
           else controller.redo(sessionId)
         } else {
           const action = CODE_ACTIONS[commandId]
-          if (action) void editor.getAction(action)?.run()
+          if (action) editor.trigger(SHORTCUT_ACTION_SOURCE, action, null)
         }
       })
     }
@@ -410,6 +422,7 @@ export function MonacoDocument({
     return () => {
       saveView(tabId, editor.saveViewState())
       host.removeEventListener('focusout', handleFindWidgetFocusOut)
+      host.removeEventListener('keydown', handleEditActionShortcut, true)
       if (pendingFindBlurFrame !== null) cancelAnimationFrame(pendingFindBlurFrame)
       selectionListener.dispose()
       contentListener.dispose()
@@ -544,7 +557,7 @@ export function MonacoDocument({
   }
   const wrapEnabled = appState.editorWordWrap
   const sourceActions = (
-    <div className="vds-code-actions flex min-w-0 flex-nowrap items-center overflow-x-auto !gap-[var(--vds-toolbar-icon-gap)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="toolbar" aria-label={t('code.toolbar')}>
+    <div className="vds-code-actions flex min-w-0 flex-nowrap items-center overflow-x-auto !gap-[var(--vds-toolbar-icon-gap)] !border-b-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="toolbar" aria-label={t('code.toolbar')}>
       <Tooltip portalled content={t('code.undo')}><IconButton data-testid="markdown-undo" variant="ghostIcon" size="sm" title={undefined} label={t('code.undo')} icon={<Undo2 />} disabled={readOnly} onClick={() => runHistoryAction(UNDO_COMMAND)} /></Tooltip>
       <Tooltip portalled content={t('code.redo')}><IconButton data-testid="markdown-redo" variant="ghostIcon" size="sm" title={undefined} label={t('code.redo')} icon={<Redo2 />} disabled={readOnly} onClick={() => runHistoryAction(REDO_COMMAND)} /></Tooltip>
       <span className="mx-[var(--vds-space-1)] h-5 w-px bg-[var(--vds-divider-default)]" role="separator" />

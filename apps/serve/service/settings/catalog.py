@@ -80,12 +80,9 @@ GATEWAY_STRATEGY_MODELS = (
 )
 GATEWAY_DIRECT_MODELS = (
     ("claude-opus-4-7", "Claude Opus 4.7"),
-    ("bailian/deepseek-v4-pro", "Bailian DeepSeek V4 Pro"),
-    ("bailian/deepseek-v4-flash", "Bailian DeepSeek V4 Flash"),
     ("qwen3.7-plus", "Qwen 3.7 Plus"),
     ("qwen3.6-plus", "Qwen 3.6 Plus"),
     ("qwen3.7-max", "Qwen 3.7 Max"),
-    ("openai/gpt-5.5", "OpenAI GPT 5.5"),
 )
 GATEWAY_CAPABILITY_ALIASES = {"qwen": "qwen3.7-max"}
 # 内置模型收敛: 网关目录当前只**对外暴露** qwen3.8-max 与 qwen3.8-flash。收敛的是选择器
@@ -275,7 +272,7 @@ def declares_external_connection(config: Optional[Mapping[str, Any]]) -> bool:
 def pin_builtin_gateway_route(config: Dict[str, Any]) -> Dict[str, Any]:
     """内置 lane 的执行地址恒取产品常量; 配置文件里的地址回显不参与路由。
 
-    出厂种子与 ``make config`` 会把网关地址写进用户 config.json, 而 ``call_url`` 优先于
+    出厂种子与 ``npm run config`` 会把网关地址写进用户 config.json, 而 ``call_url`` 优先于
     ``base_url`` —— 产品切换网关地址后, 这些回显会把存量机器永远钉在旧地址上。这里在
     加载态把内置 lane 的地址路由键清掉、``base_url`` 钉成常量, 与
     ``converge_gateway_model_config`` 同一「不写盘」契约: 常量一改, 存量机器立即跟随。

@@ -5,21 +5,14 @@ import type {
 } from '../../preferences'
 import { isPreferenceShortcutBindingAllowed } from '../../preferences.ts'
 
-export type ShortcutScope = 'global' | 'workbench' | 'markdown' | 'code' | 'pdf' | 'office'
+export type ShortcutScope = 'markdown' | 'code' | 'pdf'
 export type ShortcutPlatform = 'mac' | 'windows'
 export type ShortcutModifier = PreferenceShortcutModifier
 export type ShortcutContext =
-  | 'always'
-  | 'workbench.active'
   | 'markdown.visual'
   | 'code.editable'
   | 'pdf.open'
-  | 'office.open'
-  | 'office.writerEditable'
 export type ShortcutMessageKey =
-  | 'globalSearch'
-  | 'toggleModulePanel'
-  | 'toggleAiPanel'
   | 'markdownSave'
   | 'markdownUndo'
   | 'markdownRedo'
@@ -39,19 +32,12 @@ export type ShortcutMessageKey =
   | 'markdownHeading6'
   | 'codeSave'
   | 'codeSaveAll'
-  | 'codeQuickOpen'
   | 'codeUndo'
   | 'codeRedo'
   | 'codeFind'
   | 'codeReplace'
-  | 'codeCopyLineUp'
-  | 'codeCopyLineDown'
-  | 'codeMoveLineUp'
-  | 'codeMoveLineDown'
-  | 'codeDeleteLine'
   | 'codeGoToLine'
   | 'codeLineComment'
-  | 'codeBlockComment'
   | 'codeIndent'
   | 'codeOutdent'
   | 'pdfFind'
@@ -74,24 +60,8 @@ export type ShortcutMessageKey =
   | 'pdfHighlight'
   | 'pdfComment'
   | 'pdfCopyText'
-  | 'pdfOpenLink'
-  | 'pdfToggleOutline'
-  | 'officeSave'
-  | 'officeFind'
-  | 'officePaste'
-  | 'officeSelectAll'
-  | 'officeBold'
-  | 'officeCopy'
-  | 'officeItalic'
-  | 'officeUnderline'
-  | 'officeCut'
-  | 'officeUndo'
-  | 'officeRedo'
 
 export type ShortcutCommandId =
-  | 'workbench.globalSearch'
-  | 'workbench.toggleModulePanel'
-  | 'workbench.toggleAiPanel'
   | 'markdown.save'
   | 'markdown.undo'
   | 'markdown.redo'
@@ -111,19 +81,12 @@ export type ShortcutCommandId =
   | 'markdown.heading6'
   | 'code.save'
   | 'code.saveAll'
-  | 'code.quickOpen'
   | 'code.undo'
   | 'code.redo'
   | 'code.find'
   | 'code.replace'
-  | 'code.copyLineUp'
-  | 'code.copyLineDown'
-  | 'code.moveLineUp'
-  | 'code.moveLineDown'
-  | 'code.deleteLine'
   | 'code.goToLine'
   | 'code.lineComment'
-  | 'code.blockComment'
   | 'code.indent'
   | 'code.outdent'
   | 'pdf.find'
@@ -146,19 +109,6 @@ export type ShortcutCommandId =
   | 'pdf.highlight'
   | 'pdf.comment'
   | 'pdf.copyText'
-  | 'pdf.openLink'
-  | 'pdf.toggleOutline'
-  | 'office.save'
-  | 'office.find'
-  | 'office.paste'
-  | 'office.selectAll'
-  | 'office.bold'
-  | 'office.copy'
-  | 'office.italic'
-  | 'office.underline'
-  | 'office.cut'
-  | 'office.undo'
-  | 'office.redo'
 
 export type ShortcutBinding = PreferenceShortcutBinding
 export type ShortcutOverrides = PreferenceShortcutOverrides
@@ -182,8 +132,6 @@ export interface ShortcutEvent {
 const PRIMARY = ['primary'] as const
 const PRIMARY_SHIFT = ['primary', 'shift'] as const
 const PRIMARY_ALT = ['primary', 'alt'] as const
-const ALT = ['alt'] as const
-const ALT_SHIFT = ['alt', 'shift'] as const
 const SHIFT = ['shift'] as const
 const UNMODIFIED = [] as const
 const binding = (key: string, modifiers: readonly ShortcutModifier[] = PRIMARY): readonly ShortcutBinding[] => ([{ key, modifiers }])
@@ -203,16 +151,10 @@ let activeShortcutOverrides: ShortcutOverrides = {}
 export const SHORTCUT_SCOPE_ORDER: readonly ShortcutScope[] = [
   'markdown',
   'code',
-  'pdf',
-  'office',
-  'workbench',
-  'global'
+  'pdf'
 ]
 
 export const SHORTCUTS: readonly ShortcutDefinition[] = [
-  { id: 'workbench.globalSearch', messageKey: 'globalSearch', scope: 'global', when: 'always', bindings: [] },
-  { id: 'workbench.toggleModulePanel', messageKey: 'toggleModulePanel', scope: 'workbench', when: 'workbench.active', bindings: binding('b') },
-  { id: 'workbench.toggleAiPanel', messageKey: 'toggleAiPanel', scope: 'workbench', when: 'workbench.active', bindings: binding('j') },
   { id: 'markdown.save', messageKey: 'markdownSave', scope: 'markdown', when: 'markdown.visual', bindings: binding('s') },
   { id: 'markdown.undo', messageKey: 'markdownUndo', scope: 'markdown', when: 'markdown.visual', bindings: binding('z') },
   { id: 'markdown.redo', messageKey: 'markdownRedo', scope: 'markdown', when: 'markdown.visual', bindings: binding('z', PRIMARY_SHIFT) },
@@ -232,19 +174,12 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: 'markdown.heading6', messageKey: 'markdownHeading6', scope: 'markdown', when: 'markdown.visual', bindings: binding('6') },
   { id: 'code.save', messageKey: 'codeSave', scope: 'code', when: 'code.editable', bindings: binding('s') },
   { id: 'code.saveAll', messageKey: 'codeSaveAll', scope: 'code', when: 'code.editable', bindings: binding('s', PRIMARY_ALT) },
-  { id: 'code.quickOpen', messageKey: 'codeQuickOpen', scope: 'code', when: 'code.editable', bindings: binding('p') },
   { id: 'code.undo', messageKey: 'codeUndo', scope: 'code', when: 'code.editable', bindings: binding('z') },
   { id: 'code.redo', messageKey: 'codeRedo', scope: 'code', when: 'code.editable', bindings: binding('z', PRIMARY_SHIFT) },
   { id: 'code.find', messageKey: 'codeFind', scope: 'code', when: 'code.editable', bindings: binding('f') },
   { id: 'code.replace', messageKey: 'codeReplace', scope: 'code', when: 'code.editable', bindings: binding('f', PRIMARY_ALT) },
-  { id: 'code.copyLineUp', messageKey: 'codeCopyLineUp', scope: 'code', when: 'code.editable', bindings: binding('ArrowUp', ALT_SHIFT) },
-  { id: 'code.copyLineDown', messageKey: 'codeCopyLineDown', scope: 'code', when: 'code.editable', bindings: binding('ArrowDown', ALT_SHIFT) },
-  { id: 'code.moveLineUp', messageKey: 'codeMoveLineUp', scope: 'code', when: 'code.editable', bindings: binding('ArrowUp', ALT) },
-  { id: 'code.moveLineDown', messageKey: 'codeMoveLineDown', scope: 'code', when: 'code.editable', bindings: binding('ArrowDown', ALT) },
-  { id: 'code.deleteLine', messageKey: 'codeDeleteLine', scope: 'code', when: 'code.editable', bindings: binding('k', PRIMARY_SHIFT) },
   { id: 'code.goToLine', messageKey: 'codeGoToLine', scope: 'code', when: 'code.editable', bindings: binding('l') },
   { id: 'code.lineComment', messageKey: 'codeLineComment', scope: 'code', when: 'code.editable', bindings: binding('/') },
-  { id: 'code.blockComment', messageKey: 'codeBlockComment', scope: 'code', when: 'code.editable', bindings: binding('a', ALT_SHIFT) },
   { id: 'code.indent', messageKey: 'codeIndent', scope: 'code', when: 'code.editable', bindings: binding('Tab', UNMODIFIED) },
   { id: 'code.outdent', messageKey: 'codeOutdent', scope: 'code', when: 'code.editable', bindings: binding('Tab', SHIFT) },
   { id: 'pdf.find', messageKey: 'pdfFind', scope: 'pdf', when: 'pdf.open', bindings: binding('f') },
@@ -266,30 +201,10 @@ export const SHORTCUTS: readonly ShortcutDefinition[] = [
   { id: 'pdf.scrollPageUp', messageKey: 'pdfScrollPageUp', scope: 'pdf', when: 'pdf.open', bindings: binding('Space', SHIFT) },
   { id: 'pdf.highlight', messageKey: 'pdfHighlight', scope: 'pdf', when: 'pdf.open', bindings: [] },
   { id: 'pdf.comment', messageKey: 'pdfComment', scope: 'pdf', when: 'pdf.open', bindings: [] },
-  { id: 'pdf.copyText', messageKey: 'pdfCopyText', scope: 'pdf', when: 'pdf.open', bindings: [] },
-  { id: 'pdf.openLink', messageKey: 'pdfOpenLink', scope: 'pdf', when: 'pdf.open', bindings: [] },
-  { id: 'pdf.toggleOutline', messageKey: 'pdfToggleOutline', scope: 'pdf', when: 'pdf.open', bindings: [] },
-  { id: 'office.save', messageKey: 'officeSave', scope: 'office', when: 'office.open', bindings: binding('s') },
-  { id: 'office.find', messageKey: 'officeFind', scope: 'office', when: 'office.open', bindings: binding('f') },
-  { id: 'office.paste', messageKey: 'officePaste', scope: 'office', when: 'office.writerEditable', bindings: binding('v') },
-  { id: 'office.selectAll', messageKey: 'officeSelectAll', scope: 'office', when: 'office.writerEditable', bindings: binding('a') },
-  { id: 'office.bold', messageKey: 'officeBold', scope: 'office', when: 'office.writerEditable', bindings: binding('b') },
-  { id: 'office.copy', messageKey: 'officeCopy', scope: 'office', when: 'office.writerEditable', bindings: binding('c') },
-  { id: 'office.italic', messageKey: 'officeItalic', scope: 'office', when: 'office.writerEditable', bindings: binding('i') },
-  { id: 'office.underline', messageKey: 'officeUnderline', scope: 'office', when: 'office.writerEditable', bindings: binding('u') },
-  { id: 'office.cut', messageKey: 'officeCut', scope: 'office', when: 'office.writerEditable', bindings: binding('x') },
-  { id: 'office.undo', messageKey: 'officeUndo', scope: 'office', when: 'office.writerEditable', bindings: binding('z') },
-  {
-    id: 'office.redo',
-    messageKey: 'officeRedo',
-    scope: 'office',
-    when: 'office.writerEditable',
-    bindings: [{ key: 'z', modifiers: PRIMARY_SHIFT }, { key: 'y', modifiers: PRIMARY }]
-  }
+  { id: 'pdf.copyText', messageKey: 'pdfCopyText', scope: 'pdf', when: 'pdf.open', bindings: [] }
 ]
 
 const SHORTCUT_BY_ID = new Map(SHORTCUTS.map(shortcut => [shortcut.id, shortcut]))
-const SHORTCUT_SCOPES = new Set<ShortcutScope>(SHORTCUT_SCOPE_ORDER)
 const MARKDOWN_NATIVE_BINDINGS: Partial<Record<ShortcutCommandId, readonly ShortcutBinding[]>> = {
   'markdown.redo': binding('y'),
   'markdown.strikethrough': binding('x', ['primary', 'alt']),
@@ -437,14 +352,6 @@ export function recordShortcutBinding(
   if (event.altKey) modifiers.push('alt')
   if (!isPreferenceShortcutBindingAllowed(key, modifiers)) return undefined
   return { key, modifiers }
-}
-
-export function shortcutScopesForTarget(target: EventTarget | null): ShortcutScope[] {
-  const element = target instanceof Element ? target : null
-  const scope = element?.closest<HTMLElement>('[data-shortcut-scope]')?.dataset.shortcutScope
-  return scope && SHORTCUT_SCOPES.has(scope as ShortcutScope)
-    ? [scope as ShortcutScope, 'global']
-    : ['workbench', 'global']
 }
 
 export function formatShortcut(bindingValue: ShortcutBinding, platform: ShortcutPlatform): string {

@@ -74,7 +74,7 @@ export type TagVariant =
   | 'secondary'
   | TagTone
 export type CardPadding = 'lg' | 'md' | 'none' | 'sm'
-export type CardVariant = 'bordered' | 'elevated' | 'flat'
+export type CardVariant = 'bordered' | 'elevated' | 'flat' | 'tinted'
 export type DividerOrientation = 'horizontal' | 'vertical'
 export type AlertTone = 'error' | 'info' | 'success' | 'warning'
 export type AvatarSize = ComponentSize
@@ -232,7 +232,8 @@ const CARD_VARIANT_CLASS_NAMES: Record<CardVariant, string> = {
     'border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-1-center)]',
   elevated:
     'border border-solid border-transparent bg-[var(--vds-surface-raised)] shadow-[var(--vds-shadow-2-center)]',
-  flat: 'border border-solid border-transparent bg-[var(--vds-surface-muted)]'
+  flat: 'border border-solid border-transparent bg-[var(--vds-surface-muted)]',
+  tinted: 'bg-[var(--vds-bg-gray-default-transparent)]'
 }
 const CARD_PADDING_CLASS_NAMES: Record<CardPadding, string> = {
   none: '',

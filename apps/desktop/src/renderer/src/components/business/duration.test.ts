@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { TFunction } from 'i18next'
 
-import { activityDurationLabel, elapsedLabel } from './duration.ts'
+import { activityDurationLabel, elapsedLabel, turnDurationLabel } from './duration.ts'
 
 const translate = ((key: string, options?: { count?: number; minutes?: number; seconds?: number }) => {
   if (key === 'stream.seconds') return `${options?.count} ${options?.count === 1 ? 'second' : 'seconds'}`
@@ -22,4 +22,11 @@ test('activity duration displays subsecond groups as one second without changing
 
 test('other elapsed-time labels retain their zero-second behavior', () => {
   assert.equal(elapsedLabel(1000, 1999, translate), '0 seconds')
+})
+
+test('turn duration uses compact English units', () => {
+  assert.equal(turnDurationLabel(1000, 4800), '3.8s')
+  assert.equal(turnDurationLabel(1000, 39100), '38.1s')
+  assert.equal(turnDurationLabel(1000, 62100), '1m 1s')
+  assert.equal(turnDurationLabel(1000, 3662000), '1h 1m 1s')
 })

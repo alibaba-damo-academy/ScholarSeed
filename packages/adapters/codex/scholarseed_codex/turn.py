@@ -256,7 +256,7 @@ class CodexTurnRuntime:
         if method == "item/agentMessage/delta":
             text = str(params.get("delta") or "")
             phase = self.message_phases.get(item_id)
-            if phase is None and item_id in self.item_details:
+            if phase is None and item_id:
                 self.pending_message_deltas.setdefault(item_id, []).append(text)
                 return
             self.streamed_messages.add(item_id)
@@ -448,6 +448,14 @@ class CodexTurnRuntime:
         if method == "error":
             will_retry = bool(params.get("willRetry"))
             failure = provider_failure(params.get("error"))
+            logger.info(
+                "codex_provider_error thread_id=%s turn_id=%s code=%s http_status=%s will_retry=%s",
+                self._thread.thread_id,
+                turn_id or self.active_turn_id,
+                failure.diagnostic_code,
+                failure.http_status,
+                will_retry,
+            )
             self.provider_failure = failure
             incident_turn_id = turn_id or self.active_turn_id
             if not self.provider_incident_id or self.provider_incident_turn_id != incident_turn_id:
@@ -481,6 +489,8 @@ class CodexTurnRuntime:
                 process_generation=message_generation,
                 vendor_thread_id=self._thread.thread_id,
                 vendor_turn_id=incident_turn_id,
+                provider_error_code=failure.diagnostic_code,
+                provider_http_status=failure.http_status,
             )
             await self._emitter.incident(self._thread, incident, turn_id=incident_turn_id)
             return
@@ -964,6 +974,16 @@ class CodexTurnRuntime:
         await self._emit_assistant_message(turn_id, item_id, text, phase)
         await self._complete_assistant_message(turn_id, item_id, text, phase)
 
+    async def _flush_pending_message_deltas(
+        self,
+        turn_id: str,
+        item_id: str,
+        phase: MessagePhase,
+    ) -> None:
+        pending = self.pending_message_deltas.pop(item_id, [])
+        if pending:
+            await self._emit_assistant_message(turn_id, item_id, "".join(pending), phase)
+
     async def _complete_assistant_message(
         self,
         turn_id: str,
@@ -1011,6 +1031,7 @@ class CodexTurnRuntime:
             phase = _message_phase(item.get("phase"))
             if item_id and phase is not None:
                 self.message_phases[item_id] = phase
+                await self._flush_pending_message_deltas(turn_id, item_id, phase)
             return
         await self._flush_unknown_message(
             turn_id,
@@ -1270,6 +1291,14 @@ class CodexTurnRuntime:
                 if terminal_error_code or terminal_error_message
                 else self.provider_failure or provider_failure(None)
             )
+            if status == TurnStatus.FAILED:
+                logger.info(
+                    "codex_turn_failed thread_id=%s turn_id=%s code=%s http_status=%s",
+                    self._thread.thread_id,
+                    turn_id,
+                    failure.diagnostic_code,
+                    failure.http_status,
+                )
             await self._close_provider_incident(
                 turn_id,
                 recovered=status == TurnStatus.COMPLETED,
@@ -1373,6 +1402,8 @@ class CodexTurnRuntime:
             process_generation=generation,
             vendor_thread_id=self._thread.thread_id,
             vendor_turn_id=turn_id,
+            provider_error_code=terminal_failure.diagnostic_code,
+            provider_http_status=terminal_failure.http_status,
         )
         await self._emitter.incident(self._thread, incident, turn_id=turn_id)
         self.provider_incident_id = ""

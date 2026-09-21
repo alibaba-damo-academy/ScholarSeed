@@ -292,6 +292,20 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         incident = self.incident(RuntimeIncidentState.RETRYING)
         wire = incident_data(incident)
         self.assertEqual(event_incident(SimpleNamespace(payload={"incident": wire})), incident)
+        self.assertEqual(
+            event_incident(
+                SimpleNamespace(
+                    payload={
+                        "incident": {
+                            **wire,
+                            "provider_error_code": "rate_limit_exceeded",
+                            "provider_http_status": 429,
+                        }
+                    }
+                )
+            ).provider_http_status,
+            429,
+        )
         for field, invalid in (
             ("incident_id", 12),
             ("attempt", True),

@@ -74,6 +74,7 @@ declare global {
     /** 写系统剪贴板。不走 navigator.clipboard（要求文档聚焦，桌面端易失焦被拒）。 */
     acquireOfficeImage: (source: OfficeImageSource) => Promise<OfficeImageResult>
     writeClipboard: (text: string) => Promise<{ ok: boolean; error?: string }>
+    pasteClipboard: () => Promise<boolean>
     writeClipboardImage: (bytes: Uint8Array) => Promise<{ ok: boolean; error?: string }>
     readOfficeClipboard: () => Promise<OfficeClipboardResult>
     /** 资料导入：按指定范围多选本地资料，取消返回空数组。 */
@@ -107,6 +108,8 @@ declare global {
     onLandingReopen: (cb: (detail: { error: string }) => void) => () => void
     getUpdateState: () => Promise<UpdateSnapshot>
     checkUpdate: () => Promise<UpdateSnapshot>
+    /** 静默刷新：与背景检查同一条路径（不进 'checking' 相位）；更新表面打开时刷新状态。 */
+    refreshUpdate: () => Promise<void>
     diagnoseUpdate: () => Promise<UpdateDiagnosis>
     startUpdate: (id: string) => Promise<StartUpdateResult>
     installUpdate: () => Promise<StartUpdateResult>

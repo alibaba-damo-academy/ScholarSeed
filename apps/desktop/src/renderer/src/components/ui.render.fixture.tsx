@@ -7,7 +7,6 @@ import { resources } from '../../../localization/resources'
 import aiThinking from '../assets/ai-thinking.gif'
 
 import '../styles.css'
-import { Effort } from './business/Effort'
 import {
   Accordion,
   AccordionContent,
@@ -192,10 +191,6 @@ function NavigationTabsScrollDemo(): JSX.Element {
 }
 
 function Fixture(): JSX.Element {
-  const [effortValue, setEffortValue] = useState('')
-  const [effortChanges, setEffortChanges] = useState(0)
-  const [savedEffort, setSavedEffort] = useState('')
-  const [pendingEffort, setPendingEffort] = useState<string | null>(null)
   const [buttonClicks, setButtonClicks] = useState(0)
   const [accepted, setAccepted] = useState(false)
   const [enabled, setEnabled] = useState(false)
@@ -288,27 +283,6 @@ function Fixture(): JSX.Element {
       <Spinner imageSrc={aiThinking} size="sm" data-testid="render-spinner-image" />
       <Button loading data-testid="render-button-loading-default" />
       <Button loading loadingIcon={<Spinner imageSrc={aiThinking} size="sm" />} data-testid="render-button-loading-image" />
-      <div data-testid="render-effort" style={{ width: 280 }}>
-        <Effort value={effortValue} options={[
-          { value: '', label: 'Default' },
-          { value: 'low', label: 'Low' },
-          { value: 'medium', label: 'Medium' },
-          { value: 'high', label: 'High' }
-        ]} disabled={false} onSelect={(value) => {
-          setEffortValue(value)
-          setEffortChanges((count) => count + 1)
-        }} />
-        <output data-testid="render-effort-value">{effortValue}</output>
-        <output data-testid="render-effort-changes">{effortChanges}</output>
-      </div>
-      <div data-testid="render-effort-fixed">
-        <Effort value="" options={[{ value: '', label: 'Default' }]} disabled onSelect={() => setEffortChanges((count) => count + 1)} />
-      </div>
-      <div data-testid="render-effort-pending" style={{ width: 280 }}>
-        <Effort value={savedEffort} options={[{ value: '', label: 'Default' }, { value: 'high', label: 'High' }]}
-          disabled={false} pending={pendingEffort !== null} onSelect={setPendingEffort} />
-        <Button onClick={() => { setSavedEffort(pendingEffort ?? ''); setPendingEffort(null) }}>Complete effort save</Button>
-      </div>
       <Button
         data-testid="render-button"
         loading={buttonClicks > 0}

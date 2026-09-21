@@ -5,7 +5,7 @@ import {
   Input,
   IconButton,
   Alert,
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogPortal,
   Pagination,
   Badge,
@@ -23,6 +23,8 @@ import { IconFont } from '../../components/primitive'
 import { useApp } from '../../store'
 import { LiteratureApiError, importBibliography, listLiteratureCollections, createLiteratureCollection, type LibraryCollection } from './api'
 import { catalogue } from './catalog'
+import { DestinationRows, MENU_BOUNDS } from './DestinationTree'
+import { collectionNodes, type JoinDestination } from './join'
 import { searchPapersBibtex } from './result'
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
 
@@ -156,15 +158,20 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
   const [collectionsLoading, setCollectionsLoading] = useState(false)
   const [collectionsError, setCollectionsError] = useState<LiteratureErrorMessage | null>(null)
   const [creatingFor, setCreatingFor] = useState<ReferenceItem | null>(null)
+  const [createParent, setCreateParent] = useState<JoinDestination | null>(null)
   const [collectionName, setCollectionName] = useState('')
   const [createError, setCreateError] = useState<LiteratureErrorMessage | null>(null)
   const [creating, setCreating] = useState(false)
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null)
   const inFlight = useRef(new Set<string>())
   const search = query.trim().toLocaleLowerCase()
   const filtered = useMemo(() => payload.references.filter((reference) => reference.title.toLocaleLowerCase().includes(search)), [payload.references, search])
   const pageCount = Math.max(1, Math.ceil(filtered.length / REFERENCES_PAGE_SIZE))
   const currentPage = Math.min(page, pageCount)
   const visible = useMemo(() => filtered.slice((currentPage - 1) * REFERENCES_PAGE_SIZE, currentPage * REFERENCES_PAGE_SIZE), [filtered, currentPage])
+  // 与文献库「加入文献库」一致的层级目录树: 由扁平分类列表按 parent_id 还原成树, 供 DestinationRows 递归渲染。
+  const collectionTree = useMemo(() => collectionNodes(collections, projectId), [collections, projectId])
+  const rootDestination: JoinDestination = { projectId, path: [] }
 
   const add = async (reference: ReferenceItem, collectionId = ''): Promise<void> => {
     if (inFlight.current.has(reference.ref_id)) return
@@ -203,13 +210,22 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
     setCreateError(null)
     try {
       const name = collectionName.trim()
-      const existing = collections.find((collection) => collection.name === name)
-      const collection = existing ?? await createLiteratureCollection(name, projectId)
+      const parentId = createParent?.collectionId
+      const existing = collections.find((collection) => collection.name === name && (collection.parent_id || undefined) === parentId)
+      const collection = existing ?? await createLiteratureCollection(name, projectId, parentId)
       catalogue.reload()
       setCreatingFor(null)
+      setCreateParent(null)
       await add(creatingFor, collection.id)
     } catch (error) { setCreateError(literatureErrorMessage(error instanceof LiteratureApiError ? error.failure.code : undefined, error instanceof Error ? error.message : undefined, 'references.createFailed')) }
     finally { setCreating(false) }
+  }
+  const openCreate = (reference: ReferenceItem, parent: JoinDestination): void => {
+    setMenuOpenFor(null)
+    setCreatingFor(reference)
+    setCreateParent(parent)
+    setCollectionName('')
+    setCreateError(null)
   }
 
   return (
@@ -244,15 +260,21 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
                             {metadata ? <p title={reference.authors.join(', ')} className="m-0 mt-[var(--vds-space-1)] truncate text-xs text-[var(--vds-text-secondary)]">{metadata}</p> : null}
                             {reference.claim ? <p title={reference.claim} className="m-0 mt-[var(--vds-space-2)] line-clamp-2 text-xs leading-relaxed text-[var(--vds-text-secondary)]">{reference.claim}</p> : null}
                           </div>
-                          <DropdownMenu onOpenChange={(isOpen) => { if (isOpen) void loadCollections() }}>
+                          {/* 每条文献共用一个 menuOpenFor: 互斥已由该单值状态保证, 必须关掉 sibling-close,
+                              否则某条展开时其余(关闭的)菜单收到 sibling 事件回写 onOpenChange(false),
+                              会把 menuOpenFor 抹回 null, 刚展开的菜单立刻被关掉。 */}
+                          <DropdownMenu closeOnSiblingOpen={false} open={menuOpenFor === reference.ref_id} onOpenChange={(isOpen) => { setMenuOpenFor(isOpen ? reference.ref_id : null); if (isOpen) void loadCollections() }}>
                             <DropdownMenuTrigger asChild>
                               <IconButton size="sm" variant="ghost" label={saved[reference.ref_id] ? t('references.chooseCollection', { title: reference.title }) : t('references.add', { title: reference.title })} icon={<IconFont type="line-operation-add" />} loading={pending.has(reference.ref_id)} disabled={pending.has(reference.ref_id)} />
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="min-w-56 max-w-80">
-                              <DropdownMenuItem disabled={Boolean(saved[reference.ref_id])} onSelect={() => void add(reference)}>{t('references.defaultCollection')}</DropdownMenuItem>
-                              {collectionsLoading ? <DropdownMenuItem disabled>{t('references.loadingCollections')}</DropdownMenuItem> : collectionsError ? <DropdownMenuItem onSelect={() => void loadCollections()}>{t(collectionsError.key)}{collectionsError.detail && <span> {collectionsError.detail}</span>}</DropdownMenuItem> : collections.map((collection) => <DropdownMenuItem key={collection.id} onSelect={() => void add(reference, collection.id)}><span className="truncate" title={collection.name}>{collection.name}</span></DropdownMenuItem>)}
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem onSelect={() => { setCreatingFor(reference); setCollectionName(''); setCreateError(null) }}><IconFont type="line-operation-add" />{t('references.newCollectionMenu')}</DropdownMenuItem>
+                            <DropdownMenuContent align="end" className={MENU_BOUNDS}>
+                              <DropdownMenuItem disabled={Boolean(saved[reference.ref_id])} onSelect={() => void add(reference)}>{t('join.direct')}</DropdownMenuItem>
+                              <DropdownMenuSub>
+                                <DropdownMenuSubTrigger openOnHover disabled={collectionsLoading}>{t('join.collection')}</DropdownMenuSubTrigger>
+                                <DropdownMenuSubContent className={MENU_BOUNDS} autoFocus={false}>
+                                  {collectionsLoading ? <DropdownMenuItem disabled>{t('references.loadingCollections')}</DropdownMenuItem> : collectionsError ? <DropdownMenuItem onSelect={() => void loadCollections()}>{t(collectionsError.key)}{collectionsError.detail && <span> {collectionsError.detail}</span>}</DropdownMenuItem> : <DestinationRows nodes={collectionTree} parent={rootDestination} choose={(node) => { setMenuOpenFor(null); void add(reference, node.collectionId ?? '') }} create={(parent) => openCreate(reference, parent)} />}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuSub>
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </div>
@@ -275,13 +297,13 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
           </CollapsibleContent>
         </Collapsible>
       </Card>
-      <Dialog open={creatingFor !== null} onOpenChange={(isOpen) => { if (!isOpen && !creating) setCreatingFor(null) }}>
+      <Dialog open={creatingFor !== null} onOpenChange={(isOpen) => { if (!isOpen && !creating) { setCreatingFor(null); setCreateParent(null) } }}>
         <DialogPortal>
           <DialogContent>
             <DialogHeader><DialogTitle>{t('references.newCollection')}</DialogTitle><DialogDescription>{t('references.createDescription')}</DialogDescription></DialogHeader>
             <Input aria-label={t('references.collectionName')} placeholder={t('references.collectionPlaceholder')} value={collectionName} disabled={creating} onChange={(event) => setCollectionName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void createAndAdd() } }} />
             {createError ? <Alert tone="error">{t(createError.key)}{createError.detail && <span> {createError.detail}</span>}</Alert> : null}
-            <DialogFooter><Button variant="secondary" disabled={creating} onClick={() => setCreatingFor(null)}>{t('references.cancel')}</Button><Button disabled={!collectionName.trim()} loading={creating} onClick={() => void createAndAdd()}>{t('references.createAndAdd')}</Button></DialogFooter>
+            <DialogFooter><Button variant="secondary" disabled={creating} onClick={() => { setCreatingFor(null); setCreateParent(null) }}>{t('references.cancel')}</Button><Button disabled={!collectionName.trim()} loading={creating} onClick={() => void createAndAdd()}>{t('references.createAndAdd')}</Button></DialogFooter>
           </DialogContent>
         </DialogPortal>
       </Dialog>

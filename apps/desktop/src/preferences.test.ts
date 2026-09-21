@@ -67,6 +67,7 @@ test('shortcut overrides preserve valid bindings and explicit cleared commands',
       'code.moveLineUp': { key: 'ArrowUp', modifiers: ['alt'] },
       'pdf.nextPage': { key: 'PageDown', modifiers: [] },
       'workbench.toggleModulePanel': null,
+      'office.save': { key: 's', modifiers: ['primary'] },
       invalidKey: { key: '', modifiers: ['primary'] },
       invalidModifier: { key: 'x', modifiers: ['meta'] },
       invalidBareText: { key: 'a', modifiers: [] },
@@ -75,9 +76,7 @@ test('shortcut overrides preserve valid bindings and explicit cleared commands',
   })
   assert.deepEqual(parsed.shortcutOverrides, {
     'markdown.bold': { key: 'm', modifiers: ['primary', 'shift'] },
-    'code.moveLineUp': { key: 'ArrowUp', modifiers: ['alt'] },
-    'pdf.nextPage': { key: 'PageDown', modifiers: [] },
-    'workbench.toggleModulePanel': null
+    'pdf.nextPage': { key: 'PageDown', modifiers: [] }
   })
   assert.deepEqual(sanitizeRendererPreferences({}).shortcutOverrides, {})
 })

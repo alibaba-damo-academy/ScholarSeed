@@ -44,12 +44,12 @@ damoatrace serve
 ## 开发与验证
 
 ```bash
-make install
-make fmt
-make fmt-check
-make contract
-make check
-make wheel
+npm run install:python
+npm run fmt
+npm run fmt-check
+npm run damoatrace:contract
+npm run damoatrace:check
+python -m build --wheel
 ```
 
-`make wheel` 只生成并检查本地 wheel，不上传包。
+`python -m build --wheel` 只生成并检查本地 wheel，不上传包。

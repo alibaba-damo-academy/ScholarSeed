@@ -9,6 +9,7 @@ import {
   pruneMissingCatalogThreads,
   requestModelKey,
   retainCatalogThread,
+  selectableCatalogModelKey,
   selectedSessionModelKey
 } from './catalog.ts'
 import type { SessionNode, Thread } from './model.ts'
@@ -151,4 +152,31 @@ test('an empty or fully greyed catalogue counts as no selectable model', () => {
   assert.equal(hasSelectableModel([{ disabled: true }, { disabled: true }]), false)
   assert.equal(hasSelectableModel([{ disabled: true }, {}]), true)
   assert.equal(hasSelectableModel([{ disabled: undefined }]), true)
+})
+
+test('logout replaces a disabled built-in default with the equivalent personal model', () => {
+  const personalKey = 'personal-0123456789abcdef0123456789abcdef:qwen3.8-max'
+  const models = [
+    { key: 'qwen3.8-max', disabled: true },
+    { key: personalKey, model_id: 'qwen3.8-max' },
+    { key: 'personal-fedcba9876543210fedcba9876543210:other-model', model_id: 'other-model' }
+  ]
+
+  assert.equal(selectableCatalogModelKey('qwen3.8-max', models), personalKey)
+  assert.equal(selectableCatalogModelKey(personalKey, models), personalKey)
+})
+
+test('catalog selection preserves an enabled previous choice before using the first fallback', () => {
+  const models = [
+    { key: 'disabled-default', disabled: true },
+    { key: 'personal-first:first', model_id: 'first' },
+    { key: 'personal-previous:previous', model_id: 'previous' }
+  ]
+
+  assert.equal(
+    selectableCatalogModelKey('disabled-default', models, 'personal-previous:previous'),
+    'personal-previous:previous'
+  )
+  assert.equal(selectableCatalogModelKey('missing', models), 'personal-first:first')
+  assert.equal(selectableCatalogModelKey('missing', []), 'missing')
 })

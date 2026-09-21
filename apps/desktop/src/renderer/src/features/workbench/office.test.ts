@@ -32,7 +32,6 @@ const threadSource = readFileSync(new URL('./office/office-thread.js', import.me
 const policySource = readFileSync(new URL('./office/policy.js', import.meta.url), 'utf8')
 const searchSource = readFileSync(new URL('./office/search.js', import.meta.url), 'utf8')
 const governanceSource = readFileSync(new URL('./office/governance.js', import.meta.url), 'utf8')
-const inputSource = readFileSync(new URL('./office/input.js', import.meta.url), 'utf8')
 const caretSource = readFileSync(new URL('./office/caret.js', import.meta.url), 'utf8')
 const clipboardSource = readFileSync(new URL('./office/clipboard.js', import.meta.url), 'utf8')
 const paletteSource = readFileSync(new URL('./office/palette.js', import.meta.url), 'utf8')
@@ -117,11 +116,11 @@ test('every Office runtime loads its packaged CJK UI font before document fonts'
   assert.match(source, /defaultFontCount:defaultFonts\.length/)
 })
 
-test('Office startup exposes one retry surface and routes save through Workbench', () => {
+test('Office startup exposes one retry surface without registering a save shortcut', () => {
   assert.match(source, /officeFrame\.loading/)
   assert.match(source, /zeta-20250513/)
   assert.doesNotMatch(source, /cdn\.zetaoffice\.net/)
-  assert.match(source, /post\('save-request'\)/)
+  assert.doesNotMatch(source, /save-request|config\.shortcuts/)
   assert.match(runtimeSource, /controller\.save\(session\.id\)/)
 })
 
@@ -258,8 +257,7 @@ test('Office staging preserves the source filename instead of the display title'
 test('Writer rich paste carries host clipboard MIME formats into the governed Office worker', () => {
   assert.match(preloadSource, /readOfficeClipboard/)
   assert.match(runtimeSource, /window\.scholarseed\.readOfficeClipboard\(\)/)
-  assert.match(source, /paste: effectiveShortcutBindings\('office\.paste'\)/)
-  assert.match(source, /shortcutMatches\(event,config\.shortcuts\.paste\).*postMessage\(\{cmd:'image_request'/)
+  assert.doesNotMatch(source, /config\.shortcuts|shortcutMatches|image_request.*keydown/)
   assert.match(source, /formats:message\.formats/)
   assert.match(runtimeSource, /status: 'text', formats: clipboard\.formats/)
   assert.match(threadSource, /insertTransferable\(message\.requestId, message\.formats\)/)
@@ -302,7 +300,7 @@ test('Office iframe lifetime belongs to one persistent app-level host', () => {
 test('Office selection reports a frame-local point and binds its viewport projection to the tab', () => {
   assert.match(source, /point:selectionAnchorPoint\|\|selectionPoint/)
   assert.match(source, /function captureSelectionAnchor\(event\)[\s\S]*selectionAnchorPoint=selectionPoint/)
-  assert.match(source, /document\.addEventListener\('pointermove',event=>\{selectionPoint=\{x:event\.clientX,y:event\.clientY\};selectionAutoscroll\.move\(event\)\}/)
+  assert.match(source, /document\.addEventListener\('pointermove',event=>\{selectionPoint=\{x:event\.clientX,y:event\.clientY\};if\(selectionAutoscroll\.move\(event\)&&selectionAutoscrollKind==='writer'\)\{event\.preventDefault\(\);event\.stopImmediatePropagation\(\)\}\}/)
   assert.doesNotMatch(source, /document\.addEventListener\('pointermove',[\s\S]*selectionAnchorPoint=selectionPoint[\s\S]*selectionAutoscroll\.move\(event\)/)
   assert.match(runtimeSource, /controller\.setSelection\(viewId/)
   assert.match(runtimeSource, /selectionViewport\(/)
@@ -319,38 +317,10 @@ test('Office uses native formatting without a parallel host rich-content toolbar
   assert.doesNotMatch(runtimeSource, /post\('format'/)
 })
 
-test('Office canvas leaves keyboard handling to Qt instead of browser contenteditable defaults', () => {
-  assert.match(source, /<canvas id="qtcanvas" contenteditable="true" oncontextmenu="event\.preventDefault\(\)" onkeydown="event\.preventDefault\(\)"/)
-})
-
-test('Office Writer uses a real text control for IME composition and sends committed Unicode to UNO', () => {
-  assert.match(source, /<textarea id="ime-input"/)
-  assert.match(source, /ScholarSeedOfficeInput\.create\(/)
-  assert.match(source, /cmd:'input_text'/)
-  assert.match(inputSource, /function onCompositionEnd\(event\)[\s\S]+commit\(text\)/)
-  assert.match(threadSource, /case 'input_text': insertText\(event\.data\.text\); break/)
-  assert.match(threadSource, /INSERT_TEXT_COMMAND/)
-  assert.match(threadSource, /Name: 'Text', Value: text/)
-})
-
-test('Office IME bridge maps text editing, selection and modifier shortcuts without moving DOM focus', () => {
-  const context = { navigator: { userAgent: 'Macintosh' } } as Record<string, unknown>
-  runInNewContext(inputSource, context)
-  const input = context.ScholarSeedOfficeInput as {
-    commandFor: (
-      event: { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean },
-      shortcuts?: { bindings: { key: string; modifiers: string[] }[]; command: string }[]
-    ) => string
-  }
-  const shortcuts = [{ bindings: [{ key: 'z', modifiers: ['primary'] }], command: '.uno:Undo' }]
-  assert.equal(input.commandFor({ key: 'Backspace' }), '.uno:SwBackspace')
-  assert.equal(input.commandFor({ key: 'ArrowLeft' }), '.uno:GoLeft')
-  assert.equal(input.commandFor({ key: 'ArrowLeft', shiftKey: true }), '.uno:GoLeftSel')
-  assert.equal(input.commandFor({ key: 'z', metaKey: true }, shortcuts), '.uno:Undo')
-  assert.equal(input.commandFor({ key: 'A', shiftKey: true }), '')
-  assert.doesNotMatch(inputSource, /canvas\.focus/)
-  assert.doesNotMatch(inputSource, /const SHORTCUTS/)
-  assert.match(source, /effectiveShortcutBindings\('office\.bold'\)/)
+test('Office canvas is read-only and does not register text editing input', () => {
+  assert.match(source, /<canvas id="qtcanvas" oncontextmenu="event\.preventDefault\(\)"/)
+  assert.doesNotMatch(source, /contenteditable|ime-input|ScholarSeedOfficeInput|input_text|input_command/)
+  assert.doesNotMatch(threadSource, /input_text|input_command|InsertText/)
 })
 
 interface AccessibleNode {
@@ -423,37 +393,6 @@ test('Office caret locator anchors an end-of-paragraph caret after the last glyp
   })
   const none = accessibleContainer([accessibleParagraph('abc', -1, { X: 0, Y: 0 })])
   assert.equal(caret.locate(writerFrame(none)), undefined)
-})
-
-test('Office IME input maps native screen pixels onto the canvas and clamps the anchor inside it', () => {
-  const context = {} as Record<string, unknown>
-  runInNewContext(inputSource, context)
-  const input = context.ScholarSeedOfficeInput as {
-    caretBox: (caret: unknown, surface: { width: number; height: number }) => { left: number; top: number; height: number } | undefined
-  }
-  const surface = { width: 800, height: 500 }
-  assert.deepEqual(
-    plain(input.caretBox({ rect: { x: 300, y: 400, height: 36 }, screen: { width: 1600, height: 1000 } }, surface)),
-    { left: 150, top: 200, height: 18 }
-  )
-  assert.deepEqual(
-    plain(input.caretBox({ rect: { x: 5000, y: 5000, height: 20 }, screen: { width: 800, height: 500 } }, surface)),
-    { left: 799, top: 480, height: 20 }
-  )
-  assert.equal(input.caretBox({ rect: { x: 1, y: 1, height: 1 }, screen: { width: 0, height: 1 } }, surface), undefined)
-  assert.equal(input.caretBox({ rect: { x: Number.NaN, y: 1, height: 1 }, screen: { width: 1, height: 1 } }, surface), undefined)
-})
-
-test('Office IME textarea follows the reported Writer caret instead of a fixed frame position', () => {
-  assert.doesNotMatch(source, /#ime-input\{[^}]*(bottom|left:50%)/)
-  assert.match(source, /config\.caretUrl,config\.paletteUrl,config\.docUrl,config\.docxUrl,config\.selectionUrl,config\.threadUrl\]/)
-  assert.match(source, /message\.cmd===caretCommand\)officeInput\.place\(message\)/)
-  assert.match(source, /requestCaret:\(\)=>port\?\.postMessage\(\{cmd:caretRequestCommand\}\)/)
-  assert.match(inputSource, /function onCompositionStart\(\)[\s\S]+requestCaret\(\)/)
-  assert.match(threadSource, /selectionChanged\(\) \{[\s\S]+scheduleCaretReport\(\)[\s\S]+disposing/)
-  assert.match(threadSource, /function insertText\(text\) \{[\s\S]+?scheduleCaretReport\(\)\n\}/)
-  assert.match(threadSource, /case CARET_REQUEST_COMMAND: scheduleCaretReport\(\); break/)
-  assert.match(threadSource, /ScholarSeedOfficeCaret\.locate\(/)
 })
 
 test('Office context menus recursively replace native labels with stable English command labels', () => {
@@ -568,13 +507,18 @@ test('Writer and Calc pointer drags keep the action menu hidden until release', 
   assert.match(threadSource, /let selectionDragging = false/)
   assert.match(threadSource, /case SELECTION_DRAG_COMMAND:[\s\S]*selectionDragging = Boolean\(event\.data\.active\)[\s\S]*documentKind === 'calc'\) reportSelection\(\)[\s\S]*else scheduleSelectionReport\(\)/)
   assert.match(threadSource, /selectionChanged\(\) \{[\s\S]*if \(!selectionDragging\) scheduleSelectionReport\(\)/)
-  assert.match(threadSource, /function autoscrollWriterSelection\(horizontal, vertical\)[\s\S]*getViewCursor\(\)[\s\S]*goDown\(SELECTION_STEP_COUNT, true\)/)
-  assert.match(threadSource, /case SELECTION_AUTOSCROLL_COMMAND:[\s\S]*autoscrollWriterSelection\(Number\(event\.data\.x\), Number\(event\.data\.y\)\)/)
-  assert.match(source, /selectionAutoscrollKind==='writer'\)port\?\.postMessage\(\{cmd:selectionAutoscrollCommand/)
+  assert.match(threadSource, /function readonlyWriterSelectionCursor\(controller, direction\)[\s\S]*writerSelection\?\.describe\(controller\.getSelection\(\)\)[\s\S]*controller\.getViewCursor\(\)[\s\S]*cursor\.gotoRange\(anchor, false\)[\s\S]*cursor\.gotoRange\(edge, true\)/)
+  assert.match(threadSource, /const SELECTION_STEP_COUNT = 1/)
+  assert.match(threadSource, /function prepareWriterAutoscroll\(message\)[\s\S]*selectionDragging && documentKind === 'writer' && xModel[\s\S]*readonlyWriterSelectionCursor\(controller, Math\.sign\(vertical \|\| horizontal\)\)[\s\S]*pendingWriterAutoscroll = \{ requestId: message\.requestId, cursor, horizontal, vertical \}[\s\S]*SELECTION_AUTOSCROLL_READY_COMMAND/)
+  assert.match(threadSource, /function commitWriterAutoscroll\(message\)[\s\S]*pending\.vertical > 0\) pending\.cursor\.goDown\(SELECTION_STEP_COUNT, true\)[\s\S]*pending\.vertical < 0\) pending\.cursor\.goUp\(SELECTION_STEP_COUNT, true\)[\s\S]*SELECTION_AUTOSCROLL_APPLIED_COMMAND/)
+  assert.doesNotMatch(threadSource, /measureWriterSelectionLine|advanceWriterSelectionLine|writerSelectionMotion/)
+  assert.match(threadSource, /post\(\{ cmd: SELECTION_AUTOSCROLL_APPLIED_COMMAND, requestId: message\.requestId \}\)/)
+  assert.match(threadSource, /case SELECTION_AUTOSCROLL_COMMAND:[\s\S]*prepareWriterAutoscroll\(event\.data\)[\s\S]*case SELECTION_AUTOSCROLL_COMMIT_COMMAND:[\s\S]*commitWriterAutoscroll\(event\.data\)/)
+  assert.match(source, /selectionAutoscrollKind==='writer'\)return advanceWriterAutoscroll\(speed\)/)
 })
 
 test('Calc selection autoscroll leaves range extension to the native pointer drag', () => {
-  assert.match(source, /if\(selectionAutoscrollKind==='writer'\)port\?\.postMessage\(\{cmd:selectionAutoscrollCommand/)
+  assert.match(source, /if\(selectionAutoscrollKind==='writer'\)return advanceWriterAutoscroll\(speed\);[\s\S]*return true/)
   assert.doesNotMatch(threadSource, /function autoscrollCalcSelection/)
 })
 
@@ -656,8 +600,7 @@ test('Writer body reveal reuses the counted Office search bridge and selects the
 test('all Office modules use the counted host search without duplicating the native findbar', () => {
   assert.match(policySource, /calc:[\s\S]*toolbars: \['standardbar', 'formulabar'\]/)
   assert.match(policySource, /writer:[\s\S]*toolbars: \['standardbar', 'textobjectbar'\]/)
-  assert.match(source, /find: effectiveShortcutBindings\('office\.find'\)/)
-  assert.match(source, /shortcutMatches\(event,config\.shortcuts\.find\).*office-search-open/)
+  assert.doesNotMatch(source, /effectiveShortcutBindings|shortcutMatches|office-search-open/)
   assert.match(source, /searchVisible&&event\.key==='Escape'/)
   assert.match(hostSource, /className="vds-office-search"/)
   assert.match(hostSource, /placeholder=\{t\('officeDocument\.fullSearch'\)\}/)

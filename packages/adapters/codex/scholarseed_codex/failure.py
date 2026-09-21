@@ -23,7 +23,8 @@ CODEX_QUOTA_EXCEEDED_MESSAGE = "Quota exceeded. Check your plan and billing deta
 
 _SSE_EVENT_ERROR = "event:error"
 _SSE_DATA_PREFIX = "data:"
-_HTTP_ERROR_PREFIX = re.compile(r"^unexpected status \d{3}\b[^:]*:\s*", re.IGNORECASE)
+_HTTP_ERROR_PREFIX = re.compile(r"^unexpected status (\d{3})\b[^:]*:\s*", re.IGNORECASE)
+_SSE_HTTP_STATUS = re.compile(r"^:HTTP_STATUS/(\d{3})\s*$", re.MULTILINE)
 _CONTENT_POLICY_CODES = frozenset(
     {"content_safety_blocked", "content_policy_violation", "content_filter"}
 )
@@ -96,6 +97,8 @@ class ProviderFailure:
     code: str
     message: str
     retryability: RuntimeRetryability
+    diagnostic_code: str = CODEX_PROVIDER_FAILED
+    http_status: int | None = None
 
 
 def unpack_error(value: Any) -> tuple[str, str]:
@@ -114,9 +117,12 @@ def provider_failure(value: Any) -> ProviderFailure:
     """Extract stable, redacted provider semantics from one native error value."""
 
     code, message = unpack_error(value)
+    http_status = _http_status(message)
     sse_error = _sse_error(message) or _http_error(message)
     if sse_error is None and isinstance(value, Mapping):
-        sse_error = _http_error(str(value.get("additionalDetails") or ""))
+        details = str(value.get("additionalDetails") or "")
+        sse_error = _http_error(details)
+        http_status = http_status or _http_status(details)
     if sse_error is not None:
         nested_code, _nested_message = unpack_error(sse_error)
         code = nested_code or code
@@ -133,6 +139,8 @@ def provider_failure(value: Any) -> ProviderFailure:
             if normalized in _TERMINAL_CODES
             else RuntimeRetryability.USER_RETRYABLE
         ),
+        diagnostic_code=normalized if normalized in _SAFE_MESSAGES else CODEX_PROVIDER_FAILED,
+        http_status=http_status,
     )
 
 
@@ -142,6 +150,14 @@ def authentication_failure(failure: ProviderFailure) -> bool:
 
 def _safe_message(code: str) -> str:
     return _SAFE_MESSAGES.get(code.casefold(), PROVIDER_FAILURE_MESSAGE)
+
+
+def _http_status(message: str) -> int | None:
+    match = _HTTP_ERROR_PREFIX.match(message) or _SSE_HTTP_STATUS.search(message)
+    if match is None:
+        return None
+    status = int(match.group(1))
+    return status if 400 <= status <= 599 else None
 
 
 def _http_error(message: str) -> Mapping[str, Any] | None:

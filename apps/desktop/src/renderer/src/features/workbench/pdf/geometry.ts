@@ -113,6 +113,9 @@ export function pageNumber(value: string | number, total: number): number {
   const number = Number(value)
   return Math.min(Math.max(1, Number.isFinite(number) ? Math.trunc(number) : 1), Math.max(1, total))
 }
+export function pageInSelectionSpan(page: number, anchor: number, focus: number): boolean {
+  return page >= Math.min(anchor, focus) && page <= Math.max(anchor, focus)
+}
 export function fittedScale(mode: 'page' | 'width', page: Size, viewport: Size): number {
   const width = viewport.width / page.width
   return Math.max(MIN_SCALE, Math.min(MAX_SCALE, mode === 'width' ? width : Math.min(width, viewport.height / page.height)))

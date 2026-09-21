@@ -40,7 +40,7 @@
     {
       "mode": 420,
       "path": "PACKAGE-MANIFEST.sha256",
-      "sha256": "5f57ccd8e5979488fbe9a4025fccb91b8246cda301a883bf70868a71fd9a866f",
+      "sha256": "4fb671814eb320f99d879911731f3beb06ffd1f3dfc3f328ff9f57d659168492",
       "size": 20369
     },
     {
@@ -52,14 +52,14 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "0ec115e8e063fd7bf0bf9f201df6326e38ee239ba0dbcac6788e554729b4a83f",
-      "size": 26173
+      "sha256": "cae238c85f51d66a140a25d2ad320bc720efbf7f00b8aab51b332970e34008f0",
+      "size": 27486
     },
     {
       "mode": 420,
       "path": "VERSION",
-      "sha256": "479295c9770d7243e03d8bd132b45fda509899c15f84b7483304fb13f24275f3",
-      "size": 13
+      "sha256": "c71a11a751197b0747d19ea833a16f90fbdb96d80e4021f964c18cbc592c885a",
+      "size": 12
     },
     {
       "mode": 420,
@@ -1267,6 +1267,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "0ec115e8e063fd7bf0bf9f201df6326e38ee239ba0dbcac6788e554729b4a83f",
-  "version": "2026.9.20+3"
+  "source_document_sha256": "cae238c85f51d66a140a25d2ad320bc720efbf7f00b8aab51b332970e34008f0",
+  "version": "2026.9.21+1"
 }

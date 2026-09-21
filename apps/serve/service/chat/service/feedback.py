@@ -33,8 +33,10 @@ from typing import Any, Iterable, Mapping, Optional, Protocol, Sequence
 
 import httpx
 
+from damoatrace.data.store import TraceStore
 from damoatrace.paths import APP_LOG_DIR, METRICS_DIR, TRACE_DIR
-from service.chat.runtime.evidence import session_trace_paths
+from service.chat.runtime.evidence import TRACE_RUNTIME_INCIDENT_PREFIX, session_trace_paths
+from service.chat.service.streams import DIAGNOSTIC_EVENT, StreamEnd
 from service.paths import (
     CODEX_RUNTIME_HOME,
     CONFIG_PATH,
@@ -70,6 +72,21 @@ MAX_RECORDING_REPORT_SIZE = 2 * 1024 * 1024
 DESCRIPTION_MAX = 5000
 BUNDLE_MEDIA_TYPE = "application/zip"
 RECORDING_REPORT_ARCNAME = "feedback/recording-report.json"
+SESSION_ERROR_SUMMARY_ARCNAME = "feedback/session-error-summary.json"
+SESSION_ERROR_SUMMARY_VERSION = 1
+SESSION_ERROR_SUMMARY_EVENTS = 64
+SESSION_ERROR_SUMMARY_MAX_BYTES = 16 * 1024
+SESSION_ERROR_SUMMARY_INCIDENT_PREFIX = f"{TRACE_RUNTIME_INCIDENT_PREFIX}."
+SESSION_ERROR_SUMMARY_BRIDGE_EVENT = DIAGNOSTIC_EVENT
+SESSION_ERROR_SUMMARY_TURN_SUFFIX = ".turn.failed"
+SESSION_ERROR_SUMMARY_FAILED_STREAM_ENDS = frozenset(
+    {
+        StreamEnd.HTTP_ERROR.value,
+        StreamEnd.TRANSPORT_ERROR.value,
+        StreamEnd.BRIDGE_ERROR.value,
+        StreamEnd.PROVIDER_ERROR.value,
+    }
+)
 
 # 日志包文件名。曾经是固定的 "scholarseed-logs.zip": 上游按 feedback_id 分目录存, OSS 里
 # 不冲突, 但管理台把几条反馈的包下到同一个目录后彼此互盖, 也认不出哪个包是谁的。
@@ -333,6 +350,143 @@ def _collect_files(root: Path) -> list[Path]:
 
 
 def build_log_bundle(
+    *,
+    include_trace: bool,
+    session_id: str = "",
+    vendor_thread_id: str = "",
+    recording_report: bytes = b"",
+    include_diagnostics: bool = True,
+    budget: int = MAX_BUNDLE_SIZE,
+) -> bytes:
+    """Preserve the original bundle, then append optional bounded session evidence."""
+
+    bundle = _build_log_bundle_contents(
+        include_trace=include_trace,
+        session_id=session_id,
+        vendor_thread_id=vendor_thread_id,
+        recording_report=recording_report,
+        include_diagnostics=include_diagnostics,
+        budget=budget,
+    )
+    if not include_trace or not session_id:
+        return bundle
+    summary = _session_error_summary(session_id)
+    if not summary:
+        return bundle
+    candidate = io.BytesIO(bundle)
+    with zipfile.ZipFile(candidate, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(SESSION_ERROR_SUMMARY_ARCNAME, summary)
+    if len(candidate.getvalue()) > budget:
+        logger.info(
+            "feedback session error summary omitted: session_id=%s reason=bundle_budget",
+            session_id,
+        )
+        return bundle
+    return candidate.getvalue()
+
+
+def _session_error_summary(session_id: str) -> bytes:
+    events: list[dict[str, Any]] = []
+    trace_count = 0
+    for path in session_trace_paths(session_id, TRACE_DIR):
+        try:
+            trace = TraceStore(path.parent, trace_file=path, offline=True)
+            records = trace.session_events(session_id)
+        except (OSError, ValueError) as error:
+            logger.info("feedback session error summary unavailable: %s", type(error).__name__)
+            continue
+        trace_count += 1
+        for record in records:
+            name = record.get("name")
+            attributes = record.get("attributes")
+            if not isinstance(attributes, Mapping):
+                continue
+            location = {}
+            span_id = record.get("span_id")
+            if (
+                isinstance(span_id, str)
+                and len(span_id) == 32
+                and span_id.isascii()
+                and span_id.isalnum()
+            ):
+                location["span_id"] = span_id
+            started_at = record.get("started_at")
+            if isinstance(started_at, str) and len(started_at) <= 40 and started_at.isascii():
+                location["started_at"] = started_at
+            if name == SESSION_ERROR_SUMMARY_BRIDGE_EVENT:
+                status = attributes.get("status_code")
+                upstream_end = attributes.get("upstream_end")
+                upstream = attributes.get("upstream")
+                error_seen = isinstance(upstream, Mapping) and upstream.get("error_seen") is True
+                rejected = (
+                    isinstance(status, int)
+                    and not isinstance(status, bool)
+                    and 400 <= status <= 599
+                )
+                if (
+                    rejected
+                    or upstream_end in SESSION_ERROR_SUMMARY_FAILED_STREAM_ENDS
+                    or error_seen
+                ):
+                    event = {"kind": "gateway_failure", **location}
+                    if rejected:
+                        event["http_status"] = status
+                    if upstream_end in SESSION_ERROR_SUMMARY_FAILED_STREAM_ENDS:
+                        event["upstream_end"] = upstream_end
+                    if error_seen:
+                        event["upstream_error_seen"] = True
+                    events.append(event)
+            elif isinstance(name, str) and name.startswith(SESSION_ERROR_SUMMARY_INCIDENT_PREFIX):
+                event = {"kind": "runtime_incident", **location}
+                for key in (
+                    "incident_kind",
+                    "incident_state",
+                    "recovery_strategy",
+                    "retryability",
+                    "provider_error_code",
+                ):
+                    value = attributes.get(key)
+                    if (
+                        isinstance(value, str)
+                        and value.isascii()
+                        and value.replace("_", "").replace(".", "").isalnum()
+                        and len(value) <= 64
+                    ):
+                        event[key] = value
+                status = attributes.get("provider_http_status")
+                if (
+                    isinstance(status, int)
+                    and not isinstance(status, bool)
+                    and 400 <= status <= 599
+                ):
+                    event["http_status"] = status
+                events.append(event)
+            elif isinstance(name, str) and name.endswith(SESSION_ERROR_SUMMARY_TURN_SUFFIX):
+                events.append({"kind": "turn_failed", **location})
+    if not events:
+        return b""
+    total_events = len(events)
+    events = events[-SESSION_ERROR_SUMMARY_EVENTS:]
+    while events:
+        summary = json.dumps(
+            {
+                "version": SESSION_ERROR_SUMMARY_VERSION,
+                "session_id": session_id,
+                "trace_files": trace_count,
+                "matching_events": total_events,
+                "truncated": len(events) < total_events,
+                "events": events,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(summary) <= SESSION_ERROR_SUMMARY_MAX_BYTES:
+            return summary
+        events.pop(0)
+    return b""
+
+
+def _build_log_bundle_contents(
     *,
     include_trace: bool,
     session_id: str = "",

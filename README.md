@@ -1,47 +1,159 @@
-# 书深 ScholarSeed
+<div align="center">
 
-书深是面向科研与研发的本地桌面 Agent 应用，提供 AI 对话、项目资料、文献阅读、文件工作台和科研技能。
+# ScholarSeed
 
-## 获取与安装
+**A local desktop Agent platform for scientific research and R&D.**
 
-需要 Git、Git LFS、Node.js 24.16.0、npm 11.13.0、uv 0.12.11 或更新版本，以及目标平台的构建工具。仓库包含经校验的 Python 与 Codex 运行时；不要自行替换其版本。
+[English](README.md) · [简体中文](README_zh.md)
 
-克隆仓库后在根目录执行：
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+![macOS](https://img.shields.io/badge/macOS-arm64%20%7C%20x86__64-black)
+![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4)
+![Electron](https://img.shields.io/badge/Electron-React%20%2B%20TypeScript-47848F)
+![Python](https://img.shields.io/badge/Python-FastAPI-3776AB)
+
+</div>
+
+ScholarSeed is a local-first desktop Agent application for research and engineering workflows. It combines an Electron desktop experience with a Python service, a runtime-neutral Agent contract, pluggable runtime adapters, research skills, and auditable execution traces.
+
+## Features
+
+<!-- Product team: add the approved core feature list here. -->
+
+## Screenshots
+
+<!-- Product team: add approved product screenshots here. -->
+
+## Architecture
+
+ScholarSeed is a monorepo. The root `pyproject.toml` coordinates an uv workspace; each application and package owns its source, dependencies, and distribution boundary.
+
+```text
+Electron / React
+      │ HTTP + SSE
+      ▼
+ScholarSeed Serve
+      │ commands + events
+      ▼
+Runtime Gateway ──► Codex Adapter ──► Codex App Server
+      │
+      └────────────► DamoATrace evidence recording
+```
+
+| Path | Responsibility |
+| --- | --- |
+| `apps/desktop/` | Electron + React desktop application |
+| `apps/serve/` | FastAPI product backend and the `scholarseed` distribution |
+| `packages/runtime/` | Runtime-neutral contracts, provider discovery, and the event-driven gateway |
+| `packages/adapters/codex/` | Codex App Server process integration and native protocol translation |
+| `packages/adapters/dsh/` | Reserved DeepSeek Harness adapter boundary; no provider is implemented yet |
+| `packages/damoatrace/` | Independent trace contracts, recording, storage, query, and CLI |
+| `skills/community/` | Research skills compiled into the product |
+| `tests/` | Cross-package contracts, integration tests, acceptance tests, and release gates |
+
+The executable Agent provider currently included by ScholarSeed is Codex. Runtime discovers providers through the `scholarseed_runtime.providers` entry point; product enablement is controlled by `product.json`. The removed proprietary Harness and the historical `damoagent` namespace are not part of this repository.
+
+## Requirements
+
+- Git and Git LFS
+- Node.js `24.16.0`
+- npm `11.13.0`
+- Python `3.12+`
+- uv `0.12.11+`
+- Native build tools for the target platform
+
+Installers are built natively for macOS arm64, macOS x86_64, or Windows x86_64. Cross-platform packaging is not supported.
+
+## Run From Source
+
+Clone the repository with Git rather than downloading a source archive so that Git LFS resources are available:
 
 ```bash
+git clone <repository-url>
+cd Scholarseed
 git lfs install
 git lfs pull
-make install
-make build
-make config-template
-make desktop
+npm ci
+npm run dev
 ```
 
-大文件通过 Git LFS 保存。仅下载源码 ZIP 可能缺少运行资源，应优先使用 Git 克隆并拉取 LFS 对象。`make config-template` 会更新配置；已有配置时请先备份。`make config` 提供交互式配置。
+`npm run dev` prepares the repository-pinned Python runtime and development environment before starting Electron. You normally do not need to install the workspace packages manually.
 
-## 模型与账号配置
+## Model and Service Configuration
 
-- **自备模型连接**：在应用设置中填写你有权使用的模型服务地址、模型名称和凭据；具体参数以服务商要求为准。
-- **书深账号服务**：通过应用提供的登录入口连接对外服务，使用账号已开通的能力。账号授权与本机服务的访问模式是不同概念。
+ScholarSeed requires a model connection that you are authorized to use. Configure the provider endpoint, model name, and credential in the application settings. Local HTTP authentication and model authorization are separate concerns: a healthy local service does not imply that a model account is authorized.
 
-运行需要可用的模型连接和相应网络访问权限。文献检索等联网能力还需要对应服务可用。不要把 API Key、用户配置或会话数据提交到仓库。
+Optional development and service variables are documented in [`.env.example`](.env.example). Do not commit API keys, access tokens, user configuration, session data, certificates, or private keys.
 
-论文卡片上传是独立的可选服务，需要显式设置 `UPLOAD_BASE_URL`；未配置时会明确报错，不连接历史内部地址。
+`UPLOAD_BASE_URL` enables the optional paper-card upload service. When it is not configured, ScholarSeed reports the missing configuration instead of connecting to an internal or historical endpoint.
 
-默认用户数据位于 `~/.scholarseed`，可用 `SCHOLARSEED_HOME` 指定其他目录。产品 skills 位于 `skills/community/`，不是开发者协作工具，安装时会编译到产品中。
+## Local Data and Privacy
 
-## 源码与检查
+The default user data directory is `~/.scholarseed`. Set `SCHOLARSEED_HOME` to use a different location.
 
-`apps/desktop/` 是 Electron 客户端，`apps/serve/` 是产品后端；`packages/` 包含 Runtime 契约与 Gateway、Codex/DeepSeek 适配边界及 ATrace。DeepSeek 适配器目前为预留能力，不代表已经可用。
+- User-level configuration, credentials, project registry, session catalog, and literature data are managed under `SCHOLARSEED_HOME`.
+- Project-owned data is stored under `<project>/.scholarseed/` and travels with the project directory.
+- Codex state is isolated under the ScholarSeed home unless an explicit source home is configured.
+- DamoATrace records product-visible diagnostic events for debugging; it does not imply access to undisclosed executor internals.
+
+Keep user data and credentials outside the repository. Review diagnostic bundles before sharing them.
+
+## Development
+
+Common repository commands are exposed from the root `package.json`:
 
 ```bash
-make doctor
-npm --prefix apps/desktop test
-npm --prefix apps/desktop run typecheck
+# Build the desktop application
+npm run build
+
+# Run deterministic desktop tests
+npm run desktop:test
+
+# Check Python types
+npm run python:typecheck
+
+# Check formatting and import rules
+npm run fmt-check
+
+# Inspect the local toolchain and runtime
+npm run doctor
 ```
 
-首版以 macOS 验收为目标；Windows 源码保留，但尚未完成公开环境验收。首次准备版本的实际验收仍在进行，不能把源码存在视为已验证。内部工作记录、开发者 skills、视觉规范门禁和私有历史不随本仓库交付。
+`npm run check` runs static checks; it is not a substitute for real Electron, backend, model, and tool-flow acceptance.
 
-## 许可证
+## Packaging
 
-本仓库的原创内容采用 [Apache License 2.0](LICENSE) 授权。随附第三方组件及素材仍遵循各自的许可证与声明，不被本仓库许可证替代。已有声明见 [Desktop notices 与对应源码](apps/desktop/resources/notices/README.md)、[Office](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) 和 [paper-fulltext-dl](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)；第三方授权审核仍需完成。
+Build installers on the matching native operating system:
+
+```bash
+# Build and verify an unpacked application without signing or an installer
+npm run package:check
+
+# Build a local development installer
+npm run package
+
+# Build a release installer; signing and notarization credentials come from CI
+npm run package:dist
+```
+
+| Target | Native build host | Installer |
+| --- | --- | --- |
+| macOS arm64 | Apple Silicon macOS | DMG |
+| macOS x86_64 | Intel macOS | DMG |
+| Windows x86_64 | Windows x64 | NSIS EXE |
+
+Release credentials must be supplied through protected CI variables or the local secure credential store. Certificates, private keys, notarization secrets, and internal upload addresses must never be committed.
+
+## Community and Support
+
+<!-- Product team: add approved community, issue tracker, and support links here. -->
+
+## License
+
+ScholarSeed's original source code is licensed under the [Apache License 2.0](LICENSE).
+
+Third-party software, assets, and bundled runtimes remain under their respective licenses. Their licenses are not replaced by Apache-2.0. Available notices include:
+
+- [Desktop dependencies and corresponding source notices](apps/desktop/resources/notices/README.md)
+- [Office viewer third-party notices](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md)
+- [`paper-fulltext-dl` third-party notices](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)

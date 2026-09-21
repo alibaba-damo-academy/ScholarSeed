@@ -71,6 +71,7 @@ LOCK_SOURCE = "repository"
 SKILL_PACK_ORIGIN_SOURCE = "repository"
 COMMUNITY_NAMESPACE = "scholarseed"
 DEFAULT_SKILL_VERSION = "0.0.0"
+SKILL_VERSION_FILE = "VERSION"
 FILE_MODE = 0o644
 EXECUTABLE_MODE = 0o755
 DIRECTORY_MODE = 0o755
@@ -193,12 +194,20 @@ def discover_source_skills(source: Path = COMMUNITY_SKILLS_DIR) -> tuple[str, ..
 
 def _skill_version(directory: Path, frontmatter: Mapping[str, Any]) -> str:
     metadata = frontmatter.get("metadata")
+    version = ""
     if isinstance(metadata, Mapping):
         version = str(metadata.get("version") or "").strip()
-        if version:
-            return version
-    version = str(frontmatter.get("version") or "").strip()
-    return version or DEFAULT_SKILL_VERSION
+    if not version:
+        version = str(frontmatter.get("version") or "").strip() or DEFAULT_SKILL_VERSION
+    version_file = directory / SKILL_VERSION_FILE
+    if version_file.is_file():
+        declared = version_file.read_text(encoding=TEXT_ENCODING).strip()
+        if declared != version:
+            raise SkillPackError(
+                f"{directory.name}: {SKILL_VERSION_FILE} version {declared!r} "
+                f"differs from {SKILL_MANIFEST_NAME} version {version!r}"
+            )
+    return version
 
 
 def _skill_blurb(frontmatter: Mapping[str, Any]) -> str:

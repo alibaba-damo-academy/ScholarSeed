@@ -527,6 +527,8 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
             generation=1,
         )
         self.assertEqual(self.events[-1].payload["error_code"], "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(self.events[-3].incident.provider_error_code, "content_safety_blocked")
+        self.assertEqual(self.events[-3].incident.provider_http_status, 400)
         self.assertEqual(
             self.events[-1].payload["retryability"], RuntimeRetryability.TERMINAL.value
         )
@@ -576,6 +578,8 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(failed.incident.safe_error, detected.incident.safe_error)
         self.assertEqual(failed.incident.retryability, RuntimeRetryability.TERMINAL)
+        self.assertEqual(detected.incident.provider_http_status, 429)
+        self.assertEqual(detected.incident.provider_error_code, "throttling.allocationquota")
         self.assertEqual(terminal.kind, CodexSessionEventKind.TURN_FAILED)
         self.assertEqual(terminal.payload["error_code"], "Throttling.AllocationQuota")
         self.assertEqual(terminal.payload["safe_error"], detected.incident.safe_error)
@@ -770,6 +774,34 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         )
         rows = await session.history()
         self.assertEqual([row["phase"] for row in rows], [None, "commentary", "final_answer"])
+
+    async def test_message_delta_waits_for_authoritative_started_phase(self) -> None:
+        await self.state.notification(
+            "item/agentMessage/delta",
+            {"turnId": "turn", "itemId": "message", "delta": "正在检查。"},
+            generation=1,
+        )
+        self.assertEqual(self.events, [])
+
+        await self.state.notification(
+            "item/started",
+            {
+                "turnId": "turn",
+                "item": {
+                    "id": "message",
+                    "type": "agentMessage",
+                    "phase": "commentary",
+                },
+            },
+            generation=1,
+        )
+
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].kind, CodexSessionEventKind.ASSISTANT_DELTA)
+        self.assertEqual(
+            self.events[0].payload,
+            {"text": "正在检查。", "phase": "commentary"},
+        )
 
     async def asyncSetUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="codex-watch-")

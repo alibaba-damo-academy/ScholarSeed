@@ -69,6 +69,7 @@ import {
   Thread
 } from './model'
 import { findSessionNode, removeSessionNode, upsertSessionNode } from './tree'
+import { selectableCatalogModelKey } from './catalog'
 import {
   LITERATURE_SCOPE_KEY,
   continuityScopeKey,
@@ -4870,12 +4871,13 @@ export function StoreProvider({
     }),
     applyModelCatalog: (catalog) => setState((current) => {
       if (!catalog) return current
+      const models = catalog.available_models ?? []
       return {
         ...current,
-        model: catalog.current_model ?? current.model,
+        model: selectableCatalogModelKey(catalog.current_model, models, current.model),
         catalog: {
           ...current.catalog,
-          models: catalog.available_models ?? [],
+          models,
           hiddenModels: catalog.hidden_models ?? [],
           subscriptionGroups: catalog.subscription_groups ?? [],
         }

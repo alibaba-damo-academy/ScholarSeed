@@ -100,7 +100,7 @@ exclude = ["tests*"]
 include-package-data = false
 
 [tool.setuptools.package-data]
-"service.settings" = ["default.json", "capabilities.json"]
+"service.settings" = ["default.json", "capabilities.*.json"]
 # 产品 wheel 只拥有产品运行期数据; SDK 与 trace 资产属于各自独立的
 # damoagent / damoatrace 发行包。capabilities/skills/ 是 prebundle 从仓库内
 # skills/community/ 离线编译出的技能 pack, 随 wheel 交付。

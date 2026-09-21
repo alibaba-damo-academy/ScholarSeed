@@ -58,7 +58,7 @@ LOCAL_USER = "local"
 GATEWAY_BASE_URL = "https://scholarseed.damo.alibaba.com/v1"
 GATEWAY_MODEL_KEY = "qwen3.8-max"
 SELF_CONFIGURED_KEY = "self-configured-gateway-key"
-# 出厂种子与 `make config` 会把整张模板落盘: 这些空值是模板回显, 不是用户的选择。
+# 出厂种子与 `npm run config` 会把整张模板落盘: 这些空值是模板回显, 不是用户的选择。
 UNDECLARED_TEMPLATE = {
     "provider": "",
     "base_url": "",
@@ -841,6 +841,13 @@ class _RecordingSubscriptions:
         self.owners.append(owner_id)
         return {"models": []}
 
+    def sync_on_cooldown(self, owner_id: str, connection_id: str) -> bool:
+        return False
+
+    async def sync_directory(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        self.owners.append(owner_id)
+        return {"models": []}
+
 
 def test_machine_axis_splits_gateway_gate_and_personal_connection_identities() -> None:
     """machine 轴下两个身份各喂各的: 真实账号给内置门禁, 归属身份给个人连接。
@@ -940,7 +947,7 @@ def test_declared_empty_legacy_connection_uses_product_gateway() -> None:
 def test_credential_fields_never_erase_the_builtin_catalog() -> None:
     """凭据不是连接身份: 填 api_key 或自定义 header 不得把内置目录抹空。
 
-    出厂种子与 ``make config`` 都会把整张模板以空值落盘。判定内置目录时若把凭据也算作
+    出厂种子与 ``npm run config`` 都会把整张模板以空值落盘。判定内置目录时若把凭据也算作
     连接声明, 用户一填 api_key 或一个自定义 header, 内置目录就整体塌空 —— 症状是模型
     菜单一个都不剩, 开会话直接报 "selected ScholarSeed model is unavailable"。
     """
@@ -1010,7 +1017,7 @@ def test_product_default_survives_an_undeclared_template_field() -> None:
 
     盘上的 ``base_url: ""`` 不是用户的选择, 只是整张模板被落盘的回显。让它覆盖
     ``default.json`` 的真实默认值, 产品默认就永远到不了已有 config.json 的机器 ——
-    首启动之后再修种子也无效, 而 ``make all`` 还会一遍遍把空值写回去。
+    首启动之后再修种子也无效, 而 ``npm run all`` 还会一遍遍把空值写回去。
     """
 
     write_config(dict(UNDECLARED_TEMPLATE))

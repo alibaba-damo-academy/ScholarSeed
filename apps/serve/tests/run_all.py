@@ -338,7 +338,7 @@ SUITES = [
     "tests.contract_evolve_controller",
     # 注: 账号管理后台 (account/) 属企业控制面, 不在开源仓库内, 其契约套件随之移出。
     # (带点模块名原样注册; runner 按 sys.executable -m <module> 执行)
-    # 三套件均跑真 PostgreSQL (存储层只有 PG 一个实现), 跑前需 `make pg-up`。
+    # 三套件均跑真 PostgreSQL (存储层只有 PG 一个实现), 跑前需 `npm run pg-up`。
     # 管理员短信找回口令：手机号绑定（验码自证归属）+ 未登录凭码重置。
     # 重点是四条安全边界：目的隔离（终端用户的 reset 码不得提权重置管理员口令）、
     # 免鉴权发码端点不泄露「哪些号是管理员」、手机号库层唯一、重置即清锁 + 全端下线。

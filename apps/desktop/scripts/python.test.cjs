@@ -80,15 +80,16 @@ test('real native Python, venv and alternate-base rejection use the shared polic
       execFileSync(process.env.UV || 'uv', ['venv', '--no-python-downloads', '--python', otherPython, otherVenv],
         { stdio: 'pipe' })
       assert.throws(() => verifyDevelopmentPython(REPO, developmentPython(REPO, otherVenv)),
-        /base differs.*make install/)
+        /base differs.*npm run install:python/)
     } finally {
       fs.rmSync(temporary, { recursive: true, force: true })
     }
   })
 
-test('every Make Desktop startup includes the independent runtime gate', () => {
-  const makefile = fs.readFileSync(path.join(REPO, 'Makefile'), 'utf8')
-  for (const target of ['run', 'desktop', 'desktop-dev', 'health', 'serve']) {
-    assert.match(makefile, new RegExp(`^${target}:.*check-python`, 'm'))
+test('root npm workspace startup commands include the independent runtime gate', () => {
+  const workspace = fs.readFileSync(path.join(REPO, 'scripts', 'workspace.cjs'), 'utf8')
+  for (const command of ['runBinary', 'desktop', 'serve']) {
+    assert.match(workspace, new RegExp(`function ${command}\\(`))
   }
+  assert.match(workspace, /checkPython\(\)/)
 })

@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next'
 import {
   getModels,
   ModelInfo,
-  runCommand,
   setDefaultModel,
   setSessionModel
 } from '../../api'
@@ -24,7 +23,7 @@ import {
   PopoverTrigger
 } from '../ui'
 import IconFont from '../primitive'
-import { Effort, useEffort } from './Effort'
+import { useEffort } from './Effort'
 
 // ModelMenu.tsx — the model picker, anchored under the composer control row
 // (PRD 2.1.2 modification 1). It keeps the three catalogue groups the product
@@ -52,12 +51,25 @@ const MODEL_CHIP_CLASS = [
   'hover:bg-[var(--vds-surface-hover)] focus-visible:bg-[var(--vds-surface-hover)]'
 ].join(' ')
 const MODEL_CHIP_FRAME_CLASS = 'relative min-w-0 flex-[0_1_auto]'
+// 弹框容器只负责定位与并排布局, 一级/二级卡片各自携带圆角抬升表面,
+// 对应设计稿中左主菜单、右二级菜单的双卡结构。
+const MENU_SHEET_CLASS = [
+  'flex flex-col rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)]',
+  'shadow-[var(--vds-shadow-2-center)]'
+].join(' ')
+const MENU_ENTRY_CLASS = (active: boolean, disabled: boolean): string =>
+  [
+    'flex min-h-8 w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
+    'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
+    active ? 'bg-[var(--vds-surface-hover)]' : 'bg-transparent hover:bg-[var(--vds-surface-hover)]',
+    disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
+    'transition-[background,color] duration-[120ms]'
+  ].join(' ')
 const MODEL_MENU_PANEL_CLASS = [
   // 宽度跟随目录内容收口, 上限仍是原来的 320px 与视口边距的较小者: 短模型名不再撑出
   // 大片空白, 长个人模型标签照旧在上限内换行。
-  '!z-[calc(var(--vds-z-modal)+1)] !flex !w-fit max-w-[var(--vds-model-menu-max-width)] flex-col',
-  'max-h-[min(270px,36vh)]',
-  'rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-2)] shadow-[var(--vds-shadow-2-center)]'
+  'max-h-[min(270px,36vh)] w-fit max-w-[var(--vds-model-menu-max-width)]',
+  'p-[var(--vds-space-2)]'
 ].join(' ')
 // 模型列表自己滚动, 底部「模型管理」入口钉在面板下沿, 不跟着列表滚走。
 const MODEL_MENU_LIST_CLASS = 'min-h-0 flex-1 overflow-y-auto overscroll-contain'
@@ -118,7 +130,7 @@ export function ModelMenu({
   const { t: account } = useTranslation('account')
   const { models, subscriptionGroups } = state.catalog
   const effort = useEffort()
-  const [showModels, setShowModels] = React.useState(false)
+  const [submenu, setSubmenu] = React.useState<'effort' | 'models' | null>(null)
   const selectedModelKey = selectedSessionModelKey(
     state.model,
     state.activeSession,
@@ -128,6 +140,9 @@ export function ModelMenu({
   // 一个可选模型都没有时（未登录且未配置自有连接），持久化的默认键即使还指向某个置灰行,
   // 也不该再把它当「当前模型」展示: 按钮回到「选择模型」, 灰行上也不留选中标记。
   const modelAvailable = hasSelectableModel(models)
+  // 未选择模型(无可选模型, 或默认键未命中任何可选行, 如登出后仅剩置灰行): 强度入口
+  // 整体禁用、回显占位符并隐藏其上方分割线。目录里的置灰行不算当前模型。
+  const hasCurrentModel = modelAvailable && Boolean(selectedModel)
   // 选中的模型可能已不在目录里(用户在模型管理里关掉了它的显示、停用了那条连接, 或删了它)。
   // 此时**不自动换成别的模型** —— 如实标不可用, 由用户决定。渲染必须走模型段而不是整串,
   // 否则复合 key 会以 `personal-<hex>:<model>` 的形态泄漏成用户可见文案。
@@ -149,7 +164,7 @@ export function ModelMenu({
     [models]
   )
   const panelRef = React.useRef<HTMLDivElement | null>(null)
-  const controlsRef = React.useRef<HTMLButtonElement | null>(null)
+  const controlsRef = React.useRef<HTMLDivElement | null>(null)
   const switching = React.useRef(false)
   const [pending, setPending] = React.useState<{
     sessionId: string | null
@@ -165,13 +180,14 @@ export function ModelMenu({
     if (!state.modelMenuOpen) return
     const selected = panelRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
     selected?.scrollIntoView({ block: 'nearest' })
-    if (showModels) selected?.focus()
+    if (submenu === 'models') selected?.focus()
     else controlsRef.current?.focus()
-  }, [state.modelMenuOpen, selectedModelKey, showModels])
+  }, [state.modelMenuOpen, selectedModelKey, submenu])
 
   const selectModel = async (model: ModelInfo): Promise<void> => {
     if (switching.current) return
-    setShowModels(false)
+    setSubmenu(null)
+    set({ modelMenuOpen: false })
     if (model.key === selectedModelKey) return
     const sessionId = state.activeSession
     switching.current = true
@@ -234,7 +250,7 @@ export function ModelMenu({
     <Popover
       open={state.modelMenuOpen}
       onOpenChange={(open) => {
-        if (open) setShowModels(false)
+        if (open) setSubmenu(null)
         set({ modelMenuOpen: open })
       }}
     >
@@ -251,7 +267,7 @@ export function ModelMenu({
             title={
               pendingHere
                 ? t('models.switchingTo', { model: modelDisplayLabels(pendingHere.model, account).label })
-                : `${selectedLabel} · ${effort.label}`
+                : `${selectedLabel} · ${hasCurrentModel ? effort.label : '-'}`
             }
             aria-expanded={state.modelMenuOpen}
           >
@@ -261,7 +277,9 @@ export function ModelMenu({
             >
               {pendingHere ? t('models.switching') : selectedLabel}
             </span>
-            <span className="shrink-0 text-[var(--vds-text-tertiary)]">{effort.label}</span>
+            <span className="shrink-0 text-[var(--vds-text-tertiary)]">
+              {hasCurrentModel ? effort.label : '-'}
+            </span>
             <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
               <IconFont
                 type="icon-a-line-switch-arrow-down-s"
@@ -274,39 +292,125 @@ export function ModelMenu({
         <PopoverContent
           align="end"
           aria-label={t('models.selection')}
-          data-testid={showModels ? 'model-selector-menu' : 'model-controls-menu'}
-          className={showModels ? MODEL_MENU_PANEL_CLASS : '!z-[var(--vds-z-select-content)] !w-[var(--vds-model-controls-width)] !gap-[var(--vds-space-1)] !p-[var(--vds-space-3)]'}
+          className="!z-[calc(var(--vds-z-modal)+1)] !flex !items-end !gap-[var(--vds-space-2)] !max-w-[calc(100vw_-_var(--vds-space-6))] !rounded-none !bg-transparent !p-0 !shadow-none"
         >
-          {!showModels ? (
-            <>
-              <div className="flex justify-center">
-                <Button
-                  ref={controlsRef}
-                  data-testid="model-list-toggle"
-                  variant="ghost"
-                  size="content"
-                  className="h-auto w-fit max-w-full min-w-0 flex-nowrap gap-[var(--vds-space-1)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
-                  aria-disabled={effort.pending || Boolean(pending)}
-                  onClick={() => {
-                    if (!effort.pending && !pending) setShowModels(true)
-                  }}
-                >
-                  <span className="min-w-0 truncate">{selectedLabel}</span>
-                  <span aria-hidden="true" className="shrink-0 text-[var(--vds-text-tertiary)]">·</span>
-                  <span className="shrink-0 whitespace-nowrap text-[var(--vds-brand-text-primary)]">{effort.label}</span>
-                </Button>
+          <div
+            ref={controlsRef}
+            tabIndex={-1}
+            role="menu"
+            aria-label={t('models.selection')}
+            data-testid="model-controls-menu"
+            className={`${MENU_SHEET_CLASS} w-[var(--vds-model-controls-width)] p-[var(--vds-space-1)]`}
+          >
+            {modelAvailable && selectedModel ? (
+              <div
+                data-testid="model-current"
+                className="flex items-center gap-[var(--vds-space-2)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]">
+                    {modelDisplayLabels(selectedModel, account).label}
+                  </span>
+                  {modelDisplayLabels(selectedModel, account).providerLabel ? (
+                    <span className="block truncate text-[length:var(--vds-font-caption)] leading-relaxed text-[var(--vds-text-tertiary)]">
+                      {modelDisplayLabels(selectedModel, account).providerLabel}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]" aria-hidden>
+                  ✓
+                </span>
               </div>
-              <Effort
-                key={`${state.activeSession}:${selectedModelKey}`}
-                value={effort.value}
-                options={effort.options}
-                disabled={effort.disabled || Boolean(pending)}
-                pending={effort.pending}
-                onSelect={(value) => void effort.select(value)}
-              />
-            </>
-          ) : (
-            <>
+            ) : null}
+            {hasCurrentModel ? (
+              <div aria-hidden="true" className="mx-[var(--vds-space-2)] border-t border-[var(--border-soft)]" />
+            ) : null}
+            <Button
+              type="button"
+              role="menuitem"
+              data-testid="model-effort-row"
+              size="content"
+              unstyled
+              className={MENU_ENTRY_CLASS(submenu === 'effort', !hasCurrentModel || !effort.selectable)}
+              disabled={!hasCurrentModel || !effort.selectable || effort.pending || Boolean(pending)}
+              aria-haspopup="menu"
+              aria-expanded={submenu === 'effort'}
+              aria-busy={effort.pending}
+              onClick={() => setSubmenu(submenu === 'effort' ? null : 'effort')}
+            >
+              <span className="min-w-0 flex-1 text-left">{t('models.effortRow')}</span>
+              <span className="shrink-0 text-[var(--vds-text-tertiary)]">
+                {hasCurrentModel && effort.selectable ? effort.label : '-'}
+              </span>
+              <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
+                <Icon name="chevron-right" size={12} />
+              </span>
+            </Button>
+            <div aria-hidden="true" className="mx-[var(--vds-space-2)] border-t border-[var(--border-soft)]" />
+            <Button
+              type="button"
+              role="menuitem"
+              data-testid="model-list-toggle"
+              size="content"
+              unstyled
+              className={MENU_ENTRY_CLASS(submenu === 'models', false)}
+              aria-haspopup="menu"
+              aria-expanded={submenu === 'models'}
+              onClick={() => setSubmenu(submenu === 'models' ? null : 'models')}
+            >
+              <span className="min-w-0 flex-1 text-left">{t('models.moreModels')}</span>
+              <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
+                <Icon name="chevron-right" size={12} />
+              </span>
+            </Button>
+          </div>
+
+          {submenu === 'effort' ? (
+            <div
+              role="menu"
+              aria-label={t('models.effortRow')}
+              data-testid="model-effort-menu"
+              className={`${MENU_SHEET_CLASS} w-[var(--vds-model-controls-width)] p-[var(--vds-space-1)]`}
+            >
+              <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-caption)] leading-relaxed text-[var(--vds-text-tertiary)]">
+                {t('models.effortHint')}
+              </div>
+              {effort.options.map((option) => {
+                const selected = option.value === effort.value
+                return (
+                  <Button
+                    key={option.value || 'default'}
+                    type="button"
+                    role="menuitem"
+                    data-testid={`model-effort-option-${option.value || 'default'}`}
+                    size="content"
+                    unstyled
+                    className={MODEL_ROW_CLASS(selected, effort.pending || Boolean(pending))}
+                    aria-disabled={effort.pending || Boolean(pending)}
+                    onClick={() => {
+                      setSubmenu(null)
+                      void effort.select(option.value)
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 whitespace-nowrap text-[length:var(--vds-font-body-lv1)] font-medium leading-relaxed text-[var(--vds-text-primary)]">
+                      {option.label}
+                    </span>
+                    <span className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]" aria-hidden>
+                      {selected ? '✓' : ''}
+                    </span>
+                  </Button>
+                )
+              })}
+            </div>
+          ) : null}
+
+          {submenu === 'models' ? (
+            <div
+              role="menu"
+              aria-label={t('models.selection')}
+              data-testid="model-selector-menu"
+              className={`${MENU_SHEET_CLASS} ${MODEL_MENU_PANEL_CLASS}`}
+            >
           <div ref={panelRef} className={MODEL_MENU_LIST_CLASS}>
             {subscriptionModels.length > 0 && (
               <>
@@ -399,8 +503,8 @@ export function ModelMenu({
               <span className="min-w-0 flex-1">{t('models.manage')}</span>
             </Button>
           </div>
-            </>
-          )}
+            </div>
+          ) : null}
         </PopoverContent>
       </div>
     </Popover>

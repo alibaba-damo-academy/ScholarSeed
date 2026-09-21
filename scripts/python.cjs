@@ -10,6 +10,12 @@ const MANIFEST_FILENAME = 'manifest.json'
 const CACHE_DIRECTORY = '.python'
 const CACHE_RECEIPT = 'archive.sha256'
 const DEFAULT_VENV = '.venv'
+const UV_ENV = 'UV'
+const UV_DEFAULT_INDEX_ENV = 'UV_DEFAULT_INDEX'
+const PIP_INDEX_ENV = 'PIP_INDEX_URL'
+const PYTHON_ENV = 'PYTHON'
+const VENV_ENV = 'VENV'
+const DESKTOP_GROUP = 'desktop'
 const WINDOWS_PLATFORM = 'win32'
 const PROBE_TIMEOUT_MS = 15_000
 const FILESYSTEM_RETRY_DELAY_MS = 250
@@ -94,7 +100,7 @@ function verifyCache(root, release) {
     }
     return executable
   } catch (error) {
-    throw new Error(`${error.message}. Stop Desktop and Python processes using ${root}, move that cache directory aside, then run make install.`)
+    throw new Error(`${error.message}. Stop Desktop and Python processes using ${root}, move that cache directory aside, then run npm run install:python.`)
   }
 }
 
@@ -161,7 +167,7 @@ function verifyDevelopmentPython(repo, executable) {
     if (sameRealPath(actual.prefix, actual.base_prefix)) throw new Error('Desktop requires a project virtual environment')
     return actual
   } catch (error) {
-    throw new Error(`${error.message}. Run make install without PYTHON to synchronize the Desktop environment.`)
+    throw new Error(`${error.message}. Run npm run install:python without PYTHON to synchronize the Desktop environment.`)
   }
 }
 
@@ -170,21 +176,69 @@ function developmentPython(repo, venv = DEFAULT_VENV) {
   return path.join(path.resolve(repo, venv), ...release.venvExecutable.split('/'))
 }
 
+function uvExecutable(environment = process.env) {
+  return environment[UV_ENV] || 'uv'
+}
+
+function configuredPipIndex(environment = process.env) {
+  if (environment[UV_DEFAULT_INDEX_ENV] || environment[PIP_INDEX_ENV]) return ''
+  try {
+    return execFileSync('pip3', ['config', 'get', 'global.index-url'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true
+    }).trim().replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
+
+async function prepareDevelopmentEnvironment(repo, environment = process.env) {
+  const env = { ...environment }
+  const pipIndex = configuredPipIndex(env)
+  if (pipIndex) env[UV_DEFAULT_INDEX_ENV] = pipIndex
+  const venv = env[VENV_ENV] || DEFAULT_VENV
+  let runtime = env[PYTHON_ENV] || ''
+  if (!runtime) runtime = await preparePython(repo)
+  execFileSync(uvExecutable(env), [
+    'sync',
+    '--locked',
+    '--all-packages',
+    '--extra',
+    'serve',
+    '--extra',
+    'dev',
+    '--group',
+    DESKTOP_GROUP,
+    '--no-python-downloads',
+    '--python',
+    runtime
+  ], {
+    cwd: repo,
+    env: { ...env, UV_PROJECT_ENVIRONMENT: venv },
+    stdio: 'inherit',
+    windowsHide: true
+  })
+  if (!env[PYTHON_ENV]) return verifyDevelopmentPython(repo, developmentPython(repo, venv))
+  return { python: runtime, external: true, venv: path.resolve(repo, venv) }
+}
+
 async function main(argv) {
   const repo = path.resolve(__dirname, '..')
   if (argv[0] === 'prepare' && argv.length === 1) {
     console.log(await preparePython(repo))
+  } else if (argv[0] === 'prepare-dev' && argv.length === 1) {
+    console.log(JSON.stringify(await prepareDevelopmentEnvironment(repo)))
   } else if (argv[0] === 'check' && argv.length <= 2) {
     const executable = developmentPython(repo, argv[1])
     console.log(JSON.stringify(verifyDevelopmentPython(repo, executable)))
   } else {
-    throw new Error('usage: node scripts/python.cjs prepare | check [venv]')
+    throw new Error('usage: node scripts/python.cjs prepare | prepare-dev | check [venv]')
   }
 }
 
 module.exports = { pythonRelease, verifyPythonArchive, inspectPython, verifyPython,
-  verifyDevelopmentPython, preparePython, developmentPython, nativeTar, sameRealPath,
-  retryFilesystem, cleanupTemporary }
+  verifyDevelopmentPython, preparePython, prepareDevelopmentEnvironment,
+  developmentPython, nativeTar, sameRealPath,
+  retryFilesystem, cleanupTemporary, configuredPipIndex }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => {

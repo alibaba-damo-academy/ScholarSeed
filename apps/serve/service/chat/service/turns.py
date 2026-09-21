@@ -686,18 +686,24 @@ class TurnService:
                 return {"ok": False, "error": TURN_ALREADY_RUNNING}, HTTP_CONFLICT
             if live.terminating or live.terminated:
                 return {"ok": False, "error": SESSION_TERMINATED}, HTTP_CONFLICT
+            if (
+                live.waiting_request_id == queued_message_id
+                and live.resource_task is not None
+                and not live.resource_task.done()
+            ):
+                queued = live.catalog.queued_message(session_id, queued_message_id)
+                if queued is not None and queued.state in (
+                    QueuedMessageState.QUEUED,
+                    QueuedMessageState.WAITING_RESOURCES,
+                ):
+                    return self._queue_receipt(live, queued_message_id), HTTP_ACCEPTED
             task = self._schedule_locked(live, queued_message_id, retry_failed=True)
             if task is None:
                 return {
                     "ok": False,
                     "error": QUEUED_MESSAGE_NOT_SENDABLE,
                 }, HTTP_CONFLICT
-            return {
-                "ok": True,
-                "queued": True,
-                "queued_message_id": queued_message_id,
-                "queued_depth": len(live.catalog.queued_messages(live.id)),
-            }, HTTP_ACCEPTED
+            return self._queue_receipt(live, queued_message_id), HTTP_ACCEPTED
 
     async def _steer(
         self,

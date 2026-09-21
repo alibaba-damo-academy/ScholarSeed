@@ -12,43 +12,6 @@ import { createServer, type ViteDevServer } from 'vite'
 const FIXTURE_URL = '/components/ui.render.fixture.html'
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-test('effort thumb remains stable during an asynchronous save', async () => {
-  await withFixture(async (page) => {
-    const slider = page.getByTestId('render-effort-pending').getByRole('slider')
-    await slider.press('End')
-    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
-    assert.equal(await slider.getAttribute('aria-busy'), 'true')
-    assert.equal(await slider.isDisabled(), false)
-    await slider.press('Home')
-    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
-    await page.getByRole('button', { name: 'Complete effort save' }).click()
-    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
-    assert.equal(await slider.getAttribute('aria-busy'), 'false')
-  })
-})
-
-test('effort slider commits discrete choices once after drag and supports keyboard and fixed models', async () => {
-  await withFixture(async (page) => {
-    const slider = page.getByTestId('render-effort').getByRole('slider')
-    await slider.focus()
-    await page.keyboard.press('ArrowRight')
-    assert.equal(await page.getByTestId('render-effort-value').textContent(), 'low')
-    assert.equal(await slider.getAttribute('aria-valuetext'), 'Low')
-    const track = await slider.locator('..').boundingBox()
-    assert.ok(track)
-    await page.mouse.move(track.x + track.width / 3, track.y + track.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(track.x + track.width, track.y + track.height / 2, { steps: 8 })
-    assert.equal(await page.getByTestId('render-effort-changes').textContent(), '1')
-    await page.mouse.up()
-    assert.equal(await page.getByTestId('render-effort-value').textContent(), 'high')
-    assert.equal(await page.getByTestId('render-effort-changes').textContent(), '2')
-    await slider.press('Home')
-    assert.equal(await page.getByTestId('render-effort-value').textContent(), '')
-    assert.equal(await page.getByTestId('render-effort-fixed').getByRole('slider').isDisabled(), true)
-  })
-})
-
 async function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer()

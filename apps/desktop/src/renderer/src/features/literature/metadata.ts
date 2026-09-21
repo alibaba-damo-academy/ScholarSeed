@@ -9,6 +9,11 @@
  * 2. **可用性**: 只要能选出一个维度就给入口, 不看题录是否已经填全 —— 上游会勘误、
  *    会补摘要, 同步过的记录也允许再同步一次。三个标识符全空时不给入口, 因为点了
  *    只会报错。
+ *    title 这一维还要多一道形态门槛 (`./title.ts`): 值是编号、扫描文件名、路径、占位符
+ *    或一整句话时不给入口, 因为 OpenAlex 的标题模糊检索只会回一堆不相干的命中, 反而要
+ *    用户在确认框里替一个垃圾值挑「是不是同一篇」。那道门槛是**否决式**的 —— 只有出现
+ *    「不可能是标题」的结构性反证才判否, 其余一律放行: 收起入口对用户没有别的出路,
+ *    多显示一次入口只是多点一下, 所以宁可放过。doi/arxiv 是标识符, 不看形态。
  * 3. **确认策略**: doi/arxiv 是标识符解析, 命中即唯一, 直接落库; title 是模糊匹配
  *    (OpenAlex 的 `title.search` 是分词 AND, 整条标题也可能命中多条), 命中也要人确认
  *    是不是同一篇, 不能替用户认。确认与否只看维度, 不看响应形状。
@@ -16,6 +21,7 @@
  */
 
 import type { LiteratureDetail, LiteratureUpdate } from '../../contracts/literature'
+import { looksLikePaperTitle } from './title.ts'
 
 /** 一次同步产出的更新体; 键恒落在 serve 侧 `EDITABLE_FIELDS` 内。 */
 export type PaperMetaFields = NonNullable<LiteratureUpdate['fields']>
@@ -92,13 +98,17 @@ function text(value: unknown): string {
  * 按 doi > arxiv > title 选出唯一同步维度; 三者皆空时返回 null。
  *
  * 只发中选维度的值, 不发其余维度 —— 上游按优先级只看第一个, 多带只会让请求体撒谎。
+ * title 维度额外要求值像个论文标题, 不像就当作这一维不可用 (返回 null), 详情页的
+ * 同步卡与按钮同源于此, 会一起收起。
  */
 export function selectPaperMetaQuery(
   item: Pick<LiteratureDetail, PaperMetaDimension>
 ): PaperMetaQuery | null {
   for (const dimension of DIMENSION_PRECEDENCE) {
     const value = text(item[dimension])
-    if (value) return { dimension, value }
+    if (!value) continue
+    if (dimension === 'title' && !looksLikePaperTitle(value)) continue
+    return { dimension, value }
   }
   return null
 }
@@ -108,6 +118,8 @@ export function selectPaperMetaQuery(
  *
  * 同步过的记录同样可以再同步 —— 上游可能勘误或补了摘要, 是不是要覆盖由确认框里
  * 逐字段勾选决定, 不在这里替用户拦。
+ *
+ * 只剩 title 且它不像论文标题时算「不能」: 这时点下去只是拿垃圾值去模糊检索。
  */
 export function canSyncMetadata(item: LiteratureDetail): boolean {
   return selectPaperMetaQuery(item) !== null

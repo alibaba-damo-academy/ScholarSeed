@@ -724,28 +724,64 @@ def test_effort_mapping_and_clamping() -> None:
 
 def test_reasoning_forms_merge_by_kind() -> None:
     """就近覆盖按 kind 逐项合并；显式空集合才是「无可调形态」。"""
-    gateway = bundled_registry().lookup("qwen3.8-max", GATEWAY_CONNECTION)
-    kinds = [option.kind for option in (gateway.reasoning_options or ())]
-    check("the gateway level ladder is declared", "effort" in kinds, str(kinds))
-    check(
-        "the vendor toggle survives the gateway override",
-        "toggle" in kinds,
-        str(kinds),
+    # 内置目录已扁平化（connections 段清空），合并语义改由合成文档验证 —— 机制仍在
+    # capabilities.py 里，BYOK/未来自定义连接仍会用到，不能因为内置数据扁平了就失覆盖。
+    merged_doc = capability_document(
+        reasoning={
+            "supported": True,
+            "options": [
+                {
+                    "kind": "toggle",
+                    "wire": {"chat_completions": "enable_thinking", "responses": "enable_thinking"},
+                },
+                {
+                    "kind": "budget",
+                    "wire": {"chat_completions": "thinking_budget", "responses": "thinking_budget"},
+                },
+            ],
+        }
     )
+    merged_doc["connections"] = {
+        f"lane:{CAPABILITY_MODEL}": {
+            "reasoning": {
+                "supported": True,
+                "options": [{"kind": "effort", "values": ["low", "xhigh"]}],
+            }
+        }
+    }
+    merged = registry_from(merged_doc).lookup(CAPABILITY_MODEL, "lane")
+    merged_kinds = [option.kind for option in (merged.reasoning_options or ())]
     check(
-        "the merged effort values come from the override",
-        list(gateway.effort_values or ()) == ["low", "medium", "xhigh"],
-        str(gateway.effort_values),
+        "a nearest override merges by kind instead of replacing wholesale",
+        {"effort", "toggle", "budget"} <= set(merged_kinds),
+        str(merged_kinds),
     )
-    fixed_gateway = bundled_registry().lookup("gpt-5.5", GATEWAY_CONNECTION)
+    emptied = capability_document()
+    emptied["connections"] = {
+        f"lane:{CAPABILITY_MODEL}": {"reasoning": {"supported": True, "options": []}}
+    }
+    fixed_override = registry_from(emptied).lookup(CAPABILITY_MODEL, "lane")
     check(
         "an explicit empty override really removes every form",
-        fixed_gateway.reasoning_options == (),
-        str(fixed_gateway.reasoning_options),
+        fixed_override.reasoning_options == (),
+        str(fixed_override.reasoning_options),
     )
     check(
         "so a fixed-on model declares no off control",
-        fixed_on(fixed_gateway.reasoning_options) is True,
+        fixed_on(fixed_override.reasoning_options) is True,
+    )
+    # 扁平化后的内置 qwen3.8-max：网关实测档位与厂商开关在同一条基线里并存。
+    flat = bundled_registry().lookup("qwen3.8-max", GATEWAY_CONNECTION)
+    flat_kinds = [option.kind for option in (flat.reasoning_options or ())]
+    check(
+        "the flattened qwen3.8-max declares the gateway-probed ladder",
+        "effort" in flat_kinds and list(flat.effort_values or ()) == ["low", "medium", "xhigh"],
+        str(flat.effort_values),
+    )
+    check(
+        "the flattened qwen3.8-max keeps the vendor toggle alongside it",
+        "toggle" in flat_kinds,
+        str(flat_kinds),
     )
     check(
         "load rejects a wire name keyed by an unknown protocol",

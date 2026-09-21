@@ -490,10 +490,10 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
     <>
       <ContextMenu open={contextMenuOpen} onOpenChange={setContextMenuOpen}>
         <ContextMenuTrigger asChild>
-          <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)] border-[var(--vds-border-default)] shadow-none" padding="sm" data-artifact-role={primary.role}>
+          <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)]" padding="sm" variant="tinted" data-artifact-role={primary.role}>
             <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]" data-testid={`turn-artifact-${primary.artifact_id}`}>
               <span className="grid size-8 shrink-0 place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]"><Icon name="doc" size={20} sw={1.8} /></span>
-              <span className="grid min-w-0 flex-1 gap-0.5">
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <EllipsisText
                   className="text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed text-[var(--vds-text-primary)]"
                   tooltip={`${primary.title || primary.name}\n${primary.path}`}

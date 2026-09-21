@@ -3,33 +3,15 @@ import { Check, ChevronDown } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { LiteratureSearchPaper } from '../../contracts/literature'
 import { Button, DropdownMenu, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
+  DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
   DropdownMenuTrigger, useToast, type ButtonSize } from '../../components/ui'
 import { useApp } from '../../store'
 import { CreateCollectionDialog } from './CreateCollectionDialog'
+import { DestinationRows, MENU_BOUNDS } from './DestinationTree'
 import { createLiteratureCollection, getLiteratureProjects, listLiteratureCollections } from './api'
 import { collectionNodes, flattenDestinations, paperJoinKey, pushLibItem, type JoinDestination, type JoinNode } from './join'
 import { joinedCollectionCreated, recordJoined, useJoinedPapers } from './joinState'
 
-const MENU_BOUNDS = 'max-h-[calc(100dvh-var(--vds-space-4))] max-w-[var(--vds-popover-width-md)] overflow-y-auto'
-
-function DestinationRows({ nodes, parent, choose, create }: {
-  nodes: JoinNode[]; parent?: JoinDestination; choose: (node: JoinDestination) => void; create: (node: JoinDestination) => void
-}): React.JSX.Element {
-  const { t } = useTranslation('literature')
-  const [active, setActive] = useState('')
-  return <>
-    {nodes.map(node => !node.children.length && node.collectionId
-      ? <DropdownMenuItem key={node.key} onPointerEnter={() => setActive('')} onSelect={() => choose(node)}><span className="min-w-0 truncate">{node.name}</span></DropdownMenuItem>
-      : <DropdownMenuSub key={node.key} open={active === node.key} onOpenChange={open => setActive(open ? node.key : '')}>
-      <DropdownMenuSubTrigger openOnHover onClick={event => { event.preventDefault(); choose(node) }}><span className="min-w-0 truncate">{node.name}</span></DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className={MENU_BOUNDS} autoFocus={false} onKeyDown={event => { if (event.key === 'ArrowLeft') { event.preventDefault(); setActive('') } }}>
-        <DestinationRows nodes={node.children} parent={node.collectionId ? undefined : node} choose={choose} create={create} />
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>)}
-    {parent && <>{nodes.length > 0 && <DropdownMenuSeparator />}<DropdownMenuItem onPointerEnter={() => setActive('')} onSelect={() => create(parent)}>{t('join.newCollection')}</DropdownMenuItem></>}
-  </>
-}
 export function JoinedLabel(): React.JSX.Element {
   const { t } = useTranslation('literature')
   return <span className="inline-flex flex-wrap items-center gap-[var(--vds-space-1)] text-[var(--vds-text-secondary)]" data-testid="literature-joined">

@@ -1,4 +1,7 @@
 {
+  "turn": {
+    "duration": "本轮用时 {{duration}}"
+  },
   "header": {
     "recent": "最近",
     "home": "返回首页",

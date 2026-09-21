@@ -37,6 +37,7 @@ import {
   type GlobalPermissionMode,
   getSkills,
   interruptSession,
+  isQueuedMessageNotSendable,
   listQueuedMessages,
   ModeInfo,
   openSession,
@@ -1982,6 +1983,60 @@ export function Composer({
     return true
   }
 
+  const resolveNotSendable = async (
+    sessionId: string,
+    queuedMessageId: string
+  ): Promise<void> => {
+    const authoritative = await listQueuedMessages(sessionId)
+    if (authoritative === null) {
+      set({ foregroundError: feedback('components', 'composer.checkFailed') })
+      return
+    }
+    const syncQueue = (): void => {
+      patchThread(sessionId, {
+        queuedMessages: mergeQueuedOutbox(
+          sessionId,
+          authoritative.map(queuedMessageFromPayload)
+        )
+      })
+    }
+    const queued = authoritative.find((item) => item.queued_message_id === queuedMessageId)
+    if (!queued) {
+      const reconciliation = await reconcileQueuedMessage(sessionId, queuedMessageId)
+      if (reconciliation?.ok && reconciliation.outcome === 'applied') {
+        releaseQueuedOutbox(sessionId, queuedMessageId)
+        syncQueue()
+        await act.loadAiContext(sessionId)
+        return
+      }
+      if (!reconciliation?.ok || reconciliation.outcome !== 'not_applied') {
+        syncQueue()
+        set({ foregroundError: feedback('components', 'composer.checkFailed') })
+        return
+      }
+      const local = (activeThread(state).queuedMessages ?? []).find(
+        (item) => item.queuedMessageId === queuedMessageId
+      )
+      if (local) {
+        retainQueuedOutbox(sessionId, {
+          ...local,
+          state: 'failed',
+          safeErrorCode: QUEUED_MESSAGE_SAFE_ERRORS.SUBMISSION_NOT_APPLIED,
+          serverPresent: false
+        })
+      }
+      syncQueue()
+    } else {
+      syncQueue()
+      if (queued.state === 'waiting_resources' || queued.state === 'submitting') return
+      if (queued.state === 'outcome_unknown') {
+        set({ foregroundError: feedback('components', 'composer.stillUnknown') })
+        return
+      }
+    }
+    set({ foregroundError: feedback('components', 'composer.notSubmitted') })
+  }
+
   const retractQueuedMessage = async (
     queuedMessageId: string
   ): Promise<void> => {
@@ -2084,6 +2139,11 @@ export function Composer({
     } else if (running) {
       const result = await postSide(sessionId, queuedMessageId)
       if (!result?.ok) {
+        if (isQueuedMessageNotSendable(result?.reason)) {
+          await resolveNotSendable(sessionId, queuedMessageId)
+          setQueuedActionId(null)
+          return
+        }
         await refreshQueuedMessages(sessionId)
         set({
           foregroundError: feedback('components', 'composer.adjustFailed', {
@@ -2096,6 +2156,11 @@ export function Composer({
     } else {
       const result = await sendQueuedMessage(sessionId, queuedMessageId)
       if (!result?.ok) {
+        if (isQueuedMessageNotSendable(result?.error)) {
+          await resolveNotSendable(sessionId, queuedMessageId)
+          setQueuedActionId(null)
+          return
+        }
         await refreshQueuedMessages(sessionId)
         set({
           foregroundError: feedback('components', 'composer.pendingFailed', {
@@ -2216,7 +2281,7 @@ export function Composer({
 
         {creditBlocked && (
           <Card
-            className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-3)] !rounded-[var(--vds-radius-6)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] shadow-[var(--vds-shadow-1-center)] max-sm:flex-wrap"
+            className="@container mb-[var(--vds-space-3)] flex flex-wrap items-center gap-x-[var(--vds-space-3)] gap-y-[var(--vds-space-2)] !rounded-[var(--vds-radius-6)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] shadow-[var(--vds-shadow-1-center)]"
             data-testid="composer-credits-exhausted"
             id={CREDITS_EXHAUSTED_NOTICE_ID}
             padding="none"
@@ -2234,7 +2299,7 @@ export function Composer({
               </span>
             </span>
             <Button
-              className="flex-none rounded-[var(--vds-radius-pill)] max-sm:w-full"
+              className="flex-none rounded-[var(--vds-radius-pill)] @max-[20rem]:basis-full"
               data-testid="composer-credits-more"
               onClick={() => void openCreditsPage()}
               size="md"

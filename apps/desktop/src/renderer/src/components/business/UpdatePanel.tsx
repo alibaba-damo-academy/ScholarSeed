@@ -172,6 +172,15 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
     setExpanded(false)
   }, [candidateId])
 
+  // 卡片被打开时静默刷新一次（与背景检查同一路径，不进 'checking' 相位、不闪按钮）：
+  // 上一次检查之后线上新发布的包会在用户点「重启完成更新」之前由主进程 supersede 推进，
+  // 安装点击本身保持秒级、可预测。两个入口表面（工作台活动栏火箭、0.1 侧栏药丸）都只在
+  // 展开时渲染本组件，挂这一处即同时覆盖。StrictMode 下重复触发无害：静默检查幂等，
+  // 主进程侧 in-flight 闸与安装失败结果保护都在投影点里。
+  React.useEffect(() => {
+    void window.scholarseed.refreshUpdate()
+  }, [])
+
   const candidate = state?.candidate
   const phase: UpdateSnapshot['phase'] = state?.phase ?? 'idle'
   const stage = updatePanelStageOf(state)

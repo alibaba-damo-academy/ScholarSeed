@@ -21,25 +21,11 @@
     "save": "Save"
   },
   "groups": {
-    "global": "Global and workbench",
     "markdown": "Markdown editor",
     "code": "Code editor",
-    "pdf": "PDF reader",
-    "office": "Office editor"
+    "pdf": "PDF reader"
   },
   "commands": {
-    "globalSearch": {
-      "title": "Global search",
-      "description": "Open global search from anywhere in the app."
-    },
-    "toggleModulePanel": {
-      "title": "Toggle left panel",
-      "description": "Expand or collapse the current module panel outside file editors."
-    },
-    "toggleAiPanel": {
-      "title": "Toggle AI panel",
-      "description": "Expand or collapse the AI assistant panel."
-    },
     "markdownSave": {
       "title": "Save Markdown",
       "description": "Save the current Markdown file."
@@ -113,7 +99,6 @@
       "description": "Save the current code or Markdown source file."
     },
     "codeSaveAll": { "title": "Save all", "description": "Save every dirty, writable file in the current project in order." },
-    "codeQuickOpen": { "title": "Quick open file", "description": "Open a project search limited to files." },
     "codeUndo": {
       "title": "Undo code edit",
       "description": "Undo the latest change in the current code editor."
@@ -124,14 +109,8 @@
     },
     "codeFind": { "title": "Find in code", "description": "Open in-document search in the code editor." },
     "codeReplace": { "title": "Replace in code", "description": "Open find and replace in the code editor." },
-    "codeCopyLineUp": { "title": "Copy line up", "description": "Copy the current line or selected lines upward." },
-    "codeCopyLineDown": { "title": "Copy line down", "description": "Copy the current line or selected lines downward." },
-    "codeMoveLineUp": { "title": "Move line up", "description": "Move the current line or selected lines upward." },
-    "codeMoveLineDown": { "title": "Move line down", "description": "Move the current line or selected lines downward." },
-    "codeDeleteLine": { "title": "Delete line", "description": "Delete the current line or selected lines." },
     "codeGoToLine": { "title": "Go to line", "description": "Enter a line number and jump to it in the code file." },
     "codeLineComment": { "title": "Toggle line comment", "description": "Toggle line comments for the current or selected lines." },
-    "codeBlockComment": { "title": "Toggle block comment", "description": "Toggle block comments for the selected code." },
     "codeIndent": { "title": "Indent", "description": "Indent the current line or selection." },
     "codeOutdent": { "title": "Outdent", "description": "Reduce indentation for the current line or selection." },
     "pdfFind": {
@@ -156,52 +135,6 @@
     "pdfScrollPageUp": { "title": "Scroll one screen up", "description": "Scroll up by the visible PDF viewport height." },
     "pdfHighlight": { "title": "Highlight selected text", "description": "Highlight selected PDF text with the current color; unassigned by default." },
     "pdfComment": { "title": "Comment on selected text", "description": "Open comment input for selected PDF text; unassigned by default." },
-    "pdfCopyText": { "title": "Copy selected text", "description": "Copy the current PDF text selection; unassigned by default." },
-    "pdfOpenLink": { "title": "Open focused link", "description": "Open the currently focused PDF link; unassigned by default." },
-    "pdfToggleOutline": { "title": "Toggle outline", "description": "Expand or collapse the PDF outline; unassigned by default." },
-    "officeSave": {
-      "title": "Save Office file",
-      "description": "Save the current Office file through the workbench."
-    },
-    "officeFind": {
-      "title": "Find in Office",
-      "description": "Open in-document search for the current Office file."
-    },
-    "officePaste": {
-      "title": "Paste Office content",
-      "description": "Paste text or images into Office Writer through the governed clipboard."
-    },
-    "officeSelectAll": {
-      "title": "Select all Office content",
-      "description": "Select all content in Office Writer."
-    },
-    "officeBold": {
-      "title": "Toggle Office bold",
-      "description": "Toggle bold formatting for the selection in Office Writer."
-    },
-    "officeCopy": {
-      "title": "Copy Office content",
-      "description": "Copy the selection in Office Writer."
-    },
-    "officeItalic": {
-      "title": "Toggle Office italic",
-      "description": "Toggle italic formatting for the selection in Office Writer."
-    },
-    "officeUnderline": {
-      "title": "Toggle Office underline",
-      "description": "Toggle underline formatting for the selection in Office Writer."
-    },
-    "officeCut": {
-      "title": "Cut Office content",
-      "description": "Cut the selection in Office Writer."
-    },
-    "officeUndo": {
-      "title": "Undo Office edit",
-      "description": "Undo the latest change in Office Writer."
-    },
-    "officeRedo": {
-      "title": "Redo Office edit",
-      "description": "Redo the latest reverted change in Office Writer."
-    }
+    "pdfCopyText": { "title": "Copy selected text", "description": "Copy the current PDF text selection; unassigned by default." }
   }
 }

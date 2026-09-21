@@ -17,7 +17,6 @@ import { HomeOverview } from '../features/home/HomeOverview'
 import { Workbench } from '../features/workbench/Workbench'
 import { DocumentDragProvider } from '../features/workbench/Dragging'
 import { Icon } from '../icons'
-import { resolveShortcut, shortcutScopesForTarget } from '../shortcuts'
 import { hasProjectScope, useApp } from '../store'
 import { ActivityRail } from './ActivityRail'
 import { ModulePanel } from './ModulePanel'
@@ -147,29 +146,6 @@ export function WorkbenchShell(): React.JSX.Element {
   const { t } = useTranslation('shell')
   const [modulePanelWidth, setModulePanelWidth] = useState(readStoredModulePanelWidth)
   const aiPanelWidthRef = useRef(readStoredAiPanelWidth())
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.defaultPrevented) return
-      const shortcut = resolveShortcut(event, shortcutScopesForTarget(event.target))
-      if (shortcut?.id === 'workbench.globalSearch') {
-        event.preventDefault()
-        set({ globalSearchOpen: true, globalSearchMode: 'all' })
-        return
-      }
-      if (state.mainView === 'home') return
-      if (shortcut?.id === 'workbench.toggleAiPanel') {
-        event.preventDefault()
-        act.toggleAiPanel()
-      } else if (shortcut?.id === 'workbench.toggleModulePanel') {
-        event.preventDefault()
-        if (state.pdfSidePanelOpen && !state.modulePanelOpen) modulePanelUserOverride.current = true
-        act.toggleModulePanel()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [act, set, state.mainView])
 
   const modulePanelUserOverride = useRef(false)
   const prevPdfPanelRef = useRef(state.pdfSidePanelOpen)

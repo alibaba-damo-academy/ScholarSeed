@@ -11,6 +11,7 @@ import { createRuntime } from './fixtures/runtime'
 import { BROKEN_PDF_NAME, fileDigest, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
 
 const SHORTCUT = process.platform === 'darwin' ? 'Meta' : 'Control'
+const NATIVE_SHORTCUT_MODIFIER = process.platform === 'darwin' ? 'meta' : 'control'
 const EMPTY_FOLDER_PROJECT_NAME = '空库文件夹验收'
 const EMPTY_DOCUMENT_PROJECT_NAME = '空库文档验收'
 const EMPTY_FOLDER_NAME = '首个文件夹'
@@ -40,6 +41,7 @@ const COMPACT_AI_BUTTON_MAX_WIDTH_PX = 32
 const SPLIT_SCROLL_DISTANCE_PX = 520
 const SPLIT_SCROLL_SECTION_COUNT = 80
 const TREE_EDITOR_LOAD_TIMEOUT_MS = 15_000
+const CODE_ACTION_SETTLE_MS = 250
 const TREE_UNSAVED_EDIT = '\nUnsaved tree edit'
 const OVERSIZED_TEST_LIMIT_KB = 1024
 const BYTES_PER_KIBIBYTE = 1024
@@ -283,100 +285,20 @@ test('PDF import accepts missing metadata and persists extracted identifiers', a
   } finally { await desktop.attachArtifacts() }
 })
 
-test('shortcut settings project the shared catalog and filter commands', async ({}, testInfo) => {
+test('shortcut settings page stays hidden', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
     await page.getByTestId('activity-account').click()
     await page.getByTestId('account-menu-settings').click()
-    await page.getByTestId('account-settings-nav-shortcuts').click()
-    await expect(page.getByTestId('account-settings-shortcuts')).toBeVisible()
-    await expect(page.getByTestId('shortcut-group-global')).toBeVisible()
-    await expect(page.getByTestId('shortcut-group-markdown')).toBeVisible()
-    await expect(page.locator('[data-shortcut-id="workbench.globalSearch"]')).toContainText('未分配')
-    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-global-unassigned.png') })
-    await expect(page.locator('[data-shortcut-id="markdown.heading6"]')).toContainText(
-      process.platform === 'darwin' ? '⌘6' : 'Ctrl+6'
-    )
-    await expect(page.locator('[data-shortcut-id="markdown.runCodeBlock"]')).toHaveCount(0)
-    await page.getByTestId('shortcut-search').fill('标题')
-    await expect(page.locator('[data-shortcut-id="markdown.heading1"]')).toBeVisible()
-    await expect(page.locator('[data-shortcut-id="markdown.heading6"]')).toBeVisible()
-    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-markdown-headings.png') })
-    await page.getByTestId('shortcut-search').fill('粗体')
-    await expect(page.locator('[data-shortcut-id="markdown.bold"]')).toBeVisible()
-    await expect(page.locator('[data-shortcut-id="office.bold"]')).toBeVisible()
-    await expect(page.locator('[data-shortcut-id="pdf.find"]')).toHaveCount(0)
-    desktop.assertNoPageErrors()
-  } finally { await desktop.attachArtifacts() }
-})
-
-test('shortcut settings rebind, persist, clear, restore, and block same-scope conflicts', async ({}, testInfo) => {
-  const runtime = createRuntime(testInfo)
-  const desktop = new DesktopSession(runtime, testInfo)
-  const preferencesPath = join(runtime.userData, 'renderer-preferences.json')
-  const openShortcutSettings = async (page: Awaited<ReturnType<DesktopSession['launch']>>): Promise<void> => {
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
-    await page.getByTestId('account-settings-nav-shortcuts').click()
-    await expect(page.getByTestId('account-settings-shortcuts')).toBeVisible()
-  }
-  const readOverrides = (): Record<string, unknown> => {
-    if (!existsSync(preferencesPath)) return {}
-    return (JSON.parse(readFileSync(preferencesPath, 'utf8')) as { shortcutOverrides?: Record<string, unknown> }).shortcutOverrides ?? {}
-  }
-  try {
-    let page = await desktop.launch()
-    await openShortcutSettings(page)
-    await page.getByTestId('shortcut-edit-workbench.globalSearch').click()
-    const editor = () => page.getByTestId('shortcut-editor-dialog')
-    await page.getByTestId('shortcut-recorder').press(`${SHORTCUT}+Shift+p`)
-    await expect(page.getByTestId('shortcut-recorder')).toContainText(
-      process.platform === 'darwin' ? '⇧⌘P' : 'Ctrl+Shift+P'
-    )
-    await editor().getByRole('button', { name: '保存' }).click()
-    await expect.poll(() => readOverrides()['workbench.globalSearch']).toEqual({
-      key: 'p', modifiers: ['primary', 'shift']
-    })
-    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-rebound.png') })
-    await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
-    await page.keyboard.press(`${SHORTCUT}+k`)
-    await expect(page.getByTestId('global-search')).toHaveCount(0)
-    await page.keyboard.press(`${SHORTCUT}+Shift+p`)
-    await expect(page.getByTestId('global-search')).toBeVisible()
-    await page.keyboard.press('Escape')
-
-    await desktop.close()
-    page = await desktop.launch()
-    await page.keyboard.press(`${SHORTCUT}+Shift+p`)
-    await expect(page.getByTestId('global-search')).toBeVisible()
-    await page.keyboard.press('Escape')
-
-    await openShortcutSettings(page)
-    await page.getByTestId('shortcut-edit-workbench.toggleModulePanel').click()
-    await page.getByTestId('shortcut-recorder').press(`${SHORTCUT}+j`)
-    await expect(editor().getByRole('alert')).toContainText('切换 AI 面板')
-    await expect(editor().getByRole('button', { name: '保存' })).toBeDisabled()
-    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-conflict.png') })
-    await editor().getByRole('button', { name: '取消' }).click()
-
-    await page.getByTestId('shortcut-edit-workbench.globalSearch').click()
-    await editor().getByRole('button', { name: '清空快捷键' }).click()
-    await expect.poll(() => readOverrides()['workbench.globalSearch']).toBe(null)
-    await expect(page.locator('[data-shortcut-id="workbench.globalSearch"]')).toContainText('未分配')
-    await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
-    await page.keyboard.press(`${SHORTCUT}+Shift+p`)
-    await page.keyboard.press(`${SHORTCUT}+k`)
-    await expect(page.getByTestId('global-search')).toHaveCount(0)
-
-    await openShortcutSettings(page)
-    await page.getByTestId('shortcut-edit-workbench.globalSearch').click()
-    await editor().getByRole('button', { name: '恢复默认' }).click()
-    await expect.poll(() => Object.prototype.hasOwnProperty.call(readOverrides(), 'workbench.globalSearch')).toBe(false)
-    await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
-    await page.keyboard.press(`${SHORTCUT}+k`)
-    await expect(page.getByTestId('global-search')).toHaveCount(0)
+    await expect(page.getByTestId('account-settings-nav-shortcuts')).toHaveCount(0)
+    await expect(page.getByTestId('account-settings-shortcuts')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'shortcut-settings-hidden.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -690,6 +612,9 @@ test('Markdown code block copy writes exact code through the desktop clipboard',
 
 test('Markdown and source editors preserve native copy and paste shortcuts', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   const markdownPaste = 'Markdown clipboard insertion'
   const sourcePaste = 'Source clipboard insertion'
@@ -720,12 +645,20 @@ test('Markdown and source editors preserve native copy and paste shortcuts', asy
     await expect(source.locator('.view-lines')).toContainText('plain answer 42')
     await source.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
-    await page.keyboard.press(`${SHORTCUT}+c`)
+    await desktop.app!.evaluate(({ BrowserWindow }, modifier) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents
+      contents?.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: [modifier] })
+      contents?.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: [modifier] })
+    }, NATIVE_SHORTCUT_MODIFIER)
     await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toContain('plain answer 42')
     await desktop.app!.evaluate(({ clipboard }, text) => clipboard.writeText(text), sourcePaste)
     await page.keyboard.press(`${SHORTCUT}+End`)
     await page.keyboard.press('Enter')
-    await page.keyboard.press(`${SHORTCUT}+v`)
+    await desktop.app!.evaluate(({ BrowserWindow }, modifier) => {
+      const contents = BrowserWindow.getAllWindows()[0]?.webContents
+      contents?.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: [modifier] })
+      contents?.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: [modifier] })
+    }, NATIVE_SHORTCUT_MODIFIER)
     await expect(source.locator('.view-lines')).toContainText(sourcePaste)
     await page.screenshot({ path: join(runtime.artifacts, 'source-native-clipboard.png') })
     desktop.assertNoPageErrors()
@@ -1207,29 +1140,47 @@ test('PRD source suffixes resolve real syntax grammars and code folds through th
   } finally { await desktop.attachArtifacts() }
 })
 
-test('code editor shortcuts expose go to line and file quick open', async ({}, testInfo) => {
+test('code editor shortcuts apply language comments and indentation', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
-    await seedProject(page, runtime)
-    await openFile(page, 'source.js')
+    const resources = await seedProject(page, runtime)
+    await openFile(page, 'source.py')
     const editor = page.locator('[data-testid="document-editor"]:visible')
-    await editor.locator('.view-line').filter({ hasText: 'return 42' }).click()
-    await editor.locator('textarea').focus()
-    await page.keyboard.press(`${SHORTCUT}+l`)
-    const goToLine = page.getByTestId('code-go-to-line-dialog')
-    await expect(goToLine).toBeVisible()
-    await page.getByTestId('code-go-to-line-input').fill('3')
-    await page.keyboard.press('Enter')
+    const input = editor.locator('textarea').first()
+    await editor.locator('.view-line').first().click()
+    await input.press('Tab')
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    await input.press(`${SHORTCUT}+s`)
+    await expect.poll(() => readFileSync(join(resources, 'source.py'), 'utf8')).toBe('    def answer():\n    return 42\n')
+    await editor.locator('.view-line').first().click()
+    await input.press('Shift+Tab')
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    await input.press(`${SHORTCUT}+s`)
+    await expect.poll(() => readFileSync(join(resources, 'source.py'), 'utf8')).toBe('def answer():\n    return 42\n')
+    await editor.locator('.view-line').first().click()
+    await input.press(`${SHORTCUT}+/`)
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    await input.press(`${SHORTCUT}+s`)
+    await expect.poll(() => readFileSync(join(resources, 'source.py'), 'utf8')).toBe('# def answer():\n    return 42\n')
+    await editor.locator('.view-line').first().click()
+    await input.press(`${SHORTCUT}+/`)
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    await input.press(`${SHORTCUT}+s`)
+    await expect.poll(() => readFileSync(join(resources, 'source.py'), 'utf8')).toBe('def answer():\n    return 42\n')
 
-    await editor.locator('textarea').focus()
-    await page.keyboard.press(`${SHORTCUT}+p`)
-    await expect(page.getByTestId('global-search')).toBeVisible()
-    await expect(page.getByTestId('global-search-input')).toHaveAttribute('placeholder', /快速打开项目文件|Quick open a project file/)
-    await expect(page.getByTestId('search-recent-file')).toHaveCount(1)
-    await page.screenshot({ path: join(runtime.artifacts, 'code-shortcut-quick-open.png') })
-    await page.keyboard.press('Escape')
+    await openFile(page, 'source.java')
+    await editor.locator('.view-line').first().click()
+    await input.press(`${SHORTCUT}+/`)
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    await input.press(`${SHORTCUT}+s`)
+    await expect.poll(() => readFileSync(join(resources, 'source.java'), 'utf8')).toMatch(/^\/\/ class Answer \{/)
+    await page.screenshot({ path: join(runtime.artifacts, 'code-shortcut-language-comment.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -1476,7 +1427,7 @@ test('PDF selection survives page virtualization and restores its toolbar when s
   } finally { await desktop.attachArtifacts() }
 })
 
-test('PDF selection keeps its anchor page rendered throughout a scrolling drag', async ({}, testInfo) => {
+test('PDF selection keeps every crossed page rendered and highlighted throughout a scrolling drag', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -1488,8 +1439,12 @@ test('PDF selection keeps its anchor page rendered throughout a scrolling drag',
     await seedProject(page, runtime)
     await openFile(page, PDF_NAME)
     const firstPage = page.getByTestId('pdf-page-1')
+    const secondPage = page.getByTestId('pdf-page-2')
     const thirdPage = page.getByTestId('pdf-page-3')
     const viewport = page.locator('.vds-pdf-pages')
+    await page.getByTestId('pdf-scale').dblclick()
+    await page.getByTestId('pdf-scale-input').fill('200%')
+    await page.getByTestId('pdf-scale-input').press('Enter')
     await page.getByTestId('pdf-page-input').fill('1')
     await page.getByTestId('pdf-page-input').press('Enter')
     await expect(firstPage).toHaveAttribute('data-rendered', 'true')
@@ -1505,6 +1460,7 @@ test('PDF selection keeps its anchor page rendered throughout a scrolling drag',
     await viewport.evaluate(node => { node.scrollTop = node.scrollHeight })
     await expect(thirdPage).toHaveAttribute('data-rendered', 'true')
     await expect(firstPage).toHaveAttribute('data-rendered', 'true')
+    await expect(secondPage).toHaveAttribute('data-rendered', 'true')
     expect(await firstPage.evaluate((element) => element.contains(window.getSelection()?.anchorNode ?? null))).toBe(true)
 
     const focus = thirdPage.locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
@@ -1518,8 +1474,13 @@ test('PDF selection keeps its anchor page rendered throughout a scrolling drag',
     await viewport.evaluate(node => { node.scrollTop -= 1 })
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('')
     await expect(firstPage).toHaveAttribute('data-rendered', 'false')
-    await expect(thirdPage.locator('[data-pdf-selection-highlight]')).not.toHaveCount(0)
-    await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-scroll-anchor-stable.png') })
+    for (const [pageNumber, selectedPage] of [firstPage, secondPage, thirdPage].entries()) {
+      await selectedPage.scrollIntoViewIfNeeded()
+      const selectionHighlight = selectedPage.locator('[data-pdf-selection-highlight]').first()
+      await expect(selectionHighlight).toBeAttached()
+      await selectionHighlight.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: join(runtime.artifacts, `pdf-selection-multipage-page-${pageNumber + 1}.png`) })
+    }
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -2805,6 +2766,11 @@ test('Markdown bold shortcut keeps editor priority over the module panel', async
 
 test('Markdown bold follows a user rebound shortcut without toggling the module panel', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    shortcutOverrides: {
+      'markdown.bold': { key: 'p', modifiers: ['primary', 'shift'] }
+    }
+  }))
   const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
   try {
     const page = await desktop.launch()
@@ -2813,13 +2779,6 @@ test('Markdown bold follows a user rebound shortcut without toggling the module 
     writeFileSync(join(resources, name), 'Rebound editor shortcut\n')
     await page.getByTestId('resource-refresh').click()
     await openFile(page, name)
-    await page.getByTestId('activity-account').click()
-    await page.getByTestId('account-menu-settings').click()
-    await page.getByTestId('account-settings-nav-shortcuts').click()
-    await page.getByTestId('shortcut-edit-markdown.bold').click()
-    await page.getByTestId('shortcut-recorder').press(`${SHORTCUT}+Shift+p`)
-    await page.getByTestId('shortcut-editor-dialog').getByRole('button', { name: '保存' }).click()
-    await page.getByRole('dialog', { name: '设置', exact: true }).getByRole('button', { name: '关闭', exact: true }).click()
 
     const editor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await editor.click()

@@ -240,9 +240,11 @@ function unsignedPackageCheck(frozen) {
 
 const TEMP_CLEANUP_RETRY_DELAY_MS = 250
 const TEMP_CLEANUP_TIMEOUT_MS = 60_000
+const TEMP_CLEANUP_BACKGROUND_RETRY_MS = 5_000
+const TEMP_CLEANUP_BACKGROUND_ATTEMPTS = 12
 
-function removeTemporary(directory) {
-  const deadline = Date.now() + TEMP_CLEANUP_TIMEOUT_MS
+function removeTemporary(directory, timeoutMs = TEMP_CLEANUP_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs
   for (let attempt = 0; ; attempt++) {
     try {
       fs.rmSync(directory, { recursive: true, force: true })
@@ -251,6 +253,26 @@ function removeTemporary(directory) {
       if (Date.now() >= deadline) throw error
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, TEMP_CLEANUP_RETRY_DELAY_MS)
     }
+  }
+}
+
+function retryRemoveTemporary(directory, attempts) {
+  if (attempts <= 0) return
+  setTimeout(() => {
+    try {
+      fs.rmSync(directory, { recursive: true, force: true })
+    } catch {
+      retryRemoveTemporary(directory, attempts - 1)
+    }
+  }, TEMP_CLEANUP_BACKGROUND_RETRY_MS).unref()
+}
+
+function bestEffortRemoveTemporary(directory, timeoutMs = TEMP_CLEANUP_TIMEOUT_MS) {
+  try {
+    removeTemporary(directory, timeoutMs)
+  } catch (error) {
+    console.warn(`[package] warning: could not remove temporary directory ${directory}: ${error.message}`)
+    retryRemoveTemporary(directory, TEMP_CLEANUP_BACKGROUND_ATTEMPTS)
   }
 }
 
@@ -301,7 +323,7 @@ function runPackageCheck(application, frozen, label = 'unpacked') {
     }
     return payload
   } finally {
-    removeTemporary(directory)
+    bestEffortRemoveTemporary(directory)
   }
 }
 
@@ -322,7 +344,7 @@ async function verifyInstalledWindows(installer, frozen) {
     await verifyApplication(application, frozen, false)
     return runPackageCheck(application, frozen, 'installed')
   } finally {
-    removeTemporary(directory)
+    bestEffortRemoveTemporary(directory)
   }
 }
 
@@ -395,4 +417,6 @@ module.exports.unsignedPackageCheck = unsignedPackageCheck
 module.exports.runPackageCheck = runPackageCheck
 module.exports.verifyInstalledWindows = verifyInstalledWindows
 module.exports.artifactTemporaryRoot = artifactTemporaryRoot
+module.exports.bestEffortRemoveTemporary = bestEffortRemoveTemporary
+module.exports.removeTemporary = removeTemporary
 module.exports.DARWIN_UNIX_SOCKET_PATH_BYTES = DARWIN_UNIX_SOCKET_PATH_BYTES

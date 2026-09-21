@@ -182,6 +182,8 @@ const bridge: BrowserBridge = {
   onLandingReopen: unsubscribe,
   getUpdateState: async () => upToDate(),
   checkUpdate: async () => upToDate(),
+  // 浏览器形态没有更新通路（恒 upToDate、从不带候选包），静默刷新如实无操作。
+  refreshUpdate: async () => {},
   diagnoseUpdate: async () => ({
     url: '',
     releaseLane: 'local',

@@ -91,6 +91,7 @@ import {
   type ImportPickerTarget
 } from '../picker'
 import { TRASH_NOT_COMPLETED_ERROR, waitForTrashCompletion } from './trash'
+import { CLIPBOARD_PASTE_CHANNEL } from '../clipboard'
 
 const STARTUP_BUILD_NUMBER = startupBuildNumber(new Date())
 
@@ -990,6 +991,13 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
+  ipcMain.handle(CLIPBOARD_PASTE_CHANNEL, (event) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+      return false
+    }
+    event.sender.paste()
+    return true
+  })
   ipcMain.handle('scholarseed:write-clipboard-image', async (_e, bytes: Uint8Array) => {
     try {
       const image = nativeImage.createFromBuffer(Buffer.from(bytes))
@@ -1211,6 +1219,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         errorOrigin: 'check'
       })
     }
+  })
+  // 静默刷新：更新表面（更新卡浮窗、关于书页）打开时调用，复用背景检查同一条路径。
+  // 收敛 87009973 修复后的残留窗口 —— 上一次检查之后、用户点「重启完成更新」之前发布的
+  // 新包：打开表面这一刻 supersede 已把面板推进到最新构建，安装点击本身保持秒级、
+  // 不阻塞在版本复查上。不能复用手动 update-check：它先设 'checking' 相位，ready 下
+  // 安装按钮会当场消失再出现。投影仍是 publishUpdateCheckResult 那一份，in-flight 闸、
+  // 安装失败结果保护与 announcedKey 保留全部生效。
+  ipcMain.handle('scholarseed:update-refresh', (): void => {
+    runBackgroundUpdateCheck()
   })
   // 下载：从「发现新版本」和「下载失败」都能发起 —— 失败态的「重试下载」走的是同一条
   // 路，能不能真从断点续传由 updater 依据磁盘上留下的部分文件自行判定。

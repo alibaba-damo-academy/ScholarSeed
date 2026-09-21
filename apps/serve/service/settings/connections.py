@@ -44,6 +44,7 @@ DECLARED_CAPABILITY_INT_KEYS = (CONTEXT_WINDOW_KEY, MAX_OUTPUT_TOKENS_KEY)
 ENABLED_KEY = "enabled"
 # 模型级「显示状态」。缺省即可见, 只在用户关掉时落盘 —— 既有连接文件不因这次演进产生差异。
 MODEL_HIDDEN_KEY = "hidden"
+MODEL_DIRECTORY_KEY = "model_directory"
 PRESET_ID_KEY = "preset_id"
 MODEL_ID_KEY = "id"
 MODEL_LABEL_KEY = "label"
@@ -630,6 +631,22 @@ class ModelProfileStore:
             entry.pop(MODEL_HIDDEN_KEY, None)
         self._write(document)
         return self.list(owner_id=owner_id)
+
+    def set_directory(
+        self, profile_id: str, directory: Mapping[str, Any], *, owner_id: str = ""
+    ) -> None:
+        """Persist an upstream model-directory snapshot fetched at configuration time.
+
+        读路径（模型目录/厂商列表）不应打上游；上游目录在配置时（登录成功、加载模型、
+        保存、显式 refresh）拉取并落到这里，读路径只读快照。
+        """
+
+        document = self._read()
+        profile = document[PROFILES_KEY].get(profile_id)
+        if not isinstance(profile, dict) or not self._visible(profile, owner_id):
+            raise UnknownProfileError(f"personal API profile {profile_id!r} does not exist")
+        profile[MODEL_DIRECTORY_KEY] = dict(directory)
+        self._write(document)
 
     def delete(self, profile_id: str, *, owner_id: str = "") -> dict[str, Any]:
         document = self._read()

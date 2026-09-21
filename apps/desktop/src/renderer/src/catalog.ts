@@ -15,6 +15,31 @@ export function hasSelectableModel(
   return models.some((model) => !model.disabled)
 }
 
+/**
+ * Resolve the executable model after an identity-driven catalogue refresh.
+ *
+ * Signing out disables built-in gateway entries without deleting the user's
+ * configured personal connections. The server deliberately preserves the saved
+ * default, so `current_model` may still name a disabled built-in row. Requests must
+ * not keep sending that unusable key when an enabled personal entry offers the same
+ * underlying model (or another enabled fallback is available).
+ */
+export function selectableCatalogModelKey(
+  requested: string,
+  models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled' | 'model_id'>>,
+  previous = ''
+): string {
+  const enabled = models.filter((model) => !model.disabled)
+  if (enabled.some((model) => model.key === requested)) return requested
+  if (enabled.some((model) => model.key === previous)) return previous
+
+  const requestedModelId = personalModelId(requested) || requested
+  const equivalent = enabled.find((model) =>
+    model.model_id === requestedModelId || personalModelId(model.key) === requestedModelId
+  )
+  return equivalent?.key ?? enabled[0]?.key ?? (requested || previous)
+}
+
 /** Resolve the picker label from the active session before the new-session default. */
 export function selectedSessionModelKey(
   defaultModel: string,

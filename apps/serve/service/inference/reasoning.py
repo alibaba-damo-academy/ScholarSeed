@@ -1,7 +1,7 @@
 """Declared thinking-form policy: the only maker of outbound thinking parameters.
 
-proposal 78 §9.4。输入是目录条目上已声明的 ``reasoning_options`` 载荷（来自
-``capabilities.json`` 的 ``(连接, wire model)`` 坐标）+ 上游协议 + provider 家族，
+proposal 78 §9.4。输入是目录条目上已声明的 ``reasoning_options`` 载荷（来自按提供商拆分的
+``capabilities.<provider>.json`` 的 ``(连接, wire model)`` 坐标）+ 上游协议 + provider 家族，
 输出是这次请求要带的参数。模型名字在这里不再产出任何真值（I1）：没声明控制形态，
 就不发参数并留下原因，而不是按名字猜一个厂商扩展参数。
 

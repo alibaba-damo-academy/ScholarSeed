@@ -39,6 +39,23 @@ from .contract_skill_prebundle import _inputs
 
 
 class SkillRuntimeContracts(unittest.TestCase):
+    def test_repository_source_rejects_conflicting_version_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            skill = source / "example"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\nname: example\ndescription: Example skill\nversion: 1.2.3\n---\n",
+                encoding="utf-8",
+            )
+            (skill / "VERSION").write_text("1.2.4\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                SkillPackError,
+                "VERSION version '1.2.4' differs from SKILL.md version '1.2.3'",
+            ):
+                source_compiler.source_lock(source)
+
     def test_product_defaults_join_pack_without_mutating_skill_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

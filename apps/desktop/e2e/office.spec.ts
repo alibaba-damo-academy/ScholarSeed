@@ -13,6 +13,7 @@ const OFFICE_PAINT_SETTLE_MS = 2_000
 const ONE_SHOT_E2E_ENABLED = process.env.SCHOLARSEED_ONE_SHOT_E2E === '1'
 const OFFICE_CORPUS_ROOT = process.env.SCHOLARSEED_OFFICE_CORPUS
 const SELECTION_MENU_BUDGET_MS = 500
+const LEGACY_DOC_SELECTION_MENU_TIMEOUT_MS = 1_000
 const CALC_SELECTION_MENU_TIMEOUT_MS = 2_000
 const DOC_CROSS_PAGE_SCROLL_DELTA = 1_900
 const DOC_CROSS_PAGE_SELECTION_X_RATIO = 0.5
@@ -21,8 +22,12 @@ const DOC_CROSS_PAGE_SELECTION_END_Y_RATIO = 0.58
 const DOC_CROSS_PAGE_DRAG_HOLD_MS = 1_500
 const SELECTION_AUTOSCROLL_OVERFLOW_PX = 48
 const SELECTION_AUTOSCROLL_HOLD_MS = 2_500
+const SELECTION_AUTOSCROLL_FRAME_SAMPLE_MS = 500
+const SELECTION_AUTOSCROLL_FRAME_SAMPLES = 3
+const WRITER_AUTOSCROLL_EDGE_OFFSET_PX = 1
 const WRITER_AUTOSCROLL_SELECTION_X_RATIO = 0.15
 const WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.1
+const LEGACY_DOC_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.35
 const CALC_AUTOSCROLL_SELECTION_X_RATIO = 0.15
 const CALC_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.25
 
@@ -361,6 +366,45 @@ test('Office prewarms one runtime and replaces Office-family documents in place'
   }
 })
 
+test('readonly Office formats ignore keyboard text input', async ({}, testInfo) => {
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS * 2)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const files = [
+    { name: 'readonly-input.csv', bytes: 'name,result\nScholarSeed,通过\n' },
+    { name: 'readonly-input.docx', bytes: documentArchive() },
+    { name: 'readonly-input.pptx', bytes: presentationArchive() },
+    { name: 'readonly-input.xlsx', bytes: spreadsheetArchive() }
+  ] as const
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    for (const file of files) writeFileSync(join(resources, file.name), file.bytes)
+    const hashes = Object.fromEntries(files.map(file => [file.name, sha256(join(resources, file.name))]))
+    await page.getByTestId('resource-refresh').click()
+
+    for (const file of files) {
+      await openFile(page, file.name)
+      const frame = page.locator(`iframe[data-testid="office-editor"][title="${file.name}"]`)
+      await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+      await expect(frame.contentFrame().locator('textarea, [contenteditable="true"]')).toHaveCount(0)
+      await frame.contentFrame().locator('#qtcanvas').click()
+      await page.keyboard.type('readonly input must be ignored')
+      expect(sha256(join(resources, file.name))).toBe(hashes[file.name])
+    }
+
+    await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
+    await page.screenshot({ path: join(runtime.artifacts, 'office-readonly-keyboard-input.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('large Calc selections preserve a version-bound reference for AI', async ({}, testInfo) => {
   test.setTimeout(OFFICE_READY_TIMEOUT_MS)
   const runtime = createRuntime(testInfo)
@@ -555,7 +599,7 @@ test('readonly Writer documents expose selection actions across pages', async ({
   }
 })
 
-test('DOCX selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+test('DOCX selection autoscroll starts from the bottom line inside the workspace', async ({}, testInfo) => {
   test.setTimeout(OFFICE_READY_TIMEOUT_MS)
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
@@ -578,8 +622,20 @@ test('DOCX selection autoscroll follows the pointer beyond the workspace', async
     const x = bounds.x + bounds.width * WRITER_AUTOSCROLL_SELECTION_X_RATIO
     await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO)
     await page.mouse.down()
-    await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
-    await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+    await page.mouse.move(x, bounds.y + bounds.height - WRITER_AUTOSCROLL_EDGE_OFFSET_PX, { steps: 24 })
+    const frameHashes: string[] = []
+    for (let index = 0; index < SELECTION_AUTOSCROLL_FRAME_SAMPLES; index += 1) {
+      await page.waitForTimeout(SELECTION_AUTOSCROLL_FRAME_SAMPLE_MS)
+      const screenshot = await page.screenshot({
+        path: join(runtime.artifacts, `office-docx-selection-autoscroll-frame-${index + 1}.png`)
+      })
+      frameHashes.push(createHash('sha256').update(screenshot).digest('hex'))
+    }
+    expect(new Set(frameHashes).size).toBe(SELECTION_AUTOSCROLL_FRAME_SAMPLES)
+    await page.waitForTimeout(
+      SELECTION_AUTOSCROLL_HOLD_MS
+        - SELECTION_AUTOSCROLL_FRAME_SAMPLE_MS * SELECTION_AUTOSCROLL_FRAME_SAMPLES
+    )
     await expect(page.getByTestId('selection-action-host')).toBeHidden()
     await page.mouse.up()
 
@@ -597,7 +653,7 @@ test('DOCX selection autoscroll follows the pointer beyond the workspace', async
   }
 })
 
-test('real DOC selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+test('real DOC selection autoscroll starts from the bottom line inside the workspace', async ({}, testInfo) => {
   test.skip(!OFFICE_CORPUS_ROOT, 'requires SCHOLARSEED_OFFICE_CORPUS with the real Office fixture corpus')
   const source = join(OFFICE_CORPUS_ROOT!, 'doc/poi-FloatingPictures.doc')
   test.skip(!existsSync(source), 'missing doc/poi-FloatingPictures.doc')
@@ -621,20 +677,32 @@ test('real DOC selection autoscroll follows the pointer beyond the workspace', a
     const bounds = await canvas.boundingBox()
     if (!bounds) throw new Error('DOC canvas bounds unavailable')
     const x = bounds.x + bounds.width * WRITER_AUTOSCROLL_SELECTION_X_RATIO
-    await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO)
+    await page.mouse.move(x, bounds.y + bounds.height * LEGACY_DOC_AUTOSCROLL_SELECTION_START_Y_RATIO)
     await page.mouse.down()
-    await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
-    await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+    await page.mouse.move(x, bounds.y + bounds.height - WRITER_AUTOSCROLL_EDGE_OFFSET_PX, { steps: 24 })
+    const frameHashes: string[] = []
+    for (let index = 0; index < SELECTION_AUTOSCROLL_FRAME_SAMPLES; index += 1) {
+      await page.waitForTimeout(SELECTION_AUTOSCROLL_FRAME_SAMPLE_MS)
+      const screenshot = await page.screenshot({
+        path: join(runtime.artifacts, `office-doc-selection-autoscroll-frame-${index + 1}.png`)
+      })
+      frameHashes.push(createHash('sha256').update(screenshot).digest('hex'))
+    }
+    expect(new Set(frameHashes).size).toBe(SELECTION_AUTOSCROLL_FRAME_SAMPLES)
+    await page.waitForTimeout(
+      SELECTION_AUTOSCROLL_HOLD_MS
+        - SELECTION_AUTOSCROLL_FRAME_SAMPLE_MS * SELECTION_AUTOSCROLL_FRAME_SAMPLES
+    )
     await expect(page.getByTestId('selection-action-host')).toBeHidden()
     await page.mouse.up()
 
     const menu = page.getByTestId('selection-action-host')
-    await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
+    await expect(menu).toBeVisible({ timeout: LEGACY_DOC_SELECTION_MENU_TIMEOUT_MS })
     await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
     await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
     const quote = page.getByTestId('assistant-selection-quote')
-    await expect(quote).toContainText('reader’s eye find the start of the next line.')
-    await expect(quote).toContainText('Here is an example of')
+    await expect(quote).toContainText('Normal + Courier New, 12pt')
+    await expect(quote).toContainText('This paragraph is indented.')
     await page.screenshot({ path: join(runtime.artifacts, 'office-doc-selection-autoscroll.png') })
     desktop.assertNoPageErrors()
   } finally {

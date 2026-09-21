@@ -135,6 +135,8 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(self.requests[0].headers["authorization"], "Bearer access")
         self.assertEqual(self.requests[0].headers["chatgpt-account-id"], "account")
+        # 配置时加载：上游目录在 sync_directory 落快照，读路径(catalog)只读快照。
+        await self.subscriptions.sync_directory(OWNER, connection)
         with patch("service.chat.service.models.load_builtin_work_config", return_value={}):
             catalog = await self.models.catalog(user_id=OWNER)
             self.assertEqual(len(catalog["available_models"]), 1)

@@ -34,8 +34,8 @@ export const DropdownMenuPortal = ({ children }: { children?: ReactNode }): JSX.
 export const DropdownMenuSub = ({ children, ...props }: Omit<MenuRootProps, 'closeOnSiblingOpen'>): JSX.Element => (
   <MenuRoot closeOnSiblingOpen={false} {...props}>{children}</MenuRoot>
 )
-export const DropdownMenuSubContent = ({ className, ...props }: MenuContentProps): JSX.Element | null => (
-  <MenuContent className={cx(DROPDOWN_MENU_CONTENT_CLASS_NAME, className)} {...props} side="right" />
+export const DropdownMenuSubContent = ({ className, side = 'right', ...props }: MenuContentProps): JSX.Element | null => (
+  <MenuContent className={cx(DROPDOWN_MENU_CONTENT_CLASS_NAME, className)} {...props} side={side} />
 )
 export const DropdownMenuSubTrigger = MenuSubTrigger
 export const DropdownMenuRadioGroup = MenuGroup

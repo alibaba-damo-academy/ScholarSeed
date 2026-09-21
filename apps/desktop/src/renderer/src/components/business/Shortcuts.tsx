@@ -33,14 +33,12 @@ import {
 
 const SETTINGS_CONTENT_CLASS_NAME = 'mx-auto w-full max-w-[var(--vds-settings-content-width)]'
 const SHORTCUT_GROUPS: readonly {
-  id: 'global' | 'markdown' | 'code' | 'pdf' | 'office'
+  id: 'markdown' | 'code' | 'pdf'
   scopes: readonly ShortcutScope[]
 }[] = [
-  { id: 'global', scopes: ['global', 'workbench'] },
   { id: 'markdown', scopes: ['markdown'] },
   { id: 'code', scopes: ['code'] },
-  { id: 'pdf', scopes: ['pdf'] },
-  { id: 'office', scopes: ['office'] }
+  { id: 'pdf', scopes: ['pdf'] }
 ]
 
 function shortcutText(

@@ -210,6 +210,7 @@ test('visual Markdown routes configurable shortcuts to native editor commands', 
 test('Markdown toolbars use the shared S controls and design spacing', () => {
   assert.match(markdownSource, /vds-markdown-header[^"\n]*gap-\[var\(--vds-space-2\)\]/u)
   assert.match(monacoSource, /vds-code-actions[^"\n]*gap-\[var\(--vds-toolbar-icon-gap\)\]/u)
+  assert.match(monacoSource, /vds-code-actions[^"\n]*!border-b-0/u)
   assert.match(monacoSource, /markdown-undo[^\n]*variant="ghostIcon" size="sm"/u)
   assert.match(markdownSource, /top-bar-inner\]:!gap-\[var\(--vds-toolbar-icon-gap\)\]/u)
   assert.match(markdownSource, /top-bar-item\]:!size-\[var\(--vds-control-height-sm\)\]/u)
@@ -435,4 +436,9 @@ test('Markdown code block copy uses the desktop clipboard bridge and reports the
   )).markdown)
   assert.deepEqual(labels.map(markdown => markdown.codeCopied), ['已复制代码', 'Code copied'])
   assert.deepEqual(labels.map(markdown => markdown.codeCopyFailed), ['复制失败，请重试', 'Copy failed. Try again.'])
+})
+
+test('Monaco source editor binds native copy and paste handlers', () => {
+  assert.match(monacoSource, /monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyC[\s\S]*COPY_ACTION/u)
+  assert.match(monacoSource, /monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyV[\s\S]*window\.scholarseed\.pasteClipboard\(\)/u)
 })

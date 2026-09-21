@@ -45,6 +45,12 @@ const PREPRINT_FIELDS: PaperMetaFields = {
   year: 2017
 }
 
+/**
+ * 只剩标题这一维时用的题录标题: 必须是「像论文标题」的值, 否则维度门槛会先把它挡掉
+ * (见 `./title.ts`)。短词 (`Attention`) 与编号一类不算标题, 用在这类断言里会测错东西。
+ */
+const TITLE_ONLY = 'Attention Is All You Need'
+
 function detail(overrides: Partial<LiteratureDetail> = {}): LiteratureDetail {
   return {
     id: 'paper-1',
@@ -92,11 +98,16 @@ test('doi wins over arxiv and title, arxiv over title, and nothing yields no que
     dimension: 'arxiv',
     value: '1706.03762'
   })
-  assert.deepEqual(selectPaperMetaQuery(detail({ title: 'Attention' })), {
+  assert.deepEqual(selectPaperMetaQuery(detail({ title: TITLE_ONLY })), {
     dimension: 'title',
-    value: 'Attention'
+    value: TITLE_ONLY
   })
   assert.equal(selectPaperMetaQuery(detail({ doi: '  ', arxiv: '', title: '' })), null)
+  // title 这一维多一道形态门槛: 编号/文件名/整句话不像论文标题, 拿去做 OpenAlex
+  // 标题模糊检索只会回一堆不相干的命中, 所以直接不给维度。doi/arxiv 不看形态。
+  assert.equal(selectPaperMetaQuery(detail({ title: '17' })), null)
+  assert.equal(selectPaperMetaQuery(detail({ title: 'scan0001.pdf' })), null)
+  assert.equal(selectPaperMetaQuery(detail({ title: 'The weather is nice today.' })), null)
 })
 
 test('every dimension stays open to a re-sync, complete records included', () => {
@@ -105,15 +116,16 @@ test('every dimension stays open to a re-sync, complete records included', () =>
   assert.ok(canSyncMetadata(detail({ doi: '10.1234/example', year: 2017 })))
   assert.ok(canSyncMetadata(detail({ arxiv: '1706.03762', abstract: 'already there' })))
   assert.ok(canSyncMetadata(detail()))
-  // 只剩标题这一维也照样开放, 命中不命中交给确认框。
-  assert.ok(canSyncMetadata(detail({ title: 'Attention', year: 2017 })))
-  assert.ok(canSyncMetadata(detail({ title: 'Attention', publisher: 'Copernicus' })))
+  // 只剩标题这一维也照样开放 (只要标题像个标题), 命中不命中交给确认框。
+  assert.ok(canSyncMetadata(detail({ title: TITLE_ONLY, year: 2017 })))
+  assert.ok(canSyncMetadata(detail({ title: TITLE_ONLY, publisher: 'Copernicus' })))
   // 库内派生值不影响可用性: citation_key / item_type / bib_type 恒有值也不挡同步。
   assert.ok(canSyncMetadata(detail({ arxiv: '1706.03762', citation_key: 'Attention2017' })))
 
-  // 三个标识符全空时才收起入口, 否则按钮点了只会报错。
+  // 三个标识符全空、或只剩一个不像标题的 title 时才收起入口, 否则按钮点了只会报错。
   assert.equal(canSyncMetadata(detail({ title: '' })), false)
   assert.equal(canSyncMetadata(detail({ title: '   ', creators_display: 'A. Author' })), false)
+  assert.equal(canSyncMetadata(detail({ title: '17 32 45' })), false)
 })
 
 test('title matches need confirmation while identifier lookups do not', () => {

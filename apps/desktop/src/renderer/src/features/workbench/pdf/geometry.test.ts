@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { citationRegions, clipQuads, enclosingRectangle, fittedScale, matchText, mostVisiblePage, nearestRectangle, nextFitMode, pageNumber, pdfSelectionShape, percentScale, projectVisibleMarks, selectionPageText, normalizeQuads } from './geometry.ts'
+import { citationRegions, clipQuads, enclosingRectangle, fittedScale, matchText, mostVisiblePage, nearestRectangle, nextFitMode, pageInSelectionSpan, pageNumber, pdfSelectionShape, percentScale, projectVisibleMarks, selectionPageText, normalizeQuads } from './geometry.ts'
 import { internalLink, outlineTree, resolveDestination } from './navigation.ts'
 import { PDF_MARK_PALETTE } from './records.ts'
 
@@ -242,6 +242,11 @@ test('current page follows the largest visible page, not the preceding page sliv
   assert.equal(mostVisiblePage([{ page: 1, top: -300, bottom: 100 }, { page: 2, top: 116, bottom: 516 }], { top: 0, bottom: 500 }), 2)
   assert.equal(mostVisiblePage([{ page: 1, top: -50, bottom: 450 }, { page: 2, top: 466, bottom: 966 }], { top: 0, bottom: 500 }), 1)
   assert.equal(mostVisiblePage([], { top: 0, bottom: 500 }), undefined)
+})
+
+test('PDF selection span includes every page between anchor and focus in either direction', () => {
+  assert.deepEqual([1, 2, 3, 4].filter(page => pageInSelectionSpan(page, 1, 3)), [1, 2, 3])
+  assert.deepEqual([1, 2, 3, 4].filter(page => pageInSelectionSpan(page, 3, 1)), [1, 2, 3])
 })
 
 test('mixed font metrics on one text line share a single mark baseline across word spaces', () => {

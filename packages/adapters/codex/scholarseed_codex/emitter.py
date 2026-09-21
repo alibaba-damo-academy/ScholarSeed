@@ -85,6 +85,8 @@ class CodexEmitter:
                 "rpc_latency_ms": incident.rpc_latency_ms,
                 "process_exit_code": incident.process_exit_code,
                 "ambiguous_commit": incident.ambiguous_commit,
+                "provider_error_code": incident.provider_error_code,
+                "provider_http_status": incident.provider_http_status,
             },
             incident=incident,
         )

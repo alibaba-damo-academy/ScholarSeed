@@ -498,6 +498,72 @@ test('keeps commentary in the thinking stream and final answers in the agent str
   assert.deepEqual(restored.map((item) => item.kind), ['user', 'thinking', 'tool', 'agent'])
 })
 
+test('migrates one live assistant item when its authoritative phase arrives', () => {
+  const turnId = 'turn-late-phase'
+  let live = projectStreamDelta([], 'agent', '正在检查。', turnId, 'message-1', true, 7)
+  live = projectStreamDelta(live, 'thinking', '正在检查。', turnId, 'message-1', true, 8)
+
+  assert.deepEqual(live, [{
+    kind: 'thinking',
+    text: '正在检查。',
+    turnId,
+    itemId: 'message-1',
+    eventSeq: 7,
+    commentary: true
+  }])
+})
+
+test('uses the latest explicit phase when restoring cumulative assistant events', () => {
+  const turnId = 'turn-restored-late-phase'
+  const restored = projectActivityEvents([], [{
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'message_delta',
+    session_id: 'session-late-phase',
+    turn_id: turnId,
+    item_id: 'message-1',
+    data: { delta: '正在检查。' }
+  }, {
+    v: 2,
+    seq: 2,
+    ts: 2,
+    type: 'message_delta',
+    session_id: 'session-late-phase',
+    turn_id: turnId,
+    item_id: 'message-1',
+    data: { delta: '正在检查。', phase: 'commentary' }
+  }])
+
+  assert.deepEqual(restored.map((item) => [item.kind, item.itemId]), [
+    ['thinking', 'message-1']
+  ])
+})
+
+test('keeps history classification when replay only has an unphased assistant event', () => {
+  const turnId = 'turn-history-phase'
+  const restored = projectActivityEvents([{
+    kind: 'thinking',
+    text: '正在检查。',
+    turnId,
+    itemId: 'message-1',
+    commentary: true
+  }], [{
+    v: 2,
+    seq: 1,
+    ts: 1,
+    type: 'message_delta',
+    session_id: 'session-history-phase',
+    turn_id: turnId,
+    item_id: 'message-1',
+    data: { delta: '正在检查。' }
+  }])
+
+  assert.deepEqual(restored.map((item) => [item.kind, item.itemId]), [
+    ['thinking', 'message-1']
+  ])
+})
+
 test('live assistant messages retain their first event sequence for answer actions', () => {
   const turnId = 'turn-live-answer'
   let live: ConvItem[] = []

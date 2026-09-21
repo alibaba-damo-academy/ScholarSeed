@@ -54,9 +54,9 @@ const TITLE_GROUP_CLASS_NAME = 'flex flex-col items-center gap-[8px]'
 const BRAND_CLASS_NAME = 'flex shrink-0 items-center justify-center gap-[4px]'
 const BRAND_IMAGE_CLASS_NAME = 'h-[20px] w-auto object-contain'
 const TITLE_CLASS_NAME =
-  'm-[var(--vds-space-0)] shrink-0 text-center text-[28px] font-semibold leading-[42px] tracking-[0.02em] text-[var(--auth-hero-copy)] whitespace-nowrap font-[var(--vds-font-serif)]'
+  'm-[var(--vds-space-0)] shrink-0 text-center text-[28px] font-semibold leading-[42px] tracking-[0.02em] !text-[var(--vds-text-secondary)] whitespace-nowrap [font-family:var(--vds-font-serif)]'
 const WAITING_TITLE_CLASS_NAME =
-  'm-[var(--vds-space-0)] max-w-full shrink-0 whitespace-normal text-center text-[28px] font-semibold leading-[36px] tracking-[0.02em] text-[var(--auth-hero-copy)] font-[var(--vds-font-serif)]'
+  'm-[var(--vds-space-0)] max-w-full shrink-0 whitespace-normal text-center text-[28px] font-semibold leading-[36px] tracking-[0.02em] !text-[var(--vds-text-secondary)] [font-family:var(--vds-font-serif)]'
 const BODY_CLASS_NAME =
   'm-[var(--vds-space-0)] mt-[var(--vds-space-2)] text-center text-[14px] leading-[20px] text-[var(--auth-muted)]'
 const ACTIONS_CLASS_NAME = 'flex flex-col items-stretch gap-[16px]'
@@ -204,7 +204,10 @@ export function Landing({
           <Carousel autoPlay className="w-full">
             <CarouselContent>
               {HERO_SLIDES.map((slide) => (
-                <CarouselItem className={HERO_ITEM_CLASS_NAME} key={slide.copyKey}>
+                <CarouselItem
+                  className={HERO_ITEM_CLASS_NAME}
+                  key={slide.copyKey}
+                >
                   <div className={HERO_ITEM_INNER_CLASS_NAME}>
                     <div aria-hidden="true" className={HERO_ART_CLASS_NAME}>
                       <img
@@ -266,7 +269,9 @@ export function Landing({
                       src={loginLogo}
                     />
                   </div>
-                  <h1 className={WAITING_TITLE_CLASS_NAME}>{t('landing.loggingIn')}</h1>
+                  <h1 className={WAITING_TITLE_CLASS_NAME}>
+                    {t('landing.loggingIn')}
+                  </h1>
                 </div>
                 <div className={WAITING_CLASS_NAME}>
                   <Spinner size="sm" />

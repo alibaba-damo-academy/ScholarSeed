@@ -73,7 +73,11 @@ import {
   useLatestDisplayCards
 } from './Cards'
 import { useInteractionPolicies } from './Interactions'
-import { activityDurationLabel, elapsedLabel } from './duration'
+import {
+  activityDurationLabel,
+  elapsedLabel,
+  turnDurationLabel
+} from './duration'
 import { Finalizations } from '../../features/resources/Finalizations'
 import { ReviewCard } from '../../features/resources/ReviewCard'
 import { hasDirtyReviewEditor } from '../../contracts/resources'
@@ -109,7 +113,8 @@ import {
   IconButton,
   ScrollArea,
   Spinner,
-  Textarea
+  Textarea,
+  Tooltip
 } from '../ui'
 
 const HIL_WAIT_TICK_MS = 1000
@@ -415,6 +420,19 @@ export function Stream({
       item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id)
   )
   const rows = activityRows(presented, thread.turnOutcomes)
+  const finalAgentRows = new Set<number>()
+  const turnsWithFinalAgent = new Set<string>()
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]
+    if (
+      row.kind !== 'item' ||
+      row.item.kind !== 'agent' ||
+      !row.item.turnId ||
+      turnsWithFinalAgent.has(row.item.turnId)
+    ) continue
+    turnsWithFinalAgent.add(row.item.turnId)
+    finalAgentRows.add(index)
+  }
   const sessionRef = useRef(thread.sessionId)
   sessionRef.current = thread.sessionId
   const scrollToBottom = React.useCallback(
@@ -777,6 +795,11 @@ export function Stream({
                     ? thread.turnOutcomes?.[row.item.turnId]
                     : undefined
                 }
+                turnTiming={
+                  finalAgentRows.has(index) && row.item.turnId
+                    ? thread.turnTimings?.[row.item.turnId]
+                    : undefined
+                }
                 onRewind={rewindPrompt}
                 onRetry={retryTurn}
                 onOpenDelivery={onOpenDelivery}
@@ -930,6 +953,7 @@ function Item({
   trailingContent,
   running,
   turnOutcome,
+  turnTiming,
   onRewind,
   onRetry,
   onOpenDelivery
@@ -938,6 +962,7 @@ function Item({
   trailingContent?: React.ReactNode
   running: boolean
   turnOutcome?: TurnOutcome
+  turnTiming?: TurnTiming
   onRewind: (anchor: number) => Promise<string | null>
   onRetry: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
   onOpenDelivery?: (member: DeliveryCardMember) => void
@@ -961,6 +986,7 @@ function Item({
           item={item}
           trailingContent={trailingContent}
           selectionEnabled={turnOutcome !== 'running'}
+          timing={turnTiming}
         />
       )
     }
@@ -4279,14 +4305,20 @@ function AgentMsg({
   citationEnabled,
   item,
   trailingContent,
-  selectionEnabled
+  selectionEnabled,
+  timing
 }: {
   citationEnabled: boolean
   item: Extract<ConvItem, { kind: 'agent' }>
   trailingContent?: React.ReactNode
   selectionEnabled: boolean
+  timing?: TurnTiming
 }): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { t: conversation } = useTranslation('conversation')
+  const duration = timing?.completedAt === undefined
+    ? null
+    : turnDurationLabel(timing.startedAt, timing.completedAt)
   return (
     <div style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -4317,6 +4349,21 @@ function AgentMsg({
               iconOnly
               icon={<Copy size={14} />}
             />
+            {duration ? (
+              <Tooltip
+                content={conversation('turn.duration', { duration })}
+                portalled
+              >
+                <span
+                  aria-label={conversation('turn.duration', { duration })}
+                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] tabular-nums"
+                  data-testid="turn-duration"
+                  tabIndex={0}
+                >
+                  {duration}
+                </span>
+              </Tooltip>
+            ) : null}
           </div>
         )}
         {item.evidence?.length ? (

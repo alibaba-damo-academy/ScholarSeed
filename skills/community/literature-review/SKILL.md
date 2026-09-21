@@ -1,6 +1,6 @@
 ---
 name: literature-review
-version: "2026.9.20+3"
+version: "2026.9.21+1"
 description: >-
   Produce or revise an evidence-grounded literature review, survey, related-work
   section, or individual chapter from a precise research intent. Discover papers,
@@ -50,7 +50,7 @@ operation, create a visible TODO list using the host's native plan tool (such as
 | Evidence | `workflow evidence` | Handle error/review boundaries; `outline_display` → display the packet |
 | Confirm | Display `outline review-packet`; `writing approve` for a real decision | Honor applicable authorization → `manuscript prepare` |
 | Generate | `manuscript prepare` → figure branch and `manuscript generate` concurrently | v1 assembly and one refinement → editable v2 |
-| Publish | `workflow publish` → inspect → edit v2 and republish as needed | Deliver with actual checks and evidence limits |
+| Publish | `workflow publish` → bounded page check (first page + figure/table pages) → fix observed issues and republish | Deliver; report checks done and their limits |
 
 ## 1. Configure
 
@@ -92,7 +92,7 @@ operation, create a visible TODO list using the host's native plan tool (such as
 - Roles are operational, not topic names: algorithm taxonomies and cross-problem comparisons normally use `analysis`; scientific scope belongs in the title/description and analytical tasks. Terminal roles (`abstract`, `synthesis`, `conclusion`) receive the full corpus.
 - Section `position` accepts `first`, `last`, `any`, or `after:<section title>`.
 - Explicit length uses `length_min`, `length_max`, `length_target`, optional `length_unit` (words, cjk_chars, characters, pages).
-- Full surveys default to `writing_strategy:"chapter_delta"` and an abstract unless excluded. Components use `output_scope:"section"`, optional `selected_section_ids`, default `whole`, and no survey abstract requirement. The legacy `whole` field remains readable; all native generation uses the same chapter-task and full-source delta pipeline.
+- Full surveys default to `writing_strategy:"chapter_delta"` and an abstract unless excluded; `output_scope` is `survey`, which is also the default when omitted. Components use `output_scope:"section"`, optional `selected_section_ids`, and no survey abstract requirement. All native generation uses the same chapter-task and full-source delta pipeline.
 - Retrieval accepts `corpus_size:{target:40}` (optional positive min/max), dimensions, time_range, temporal_policy and mode; corpus_size is never a bare integer. Init supplies the default 40-paper target, independent of manuscript length.
 - `time_range` uses integer `start_year` and `end_year`, not `start`/`end`. Use the actual requested years; query `writing configure --describe-input` when an example is needed, without treating example years as a default time window.
 
@@ -252,8 +252,16 @@ or hash-based edit permissions.
 - Main owns all paper-related corrections after handoff: prose, claims, formulas, section structure, captions, tables, citations, templates and layout.
 - Directly edit `05_generation/full_draft_v2.tex` and the local files it actually uses, including `.tex`, `.bib`, images and styles. Use the Markdown v2 for native Markdown tasks.
 - Exported `06_output/survey.*` files are delivery copies; edit the v2 source, then run `workflow publish` again.
-- Open the returned first-three-page images and inspect clipping, math, duplicated headings/captions, blank space and glyphs. Fix observed issues directly in v2 and repeat the same publication command.
-- Report actual checks, pages inspected, remaining issues and evidence limits. Compilation and screenshots do not establish scientific correctness or the quality of uninspected pages.
+- Visual check scope: open the first-page image and the rendered pages that contain a figure or table, and inspect clipping, math, duplicated headings/captions, blank space and glyphs. Do not open any other page image in the default flow; widen the scope only on an explicit user request or when a check message names a specific page.
+- Fix observed issues directly in v2 and repeat the same publication command.
+- Report actual checks, pages inspected, remaining issues and evidence limits. Reporting this limit is the complete required action; it is not a request to additionally verify uninspected pages or scientific content.
+
+### Post-publish scope limits
+
+- After handoff, correct only issues observed in inspected pages, named in check messages, or raised by the user. The single refinement already covered editorial quality; no proactive full-manuscript re-reading follows publication.
+- No claim-by-claim or theorem-by-theorem verification of the manuscript against source papers in the default flow.
+- The bibliography is assembled deterministically from retrieved metadata; do not re-verify or normalize entries (years, venues, author names, DOIs) against the web or other external sources. Report a suspected metadata defect instead of silently researching and rewriting it.
+- Deliver the exported `06_output` files as-is; no extra packaging or standalone source archives unless the user asked.
 
 ### Publication boundaries and existing workspaces
 
@@ -269,6 +277,7 @@ or hash-based edit permissions.
 - If a duplicate is detected, `close_agent` the extra one before it writes task state, then report the incident.
 - Never fabricate a user response or packet ID. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation.
 - Preserve received chapter responses, even incomplete ones, and completed figure siblings; use the one refinement or main's v2 edits for editorial repairs, never semantic regeneration or a second refinement.
+- Post-publish checking is bounded: first page plus figure/table pages only, no claim-by-claim or theorem-by-theorem source verification, and no bibliography re-verification. Wider checks require an explicit user request or a named error.
 - One workspace per deliverable; never overwrite an existing survey. Secrets stay out of task/artifact files.
 - Only searcher and figure-planner role briefs are active; there are no separate stage reference documents. Obsolete role instructions and design history are recoverable from Git, not runtime inputs. No legacy section-writing commands.
 - Do not launch experiments or claim speed/quality improvements without authorization and measurements.

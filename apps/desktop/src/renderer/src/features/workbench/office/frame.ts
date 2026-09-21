@@ -1,5 +1,4 @@
 import type { TFunction } from 'i18next'
-import { effectiveShortcutBindings } from '../../../shortcuts'
 import { officeFailureLabels } from './failure'
 import zetaSource from 'zetajs/zeta.js?raw'
 
@@ -14,7 +13,6 @@ import selectionSource from './selection.js?raw'
 import officeThreadSource from './office-thread.js?raw'
 import policySource from './policy.js?raw'
 import governanceSource from './governance.js?raw'
-import inputSource from './input.js?raw'
 import protectionSource from './protection.js?raw'
 import searchSource from './search.js?raw'
 import embeddedSource from './embedded.js?raw'
@@ -51,7 +49,6 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
   const threadUrl = sourceUrl(officeThreadSource)
   const policyUrl = sourceUrl(policySource)
   const governanceUrl = sourceUrl(governanceSource)
-  const inputUrl = sourceUrl(inputSource)
   const protectionUrl = sourceUrl(protectionSource)
   const searchUrl = sourceUrl(searchSource)
   const embeddedUrl = sourceUrl(embeddedSource)
@@ -89,26 +86,10 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
     },
     assetsBaseUrl: ZETAOFFICE_ASSETS_BASE_URL,
     defaultFonts: ZETAOFFICE_DEFAULT_FONTS,
-    shortcuts: {
-      find: effectiveShortcutBindings('office.find'),
-      paste: effectiveShortcutBindings('office.paste'),
-      save: effectiveShortcutBindings('office.save'),
-      input: [
-        { bindings: effectiveShortcutBindings('office.selectAll'), command: '.uno:SelectAll' },
-        { bindings: effectiveShortcutBindings('office.bold'), command: '.uno:Bold' },
-        { bindings: effectiveShortcutBindings('office.copy'), command: '.uno:Copy' },
-        { bindings: effectiveShortcutBindings('office.italic'), command: '.uno:Italic' },
-        { bindings: effectiveShortcutBindings('office.underline'), command: '.uno:Underline' },
-        { bindings: effectiveShortcutBindings('office.cut'), command: '.uno:Cut' },
-        { bindings: effectiveShortcutBindings('office.undo'), command: '.uno:Undo' },
-        { bindings: effectiveShortcutBindings('office.redo'), command: '.uno:Redo' }
-      ]
-    },
     token,
     zetaUrl,
     policyUrl,
     governanceUrl,
-    inputUrl,
     protectionUrl,
     searchUrl,
     embeddedUrl,
@@ -126,48 +107,76 @@ html,body{width:100%;height:100%;margin:0;overflow:hidden;background:var(--offic
 body{display:block}.canvas{position:relative;width:100%;height:100%}
 #loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;background:var(--office-background,Canvas);z-index:2}#loading[hidden]{display:none}#status[data-error=true]{color:#b42318}button{font:inherit;padding:4px 10px}
 #qtcanvas{display:block;width:100%;height:100%;border:0;padding:0;outline:0;visibility:hidden}
-#ime-input{position:absolute;left:0;top:0;width:1px;height:1px;margin:0;border:0;padding:0;overflow:hidden;white-space:pre;resize:none;opacity:0;pointer-events:none}
 </style></head><body>
-<div class="canvas"><div id="loading"><span id="status"></span><button id="retry" data-testid="office-fonts-retry" type="button" hidden></button></div><canvas id="qtcanvas" contenteditable="true" oncontextmenu="event.preventDefault()" onkeydown="event.preventDefault()"></canvas><textarea id="ime-input" aria-label="Office text input" tabindex="-1" wrap="off" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea></div>
-<script src="${localFontsUrl}"></script><script src="${localeUrl}"></script><script src="${inputUrl}"></script><script src="${clipboardUrl}"></script><script src="${autoscrollUrl}"></script><script src="${selectionUrl}"></script><script>
+<div class="canvas"><div id="loading"><span id="status"></span><button id="retry" data-testid="office-fonts-retry" type="button" hidden></button></div><canvas id="qtcanvas" oncontextmenu="event.preventDefault()"></canvas></div>
+<script src="${localFontsUrl}"></script><script src="${localeUrl}"></script><script src="${clipboardUrl}"></script><script src="${autoscrollUrl}"></script><script src="${selectionUrl}"></script><script>
 'use strict';
 const config=${config};
 const canvas=document.getElementById('qtcanvas');
-const imeInput=document.getElementById('ime-input');
 const loading=document.getElementById('loading');
 const status=document.getElementById('status');
 const retry=document.getElementById('retry');
 status.textContent=config.text.starting;retry.textContent=config.text.reload;
-let port, filename, processor, expectedDocumentKind, bytes, palette, editable=false, started=false, starting=false, disposed=false, searchVisible=false, documentKind='', pasteShortcutPending=false,bindingId='',bindingSequence=0,readyFrame=0,layoutPaintFrame=0,workerReady=false,layoutFinished=false,layoutPaintAcknowledged=false;
+let port, filename, processor, expectedDocumentKind, bytes, palette, editable=false, started=false, starting=false, disposed=false, searchVisible=false, documentKind='',bindingId='',bindingSequence=0,readyFrame=0,layoutPaintFrame=0,workerReady=false,layoutFinished=false,layoutPaintAcknowledged=false;
 let startupStartedAt=0,runtimeReadyAt=0,documentReadonlyReason='',viewportRequestSequence=0,layoutPaintRequestId=0;
 let selectionPoint,selectionAnchorPoint,selectionPointAt=0;
 let writer=false,selectionAutoscrollKind='',selectionDragging=false;
-let embeddedActive=false;
-const caretCommand='caret';
-const caretRequestCommand='caret_request';
+let selectionAutoscrollRequestSequence=0,writerAutoscrollPendingRequest=0,writerAutoscrollCommitFrame=0,writerAutoscrollPaintFrame=0,writerAutoscrollDirectionX=0,writerAutoscrollDirectionY=0,writerAutoscrollNextAt=0;
 const selectionCommitCommand='selection_commit';
 const selectionDragCommand='selection_drag';
 const selectionAutoscrollCommand='selection_autoscroll';
+const selectionAutoscrollReadyCommand='selection_autoscroll_ready';
+const selectionAutoscrollCommitCommand='selection_autoscroll_commit';
+const selectionAutoscrollAppliedCommand='selection_autoscroll_applied';
 const primaryPointerButton=0;
 const hostDocument=parent.document;
-const selectionAutoscroll=ScholarSeedOfficeAutoscroll.create({element:canvas,onSelectionStep:step=>{
-  if(selectionAutoscrollKind==='writer')port?.postMessage({cmd:selectionAutoscrollCommand,x:step.x,y:step.y});
+function resetSelectionAutoscroll(){cancelAnimationFrame(writerAutoscrollCommitFrame);cancelAnimationFrame(writerAutoscrollPaintFrame);writerAutoscrollPendingRequest=0;writerAutoscrollCommitFrame=0;writerAutoscrollPaintFrame=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;writerAutoscrollNextAt=0}
+function dispatchWriterLineScroll(directionY){
+  if(!directionY)return;
+  const bounds=canvas.getBoundingClientRect();
+  const inset=ScholarSeedOfficeAutoscroll.SCROLLBAR_ARROW_INSET_PX;
+  const clientX=bounds.right-inset;
+  const clientY=directionY>0?bounds.bottom-inset:bounds.top+inset;
+  for(const type of ['mousedown','mouseup','click'])canvas.dispatchEvent(new MouseEvent(type,{bubbles:true,button:primaryPointerButton,buttons:type==='mousedown'?1:0,cancelable:true,clientX,clientY,view:window}));
+}
+function finishWriterAutoscroll(requestId){
+  if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
+  writerAutoscrollPaintFrame=0;writerAutoscrollPendingRequest=0;writerAutoscrollDirectionX=0;writerAutoscrollDirectionY=0;
+}
+function commitWriterAutoscroll(requestId){
+  if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
+  writerAutoscrollCommitFrame=0;
+  writerAutoscrollNextAt=performance.now()+ScholarSeedOfficeAutoscroll.SELECTION_LINE_INTERVAL_MS;
+  dispatchWriterLineScroll(writerAutoscrollDirectionY);
+  port?.postMessage({cmd:selectionAutoscrollCommitCommand,requestId});
+}
+function paintWriterAutoscroll(requestId){
+  if(!selectionDragging||requestId!==writerAutoscrollPendingRequest)return;
+  writerAutoscrollPaintFrame=requestAnimationFrame(()=>finishWriterAutoscroll(requestId));
+}
+function advanceWriterAutoscroll(speed){
+  if(!selectionDragging||!port||writerAutoscrollPendingRequest||writerAutoscrollCommitFrame||writerAutoscrollPaintFrame||performance.now()<writerAutoscrollNextAt)return false;
+  writerAutoscrollDirectionX=Math.sign(speed.x);writerAutoscrollDirectionY=Math.sign(speed.y);
+  const requestId=++selectionAutoscrollRequestSequence;writerAutoscrollPendingRequest=requestId;
+  port.postMessage({cmd:selectionAutoscrollCommand,requestId,x:writerAutoscrollDirectionX,y:writerAutoscrollDirectionY});
+  return false;
+}
+const selectionAutoscroll=ScholarSeedOfficeAutoscroll.create({bottomInset:()=>selectionAutoscrollKind==='writer'?ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX:0,element:canvas,onSelectionFrame:speed=>{
+  if(selectionAutoscrollKind==='writer')return advanceWriterAutoscroll(speed);
+  return true;
 }});
-const officeInput=ScholarSeedOfficeInput.create({element:imeInput,canvas,enabled:()=>editable&&writer&&!embeddedActive,shortcuts:config.shortcuts.input,sendCommand:command=>port?.postMessage({cmd:'input_command',command}),sendText:text=>port?.postMessage({cmd:'input_text',text}),requestCaret:()=>port?.postMessage({cmd:caretRequestCommand})});
 const imagePaths=new Set();
 let serializedImagePaths=[];
 const imageDirectory='/tmp/office/images/';
 let viewportResizeFrame=0;
 const viewportResizeCommand='resize_viewport';
 const viewportResizedCommand='viewport_resized';
-const pasteShortcutResetDelay=250;
 const csvQuoteCode=34;
 const csvUtf8EncodingCode=76;
 const documentReadyFrames=2;
 const csvSeparators=[[';',59],[',',44],['\\t',9],['|',124]];
 function post(type, detail={}){parent.postMessage({kind:'scholarseed-office-editor',token:config.token,type,...detail},'*')}
 function warmup(stage,detail={}){post('warmup',{stage,...detail})}
-function shortcutMatches(event,bindings){const primary=/Mac|iPhone|iPad/i.test(navigator.userAgent)?event.metaKey&&!event.ctrlKey:event.ctrlKey&&!event.metaKey;return bindings.some(binding=>{const modifiers=new Set(binding.modifiers);return event.key.toLowerCase()===binding.key.toLowerCase()&&primary===modifiers.has('primary')&&event.shiftKey===modifiers.has('shift')&&event.altKey===modifiers.has('alt')})}
 function diagnostic(stage,detail={}){post('diagnostic',{detail:{stage,...detail}})}
 function progress(message){status.textContent=message}
 function applyPalette(value){palette=value;document.documentElement.style.colorScheme=value.mode;document.documentElement.style.setProperty('--office-background',value.background);document.documentElement.style.setProperty('--office-foreground',value.foreground);port?.postMessage({cmd:'theme',palette})}
@@ -187,7 +196,7 @@ function requestLayoutPaint(){
 function revealDocument(readyBindingId,readySequence,remaining=documentReadyFrames){
   if(readyBindingId!==bindingId||readySequence!==bindingSequence)return;
   if(remaining>0){readyFrame=requestAnimationFrame(()=>revealDocument(readyBindingId,readySequence,remaining-1));return}
-  readyFrame=0;loading.hidden=true;canvas.style.visibility='visible';status.textContent=editable?config.text.editable:config.text.readonly;officeInput.focus();diagnostic('document-ready',{durationMs:performance.now()-runtimeReadyAt,totalDurationMs:performance.now()-startupStartedAt,editable});post('ready',{bindingId:readyBindingId,dirty:false,editable,readonlyReason:documentReadonlyReason})
+  readyFrame=0;loading.hidden=true;canvas.style.visibility='visible';status.textContent=editable?config.text.editable:config.text.readonly;diagnostic('document-ready',{durationMs:performance.now()-runtimeReadyAt,totalDurationMs:performance.now()-startupStartedAt,editable});post('ready',{bindingId:readyBindingId,dirty:false,editable,readonlyReason:documentReadonlyReason})
 }
 function scheduleDocumentReady(){
   if(!workerReady||!layoutFinished||!layoutPaintAcknowledged)return;
@@ -259,7 +268,7 @@ function onThread(event){
   }
   else if(message.cmd==='ui_ready'){
     if(message.bindingId!==bindingId)return;
-    writer=message.documentKind==='writer';embeddedActive=false;workerReady=true;if(!writer)layoutFinished=true;
+    writer=message.documentKind==='writer';workerReady=true;if(!writer)layoutFinished=true;
     editable=Boolean(message.editable);documentKind=String(message.documentKind||'');documentReadonlyReason=String(message.readonlyReason||'');scheduleViewportResize();
     if(layoutFinished)requestLayoutPaint()
   }
@@ -274,6 +283,8 @@ function onThread(event){
     diagnostic('selection-extracted',{extractionDurationMs:message.extractionDurationMs,presentationDelayMs});
     post('selection',{selection:message.selection,point:selectionAnchorPoint||selectionPoint})
   }
+  else if(message.cmd===selectionAutoscrollReadyCommand){if(selectionDragging&&message.requestId===writerAutoscrollPendingRequest&&!writerAutoscrollCommitFrame)writerAutoscrollCommitFrame=requestAnimationFrame(()=>commitWriterAutoscroll(message.requestId))}
+  else if(message.cmd===selectionAutoscrollAppliedCommand){if(selectionDragging&&message.requestId===writerAutoscrollPendingRequest&&!writerAutoscrollPaintFrame)paintWriterAutoscroll(message.requestId)}
   else if(message.cmd==='persist'){serializedImagePaths=[...imagePaths];const saved=FS.readFile('/tmp/office/'+filename);post('saved-bytes',{bytes:saved},[saved.buffer])}
 	  else if(message.cmd==='selection_replaced')post('selection-replaced',{requestId:message.requestId})
 	  else if(message.cmd==='selection_replace_failed')post('selection-replace-failed',{requestId:message.requestId,error:message.error})
@@ -290,8 +301,6 @@ function onThread(event){
     if(imagePaths.has(path)){FS.unlink(path);imagePaths.delete(path)}
     post('image-failed',{requestId:message.requestId})
   }
-  else if(message.cmd==='embedded_active')embeddedActive=Boolean(message.active)
-  else if(message.cmd===caretCommand)officeInput.place(message)
 }
 window.addEventListener('message',event=>{
   if(event.source!==parent||event.data?.kind!=='scholarseed-office-control'||event.data?.token!==config.token)return;
@@ -299,7 +308,7 @@ window.addEventListener('message',event=>{
   if(message.type==='bind'){
     bindingId=String(message.bindingId||'');bindingSequence+=1;cancelDocumentReady();workerReady=false;layoutFinished=false;layoutPaintAcknowledged=false;layoutPaintRequestId=0;
     canvas.style.visibility='hidden';loading.hidden=false;status.textContent=config.text.loading;delete status.dataset.error;
-    selectionAutoscroll.stop();bytes=new Uint8Array(message.bytes);filename=message.filename;processor=message.processor;expectedDocumentKind=message.expectedDocumentKind;selectionAutoscrollKind=ScholarSeedOfficeSelection.autoscrollKind(filename)||'';selectionDragging=false;editable=Boolean(message.editable);if(started)upload();else void start()
+    selectionAutoscroll.stop();resetSelectionAutoscroll();bytes=new Uint8Array(message.bytes);filename=message.filename;processor=message.processor;expectedDocumentKind=message.expectedDocumentKind;selectionAutoscrollKind=ScholarSeedOfficeSelection.autoscrollKind(filename)||'';selectionDragging=false;editable=Boolean(message.editable);if(started)upload();else void start()
   }
   else if(message.type==='theme')applyPalette(message.palette);
   else if(message.type==='font-permission-result'){
@@ -330,13 +339,19 @@ window.addEventListener('message',event=>{
     for(const path of serializedImagePaths){if(imagePaths.has(path)){FS.unlink(path);imagePaths.delete(path)}}
     serializedImagePaths=[];
   }
-  else if(message.type==='dispose'){disposed=true;cancelDocumentReady();hostDocument.removeEventListener('pointerup',finishSelectionDrag,true);selectionAutoscroll.destroy();officeInput.destroy();port?.postMessage({cmd:'dispose'});port?.close()}
+  else if(message.type==='dispose'){disposed=true;cancelDocumentReady();hostDocument.removeEventListener('pointerup',finishSelectionDrag,true);document.removeEventListener('mousemove',suppressWriterEdgeMousemove,true);selectionAutoscroll.destroy();resetSelectionAutoscroll();port?.postMessage({cmd:'dispose'});port?.close()}
 });
 retry.addEventListener('click',()=>void start());
 void start();
 window.addEventListener('focus',()=>post('focus'));
-document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAnchorPoint=selectionPoint;selectionPointAt=0;post('focus');if(documentKind===selectionAutoscrollKind&&event.isPrimary&&event.button===primaryPointerButton){selectionDragging=true;diagnostic('selection-drag',{active:true,eventType:event.type});selectionAutoscroll.start(event);port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
-document.addEventListener('pointermove',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAutoscroll.move(event)},true);
+document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAnchorPoint=selectionPoint;selectionPointAt=0;post('focus');if(documentKind===selectionAutoscrollKind&&event.isPrimary&&event.button===primaryPointerButton){selectionDragging=true;resetSelectionAutoscroll();diagnostic('selection-drag',{active:true,eventType:event.type});selectionAutoscroll.start(event);port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
+document.addEventListener('pointermove',event=>{selectionPoint={x:event.clientX,y:event.clientY};if(selectionAutoscroll.move(event)&&selectionAutoscrollKind==='writer'){event.preventDefault();event.stopImmediatePropagation()}},true);
+function suppressWriterEdgeMousemove(event){
+  if(!selectionDragging||selectionAutoscrollKind!=='writer')return;
+  const speed=ScholarSeedOfficeAutoscroll.velocity({x:event.clientX,y:event.clientY},canvas.getBoundingClientRect(),ScholarSeedOfficeAutoscroll.SELECTION_LINE_STEP_PX);
+  if(speed.x||speed.y){event.preventDefault();event.stopImmediatePropagation()}
+}
+document.addEventListener('mousemove',suppressWriterEdgeMousemove,true);
 function captureSelectionAnchor(event){
   if(event.view===window)selectionPoint={x:event.clientX,y:event.clientY};
   selectionAnchorPoint=selectionPoint;
@@ -356,6 +371,7 @@ function finishSelectionDrag(event){
   port?.postMessage({cmd:selectionDragCommand,active:false})
   if(selectionAutoscrollKind==='writer')port?.postMessage({cmd:selectionCommitCommand});
   selectionAutoscroll.stop(event);
+  resetSelectionAutoscroll();
 }
 document.addEventListener('pointerup',event=>{
   if(!selectionDragging)captureSelectionAnchor(event);
@@ -366,14 +382,7 @@ document.addEventListener('pointercancel',finishSelectionDrag,true);
 canvas.addEventListener('lostpointercapture',finishSelectionDrag,true);
 hostDocument.addEventListener('pointerup',finishSelectionDrag,true);
 document.addEventListener('keydown',event=>{
-  if(shortcutMatches(event,config.shortcuts.save)){event.preventDefault();event.stopImmediatePropagation();post('save-request');return}
-  if(shortcutMatches(event,config.shortcuts.find)){event.preventDefault();event.stopImmediatePropagation();post('office-search-open');return}
-  if(editable&&documentKind==='writer'&&!embeddedActive&&shortcutMatches(event,config.shortcuts.paste)){event.preventDefault();event.stopImmediatePropagation();pasteShortcutPending=true;setTimeout(()=>{pasteShortcutPending=false},pasteShortcutResetDelay);port?.postMessage({cmd:'image_request'});return}
   if(searchVisible&&event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();post('office-search-close')}
-},true);
-document.addEventListener('paste',event=>{
-  if(!editable||documentKind!=='writer'||embeddedActive)return;
-  event.preventDefault();event.stopImmediatePropagation();if(pasteShortcutPending){pasteShortcutPending=false;return}port?.postMessage({cmd:'image_request'});
 },true);
 if(!globalThis.crossOriginIsolated)fail('cross-origin-isolation',config.text.isolation);
 else post('frame-ready');
@@ -389,7 +398,6 @@ else post('frame-ready');
       URL.revokeObjectURL(threadUrl)
       URL.revokeObjectURL(policyUrl)
       URL.revokeObjectURL(governanceUrl)
-      URL.revokeObjectURL(inputUrl)
       URL.revokeObjectURL(protectionUrl)
       URL.revokeObjectURL(searchUrl)
       URL.revokeObjectURL(embeddedUrl)

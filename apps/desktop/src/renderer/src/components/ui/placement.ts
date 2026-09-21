@@ -11,7 +11,7 @@ export function menuPositionStyle(
   position: MenuPosition,
   contentRect: { width: number; height: number },
   viewport: { width: number; height: number },
-  side: 'bottom' | 'right' = 'bottom',
+  side: 'bottom' | 'left' | 'right' = 'bottom',
   align: 'center' | 'end' | 'start' = 'start'
 ): CSSProperties {
   const viewportWidth = viewport.width
@@ -31,12 +31,15 @@ export function menuPositionStyle(
     return { left, position: 'fixed', top: Math.min(Math.max(position.y, MENU_VIEWPORT_PADDING), maxTop) }
   }
 
-  if (side === 'right') {
+  if (side === 'right' || side === 'left') {
     const rightLeft = position.right + MENU_OFFSET
     const leftLeft = position.left - contentRect.width - MENU_OFFSET
     const fitsRight = rightLeft + contentRect.width <= viewportWidth - MENU_VIEWPORT_PADDING
     const fitsLeft = leftLeft >= MENU_VIEWPORT_PADDING
-    const submenuLeft = fitsRight || !fitsLeft ? rightLeft : leftLeft
+    // 首选方位放得下(或两侧都放不下时保持首选)就贴首选侧, 否则翻到另一侧。
+    const submenuLeft = side === 'right'
+      ? (fitsRight || !fitsLeft ? rightLeft : leftLeft)
+      : (fitsLeft || !fitsRight ? leftLeft : rightLeft)
     const maxTop = Math.max(MENU_VIEWPORT_PADDING, viewportHeight - contentRect.height - MENU_VIEWPORT_PADDING)
     return {
       left: Math.min(Math.max(submenuLeft, MENU_VIEWPORT_PADDING), maxLeft),

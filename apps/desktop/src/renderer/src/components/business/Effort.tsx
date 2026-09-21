@@ -10,7 +10,6 @@ import {
 } from '../../reasoning'
 import { feedback } from '../../contracts/feedback'
 import { useApp } from '../../store'
-import { Slider } from '../ui'
 
 /** Model parameter scoped to a session; remembered separately for new conversations. */
 export function useEffort() {
@@ -114,68 +113,11 @@ export function useEffort() {
     value,
     options,
     label: fixedThinking ? t('reasoning.fixed') : selectedLabel,
+    // 模型是否声明了可选思考档位: 无档位时菜单的思考强度入口禁用并回显占位符。
+    selectable: Boolean(model) && efforts.length > 0,
     disabled: Boolean(unavailable || fixedThinking),
     pending,
     select
   }
 }
 
-interface EffortProps {
-  value: string
-  options: { value: string; label: string }[]
-  disabled: boolean
-  pending?: boolean
-  onSelect: (value: string) => void
-}
-
-export function Effort({ value, options, disabled, pending = false, onSelect }: EffortProps): React.JSX.Element {
-  const { t } = useTranslation('conversation')
-  const [draft, setDraft] = React.useState(value)
-  const draftRef = React.useRef(value)
-  React.useEffect(() => {
-    if (pending) return
-    draftRef.current = value
-    setDraft(value)
-  }, [value, pending])
-  const index = Math.max(0, options.findIndex((option) => option.value === draft))
-  const max = Math.max(0, options.length - 1)
-  const commit = (): void => {
-    if (!disabled && !pending && draftRef.current !== value) onSelect(draftRef.current)
-  }
-  return (
-    <div
-      className="relative w-full"
-      onPointerUp={commit}
-      onKeyUp={commit}
-      onBlur={commit}
-      onPointerCancel={() => {
-        draftRef.current = value
-        setDraft(value)
-      }}
-    >
-      <Slider
-        data-testid="reasoning-slider"
-        aria-label={t('reasoning.label')}
-        aria-valuetext={options[index]?.label}
-        aria-busy={pending}
-        min={0}
-        max={max}
-        step={1}
-        value={index}
-        disabled={disabled || max === 0}
-        onValueChange={(next: number) => {
-          if (pending) return
-          const option = options[next]
-          if (!option) return
-          draftRef.current = option.value
-          setDraft(option.value)
-        }}
-      />
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center justify-between">
-        {options.map((option) => (
-          <span key={option.value} className="size-[var(--vds-space-1)] rounded-full bg-[var(--vds-text-tertiary)]" />
-        ))}
-      </div>
-    </div>
-  )
-}

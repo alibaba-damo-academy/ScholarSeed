@@ -28,6 +28,7 @@ let documentPolicy
 let documentKind
 let writerSelection
 let selectionDragging = false
+let pendingWriterAutoscroll
 const OFFICE_IMAGE_FAILED = 'office_image_failed'
 const OFFICE_POLICY_FAILED = 'office_policy_failed'
 const OFFICE_FORMULA_POLICY_FAILED = 'office_formula_policy_failed'
@@ -48,13 +49,14 @@ const VIEWPORT_RESIZED_COMMAND = 'viewport_resized'
 const HTML_MIME = 'text/html;charset=utf-8'
 const RTF_MIME = 'text/rtf'
 const PLAIN_MIME = 'text/plain;charset=utf-16'
-const INSERT_TEXT_COMMAND = '.uno:InsertText'
 const COPY_COMMAND = '.uno:Copy'
 const CARET_COMMAND = 'caret'
-const CARET_REQUEST_COMMAND = 'caret_request'
 const SELECTION_COMMIT_COMMAND = 'selection_commit'
 const SELECTION_DRAG_COMMAND = 'selection_drag'
 const SELECTION_AUTOSCROLL_COMMAND = 'selection_autoscroll'
+const SELECTION_AUTOSCROLL_READY_COMMAND = 'selection_autoscroll_ready'
+const SELECTION_AUTOSCROLL_COMMIT_COMMAND = 'selection_autoscroll_commit'
+const SELECTION_AUTOSCROLL_APPLIED_COMMAND = 'selection_autoscroll_applied'
 const SELECTION_STEP_COUNT = 1
 const CARET_REPORT_DELAY_MS = 16
 const PRESENTATION_NAVIGATE_COMMAND = 'presentation_navigate'
@@ -174,6 +176,7 @@ function closeDocument() {
   documentPolicy = undefined
   documentKind = undefined
   selectionDragging = false
+  pendingWriterAutoscroll = undefined
   writerSelection?.invalidate()
   writerSelection = undefined
   pendingImage = undefined
@@ -200,20 +203,42 @@ function closeDocument() {
   xModel = undefined
 }
 
-function dispatchInputCommand(command) {
-  if (!releasePolicy || !documentPolicy || !ScholarSeedOfficePolicy.allows(documentPolicy, command)) return
-  releasePolicy.dispatchNative(command, [])
-  reportModified()
-  scheduleCaretReport()
+function readonlyWriterSelectionCursor(controller, direction) {
+  const described = writerSelection?.describe(controller.getSelection())
+  const range = described?.writerRange
+  if (!range) return undefined
+  const anchor = direction > 0 ? range.getStart() : range.getEnd()
+  const edge = direction > 0 ? range.getEnd() : range.getStart()
+  const cursor = controller.getViewCursor()
+  cursor.gotoRange(anchor, false)
+  cursor.gotoRange(edge, true)
+  return cursor
 }
 
-function autoscrollWriterSelection(horizontal, vertical) {
-  if (!selectionDragging || documentKind !== 'writer' || !xModel) return
-  const cursor = xModel.getCurrentController().getViewCursor()
-  if (horizontal < 0) cursor.goLeft(SELECTION_STEP_COUNT, true)
-  else if (horizontal > 0) cursor.goRight(SELECTION_STEP_COUNT, true)
-  if (vertical < 0) cursor.goUp(SELECTION_STEP_COUNT, true)
-  else if (vertical > 0) cursor.goDown(SELECTION_STEP_COUNT, true)
+function prepareWriterAutoscroll(message) {
+  pendingWriterAutoscroll = undefined
+  if (selectionDragging && documentKind === 'writer' && xModel) {
+    const horizontal = Number(message.x)
+    const vertical = Number(message.y)
+    const controller = xModel.getCurrentController()
+    const cursor = readonlyWriterSelectionCursor(controller, Math.sign(vertical || horizontal))
+    if (cursor) pendingWriterAutoscroll = { requestId: message.requestId, cursor, horizontal, vertical }
+  }
+  post({ cmd: SELECTION_AUTOSCROLL_READY_COMMAND, requestId: message.requestId })
+}
+
+function commitWriterAutoscroll(message) {
+  try {
+    const pending = pendingWriterAutoscroll
+    if (!selectionDragging || pending?.requestId !== message.requestId) return
+    if (pending.vertical > 0) pending.cursor.goDown(SELECTION_STEP_COUNT, true)
+    else if (pending.vertical < 0) pending.cursor.goUp(SELECTION_STEP_COUNT, true)
+    if (pending.horizontal > 0) pending.cursor.goRight(SELECTION_STEP_COUNT, true)
+    else if (pending.horizontal < 0) pending.cursor.goLeft(SELECTION_STEP_COUNT, true)
+  } finally {
+    pendingWriterAutoscroll = undefined
+    post({ cmd: SELECTION_AUTOSCROLL_APPLIED_COMMAND, requestId: message.requestId })
+  }
 }
 
 function reportPresentationState() {
@@ -254,16 +279,6 @@ function navigatePresentation(direction) {
   releasePolicy.dispatchNative(command, [])
   fitPresentation()
   reportPresentationState()
-}
-
-function insertText(text) {
-  if (typeof text !== 'string' || !text || pendingImage || embedded?.active) return
-  if (!documentPolicy || !ScholarSeedOfficePolicy.allows(documentPolicy, INSERT_TEXT_COMMAND)) return
-  releasePolicy.dispatchNative(INSERT_TEXT_COMMAND, [
-    new css.beans.PropertyValue({ Name: 'Text', Value: text })
-  ])
-  reportModified()
-  scheduleCaretReport()
 }
 
 function requestImage(source, fallback) {
@@ -675,18 +690,19 @@ function start() {
       case 'office_search': runOfficeSearch(event.data.requestId, event.data.query, event.data.direction); break
       case PRESENTATION_NAVIGATE_COMMAND: navigatePresentation(event.data.direction); break
       case 'paste': insertTransferable(event.data.requestId, event.data.formats, event.data.error); break
-      case 'input_command': dispatchInputCommand(event.data.command); break
-      case 'input_text': insertText(event.data.text); break
-      case CARET_REQUEST_COMMAND: scheduleCaretReport(); break
       case SELECTION_DRAG_COMMAND:
         selectionDragging = Boolean(event.data.active)
+        if (!selectionDragging) pendingWriterAutoscroll = undefined
         cancelSelectionReport()
         if (selectionDragging) post({ cmd: 'selection', selection: { text: '' } })
         else if (documentKind === 'calc') reportSelection()
         else scheduleSelectionReport()
         break
       case SELECTION_AUTOSCROLL_COMMAND:
-        autoscrollWriterSelection(Number(event.data.x), Number(event.data.y))
+        prepareWriterAutoscroll(event.data)
+        break
+      case SELECTION_AUTOSCROLL_COMMIT_COMMAND:
+        commitWriterAutoscroll(event.data)
         break
       case SELECTION_COMMIT_COMMAND: scheduleSelectionReport(); break
       case 'host_saved':

@@ -278,11 +278,12 @@ const SCENES: Record<string, ScenePatch> = {
     modelMenuOpen: false,
     notifPanelOpen: false
   },
-  'settings-shortcuts': {
-    accountSettingsPage: 'shortcuts',
-    modelMenuOpen: false,
-    notifPanelOpen: false
-  },
+  // 暂时隐藏「键盘快捷键」页面时同步隐藏验收场景，恢复页面时一并恢复。
+  // 'settings-shortcuts': {
+  //   accountSettingsPage: 'shortcuts',
+  //   modelMenuOpen: false,
+  //   notifPanelOpen: false
+  // },
   'settings-developer': {
     accountSettingsPage: 'developer',
     modelMenuOpen: false,

@@ -14,7 +14,7 @@ FAIL = 0
 REPO_ROOT = Path(__file__).resolve().parents[3]
 # 开源布局: 产品发行包(含技能依赖声明)在 apps/serve; 根 pyproject 只是 workspace 编排器。
 PYPROJECT = REPO_ROOT / "apps" / "serve" / "pyproject.toml"
-MAKEFILE = REPO_ROOT / "Makefile"
+WORKSPACE_SCRIPT = REPO_ROOT / "scripts" / "workspace.cjs"
 BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "bundle.cjs"
 BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "build.cjs"
 DEPENDENCIES = (
@@ -118,13 +118,14 @@ def _registry_and_package_manifests_agree() -> None:
 
 
 def _builds_install_into_product_python() -> None:
-    makefile = MAKEFILE.read_text(encoding="utf-8")
+    workspace = WORKSPACE_SCRIPT.read_text(encoding="utf-8")
     build = BUILD_SCRIPT.read_text(encoding="utf-8")
     dependencies = DEPENDENCIES.read_text(encoding="utf-8")
-    # 开源版没有 Hub 冻结步骤: make install 直接调 prebundle --build 从仓库源码离线编译。
+    # 开源版没有 Hub 冻结步骤: npm workspace install 直接调 prebundle --build 从仓库源码离线编译。
     check(
         "开发安装使用统一的离线编译入口",
-        "-m service.cli.prebundle --build" in makefile and "service.cli.skills" not in makefile,
+        "'-m', 'service.cli.prebundle', '--build'" in workspace
+        and "service.cli.skills" not in workspace,
     )
     check(
         "DMG 使用实际产品 Python 的统一依赖入口", "'service.cli.prebundle', '--provision'" in build

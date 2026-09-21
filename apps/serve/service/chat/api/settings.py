@@ -278,8 +278,11 @@ def mount_setting_routes(
 
     @app.get("/api/settings/model-connections/{connection_id}/models")
     async def subscription_models(connection_id: str, request: Request) -> dict:
+        # 配置时刻（用户点「加载模型」）：拉上游并落快照，供读路径直接使用。
         try:
-            return await subscription_service().models(request_owner_id(request), connection_id)
+            return await subscription_service().sync_directory(
+                request_owner_id(request), connection_id
+            )
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error
 

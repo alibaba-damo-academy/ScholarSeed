@@ -24,7 +24,7 @@ const DEFAULT_SCENES = [
   'settings',
   'settings-models',
   'settings-files',
-  'settings-shortcuts',
+  // 'settings-shortcuts', // 暂时随「键盘快捷键」页面隐藏。
   'settings-developer',
   'settings-skills',
   'settings-about',

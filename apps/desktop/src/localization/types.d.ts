@@ -580,6 +580,9 @@ declare module 'i18next' {
             "selection": "模型选择",
             "recheck": "重新检测",
             "reasoning": "推理强度",
+            "effortRow": "思考强度",
+            "moreModels": "更多模型",
+            "effortHint": "强度越高回答越透彻，但耗时更久、消耗积分更快。",
             "personal": "个人 API",
             "builtin": "内置",
             "effect": "切换后，当前会话的下一条消息即使用新模型；正在生成的回复不受影响。",
@@ -1967,6 +1970,9 @@ declare module 'i18next' {
         }
     },
     "conversation": {
+        "turn": {
+            "duration": "本轮用时 {{duration}}"
+        },
         "header": {
             "recent": "最近",
             "home": "返回首页",
@@ -4957,25 +4963,11 @@ declare module 'i18next' {
             "save": "保存"
         },
         "groups": {
-            "global": "全局与工作台",
             "markdown": "Markdown 编辑器",
             "code": "代码编辑器",
-            "pdf": "PDF 阅读器",
-            "office": "Office 编辑器"
+            "pdf": "PDF 阅读器"
         },
         "commands": {
-            "globalSearch": {
-                "title": "全局搜索",
-                "description": "从任意页面打开全局搜索。"
-            },
-            "toggleModulePanel": {
-                "title": "切换左侧面板",
-                "description": "在文件编辑器之外展开或收起当前模块面板。"
-            },
-            "toggleAiPanel": {
-                "title": "切换 AI 面板",
-                "description": "展开或收起右侧 AI 助手面板。"
-            },
             "markdownSave": {
                 "title": "保存 Markdown",
                 "description": "保存当前 Markdown 文件。"
@@ -5052,10 +5044,6 @@ declare module 'i18next' {
                 "title": "全部保存",
                 "description": "依次保存当前项目中所有可保存的脏文件。"
             },
-            "codeQuickOpen": {
-                "title": "快速打开文件",
-                "description": "打开仅显示项目文件的快速搜索。"
-            },
             "codeUndo": {
                 "title": "撤销代码编辑",
                 "description": "撤销当前代码编辑器中的上一次修改。"
@@ -5072,26 +5060,6 @@ declare module 'i18next' {
                 "title": "在代码中替换",
                 "description": "打开代码编辑器的查找与替换。"
             },
-            "codeCopyLineUp": {
-                "title": "向上复制行",
-                "description": "将当前行或所选行向上复制。"
-            },
-            "codeCopyLineDown": {
-                "title": "向下复制行",
-                "description": "将当前行或所选行向下复制。"
-            },
-            "codeMoveLineUp": {
-                "title": "向上移动行",
-                "description": "将当前行或所选行向上移动。"
-            },
-            "codeMoveLineDown": {
-                "title": "向下移动行",
-                "description": "将当前行或所选行向下移动。"
-            },
-            "codeDeleteLine": {
-                "title": "删除行",
-                "description": "删除当前行或所选行。"
-            },
             "codeGoToLine": {
                 "title": "跳转到行",
                 "description": "输入行号并跳转到代码文件中的对应位置。"
@@ -5099,10 +5067,6 @@ declare module 'i18next' {
             "codeLineComment": {
                 "title": "切换行注释",
                 "description": "切换当前行或所选行的行注释。"
-            },
-            "codeBlockComment": {
-                "title": "切换块注释",
-                "description": "切换所选代码的块注释。"
             },
             "codeIndent": {
                 "title": "缩进",
@@ -5191,58 +5155,6 @@ declare module 'i18next' {
             "pdfCopyText": {
                 "title": "复制所选文本",
                 "description": "复制 PDF 中当前选择的文本；默认未分配。"
-            },
-            "pdfOpenLink": {
-                "title": "打开聚焦链接",
-                "description": "打开 PDF 中当前获得焦点的链接；默认未分配。"
-            },
-            "pdfToggleOutline": {
-                "title": "切换目录",
-                "description": "展开或收起 PDF 目录；默认未分配。"
-            },
-            "officeSave": {
-                "title": "保存 Office 文件",
-                "description": "通过工作台保存当前 Office 文件。"
-            },
-            "officeFind": {
-                "title": "在 Office 中查找",
-                "description": "打开当前 Office 文件的文内搜索。"
-            },
-            "officePaste": {
-                "title": "粘贴 Office 内容",
-                "description": "在 Office Writer 中通过受治理剪贴板粘贴文字或图片。"
-            },
-            "officeSelectAll": {
-                "title": "全选 Office 内容",
-                "description": "选中 Office Writer 中的全部内容。"
-            },
-            "officeBold": {
-                "title": "切换 Office 粗体",
-                "description": "切换 Office Writer 所选文字的粗体格式。"
-            },
-            "officeCopy": {
-                "title": "复制 Office 内容",
-                "description": "复制 Office Writer 中的所选内容。"
-            },
-            "officeItalic": {
-                "title": "切换 Office 斜体",
-                "description": "切换 Office Writer 所选文字的斜体格式。"
-            },
-            "officeUnderline": {
-                "title": "切换 Office 下划线",
-                "description": "切换 Office Writer 所选文字的下划线格式。"
-            },
-            "officeCut": {
-                "title": "剪切 Office 内容",
-                "description": "剪切 Office Writer 中的所选内容。"
-            },
-            "officeUndo": {
-                "title": "撤销 Office 编辑",
-                "description": "撤销 Office Writer 中的上一次修改。"
-            },
-            "officeRedo": {
-                "title": "重做 Office 编辑",
-                "description": "重做 Office Writer 中被撤销的修改。"
             }
         }
     },

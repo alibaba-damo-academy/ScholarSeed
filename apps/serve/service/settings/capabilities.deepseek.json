@@ -1,0 +1,379 @@
+{
+  "schema_version": 1,
+  "provider": "deepseek",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "deepseek-v4-pro": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 1000000,
+        "max_output": 393216,
+        "max_reasoning": 393216,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-pro",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-08-12",
+      "last_updated": "2026-08-22",
+      "notes": [
+        "百炼托管口径。DeepSeek 官方 ID 是 deepseek-v4-pro + deepseek-flash（无 deepseek-v4-flash），且官方只写 1M/384K 缩写。",
+        "effort 档位取自 models.dev(opencode 注册表, registry)；enable_thinking/thinking_budget 为厂商口径(vendor-doc)。自有层归一：界面单一思考强度映射到本模型真实形态。",
+        "2026-09-21 核对：models.dev/OpenRouter 列 max_output 384000，LiteLLM(deepseek 直连)列 393216 与百炼一致；维持百炼精确值。"
+      ]
+    },
+    "deepseek-v4-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 1000000,
+        "max_output": 393216,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-flash",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-09-10",
+      "last_updated": "2026-09-10",
+      "notes": [
+        "冲突未决：百炼模型页无思考栏位，deep-thinking 页却把它列为混合思考默认开启。",
+        "effort 档位取自 models.dev(opencode 注册表, registry)；enable_thinking/thinking_budget 为厂商口径(vendor-doc)。自有层归一：界面单一思考强度映射到本模型真实形态。",
+        "2026-09-21 核对：models.dev 列 max_output 384000 且输入含 image；百炼列 393216、仅 text，OpenRouter 亦仅 text；冲突未决，维持百炼口径。"
+      ]
+    },
+    "deepseek-v4-flash-0731": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 1000000,
+        "max_output": 393216,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "unverified"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-flash",
+        "retrieved": "2026-09-14"
+      },
+      "release_date": "2026-07-31",
+      "last_updated": "2026-07-31",
+      "notes": [
+        "百炼模型文档明确列出 deepseek-v4-flash-0731 快照；思考能力冲突仍未确认，不据此生成强度档位。"
+      ]
+    },
+    "deepseek-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 384000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/deepseek/deepseek-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-10",
+      "last_updated": "2026-09-10",
+      "notes": [
+        "官方命名 DeepSeek V4.1 Flash，id 为 deepseek-flash。models.dev 给 toggle+effort，与 v4-pro/v4-flash 的 toggle+budget 形态不同。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "effort 档位取自 models.dev(opencode 注册表, registry)；enable_thinking/thinking_budget 为厂商口径(vendor-doc)。自有层归一：界面单一思考强度映射到本模型真实形态。"
+      ]
+    },
+    "deepseek-v4-flash-vision-exp": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 384000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/deepseek/deepseek-v4-flash-vision-exp",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-10",
+      "last_updated": "2026-09-10",
+      "notes": [
+        "视觉实验版。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "effort 档位取自 models.dev(opencode 注册表, registry)；enable_thinking/thinking_budget 为厂商口径(vendor-doc)。自有层归一：界面单一思考强度映射到本模型真实形态。"
+      ]
+    },
+    "deepseek-v4.1-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 384000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/deepseek/deepseek-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-10",
+      "last_updated": "2026-09-10",
+      "notes": [
+        "端点暴露的 wire id 为 deepseek-v4.1-flash（models.dev 记作 deepseek-flash / DeepSeek V4.1 Flash）。",
+        "effort 档位取自 models.dev(opencode 注册表, registry)；enable_thinking/thinking_budget 为厂商口径(vendor-doc)。自有层归一：界面单一思考强度映射到本模型真实形态。"
+      ]
+    }
+  }
+}

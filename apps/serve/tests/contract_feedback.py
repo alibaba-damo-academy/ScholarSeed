@@ -749,6 +749,90 @@ def _bundle_names(payload: bytes) -> list[str]:
         return archive.namelist()
 
 
+def test_session_error_summary_is_additive() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        trace_dir = Path(directory)
+        path = trace_dir / "scholarseed-codex-mine.jsonl"
+        path.write_text(
+            json.dumps(
+                {
+                    "session_id": "mine",
+                    "name": "runtime.incident.detected",
+                    "attributes": {
+                        "session_id": "mine",
+                        "incident_kind": "rpc_rejected",
+                        "incident_state": "detected",
+                        "provider_error_code": "rate_limit_exceeded",
+                        "provider_http_status": 429,
+                        "raw_error": "private provider response",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        previous_trace_dir = fb.TRACE_DIR
+        fb.TRACE_DIR = trace_dir
+        try:
+            original = fb._build_log_bundle_contents(
+                include_trace=True, session_id="mine", include_diagnostics=False
+            )
+            updated = fb.build_log_bundle(
+                include_trace=True, session_id="mine", include_diagnostics=False
+            )
+            with (
+                zipfile.ZipFile(io.BytesIO(original)) as before,
+                zipfile.ZipFile(io.BytesIO(updated)) as after,
+            ):
+                check(
+                    "session summary only appends one member",
+                    after.namelist() == before.namelist() + [fb.SESSION_ERROR_SUMMARY_ARCNAME],
+                )
+                check(
+                    "old bundle members remain byte-identical",
+                    all(before.read(name) == after.read(name) for name in before.namelist()),
+                )
+                summary = after.read(fb.SESSION_ERROR_SUMMARY_ARCNAME)
+                check(
+                    "summary has safe status but no provider body",
+                    b'"http_status":429' in summary
+                    and b'"provider_error_code":"rate_limit_exceeded"' in summary
+                    and b"private provider response" not in summary,
+                )
+            check(
+                "summary requires conversation consent",
+                fb.SESSION_ERROR_SUMMARY_ARCNAME
+                not in _bundle_names(
+                    fb.build_log_bundle(include_trace=False, include_diagnostics=False)
+                ),
+            )
+            constrained = fb.build_log_bundle(
+                include_trace=True,
+                session_id="mine",
+                include_diagnostics=False,
+                budget=len(original),
+            )
+            expected = fb._build_log_bundle_contents(
+                include_trace=True,
+                session_id="mine",
+                include_diagnostics=False,
+                budget=len(original),
+            )
+            with (
+                zipfile.ZipFile(io.BytesIO(expected)) as before,
+                zipfile.ZipFile(io.BytesIO(constrained)) as after,
+            ):
+                check(
+                    "limited budget never removes original members",
+                    all(
+                        name in after.namelist() and before.read(name) == after.read(name)
+                        for name in before.namelist()
+                    ),
+                )
+        finally:
+            fb.TRACE_DIR = previous_trace_dir
+
+
 def main() -> int:
     print("desktop feedback forwarding contract")
     test_base_url_resolution()
@@ -760,6 +844,7 @@ def main() -> int:
     test_validation_and_upstream_failures()
     _check_bundle_budget_is_hard()
     test_bundle_budget_and_scope()
+    test_session_error_summary_is_additive()
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0
 

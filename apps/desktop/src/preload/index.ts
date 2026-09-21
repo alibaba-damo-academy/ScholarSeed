@@ -16,6 +16,7 @@ import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } 
 import type { ImportPickerTarget } from '../picker'
 import { SKILLS_CHANNEL, type DeviceSkillRequest, type DeviceSkillResponse } from '../skills'
 import { FEEDBACK_CAPTURE_CHANNEL, type FeedbackScreenshotResult } from '../feedback'
+import { CLIPBOARD_PASTE_CHANNEL } from '../clipboard'
 
 import { SUBSCRIPTION_CHANNEL, type SubscriptionRequest, type SubscriptionReply } from '../subscriptions'
 
@@ -136,6 +137,9 @@ const bridge = {
   writeClipboard(text: string): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('scholarseed:write-clipboard', text)
   },
+  pasteClipboard(): Promise<boolean> {
+    return ipcRenderer.invoke(CLIPBOARD_PASTE_CHANNEL)
+  },
   writeClipboardImage(bytes: Uint8Array): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('scholarseed:write-clipboard-image', bytes)
   },
@@ -204,6 +208,11 @@ const bridge = {
   },
   checkUpdate(): Promise<UpdateSnapshot> {
     return ipcRenderer.invoke('scholarseed:update-check')
+  },
+  // 静默刷新：复用主进程背景检查路径（不进 'checking' 相位），更新表面打开时调用；
+  // 结果经快照广播回来，这里没有返回值。
+  refreshUpdate(): Promise<void> {
+    return ipcRenderer.invoke('scholarseed:update-refresh')
   },
   diagnoseUpdate(): Promise<UpdateDiagnosis> {
     return ipcRenderer.invoke('scholarseed:update-diagnose')

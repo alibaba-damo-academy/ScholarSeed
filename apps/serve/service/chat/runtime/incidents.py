@@ -50,6 +50,8 @@ def event_incident(event: RuntimeEvent) -> RuntimeIncident | None:
             rpc_latency_ms=integer(raw.get("rpc_latency_ms", 0)),
             process_exit_code=optional_integer(raw.get("process_exit_code")),
             ambiguous_commit=boolean(raw.get("ambiguous_commit", False)),
+            provider_error_code=text(raw.get("provider_error_code", "")),
+            provider_http_status=optional_integer(raw.get("provider_http_status")),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("invalid runtime incident observation") from error

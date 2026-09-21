@@ -61,14 +61,24 @@ export function projectStreamDelta(
   timestamp?: number
 ): ConvItem[] {
   const conversation = [...items]
-  let index = conversation.length - 1
-  while (index >= 0) {
-    const candidate = conversation[index]
-    const sameIdentity = itemId
-      ? candidate?.itemId === itemId
-      : candidate?.itemId === undefined && candidate?.turnId === turnId
-    if (candidate?.kind === kind && candidate.turnId === turnId && sameIdentity) break
-    index -= 1
+  const stableIndexes = itemId
+    ? conversation.flatMap((candidate, index) => (
+        (candidate.kind === 'agent' || candidate.kind === 'thinking')
+          && candidate.turnId === turnId
+          && candidate.itemId === itemId
+          ? [index]
+          : []
+      ))
+    : []
+  let index = stableIndexes[0] ?? -1
+  if (!itemId) {
+    index = conversation.length - 1
+    while (index >= 0) {
+      const candidate = conversation[index]
+      const sameIdentity = candidate?.itemId === undefined && candidate?.turnId === turnId
+      if (candidate?.kind === kind && candidate.turnId === turnId && sameIdentity) break
+      index -= 1
+    }
   }
   const candidate = conversation[index]
   if (index >= 0 && candidate?.kind === kind) {
@@ -82,6 +92,33 @@ export function projectStreamDelta(
       ...(kind === 'thinking' && replace ? { commentary: true as const } : {}),
       ...(kind === 'thinking' && timestamp !== undefined ? { completedAt: timestamp } : {})
     }
+    for (const duplicateIndex of stableIndexes.slice(1).reverse()) conversation.splice(duplicateIndex, 1)
+    return conversation
+  }
+  if (index >= 0 && (candidate?.kind === 'agent' || candidate?.kind === 'thinking')) {
+    conversation[index] = kind === 'thinking'
+      ? {
+          kind,
+          text,
+          turnId,
+          itemId,
+          ...(candidate.eventSeq !== undefined || eventSeq !== undefined
+            ? { eventSeq: candidate.eventSeq ?? eventSeq }
+            : {}),
+          ...(timestamp !== undefined ? { startedAt: timestamp, completedAt: timestamp } : {}),
+          ...(replace ? { commentary: true as const } : {})
+        }
+      : {
+          kind,
+          text,
+          turnId,
+          itemId,
+          ...(modelRun ? { modelRun } : {}),
+          ...(candidate.eventSeq !== undefined || eventSeq !== undefined
+            ? { eventSeq: candidate.eventSeq ?? eventSeq }
+            : {})
+        }
+    for (const duplicateIndex of stableIndexes.slice(1).reverse()) conversation.splice(duplicateIndex, 1)
     return conversation
   }
   if (!text) return conversation
@@ -796,6 +833,7 @@ export function projectArtifactSnapshot(items: ConvItem[], artifacts: SessionArt
 type AssistantSequenceAnchor = {
   modelRun?: ModelRun
   kind: StreamItemKind
+  phaseKnown: boolean
   itemId: string
   eventSeq: number
   text: string
@@ -816,10 +854,15 @@ function assistantSequenceAnchors(events: ProductEvent[]): Map<string, Assistant
       // Agent message deltas are cumulative snapshots on the ScholarSeed surface.
       current.text = event.data.delta
       current.modelRun = event.data.model_run ?? current.modelRun
+      if (event.data.phase) {
+        current.kind = event.data.phase === 'commentary' ? 'thinking' : 'agent'
+        current.phaseKnown = true
+      }
       continue
     }
     const anchor = {
       kind: event.data.phase === 'commentary' ? 'thinking' as const : 'agent' as const,
+      phaseKnown: Boolean(event.data.phase),
       itemId: event.item_id,
       eventSeq: event.seq,
       text: event.data.delta,
@@ -850,7 +893,9 @@ function anchorAssistantSequence(items: ConvItem[], events: ProductEvent[]): Con
   projected.forEach((item, index) => {
     if ((item.kind !== 'agent' && item.kind !== 'thinking') || !item.turnId || !item.itemId) return
     const anchor = anchors.get(item.turnId)?.find((candidate) => (
-      !used.has(candidate) && candidate.kind === item.kind && candidate.itemId === item.itemId
+      !used.has(candidate)
+        && candidate.itemId === item.itemId
+        && (!candidate.phaseKnown || candidate.kind === item.kind)
     ))
     if (anchor) bind(index, anchor)
   })
@@ -862,7 +907,9 @@ function anchorAssistantSequence(items: ConvItem[], events: ProductEvent[]): Con
       || !item.turnId
       || item.eventSeq !== undefined) return
     const anchor = anchors.get(item.turnId)?.find((candidate) => (
-      !used.has(candidate) && candidate.kind === item.kind && candidate.text === item.text
+      !used.has(candidate)
+        && candidate.text === item.text
+        && (!candidate.phaseKnown || candidate.kind === item.kind)
     ))
     if (anchor) bind(index, anchor)
   })
@@ -880,7 +927,8 @@ function anchorAssistantSequence(items: ConvItem[], events: ProductEvent[]): Con
     ))
     if (remainingItems.length !== remainingAnchors.length
       || !remainingItems.every((index, offset) => (
-        projected[index].kind === remainingAnchors[offset].kind
+        !remainingAnchors[offset].phaseKnown
+          || projected[index].kind === remainingAnchors[offset].kind
       ))) continue
     remainingItems.forEach((index, offset) => bind(index, remainingAnchors[offset]))
   }

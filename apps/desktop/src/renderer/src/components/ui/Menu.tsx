@@ -229,8 +229,8 @@ export interface MenuContentProps extends HTMLAttributes<HTMLDivElement> {
   autoFocus?: boolean
   /** anchor 定位下菜单相对触发器的水平对齐；point（右键）定位不受影响。 */
   align?: 'center' | 'end' | 'start'
-  /** 子菜单需要从父级菜单项右侧展开；普通菜单默认在触发器下方。 */
-  side?: 'bottom' | 'right'
+  /** 子菜单需要从父级菜单项侧边展开；普通菜单默认在触发器下方。right/left 为首选方位, 空间不足时自动翻向另一侧。 */
+  side?: 'bottom' | 'left' | 'right'
 }
 
 export function MenuContent({ autoFocus = true, align = 'start', className, side = 'bottom', style, position: controlledPosition, onKeyDown, ...props }: MenuContentProps): JSX.Element | null {

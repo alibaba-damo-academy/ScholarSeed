@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import secrets
@@ -59,6 +60,7 @@ from service.settings.capabilities import (
     apply_capability,
     bundled_registry,
     modality_flags,
+    option_payload,
     reasoning_option,
     unverified_reason,
     vendor_capability_hint,
@@ -76,6 +78,7 @@ from service.settings.config import load_config_values
 from service.settings.connections import (
     DECLARED_CAPABILITY_INT_KEYS,
     ENABLED_KEY,
+    MODEL_DIRECTORY_KEY,
     MODEL_HIDDEN_KEY,
     MODEL_ID_KEY,
     MODEL_LABEL_KEY,
@@ -99,6 +102,7 @@ SCHOLARSEED_CODEX_PROVIDER_NAME = "ScholarSeed"
 SCHOLARSEED_MODEL_API_KEY_ENV = "SCHOLARSEED_MODEL_API_KEY"
 SCHOLARSEED_MODEL_HEADER_ENV_PREFIX = "SCHOLARSEED_MODEL_HEADER"
 SUBSCRIPTION_BILLING = "subscription"
+LOGGER = logging.getLogger(__name__)
 # Historical session identity only; never offered or admitted as a model connection.
 RETIRED_NATIVE_MODEL_KEY = "codex-subscription-default"
 API_BILLING = "api"
@@ -299,18 +303,44 @@ class ModelService:
                 for item in models
                 if item.get("billing") == SUBSCRIPTION_BILLING and not item.get("disabled")
             }
+
+            def snapshot_profiles() -> dict[str, dict]:
+                # 快照在私有 profile 上；list() 的 _public 投影是白名单，会丢弃它。
+                out: dict[str, dict] = {}
+                for profile_id in profiles:
+                    private = self._profiles.profile(profile_id, owner_id=owner_id)
+                    if isinstance(private, dict):
+                        out[profile_id] = private
+                return out
+
+            profiles_by_id = snapshot_profiles()
+            if refresh:
+                # 显式 refresh = 配置时刻：并行重拉上游并落快照；读路径本身不打上游。
+                async def resync(profile_id: str) -> tuple[str, bool]:
+                    try:
+                        await self._subscriptions.sync_directory(owner_id, profile_id)
+                        return profile_id, True
+                    except OAuthFailure:
+                        return profile_id, False
+
+                outcomes = await asyncio.gather(*(resync(p) for p in profiles))
+                profiles_by_id = snapshot_profiles()
+                for profile_id, ok in outcomes:
+                    if not ok:
+                        for item in models:
+                            if item.get("profile_id") == profile_id:
+                                item["reasoning_efforts"] = None
+                                item["reasoning_effort_error"] = (
+                                    "暂时无法读取订阅模型的思考深度，请刷新模型目录。"
+                                )
             for profile_id in profiles:
-                try:
-                    directory = await self._subscriptions.models(owner_id, profile_id)
-                except OAuthFailure:
-                    for item in models:
-                        if item.get("profile_id") == profile_id:
-                            item["reasoning_efforts"] = None
-                            item["reasoning_effort_error"] = (
-                                "暂时无法读取订阅模型的思考深度，请刷新模型目录。"
-                            )
+                snapshot = (profiles_by_id.get(profile_id) or {}).get(MODEL_DIRECTORY_KEY)
+                if not isinstance(snapshot, dict) or not snapshot.get("models"):
+                    # 尚无快照（刚登录、未配置）：读路径不打上游，后台配置时拉取自愈，
+                    # 本次先用注册表兜底，界面不阻塞。
+                    self._schedule_directory_sync(owner_id, profile_id)
                     continue
-                offered = {row["id"]: row for row in directory["models"]}
+                offered = {row["id"]: row for row in snapshot.get("models") or []}
                 for item in models:
                     if item.get("profile_id") == profile_id:
                         native = offered.get(item["model_id"], {})
@@ -321,6 +351,21 @@ class ModelService:
                         if native.get("reasoning_options") is not None:
                             item["reasoning_options"] = native.get("reasoning_options")
                         item["reasoning_effort"] = native.get("reasoning_effort", "")
+                        # 订阅目录没给思考形态时回落到注册表：OAuth 端点就是厂商官方面，
+                        # 其模型档位属 vendor-doc 真值（与受信预置 BYOK 同一口径），否则
+                        # gpt 这类原生支持 reasoning_effort 的订阅模型连滑块都不出现。
+                        if (
+                            native.get("reasoning_efforts") is None
+                            and native.get("reasoning_options") is None
+                            and not item.get(REASONING_OPTIONS_KEY)
+                            and not item.get(REASONING_EFFORTS_KEY)
+                        ):
+                            declared = bundled_registry().lookup(item["model_id"])
+                            if declared.declared and declared.reasoning_options is not None:
+                                item[REASONING_OPTIONS_KEY] = [
+                                    option_payload(option) for option in declared.reasoning_options
+                                ]
+                                item[REASONING_EFFORTS_KEY] = list(declared.effort_values or ())
         return {
             "configured": bool(models),
             "runtime_id": RUNTIME_ID,
@@ -332,6 +377,27 @@ class ModelService:
             "subscription_groups": subscription_groups(models),
             "reason": "" if models else "scholarseed_model_catalog_empty",
         }
+
+    def _schedule_directory_sync(self, owner_id: str, profile_id: str) -> None:
+        """读路径发现缺快照时后台补拉（配置时加载），不阻塞本次读。"""
+
+        if self._subscriptions.sync_on_cooldown(owner_id, profile_id):
+            return  # 上游最近在失败，冷却期内不重复锤
+
+        async def run() -> None:
+            try:
+                await self._subscriptions.sync_directory(owner_id, profile_id)
+            except Exception as error:  # 后台自愈失败只记日志，不影响读路径
+                LOGGER.warning(
+                    "subscription_directory_background_sync_failed profile=%s error=%s",
+                    profile_id,
+                    type(error).__name__,
+                )
+
+        try:
+            asyncio.get_running_loop().create_task(run())
+        except RuntimeError:
+            pass
 
     async def validate_effort(self, model_id: str, effort: str, *, user_id: str = "") -> None:
         if not effort:

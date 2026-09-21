@@ -1,4 +1,7 @@
 {
+  "turn": {
+    "duration": "Turn duration: {{duration}}"
+  },
   "header": {
     "recent": "Recent",
     "home": "Back to home",

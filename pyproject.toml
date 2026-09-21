@@ -41,7 +41,7 @@ dev = [
     "reportlab>=4.4,<6",
     "types-PyYAML>=6.0.12",
     "types-openpyxl>=3.1",
-]  # 格式化、静态检查与测试运行器 (make fmt / make lint / make typecheck / pytest)
+]  # 格式化、静态检查与测试运行器 (npm run fmt / npm run lint / npm run python:typecheck / pytest)
 # pytest 只存在于 dev extra: DMG 的 Python 依赖由 scripts/dependencies.py 用
 # `uv export --extra serve --group desktop --no-default-groups` 导出, 不含 dev extra。
 

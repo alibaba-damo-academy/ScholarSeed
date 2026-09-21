@@ -13,9 +13,9 @@ an exact, reproducible runtime version.
 
 The exact Python version, upstream release, SQLite engine and platform paths are
 declared in `manifest.json`. `scripts/python.cjs` validates that declaration and
-the archive's SHA256 for both development and packaging. Default `make install`
+the archive's SHA256 for both development and packaging. Default `npm run install:python`
 extracts the same archive to the ignored `.python/<sha256>/` cache and uses it as
-the base of `.venv`; `make check-python` verifies the actual Python/SQLite and base
+the base of `.venv`; `npm run check:python` verifies the actual Python/SQLite and base
 path. Stop processes using a venv before switching its base runtime.
 
 ## Layout

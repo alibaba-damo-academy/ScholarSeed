@@ -730,6 +730,12 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn(response_language_rule, base_instructions())
         self.assertNotIn(response_language_rule, developer_instructions())
 
+    def test_tool_preamble_uses_the_users_language(self) -> None:
+        self.assertIn(
+            "send a brief preamble to the user in the user's language",
+            base_instructions(),
+        )
+
     def test_nonresearch_prompt_does_not_require_capability_promotion(self) -> None:
         prompt = developer_instructions()
         self.assertIn("it normally and do not apply the clarification workflow below.", prompt)

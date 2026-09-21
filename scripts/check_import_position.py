@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """import 位置守卫 (E402 风格): 模块级 import 必须在文件头, 不得夹在代码后。
 
-语义对齐 pycodestyle E402 (Python 生态通用定义), 是 `make fmt-check` / format.sh --check 的
+语义对齐 pycodestyle E402 (Python 生态通用定义), 是 `npm run fmt-check` / format.sh --check 的
 一环。允许出现在 import 之前的「前导」(不触发违规):
 
   - 模块 docstring / 裸字符串

@@ -65,7 +65,7 @@ import {
   PDF_EXPORT_ERROR_CODE,
   PdfExportError
 } from './pdf/export'
-import { citationRegions, clipQuads, normalizeQuads, selectionRectangles, enclosingRectangle, fittedScale, matchText, MAX_SCALE, MIN_SCALE, mostVisiblePage, PAGE_GUTTER, pageNumber, SCALE_STEP, selectionPageText, THUMBNAIL_WIDTH, type PdfFitMode, type Size } from './pdf/geometry'
+import { citationRegions, clipQuads, normalizeQuads, selectionRectangles, enclosingRectangle, fittedScale, matchText, MAX_SCALE, MIN_SCALE, mostVisiblePage, PAGE_GUTTER, pageInSelectionSpan, pageNumber, SCALE_STEP, selectionPageText, THUMBNAIL_WIDTH, type PdfFitMode, type Size } from './pdf/geometry'
 import { outlineTree, resolveDestination, type PdfDestination, type PdfDestinationResolver, type PdfOutlineItem } from './pdf/navigation'
 import { PdfOutline } from './pdf/Outline'
 import { PdfPanel } from './pdf/Panel'
@@ -111,6 +111,7 @@ function logPdfExportFailure(error: unknown): void {
 const DEFAULT_FIT_MODE: PdfFitMode = 'width'
 interface SearchHit { page: number; text: string; ordinal: number }
 interface PageSelection { page: number; text: string; quads: number[][] }
+interface SelectionDragSpan { anchor: number; focus: number }
 interface PdfZoomAnchor { page: number; x: number; y: number; clientX: number; clientY: number }
 
 function searchSnippet(text: string, query: string): React.ReactNode {
@@ -236,7 +237,7 @@ export function PdfDocument({
     ? reading.sidebarTab
     : 'outline'
   const [pages, setPages] = useState<PDFPageProxy[]>([])
-  const [selectionDragPage, setSelectionDragPage] = useState<number | null>(null)
+  const [selectionDragSpan, setSelectionDragSpan] = useState<SelectionDragSpan | null>(null)
   const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
   const [cropBox, setCropBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [fonts, setFonts] = useState(() => new PdfFonts())
@@ -868,13 +869,6 @@ export function PdfDocument({
       else if (shortcut.id === 'pdf.comment' && (selections.length || activeMark)) setCommentFormOpen(true)
       else if (shortcut.id === 'pdf.copyText' && selectedText) {
         void window.scholarseed?.writeClipboard(selectedText).then(result => notifyResult(result.ok ? 'copied' : 'copyFailed'))
-      } else if (shortcut.id === 'pdf.openLink') {
-        const link = document.activeElement instanceof HTMLAnchorElement && documentRef.current?.contains(document.activeElement)
-          ? document.activeElement
-          : null
-        if (link?.href) void window.scholarseed?.openExternal(link.href)
-      } else if (shortcut.id === 'pdf.toggleOutline') {
-        update(sidebar && sidebarTab === 'outline' ? { sidebar: false } : { sidebar: true, sidebarTab: 'outline' })
       }
     }
     window.addEventListener('keydown', onShortcut)
@@ -883,12 +877,13 @@ export function PdfDocument({
   const onScroll = (): void => {
     const host = viewportRef.current
     if (!host) return
-    if (selections.length && selectionDragPage === null) window.getSelection()?.removeAllRanges()
+    if (selections.length && selectionDragSpan === null) window.getSelection()?.removeAllRanges()
     const elements = Array.from(host.querySelectorAll<HTMLElement>('.vds-pdf-page'))
     const page = mostVisiblePage(elements.map(element => {
       const { top, bottom } = element.getBoundingClientRect()
       return { page: Number(element.dataset.page), top, bottom }
     }), host.getBoundingClientRect())
+    if (page && selectionDragSpan) setSelectionDragSpan(current => current && current.focus !== page ? { ...current, focus: page } : current)
     if (page && page !== readingRef.current?.page) update({ page })
     const workspace = controller.getSnapshot()
     const selectedSession = workspace.sessions[sessionId]
@@ -1083,11 +1078,12 @@ export function PdfDocument({
         rightPanel={<span aria-hidden />}
         onWidthChange={width => update({ navigationWidth: Number.parseFloat(width) })}
       />}
-      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) { captureSelection(true); setSelectionDragPage(null) } }} onKeyUp={() => captureSelection()}
+      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) { captureSelection(true); setSelectionDragSpan(null) } }} onKeyUp={() => captureSelection()}
         onPointerDownCapture={event => {
           const element = (event.target as HTMLElement).closest<HTMLElement>('.vds-pdf-page')
           if (!analysis.figure) {
-            setSelectionDragPage(element ? Number(element.dataset.page) : null)
+            const page = element ? Number(element.dataset.page) : null
+            setSelectionDragSpan(page ? { anchor: page, focus: page } : null)
             return
           }
           if (!element) return
@@ -1097,6 +1093,12 @@ export function PdfDocument({
           event.currentTarget.setPointerCapture(event.pointerId)
         }}
         onPointerMove={event => {
+          if (!analysis.figure) {
+            const element = (event.target as HTMLElement).closest<HTMLElement>('.vds-pdf-page')
+            const page = element ? Number(element.dataset.page) : null
+            if (page) setSelectionDragSpan(current => current && current.focus !== page ? { ...current, focus: page } : current)
+            return
+          }
           const start = cropStart.current
           if (!start) return
           const x = Math.max(start.bounds.left, Math.min(start.bounds.right, event.clientX)), y = Math.max(start.bounds.top, Math.min(start.bounds.bottom, event.clientY))
@@ -1108,14 +1110,14 @@ export function PdfDocument({
           event.preventDefault(); cropStart.current = undefined
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
-        }} onPointerCancel={() => setSelectionDragPage(null)}>
+        }} onPointerCancel={() => setSelectionDragSpan(null)}>
         {!pages.length && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
         {pages.map(page => <PdfPage
           fonts={fonts}
           key={page.pageNumber}
           page={page}
           scale={scale}
-          keepRendered={selectionDragPage === page.pageNumber}
+          keepRendered={selectionDragSpan !== null && pageInSelectionSpan(page.pageNumber, selectionDragSpan.anchor, selectionDragSpan.focus)}
           search={query}
           focus={focus?.page === page.pageNumber ? focus : undefined}
           annotations={anchoredMarks.filter(mark => mark.page === page.pageNumber)}

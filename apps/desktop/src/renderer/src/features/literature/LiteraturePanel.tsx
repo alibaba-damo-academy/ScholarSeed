@@ -931,7 +931,7 @@ export function LiteraturePanel(): React.JSX.Element {
           </CollapsibleContent>
         </Collapsible>
         <div className="lit-side-section flex flex-col gap-2">
-          <div className="lit-section-head">
+          <div className="lit-section-head h-[var(--vds-control-height-sm)] shrink-0">
             {tagSearchOpen ? (
               <>
                 <Button
@@ -956,7 +956,6 @@ export function LiteraturePanel(): React.JSX.Element {
                   aria-label={t('panel.searchTags')}
                   placeholder={t('panel.searchTags')}
                   size="sm"
-                  className="!h-6"
                   value={tagSearch}
                   containerClassName="min-w-0 flex-1"
                   onChange={(event) => setTagSearch(event.target.value)}

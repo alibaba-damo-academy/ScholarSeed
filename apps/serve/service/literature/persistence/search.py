@@ -33,18 +33,35 @@ from service.paths import (
 )
 
 SEARCH_SKILL_ID = "builtin:fast-search"
-SEARCH_PROMPT_TEMPLATE = (
-    "这是搜索栏的一次性快速检索，用户没有入口进行多轮对话，关键词已经由用户最终确定，即使范围较宽也不要追问。"
-    "不要请求澄清、不要提供选项。立即严格执行 fast-search skill 的 Veryfast 工作流。"
-    "你的回复里，包裹在<<<和>>>之间的部分，会展现给用户，你需要在你执行的每一个步骤，告诉用户当前正在做什么，必须是一句话，简明扼要。"
-    "你不能只在结束时才输出给用户信息，因为skill运行需要时间，需要告诉用户当前的步骤以告知进度。"
-    "如，在一开始，告诉用户你想怎么干；再如，在你要调用脚本时，告诉用户你要做什么，如你有了一个分支判断，你也要告诉用户你要做什么，等等。"
-    "**不要回复类似“用户希望我把输出包裹中<<<和>>>中”这种句子，它会把“和”输出给用户，即时是思考的过程也不要输出**"
-    "**检索完成时，请只输出完成信息和结果数目，不要输出文件路径信息**"
-    "**遇到任何失败或者没有生成结果文件，都要输出错误原因**"
-    "**用户的关键词是什么语言，你的输出就应该是什么语言**"
-    "搜索关键词：{query}"
-)
+SEARCH_PROMPT_TEMPLATE = '''
+### Search Protocol Instructions
+
+This is a **one-time, quick retrieval** via the search bar. Users have **no entry point for multi-turn dialogue**, and the keywords are **finalized by the user**. Even if the scope is broad, **do not ask follow-up questions**.
+
+*   **Do not request clarification.**
+*   **Do not provide options.**
+*   **Immediately and strictly execute** the `Veryfast` workflow of the `fast-search` skill.
+
+### Output Formatting & Progress Updates
+
+The content wrapped between `<<<` and `>>>` will be **displayed to the user**. You must inform the user of the current step in **every stage** of execution using a **single, concise sentence**.
+
+*   **Real-time Feedback Required:** Since skill execution takes time, you cannot wait until the end to output information. You must report progress at each step.
+*   **Examples:**
+    *   At the start: State your intended approach.
+    *   Before calling a script: Describe what action you are taking.
+    *   During branching logic: Explain the decision or next step.
+
+### Critical Constraints
+
+1.  **No Meta-Commentary:** **Do not** output sentences like *"The user wants me to wrap the output in <<< and >>>"*. This leaks internal instructions (specifically the character "and") to the user. **Even during reasoning/thinking processes, do not output such text.**
+2.  **Completion Message:** Upon finishing the search, output **only** the completion status and the **number of results**. **Do not** output file paths.
+3.  **Error Handling:** If any failure occurs or no result files are generated, output the **error reason**. If the `SCHOLARSEED_API_KEY` is missing, instruct the user that **login is required**.
+4.  **Language Matching:** Your output language must match the **user's keyword language**.
+
+**Search Keywords:** `{query}`
+'''
+
 SEARCH_RESULT_FILENAME = "metadata.json"
 SEARCH_SCHEMA_VERSION = 1
 SEARCH_RESULT_MAX_BYTES = 8 * 1024 * 1024

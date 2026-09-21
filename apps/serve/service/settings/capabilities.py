@@ -1,14 +1,15 @@
 """Declared model capability facts and their exact-match resolution.
 
-模型能力（上下文长度、思考参数形态、输入模态）的单一事实源是随包的
-``capabilities.json``。本模块只做三件事：读它、按 ``(连接, wire model)`` 精确解析、
-把声明合并进目录条目。取不到的值就是 ``None`` —— 不由模型名推断，也不给大的默认值
-（proposal 78 的 I1/I2）。
+模型能力（上下文长度、思考参数形态、输入模态）的事实源是随包的、按提供商拆分的
+``capabilities.<provider>.json`` 多文件（加载期聚合为一个注册表）。本模块只做三件事：读它、
+按 ``(连接, wire model)`` 精确解析、把声明合并进目录条目。取不到的值就是 ``None`` —— 不由
+模型名推断，也不给大的默认值（proposal 78 的 I1/I2）。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -20,7 +21,10 @@ from scholarseed_runtime.contract import ModelWireProtocol
 EMPTY_LIMITS: Mapping[str, int | None] = MappingProxyType({})
 EMPTY_PROVENANCE: Mapping[str, str] = MappingProxyType({})
 
-CAPABILITY_FILE = Path(__file__).with_name("capabilities.json")
+CAPABILITY_DIR = Path(__file__).parent
+# 能力声明按提供商拆成 ``capabilities.<provider>.json`` 多文件，加载期聚合为一个注册表
+# （单文件曾达 2400+ 行）。glob 不含 ``capabilities.json``，故旧的单文件名不会被误读。
+CAPABILITY_GLOB = "capabilities.*.json"
 CAPABILITY_SCHEMA_VERSION = 1
 GATEWAY_CONNECTION = "scholarseed-gateway"
 
@@ -38,6 +42,9 @@ CAPABILITY_PROVENANCES = (
     "gateway-probed",
     "gateway-config",
     "product-declared",
+    # 第三方注册表口径（models.dev / opencode）：可溯源但非厂商一手页，单独标记，
+    # 不与 vendor-doc 混淆（proposal 78 §5 把注册表定位为录入期交叉核对来源）。
+    "registry",
     CAPABILITY_PROVENANCE_USER,
     "unverified",
 )
@@ -54,6 +61,11 @@ LIMIT_KEYS = (
     "max_input_thinking",
 )
 PROVENANCE_KEYS = ("limits", "modalities", "reasoning")
+RELEASE_DATE_KEY = "release_date"
+LAST_UPDATED_KEY = "last_updated"
+# ``release_date`` / ``last_updated`` 只接受 ISO 日期；空串=未声明（注册表也没收录该模型时
+# 不编日期，与 I1「取不到写 null」一致）。
+DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # ``wire`` 段的协议键词表：声明、出站取名与传输协议必须同源，否则查名会静默 miss。
 WIRE_PROTOCOL_KEYS = tuple(protocol.value for protocol in ModelWireProtocol)
@@ -111,6 +123,8 @@ class ModelCapability:
     provenance: Mapping[str, str] = EMPTY_PROVENANCE
     source_url: str = ""
     retrieved: str = ""
+    release_date: str = ""
+    last_updated: str = ""
     notes: tuple[str, ...] = ()
     declared: bool = True
 
@@ -225,6 +239,17 @@ def _string_list(value: Any, *, where: str, name: str, allowed: Sequence[str]) -
 def _text(value: Any) -> str | None:
     cleaned = str(value or "").strip()
     return cleaned or None
+
+
+def _date_text(value: Any, *, where: str, name: str) -> str:
+    """ISO 日期文本；空=未声明，非空但格式不对即录入错误（不静默丢弃）。"""
+
+    if value is None or value == "":
+        return ""
+    text = str(value).strip()
+    if not DATE_PATTERN.fullmatch(text):
+        raise CapabilitySchemaError(f"{where}: {name} must be YYYY-MM-DD or null, got {text!r}")
+    return text
 
 
 def _wire_names(value: Any, *, where: str, name: str) -> Mapping[str, str] | None:
@@ -370,6 +395,8 @@ def _parse_entry(wire_model: str, value: Any, *, where: str) -> ModelCapability:
         provenance=_parse_provenance(value.get("provenance"), where=where),
         source_url=str(source.get("url") or ""),
         retrieved=str(source.get("retrieved") or ""),
+        release_date=_date_text(value.get(RELEASE_DATE_KEY), where=where, name=RELEASE_DATE_KEY),
+        last_updated=_date_text(value.get(LAST_UPDATED_KEY), where=where, name=LAST_UPDATED_KEY),
         notes=tuple(str(entry) for entry in (value.get("notes") or ())),
     )
 
@@ -469,6 +496,8 @@ def _merge(baseline: ModelCapability, override: ModelCapability) -> ModelCapabil
         provenance=provenance,
         source_url=override.source_url or baseline.source_url,
         retrieved=override.retrieved or baseline.retrieved,
+        release_date=override.release_date or baseline.release_date,
+        last_updated=override.last_updated or baseline.last_updated,
         notes=baseline.notes + override.notes,
     )
 
@@ -485,17 +514,19 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return dict(pairs)
 
 
-def load_registry(path: Path = CAPABILITY_FILE) -> CapabilityRegistry:
-    """读取并校验随包声明；任何不自洽都在此处抛出，不静默修正。"""
+def _parse_document(document: Any, origin: str) -> CapabilityRegistry:
+    """校验并解析一份完整文档（``{schema_version, models, connections}``）成注册表。
 
-    document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
+    ``origin`` 只用于报错定位（单文件名，或聚合时的目录/glob 标识）。
+    """
+
     if not isinstance(document, dict):
-        raise CapabilitySchemaError(f"{path.name}: top level must be an object")
+        raise CapabilitySchemaError(f"{origin}: top level must be an object")
     models, connections = _validate_document(document)
     parsed_models = {
         str(key)
         .strip()
-        .lower(): _parse_entry(str(key).strip().lower(), entry, where=f"{path.name}: models.{key}")
+        .lower(): _parse_entry(str(key).strip().lower(), entry, where=f"{origin}: models.{key}")
         for key, entry in models.items()
     }
     parsed_connections = {
@@ -504,7 +535,7 @@ def load_registry(path: Path = CAPABILITY_FILE) -> CapabilityRegistry:
         .lower(): _parse_entry(
             str(key).partition(":")[2].strip().lower(),
             entry,
-            where=f"{path.name}: connections.{key}",
+            where=f"{origin}: connections.{key}",
         )
         for key, entry in connections.items()
     }
@@ -512,16 +543,73 @@ def load_registry(path: Path = CAPABILITY_FILE) -> CapabilityRegistry:
         _check_long_context(
             entry.long_context,
             entry.limits.get(CONTEXT_LIMIT_KEY),
-            where=f"{path.name}: models.{key}",
+            where=f"{origin}: models.{key}",
         )
     for key, entry in parsed_connections.items():
         baseline = parsed_models[key.partition(":")[2]]
         _check_long_context(
             entry.long_context,
             entry.limits.get(CONTEXT_LIMIT_KEY) or baseline.limits.get(CONTEXT_LIMIT_KEY),
-            where=f"{path.name}: connections.{key}",
+            where=f"{origin}: connections.{key}",
         )
     return CapabilityRegistry(models=parsed_models, connections=parsed_connections)
+
+
+def _read_document(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_no_duplicate_keys)
+
+
+def load_registry(path: Path) -> CapabilityRegistry:
+    """读取并校验单份声明文件；任何不自洽都在此处抛出，不静默修正。"""
+
+    return _parse_document(_read_document(path), path.name)
+
+
+def load_registry_dir(directory: Path = CAPABILITY_DIR) -> CapabilityRegistry:
+    """聚合 ``capabilities.<provider>.json`` 多文件为一个注册表。
+
+    跨文件出现同一 wire id 即报错（一个模型只能归属一个提供商文件，重复声明会让某条
+    静默覆盖另一条）；每个文件各自带 ``schema_version``，``connections`` 段可省略。
+    """
+
+    files = sorted(directory.glob(CAPABILITY_GLOB))
+    if not files:
+        raise CapabilitySchemaError(f"no {CAPABILITY_GLOB} files under {directory}")
+    merged_models: dict[str, Any] = {}
+    merged_connections: dict[str, Any] = {}
+    for path in files:
+        document = _read_document(path)
+        if not isinstance(document, dict):
+            raise CapabilitySchemaError(f"{path.name}: top level must be an object")
+        if document.get("schema_version") != CAPABILITY_SCHEMA_VERSION:
+            raise CapabilitySchemaError(
+                f"{path.name}: unsupported schema_version {document.get('schema_version')!r}"
+            )
+        models = document.get("models")
+        connections = document.get("connections") or {}
+        if not isinstance(models, dict) or not models:
+            raise CapabilitySchemaError(f"{path.name}: models must be a non-empty object")
+        if not isinstance(connections, dict):
+            raise CapabilitySchemaError(f"{path.name}: connections must be an object")
+        for key, entry in models.items():
+            normalized = str(key).strip().lower()
+            if normalized in merged_models:
+                raise CapabilitySchemaError(
+                    f"{path.name}: model {key!r} is declared in more than one provider file"
+                )
+            merged_models[normalized] = entry
+        for key, entry in connections.items():
+            if key in merged_connections:
+                raise CapabilitySchemaError(
+                    f"{path.name}: connection {key!r} is declared in more than one provider file"
+                )
+            merged_connections[key] = entry
+    merged = {
+        "schema_version": CAPABILITY_SCHEMA_VERSION,
+        "models": merged_models,
+        "connections": merged_connections,
+    }
+    return _parse_document(merged, f"{directory.name}/{CAPABILITY_GLOB}")
 
 
 def _check_long_context(long_context: int | None, base_window: int | None, *, where: str) -> None:
@@ -535,7 +623,7 @@ def _check_long_context(long_context: int | None, base_window: int | None, *, wh
 
 @lru_cache(maxsize=1)
 def bundled_registry() -> CapabilityRegistry:
-    return load_registry(CAPABILITY_FILE)
+    return load_registry_dir(CAPABILITY_DIR)
 
 
 def reasoning_option(

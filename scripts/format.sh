@@ -8,7 +8,7 @@
 #   VENV=/abs/.venv ./scripts/format.sh    # 覆盖 venv 位置 (默认 .venv)
 #
 # 默认路径覆盖 workspace Python 源码、scripts 与 tests。
-# 这是 `make fmt` / `make fmt-check` 背后的唯一实现 (单一来源, 无并行复制)。
+# 这是 `npm run fmt` / `npm run fmt-check` 背后的唯一实现 (单一来源, 无并行复制)。
 set -euo pipefail
 
 # 仓库根 = 本脚本目录的上一级 (无论从哪里调用都正确定位)
@@ -45,7 +45,7 @@ fi
 VENV="${VENV:-.venv}"
 PY="$VENV/bin/python"
 if [ ! -x "$PY" ]; then
-  echo "==> $PY 不存在, 回退系统 python3 (建议先 make install)" >&2
+  echo "==> $PY 不存在, 回退系统 python3 (建议先 npm run install:python)" >&2
   PY="$(command -v python3 || true)"
   [ -n "$PY" ] || { echo "ERROR: 找不到 python 解释器" >&2; exit 1; }
 fi
@@ -54,7 +54,7 @@ fi
 # 使用统一安装入口，保留 desktop 依赖组和指定的隔离环境。
 if ! "$PY" -m isort --version >/dev/null 2>&1 || ! "$PY" -m black --version >/dev/null 2>&1; then
   echo "==> isort/black 未安装, 按 uv.lock 同步 dev 依赖 (uv sync)"
-  make install VENV="$VENV" UV="${UV:-uv}" PYTHON="$PY"
+  VENV="$VENV" UV="${UV:-uv}" PYTHON="$PY" npm run install:python
   PY="$VENV/bin/python"
 fi
 

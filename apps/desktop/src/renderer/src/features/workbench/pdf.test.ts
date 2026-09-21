@@ -186,13 +186,13 @@ test('PDF selection is tab-scoped and clears the shared selection when the DOM s
   assert.match(page, /data-pdf-selection-highlight/)
 })
 
-test('PDF selection pins its drag anchor page and releases the native range before virtualization', () => {
+test('PDF selection pins its full drag span and releases the native range before virtualization', () => {
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   const page = readFileSync(new URL('./pdf/Page.tsx', import.meta.url), 'utf8')
 
-  assert.match(source, /setSelectionDragPage\(element \? Number\(element\.dataset\.page\) : null\)/)
-  assert.match(source, /keepRendered=\{selectionDragPage === page\.pageNumber\}/)
-  assert.match(source, /if \(selections\.length && selectionDragPage === null\) window\.getSelection\(\)\?\.removeAllRanges\(\)/)
+  assert.match(source, /setSelectionDragSpan\(page \? \{ anchor: page, focus: page \} : null\)/)
+  assert.match(source, /pageInSelectionSpan\(page\.pageNumber, selectionDragSpan\.anchor, selectionDragSpan\.focus\)/)
+  assert.match(source, /if \(selections\.length && selectionDragSpan === null\) window\.getSelection\(\)\?\.removeAllRanges\(\)/)
   assert.match(page, /const renderable = near \|\| keepRendered/)
   assert.match(page, /\{renderable && <canvas/)
 })

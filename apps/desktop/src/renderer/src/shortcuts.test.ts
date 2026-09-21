@@ -70,19 +70,12 @@ test('code shortcut catalog covers the approved editor commands', () => {
     [
       'code.save',
       'code.saveAll',
-      'code.quickOpen',
       'code.undo',
       'code.redo',
       'code.find',
       'code.replace',
-      'code.copyLineUp',
-      'code.copyLineDown',
-      'code.moveLineUp',
-      'code.moveLineDown',
-      'code.deleteLine',
       'code.goToLine',
       'code.lineComment',
-      'code.blockComment',
       'code.indent',
       'code.outdent'
     ]
@@ -97,23 +90,18 @@ test('PDF shortcut catalog covers navigation, zoom, browsing, and unassigned ann
     'pdf.zoomIn', 'pdf.zoomOut', 'pdf.actualSize',
     'pdf.scrollUp', 'pdf.scrollDown', 'pdf.scrollLeft', 'pdf.scrollRight',
     'pdf.scrollPageDown', 'pdf.scrollPageUp',
-    'pdf.highlight', 'pdf.comment', 'pdf.copyText', 'pdf.openLink', 'pdf.toggleOutline'
+    'pdf.highlight', 'pdf.comment', 'pdf.copyText'
   ])
-  for (const id of ['pdf.highlight', 'pdf.comment', 'pdf.copyText', 'pdf.openLink', 'pdf.toggleOutline'] as const) {
+  for (const id of ['pdf.highlight', 'pdf.comment', 'pdf.copyText'] as const) {
     assert.deepEqual(shortcutBindings(id), [])
   }
 })
 
-test('global shortcut commands have no product-defined bindings', () => {
-  const globalShortcuts = SHORTCUTS.filter(shortcut => shortcut.scope === 'global')
-  assert.ok(globalShortcuts.length > 0)
-  for (const shortcut of globalShortcuts) assert.deepEqual(shortcut.bindings, [])
+test('removed global and Office shortcut scopes have no registered commands', () => {
+  assert.equal(SHORTCUTS.some(shortcut => ['global', 'workbench', 'office'].includes(shortcut.scope)), false)
 })
 
 test('shortcut display uses native primary modifier labels', () => {
-  const binding = shortcutBinding('workbench.toggleModulePanel')
-  assert.equal(formatShortcut(binding, 'mac'), '⌘B')
-  assert.equal(formatShortcut(binding, 'windows'), 'Ctrl+B')
   assert.equal(formatShortcut(shortcutBinding('code.redo'), 'mac'), '⇧⌘Z')
   assert.equal(formatShortcut(shortcutBinding('code.redo'), 'windows'), 'Ctrl+Shift+Z')
 })
@@ -123,18 +111,12 @@ test('shortcut matching uses the platform primary modifier and supports alternat
   assert.equal(matchesShortcut(commandEvent('B', { metaKey: false, ctrlKey: true } as Partial<ShortcutEvent>), 'markdown.bold', 'windows'), true)
   assert.equal(matchesShortcut(commandEvent('b', { metaKey: false, ctrlKey: true }), 'markdown.bold', 'mac'), false)
   assert.equal(matchesShortcut(commandEvent('b', { shiftKey: true }), 'markdown.bold', 'mac'), false)
-  assert.equal(shortcutBindings('office.redo').length, 2)
-  assert.equal(matchesShortcut(commandEvent('y'), 'office.redo', 'mac'), true)
 })
 
-test('active editor scope wins over workbench for the same binding', () => {
+test('active editor scope resolves editor commands without workbench fallthrough', () => {
   assert.equal(
-    resolveShortcut(commandEvent('b'), ['markdown', 'global'], 'mac')?.id,
+    resolveShortcut(commandEvent('b'), ['markdown'], 'mac')?.id,
     'markdown.bold'
-  )
-  assert.equal(
-    resolveShortcut(commandEvent('b'), ['workbench', 'global'], 'mac')?.id,
-    'workbench.toggleModulePanel'
   )
 })
 
@@ -142,8 +124,8 @@ test('an active editor never falls through to workbench commands after rebinding
   const rebound: ShortcutOverrides = {
     'markdown.bold': { key: 'p', modifiers: ['primary', 'shift'] }
   }
-  assert.equal(resolveShortcut(commandEvent('b'), ['markdown', 'global'], 'mac', rebound), undefined)
-  assert.equal(resolveShortcut(commandEvent('b'), ['markdown', 'global'], 'mac', { 'markdown.bold': null }), undefined)
+  assert.equal(resolveShortcut(commandEvent('b'), ['markdown'], 'mac', rebound), undefined)
+  assert.equal(resolveShortcut(commandEvent('b'), ['markdown'], 'mac', { 'markdown.bold': null }), undefined)
 })
 
 test('Markdown resolves effective bindings while suppressing displaced native defaults', () => {
@@ -179,11 +161,11 @@ test('user overrides replace defaults, clearing disables, and deleting the overr
 test('same-scope effective bindings conflict while cross-scope reuse remains valid', () => {
   const binding = { key: 's', modifiers: ['primary'] } as const
   assert.deepEqual(
-    findShortcutConflicts('markdown.bold', binding, {}),
-    ['markdown.save']
+    findShortcutConflicts('code.goToLine', binding, {}),
+    ['code.save']
   )
   assert.deepEqual(
-    findShortcutConflicts('workbench.toggleModulePanel', binding, {}),
+    findShortcutConflicts('pdf.goToPage', binding, {}),
     []
   )
 })
@@ -225,21 +207,22 @@ test('shortcut recording supports editor modifiers and safe bare navigation keys
 
 test('runtime consumers use the shared shortcut registry', () => {
   const source = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8')
-  assert.match(source('./shell/WorkbenchShell.tsx'), /resolveShortcut/)
-  assert.match(source('./shell/WorkbenchShell.tsx'), /event\.defaultPrevented/)
+  assert.doesNotMatch(source('./shell/WorkbenchShell.tsx'), /resolveShortcut|shortcutScopesForTarget/)
   const markdown = source('./features/workbench/MarkdownDocument.tsx')
   assert.match(markdown, /resolveMarkdownShortcut/)
   assert.match(markdown, /suppressMarkdownDefaultShortcut/)
   assert.match(source('./features/workbench/MonacoDocument.tsx'), /monacoShortcut/)
   assert.match(source('./features/workbench/MonacoDocument.tsx'), /editor\.action\.gotoLine/)
-  assert.match(source('./features/workbench/MonacoDocument.tsx'), /globalSearchMode: 'files'/)
+  assert.match(source('./features/workbench/monaco.ts'), /contrib\/clipboard\/browser\/clipboard/)
+  assert.match(source('./features/workbench/monaco.ts'), /contrib\/comment\/browser\/comment/)
+  assert.match(source('./features/workbench/monaco.ts'), /contrib\/linesOperations\/browser\/linesOperations/)
   assert.match(source('./features/workbench/PdfDocument.tsx'), /pdf\.find/)
-  assert.match(source('./features/workbench/OfficeDocument.tsx'), /office\.find/)
-  assert.match(source('./features/workbench/office/frame.ts'), /effectiveShortcutBindings/)
-  assert.doesNotMatch(source('./features/workbench/office/input.js'), /const SHORTCUTS/)
+  assert.doesNotMatch(source('./features/workbench/OfficeDocument.tsx'), /matchesShortcut/)
+  assert.doesNotMatch(source('./features/workbench/office/frame.ts'), /shortcuts:/)
+  assert.doesNotMatch(source('./features/workbench/office/office-thread.js'), /input_command|input_text|InsertText/)
 })
 
-test('settings page edits, clears, and restores runtime shortcut overrides', () => {
+test('shortcut settings implementation remains available while its settings entry is commented out', () => {
   const page = readFileSync(new URL('./components/business/Shortcuts.tsx', import.meta.url), 'utf8')
   const panel = readFileSync(new URL('./components/business/AccountPanel.tsx', import.meta.url), 'utf8')
   assert.match(page, /SHORTCUTS/)
@@ -251,8 +234,8 @@ test('settings page edits, clears, and restores runtime shortcut overrides', () 
   assert.match(page, /clearShortcutOverride/)
   assert.match(page, /resetShortcutOverride/)
   assert.match(page, /<Dialog/)
-  assert.match(panel, /id: 'shortcuts'/)
-  assert.match(panel, /activePage === 'shortcuts' && <Shortcuts/)
+  assert.match(panel, /\/\/ \{ id: 'shortcuts', labelKey: null, lucideIcon: Keyboard \}/)
+  assert.match(panel, /\{\/\* \{activePage === 'shortcuts' && <Shortcuts \/>\} \*\/\}/)
 })
 
 test('shortcut message catalog is complete in both product languages', () => {

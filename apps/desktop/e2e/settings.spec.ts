@@ -12,7 +12,7 @@ const SETTINGS_PAGES = [
   { tab: 'models', page: 'model-configuration' },
   { tab: 'developer', page: 'developer' },
   { tab: 'files', page: 'files' },
-  { tab: 'shortcuts', page: 'shortcuts' },
+  // { tab: 'shortcuts', page: 'shortcuts' }, // 暂时随「键盘快捷键」页面隐藏。
   { tab: 'archives', page: 'archives' },
   { tab: 'about', page: 'about' }
 ] as const
@@ -52,9 +52,6 @@ test('settings keep titles and descriptions fixed while only their content scrol
         expect(before).not.toBeNull()
         await body.hover()
         await page.mouse.wheel(0, SCROLL_DISTANCE)
-        if (entry.tab === 'shortcuts') {
-          await expect.poll(() => body.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
-        }
         await expect.poll(async () => {
           const after = await header.boundingBox()
           return Math.abs((after?.y ?? Infinity) - before!.y)
@@ -62,7 +59,7 @@ test('settings keep titles and descriptions fixed while only their content scrol
         await expect(header.locator('h1')).toBeVisible()
         await expect(header.locator('p')).toBeVisible()
         expect(await shell.locator('main').evaluate(element => element.scrollTop)).toBe(0)
-        if (entry.tab === 'shortcuts' || entry.tab === 'prompts') {
+        if (entry.tab === 'prompts') {
           await page.screenshot({ path: join(runtime.artifacts, `settings-${entry.tab}-${viewport.width}.png`) })
         }
       }

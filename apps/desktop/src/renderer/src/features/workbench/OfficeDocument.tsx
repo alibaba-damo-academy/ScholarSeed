@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 
 import { IconButton, Input } from '../../components/ui'
 import { Icon } from '../../icons'
-import { matchesShortcut } from '../../shortcuts'
 import { useSelectionActionContribution, type SelectionReplacementRequest } from './actions'
 import {
   useOfficeRuntime,
@@ -146,18 +145,6 @@ export function OfficeDocument({
     return () => window.clearTimeout(timer)
   }, [executeSearch, searchOpen, searchQuery])
 
-  useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent): void => {
-      if (!matchesShortcut(event, 'office.find')) return
-      if (controller.getSnapshot().focusedTabId !== tabId) return
-      const target = event.target instanceof HTMLElement ? event.target : null
-      if (target?.closest('input, textarea, [contenteditable="true"]') && target !== searchInputRef.current) return
-      event.preventDefault()
-      openSearch()
-    }
-    window.addEventListener('keydown', handleShortcut)
-    return () => window.removeEventListener('keydown', handleShortcut)
-  }, [controller, openSearch, tabId])
   const replacement = useMemo(() => ({
     actions: null,
     expanded: false,
