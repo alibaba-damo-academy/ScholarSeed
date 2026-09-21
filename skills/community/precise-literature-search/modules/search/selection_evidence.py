@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Source-bound eligibility reviews and reusable entity evidence."""
 from __future__ import annotations
 

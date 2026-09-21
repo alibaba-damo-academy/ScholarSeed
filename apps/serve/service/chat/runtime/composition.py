@@ -348,6 +348,26 @@ class LiveSessionService:
             return
         self._prewarm_done = True
 
+    async def skill_admission(
+        self, *, path: Path, cwd: Path, user_id: str
+    ) -> Mapping[str, Any] | None:
+        canonical = path.expanduser().resolve()
+        inventory = await self.skill_inventory(cwd=cwd, force_reload=True)
+        rows = self._skills.payloads(inventory, load_skill_state(), user_id=user_id)
+        matches = [row for row in rows if canonical.is_relative_to(Path(str(row["path"])).parent)]
+        return max(matches, key=lambda row: len(Path(str(row["path"])).parts), default=None)
+
+    async def skill_configurations(
+        self, *, cwd: Path, user_id: str
+    ) -> tuple[SkillConfiguration, ...]:
+        inventory = await self.skill_inventory(cwd=cwd, force_reload=True)
+        return tuple(
+            SkillConfiguration(path, enabled)
+            for path, enabled in self._skills.session_enablement(
+                inventory, load_skill_state(), user_id=user_id
+            )
+        )
+
     async def configure_skills(
         self,
         *,
@@ -448,8 +468,14 @@ class LiveSessionService:
         )
 
     async def _prepare_attachment(self, live: LiveSession, timing: RuntimeTimingPort) -> None:
-        await self.configure_skills(
+        inventory = await self.configure_skills(
             cwd=live.runtime_workdir, state=load_skill_state(), timing=timing
+        )
+        live.skill_configurations = tuple(
+            SkillConfiguration(path, enabled)
+            for path, enabled in self._skills.session_enablement(
+                inventory, load_skill_state(), user_id=live.user_id
+            )
         )
 
     def _discard_attachment(self, live: LiveSession) -> None:
@@ -528,6 +554,7 @@ class LiveSessionService:
             cards=self._cards,
             activity_observer=self._activity_observer,
             answer_filter=self._answer_filter,
+            skill_inventory_provider=lambda cwd: self.skill_inventory(cwd=cwd, force_reload=True),
         )
         live.runtime_binding = self._catalog.runtime_binding(session_id)
         live.vendor_thread_id = resume_vendor_thread_id
@@ -555,6 +582,7 @@ class LiveSessionService:
             tuple(sorted(live.process_environment.items())),
             model_state.selected_reasoning_effort,
             model_state.selected_thinking,
+            self._skills.availability_revision(live.user_id),
         )
 
     def _activation_plan(self, live: LiveSession) -> ActivationPlan:
@@ -617,6 +645,7 @@ class LiveSessionService:
                 base_instructions=base,
                 developer_instructions=instructions,
                 skill_roots=SERVICE_SKILL_ROOTS,
+                skill_configurations=live.skill_configurations,
             )
             provider = self._gateway.provider_for(binding)
         else:
@@ -631,6 +660,7 @@ class LiveSessionService:
                 base_instructions=base,
                 developer_instructions=instructions,
                 skill_roots=SERVICE_SKILL_ROOTS,
+                skill_configurations=live.skill_configurations,
                 required_capabilities=activation.required_capabilities,
                 initial_history=(
                     self._events.portable_history(live.id, exclude_rejected=True)
@@ -835,6 +865,9 @@ class LiveSessionService:
                 base_instructions=base_instructions,
                 developer_instructions=developer_instructions,
                 skill_roots=() if ephemeral else SERVICE_SKILL_ROOTS,
+                skill_configurations=(
+                    () if ephemeral else await self.skill_configurations(cwd=cwd, user_id=user_id)
+                ),
                 ephemeral=ephemeral,
                 required_capabilities=required_capabilities,
             )

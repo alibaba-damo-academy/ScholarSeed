@@ -60,7 +60,7 @@ group.
 The bundled downloader does not contain Zotero translator sources or generated
 adapters. Normal skill downloads leave translators disabled. If an operator
 explicitly chooses to enable trusted, separately obtained translators, convert
-them with `python -m paper_dl.translators.sync` and keep the resulting adapter
+them with `scholarseed-skill-python -m paper_dl.translators.sync` and keep the resulting adapter
 directory outside the repository, skill installation and run directories.
 
 Set `browser.translators_dir` in the YAML selected by `PAPER_DL_CONFIG` to that
@@ -74,9 +74,9 @@ and stays disabled by this skill.
 ## Inspect or abandon
 
 ```bash
-python3 "$SKILL_DIR/scripts/browser_pool.py" status
+scholarseed-skill-python "$SKILL_DIR/scripts/browser_pool.py" status
 # Explicit abandonment only; stop the active adapter first.
-python3 "$SKILL_DIR/scripts/browser_pool.py" abandon --run-dir "$RUN_DIR"
+scholarseed-skill-python "$SKILL_DIR/scripts/browser_pool.py" abandon --run-dir "$RUN_DIR"
 ```
 
 Abandon refuses an executing run. If ownership cannot be verified, resolve the
@@ -89,7 +89,7 @@ Fully quit the Chrome owning the source profile and keep it closed while
 creating an authorized template:
 
 ```bash
-python3 "$SKILL_DIR/scripts/browser_pool.py" create-template \
+scholarseed-skill-python "$SKILL_DIR/scripts/browser_pool.py" create-template \
   --source-profile "$HOME/.paper-dl-cdp-profile"
 ```
 

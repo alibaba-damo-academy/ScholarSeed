@@ -6,6 +6,9 @@
     "label": "Skill groups"
   },
   "loadFailed": "Could not load skills. Please retry.",
+  "loginRequired": "Sign-in required",
+  "loginRequiredHint": "Sign in to use this skill. You can manage its enabled preference without signing in.",
+  "paused": "Paused",
   "toggleFailed": "Could not update skill status. Please retry.",
   "documentFailed": "Could not load documentation. Please retry.",
   "deleteFailed": "Could not delete the skill. Please retry.",

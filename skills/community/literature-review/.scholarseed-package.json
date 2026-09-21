@@ -40,25 +40,25 @@
     {
       "mode": 420,
       "path": "PACKAGE-MANIFEST.sha256",
-      "sha256": "4fb671814eb320f99d879911731f3beb06ffd1f3dfc3f328ff9f57d659168492",
+      "sha256": "3bde4e2de4bf3b3d79599104013b438bf77e039e066a094774c5da08da1b50af",
       "size": 20369
     },
     {
       "mode": 420,
       "path": "README.md",
-      "sha256": "c1a97513ca2801b5c62d2a08c25b595fbd069c6bad9cde8886178cd3bd245cf4",
-      "size": 22756
+      "sha256": "c4beb099efeede4bc872126faadcab33b29d7bac1823ed7f33a817e37638539f",
+      "size": 23239
     },
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "cae238c85f51d66a140a25d2ad320bc720efbf7f00b8aab51b332970e34008f0",
-      "size": 27486
+      "sha256": "e1744b7e96c6d29a4e82db0a86c76cf55528eae114894f5a482d83a73245d081",
+      "size": 28925
     },
     {
       "mode": 420,
       "path": "VERSION",
-      "sha256": "c71a11a751197b0747d19ea833a16f90fbdb96d80e4021f964c18cbc592c885a",
+      "sha256": "be62b3818f810f52e2b4404c312c577756cc2465ee86460646a9bc0cf303b8e3",
       "size": 12
     },
     {
@@ -970,8 +970,8 @@
     {
       "mode": 420,
       "path": "scripts/test_main_workflow.py",
-      "sha256": "8e8734326d8c94d9da50ccbd472aa6c812c88fc430d297ada1b0d26b3f7a8d03",
-      "size": 13353
+      "sha256": "d52efbc36a540b71ae2dc714fe9bccefbda5db7b7881942e4a60fc3868a059fb",
+      "size": 13608
     },
     {
       "mode": 420,
@@ -1246,8 +1246,8 @@
     {
       "mode": 420,
       "path": "scripts/workflow.py",
-      "sha256": "ec99fa2b44b447506d6bac9eff16a55851509e4a7df90c58db11c8814d8979e2",
-      "size": 5896
+      "sha256": "3431f19d40e6b48bbfa4b106772dd6c8f75577f94e71ef87ce918e693da476a3",
+      "size": 6286
     },
     {
       "mode": 420,
@@ -1267,6 +1267,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "cae238c85f51d66a140a25d2ad320bc720efbf7f00b8aab51b332970e34008f0",
-  "version": "2026.9.21+1"
+  "source_document_sha256": "e1744b7e96c6d29a4e82db0a86c76cf55528eae114894f5a482d83a73245d081",
+  "version": "2026.9.21+2"
 }

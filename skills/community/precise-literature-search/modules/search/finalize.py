@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Finalize file-backed agentic search artifacts into metadata and a search report."""
 
 from __future__ import annotations

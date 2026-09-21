@@ -1,9 +1,10 @@
 // authenticode.ts — Windows Authenticode 校验结果的纯判定。
 //
 // updater.ts 跑 Get-AuthenticodeSignature 拿到两个事实：Status 与 SignerCertificate.Subject；
-// 本模块只回答关于它们的两个纯问题 —— 这个 Status 意味着什么、两个 Subject 串是不是同一个
-// 发布者。不导入 Node/Electron：同一份判定必须能被 node --test 直接跑，而不是像 updater.ts
-// 那样因为导不进来只能靠源码形状守卫钉住。
+// 本模块持有这两件事的**传输契约**（脚本写出的那份 JSON 报告怎么读才可信）与关于它们的
+// 两个纯问题 —— 这个 Status 意味着什么、两个 Subject 串是不是同一个发布者。不导入 Node/Electron：
+// 同一份判定必须能被 node --test 直接跑，而不是像 updater.ts 那样因为导不进来只能靠源码形状守卫
+// 钉住。
 //
 // 为什么三分（本机不可判定 / 确证不可信 / 通过）：过去一切非 Valid 都归「签名不可信」并引导
 // 「请从官方渠道重新获取安装包」—— 而安装包字节在下载时与安装前已两次被 HTTPS 下发的
@@ -41,6 +42,69 @@ export type AuthenticodeVerdict = 'valid' | 'condemned' | 'indeterminate'
 export function classifyAuthenticodeStatus(status: string): AuthenticodeVerdict {
   if (status === AUTHENTICODE_VALID) return 'valid'
   return AUTHENTICODE_CONDEMNED_STATUSES.has(status) ? 'condemned' : 'indeterminate'
+}
+
+/**
+ * 校验脚本写出的那份 JSON 报告的键名。updater.ts 的 PowerShell 脚本用这三个值拼 hashtable，解析器用
+ * 同样的值取，契约只在这里存一份。
+ */
+export const AUTHENTICODE_REPORT_KEYS = {
+  languageMode: 'LanguageMode',
+  status: 'Status',
+  subject: 'Subject'
+} as const
+
+/** Windows PowerShell 5.1 的 `-Encoding UTF8` 写出的文件带 BOM。 */
+const UTF8_BOM_CODE_UNIT = 0xfeff
+
+/** Unicode 替换字符：任何一次编码降级的指纹。真实证书 DN 里不可能出现它。 */
+const REPLACEMENT_CHARACTER = '\uFFFD'
+
+export interface AuthenticodeReport {
+  status: string
+  subject: string
+  languageMode: string
+}
+
+/**
+ * 解析校验脚本写出的 JSON 报告文档。任何不满足契约的输入都返回 `null`，调用方据此按「校验没能执行」
+ * fail-closed —— 绝不返回一个可能已被编码破坏的发布者身份。
+ *
+ * **为什么报告走文件而不走 stdout**：签名证书 DN 自带本地化非 ASCII 属性（线上证书的 `L=杭州市`、
+ * `S=浙江省`、`OID.1.3.6.1.4.1.311.60.2.1.1=西湖区`），而 powershell.exe 的 stdout 按本机控制台代码页
+ * 编码（中文 Windows 是 936/GBK）。裸传 DN 时只要 Node 侧解码与实际代码页不一致，这几个属性就变成
+ * U+FFFD，与构建期冻结的期望串必然不符 —— 一次**解码降级**被误判成「发布者不符」的**安全拦截**，
+ * 更新永久阻断且重试每次复现（bug 87108457：3 个安装包 9 次尝试全部 `Status=Valid` 却全部被拒）。
+ *
+ * 两条看起来更省事的出路都已被真机否掉：
+ * - chcp 探测活动代码页再解码 —— 现场客户端**已含**该探测却仍回退到 UTF-8，且两条回退路径都不落
+ *   日志、事后无法定论；安全判定不该架在 best-effort 探测上。
+ * - `ConvertTo-Json` 把非 ASCII 转义成 `\uXXXX` 让 stdout 变纯 ASCII —— 真机实测 PS 5.1.17763 **不转义**
+ *   （同一条 DN 仍原样输出 24 个非 ASCII 字节）。
+ *
+ * 所以让脚本用 `Set-Content -Encoding UTF8` 把报告写进一个一次性文件、Node 按 UTF-8 读：编码由 cmdlet
+ * 参数显式决定，与控制台代码页和序列化器实现都无关。这里再把不变量钉死一次：文档里出现 U+FFFD 就
+ * 说明某处仍发生了编码降级，判定输入不可信，返回 `null`。
+ */
+export function parseAuthenticodeReport(document: string): AuthenticodeReport | null {
+  const text = (document.charCodeAt(0) === UTF8_BOM_CODE_UNIT ? document.slice(1) : document).trim()
+  if (text.includes(REPLACEMENT_CHARACTER)) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const report = parsed as Record<string, unknown>
+  const status = report[AUTHENTICODE_REPORT_KEYS.status]
+  const subject = report[AUTHENTICODE_REPORT_KEYS.subject]
+  const languageMode = report[AUTHENTICODE_REPORT_KEYS.languageMode]
+  // 三个字段都必须是在场的字符串：缺字段意味着脚本没跑完整，此时任何判定都不成立。
+  if (typeof status !== 'string' || typeof subject !== 'string' || typeof languageMode !== 'string') {
+    return null
+  }
+  return { status, subject, languageMode }
 }
 
 interface DistinguishedNameAttribute {

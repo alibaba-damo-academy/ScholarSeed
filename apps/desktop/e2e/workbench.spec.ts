@@ -564,7 +564,7 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
   } finally { await desktop.attachArtifacts() }
 })
 
-test('Markdown code block copy writes exact code through the desktop clipboard', async ({}, testInfo) => {
+test('Markdown source selection and code block copy write exact text through the desktop clipboard', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -585,6 +585,87 @@ test('Markdown code block copy writes exact code through the desktop clipboard',
     clipboardSaved = true
 
     await openFile(page, 'acceptance.md')
+    await page.getByRole('tab', { name: '源码', exact: true }).click()
+    await expect(page.locator('[data-testid="document-editor"]:visible textarea.inputarea')).toHaveCount(1)
+    await page.locator('[data-testid^="document-tab-"]').filter({ hasText: 'acceptance.md' }).click({ button: 'right' })
+    await page.getByTestId('tab-split-right').click()
+    await openFile(page, 'source.txt')
+    const sourceHeading = page.locator('[data-testid="document-editor"]:visible .view-line').filter({ hasText: '# Acceptance document' })
+    await expect(sourceHeading).toBeVisible()
+    const headingText = '# Acceptance document'
+    const copiedHeading = 'Acceptance'
+    const textBounds = await sourceHeading.evaluate(element => {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      const bounds = range.getBoundingClientRect()
+      return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+    })
+    const characterWidth = textBounds.width / headingText.length
+    const selectionY = textBounds.y + textBounds.height / 2
+    const sourceWindow = await desktop.app!.browserWindow(page)
+    await sourceWindow.evaluate(window => { window.show(); window.focus() })
+    const receiverOpened = desktop.app!.waitForEvent('window')
+    await desktop.app!.evaluate(async ({ BrowserWindow }) => {
+      const receiver = new BrowserWindow({ webPreferences: { contextIsolation: true, nodeIntegration: false } })
+      await receiver.loadURL('data:text/html,<textarea aria-label="Clipboard receiver"></textarea>')
+    })
+    const receiver = await receiverOpened
+    for (const shortcut of new Set(['Control', SHORTCUT])) {
+      for (const expectedText of [copiedHeading, 'document', copiedHeading]) {
+        await sourceWindow.evaluate(window => window.focus())
+        const start = textBounds.x + characterWidth * headingText.indexOf(expectedText)
+        await page.mouse.move(start, selectionY)
+        await page.mouse.down()
+        await page.mouse.move(start + characterWidth * expectedText.length, selectionY, { steps: expectedText.length })
+        await page.mouse.up()
+        await desktop.app!.evaluate(({ clipboard }) => clipboard.writeText(''))
+        await sourceWindow.evaluate((window, modifier) => {
+          window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'C', modifiers: [modifier] })
+          window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'C', modifiers: [modifier] })
+        }, shortcut === 'Control' ? 'control' : 'meta')
+        await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(expectedText)
+        await (await desktop.app!.browserWindow(receiver)).evaluate(window => window.focus())
+        const pasteTarget = receiver.getByRole('textbox', { name: 'Clipboard receiver', exact: true })
+        await pasteTarget.fill('')
+        await pasteTarget.press(`${SHORTCUT}+v`)
+        await expect(pasteTarget).toHaveValue(expectedText)
+      }
+    }
+    await receiver.screenshot({ path: join(runtime.artifacts, 'markdown-source-repeated-paste.png') })
+    await receiver.close()
+    await sourceWindow.evaluate(window => window.focus())
+    await expect(page.getByRole('button', { name: '保存', exact: true }).first()).toBeDisabled()
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-source-selection-copy.png') })
+    const sourceWindowContents = `${MARKDOWN_SOURCE}\n\`\`\`text\n${codeCopy}\n\`\`\`\n`
+    const pasteCases = [
+      { text: '粘贴验证\nsecond line', nativeMenu: false },
+      { text: 'Repeated paste', nativeMenu: false },
+      ...(process.platform === 'darwin' ? [{ text: 'Native menu paste', nativeMenu: true }] : [])
+    ]
+    for (const { text: pastedText, nativeMenu } of pasteCases) {
+      await sourceHeading.click()
+      await page.keyboard.press(`${SHORTCUT}+Home`)
+      await page.keyboard.press(`${SHORTCUT}+a`)
+      await desktop.app!.evaluate(({ clipboard }, text) => clipboard.writeText(text), pastedText)
+      if (nativeMenu) {
+        await desktop.app!.evaluate(({ Menu }) => Menu.sendActionToFirstResponder('paste:'))
+      } else await sourceWindow.evaluate((window, modifier) => {
+        window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: [modifier] })
+        window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: [modifier] })
+      }, NATIVE_SHORTCUT_MODIFIER)
+      const markdownSource = page.locator('[data-testid="document-editor"]:visible').filter({ hasText: pastedText.split('\n')[0] })
+      await expect(markdownSource).toBeVisible()
+      await page.keyboard.press(`${SHORTCUT}+a`)
+      await page.keyboard.press(`${SHORTCUT}+c`)
+      await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(pastedText)
+      await page.screenshot({ path: join(runtime.artifacts, 'markdown-source-paste.png') })
+      await page.getByTestId('markdown-undo').first().click()
+      await expect(sourceHeading).toBeVisible()
+      await sourceHeading.click()
+      await page.keyboard.press(`${SHORTCUT}+a`)
+      await page.keyboard.press(`${SHORTCUT}+c`)
+      await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(sourceWindowContents)
+    }
     await page.locator('[data-testid="markdown-open-editor"]:visible').click()
     const markdown = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
     await expect(markdown).toBeVisible()
@@ -3310,6 +3391,73 @@ test('development Markdown documents keep table editors alive across tab switchi
     else process.env.ELECTRON_RENDERER_URL = previousRendererUrl
     await server.close()
   }
+})
+
+test('long resource folder names stay clear of row actions at every depth', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const folderName = '超长文本超长文本超长文本超长文本超长文本'
+  const nestedPath = `${folderName}/${folderName}`
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    mkdirSync(join(resources, nestedPath), { recursive: true })
+    writeFileSync(join(resources, nestedPath, 'note.md'), '# Long folder layout\n')
+    await page.getByTestId('resource-refresh').click()
+    await page.getByTestId(`tree-resources/${folderName}`).click()
+    for (const path of [`resources/${folderName}`, `resources/${nestedPath}`]) {
+      const row = page.getByTestId(`tree-${path}`)
+      const name = row.locator('.vds-tree-name')
+      await row.hover()
+      await expect.poll(() => name.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
+      const textBounds = await name.boundingBox()
+      const actionBounds = await page.getByTestId(`tree-more-${path}`).boundingBox()
+      expect(textBounds!.x + textBounds!.width).toBeLessThanOrEqual(actionBounds!.x)
+      await page.getByTestId(`tree-create-${path}`).click()
+      await expect(page.getByTestId(`tree-new-folder-${path}`)).toBeVisible()
+      await page.keyboard.press('Escape')
+    }
+    await page.getByTestId(`tree-resources/${folderName}`).hover()
+    await page.screenshot({ path: join(runtime.artifacts, 'resource-long-folder-actions.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('switching compressed document tabs does not resurrect previous tooltips', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const names = ['tooltip-alpha.md', 'tooltip-bravo.md', 'tooltip-charlie.md', 'tooltip-delta.md', 'tooltip-echo.md']
+  try {
+    const page = await desktop.launch()
+    await (await desktop.app!.browserWindow(page)).evaluate(window => window.setSize(1100, 800))
+    const resources = await seedProject(page, runtime)
+    for (const name of names) writeFileSync(join(resources, name), `# ${name}\n`)
+    await page.getByTestId('resource-refresh').click()
+    for (const name of names) await openFile(page, name)
+    for (const name of names) {
+      const tab = page.locator('[data-testid^="document-tab-"]').filter({ hasText: name })
+      const label = tab.locator('[data-slot="ellipsis-text"]')
+      await expect.poll(() => label.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
+      await label.hover({ position: { x: 1, y: 1 } })
+      await expect(page.getByRole('tooltip').filter({ hasText: name })).toBeVisible()
+      await label.click({ position: { x: 1, y: 1 } })
+      await expect.poll(() => label.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(false)
+      await page.mouse.move(0, 0)
+      await expect(page.getByRole('tooltip')).toHaveCount(0)
+    }
+    await expect(page.locator('[data-testid="document-editor"]:visible, [data-testid="markdown-visual-editor"]:visible')).toBeVisible()
+    await expect(page.getByRole('tooltip')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'document-tabs-no-stale-tooltips.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
 })
 
 test('horizontal split keeps navigation aligned and trailing tab icons clear of actions', async ({}, testInfo) => {

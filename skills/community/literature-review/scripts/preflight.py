@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 preflight.py — check the environment before a run, and say precisely what is missing.
 
@@ -11,7 +11,7 @@ Checks are grouped by what they block, so a partial environment still yields
 useful guidance: a missing LaTeX toolchain only costs you the PDF, while an
 unconfigured model gateway blocks everything.
 
-    python3 scripts/preflight.py [--profile fast] [--json] [--no-network]
+    scholarseed-skill-python scripts/preflight.py [--profile fast] [--json] [--no-network]
 
 Exit status is 0 when nothing REQUIRED is missing; warnings alone do not fail.
 """
@@ -111,16 +111,19 @@ class Report:
 
 def check_python(rep: Report) -> None:
     v = sys.version_info
-    expected = _slr_paths.HOME / '.venv'
-    rep.add('runtime', 'bound Python 3.12.x', v[:2]==(3,12) and pathlib.Path(sys.prefix).resolve()==expected.resolve(), True,
-            detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}', hint='run scripts/setup with Python 3.12')
+    declared = os.getenv('SCHOLARSEED_PYTHON')
+    executable = pathlib.Path(sys.executable).resolve()
+    same_product = declared is None or executable == pathlib.Path(declared).resolve()
+    rep.add('runtime', 'product Python 3.12.x', v[:2] == (3, 12) and same_product, True,
+            detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}',
+            hint='launch from ScholarSeed Desktop or scholarseed-serve')
 
 
 def check_packages(rep: Report) -> None:
     for module, pip_name, required, why in PACKAGES:
         run = subprocess.run([sys.executable,'-c',f'import {module}'],capture_output=True,text=True,timeout=30)
         rep.add('packages',pip_name,run.returncode==0,required,
-                detail='' if run.returncode==0 else run.stderr[-500:], hint=f'install {pip_name} in the bound environment')
+                detail='' if run.returncode==0 else run.stderr[-500:], hint=f'install {pip_name} in the product environment')
     code = "import sys; sys.path[:0] = " + repr([str(_slr_paths.HOME/'lib'),str(_slr_paths.HOME/'scripts'),str(_slr_paths.HOME/'scripts/generation')]) + "; import slr_paths; slr_paths.bootstrap(str(" + repr(str(_slr_paths.HOME/'scripts/slr.py')) + ")); import manuscript, scripted_generation, manuscript_publication, workflow"
     run = subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=30)
     rep.add('runtime','required pipeline imports',run.returncode==0,True,detail=run.stderr[-800:])

@@ -20,7 +20,7 @@ actual parse/read outcome, not the PDF header or download status, to choose
 }
 ```
 
-Validate using `python3 "$SKILL_DIR/scripts/validate_json.py" --contract reading-outcome --input <path>`. The host records
+Validate using `scholarseed-skill-python "$SKILL_DIR/scripts/validate_json.py" --contract reading-outcome --input <path>`. The host records
 `paths.reading_outcome` in run state. Report-review refinement archives this
 artifact with the manifest before clearing active paths. Never rewrite archived
 outcomes or infer missing outcomes from titles, metadata, or an empty

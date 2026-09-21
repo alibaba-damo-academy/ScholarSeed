@@ -1287,7 +1287,7 @@ class ContentService:
             except ContentError:
                 raise
             except OSError as exc:
-                raise filesystem_error(exc, assets.WRITE_FAILED) from exc
+                raise filesystem_error(exc, assets.WRITE_FAILED, target) from exc
             finally:
                 try:
                     if (

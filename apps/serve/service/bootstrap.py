@@ -25,6 +25,7 @@ from service.assistant.service.context import AssistantService
 from service.assistant.service.links import LibraryLinkProjection
 from service.assistant.service.literature import AssistantLiteratureService
 from service.assistant.service.resources import AssistantResourceService
+from service.capabilities.api.admission import register_skill_admission
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.api.cards import register_card_routes
 from service.chat.api.history import register_history_routes
@@ -88,7 +89,12 @@ from service.paths import (
     RESOURCE_IMPORTS_DB,
     SERVICE_LITERATURE_DATABASE,
 )
-from service.platform.bridge import BRIDGE_ROUTE_PREFIX, ArtifactPublisher, DisplayCardPublisher
+from service.platform.bridge import (
+    BRIDGE_ROUTE_PREFIX,
+    ArtifactPublisher,
+    DisplayCardPublisher,
+    SkillCaller,
+)
 from service.platform.citations import PDF_INDEX_STATE
 from service.platform.content import ArtifactScopeKind, ProjectRef, RootKind
 from service.platform.context import AssistantContextProvider, AssistantTurnSnapshot, ContextRefKind
@@ -415,6 +421,11 @@ def create_app(
     def resolve_display_card_caller(scope_id: str) -> DisplayCardPublisher | None:
         return app.state.session_service.bridge_caller(scope_id)
 
+    def resolve_skill_caller(scope_id: str) -> SkillCaller | None:
+        return app.state.session_service.bridge_caller(
+            scope_id
+        ) or invocation_service.bridge_caller(scope_id)
+
     content_context = ContentContextProvider(
         content, absolute_file_reader=literature_attachments.read_absolute
     )
@@ -521,6 +532,7 @@ def create_app(
         app, app.state.session_service, history, app.state.assistant
     )
     artifact_router = register_artifact_routes(app, resolve_artifact_caller)
+    skill_router = register_skill_admission(app, resolve_skill_caller, app.state.runtime_service)
     evidence_router = register_card_bridge(
         app, app.state.session_service, app.state.fulltext_authorizer
     )
@@ -551,6 +563,7 @@ def create_app(
         bridge_router = APIRouter()
         bridge_router.include_router(history_router)
         bridge_router.include_router(artifact_router)
+        bridge_router.include_router(skill_router)
         bridge_router.include_router(card_router)
         bridge_router.include_router(result_router)
         bridge_router.include_router(review_router)

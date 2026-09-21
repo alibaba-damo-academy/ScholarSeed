@@ -2,17 +2,11 @@
 set -euo pipefail
 SLR_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLR_SETUP_ROOT="$(dirname "$SLR_SETUP_DIR")"
-SLR_SETUP_PYTHON="${PYTHON_BIN:-python3.12}"
+SLR_SETUP_PYTHON="scholarseed-skill-python"
 "$SLR_SETUP_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12.x is required"'
-# The environment keeps its creation path so installed script shebangs remain valid.
-SLR_NEW_ENV="$(mktemp -d "$SLR_SETUP_ROOT/.venv-3.12-XXXXXXXX")"
-"$SLR_SETUP_PYTHON" -m venv "$SLR_NEW_ENV"
-"$SLR_NEW_ENV/bin/python" -m pip install --upgrade pip
-"$SLR_NEW_ENV/bin/python" -m pip install -r "$SLR_SETUP_ROOT/requirements.txt"
-"$SLR_NEW_ENV/bin/python" -m pip check
-"$SLR_NEW_ENV/bin/python" -c 'import openai, httpx, pypdfium2, pdfplumber, pypdf, matplotlib, PIL, pysbd'
-# Verify pipeline imports before replacing the old binding.
-SLR_INSTALL_ROOT="$SLR_SETUP_ROOT" "$SLR_NEW_ENV/bin/python" - <<'PY'
+"$SLR_SETUP_PYTHON" -m pip check
+"$SLR_SETUP_PYTHON" -c 'import openai, httpx, pypdfium2, pdfplumber, pypdf, matplotlib, PIL, pysbd'
+SLR_INSTALL_ROOT="$SLR_SETUP_ROOT" "$SLR_SETUP_PYTHON" - <<'PY'
 import os, sys
 from pathlib import Path
 root=Path(os.environ['SLR_INSTALL_ROOT'])
@@ -21,14 +15,6 @@ import slr_paths
 slr_paths.bootstrap(str(root/'scripts/slr.py'))
 import manuscript, scripted_generation, manuscript_publication, workflow
 PY
-SLR_OLD_ENV="$SLR_SETUP_ROOT/.venv-backup-$(date +%Y%m%d%H%M%S)-$$"
-if [ -e "$SLR_SETUP_ROOT/.venv" ] || [ -L "$SLR_SETUP_ROOT/.venv" ]; then
-  mv "$SLR_SETUP_ROOT/.venv" "$SLR_OLD_ENV"
-fi
-if ! ln -s "$SLR_NEW_ENV" "$SLR_SETUP_ROOT/.venv"; then
-  if [ -e "$SLR_OLD_ENV" ] || [ -L "$SLR_OLD_ENV" ]; then mv "$SLR_OLD_ENV" "$SLR_SETUP_ROOT/.venv"; fi
-  exit 1
-fi
 if [ ! -f "$SLR_SETUP_ROOT/config/model_config.fast.json" ]; then
   cp "$SLR_SETUP_ROOT/config/model_config.fast.example.json" "$SLR_SETUP_ROOT/config/model_config.fast.json"
 fi

@@ -188,8 +188,9 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
     }, [])
     const setOpen = useCallback(
       (nextOpen: boolean) => {
-        if (nextOpen) cancelScheduledClose()
-        if (disabled) return
+        cancelScheduledClose()
+        if (disabled && nextOpen) return
+        if (!nextOpen && open === undefined) setUncontrolledOpen(false)
         if (nextOpen === requestedOpenRef.current) return
         requestedOpenRef.current = nextOpen
         if (open === undefined) setUncontrolledOpen(nextOpen)
@@ -203,6 +204,13 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
     }, [cancelScheduledClose, setOpen])
 
     useEffect(() => cancelScheduledClose, [cancelScheduledClose])
+
+    useEffect(() => {
+      if (!disabled) return
+      cancelScheduledClose()
+      requestedOpenRef.current = false
+      setUncontrolledOpen(false)
+    }, [cancelScheduledClose, disabled])
 
     useEffect(() => {
       if (!currentOpen) return

@@ -68,6 +68,7 @@ SUITES = [
     "contract_oauth_bridge",
     "contract_subscriptions",
     "contract_pdf_analysis",
+    "contract_figure_stream",
     "contract_pdf_failures",
     "contract_pdf_records",
     "contract_attachment_import",
@@ -198,6 +199,8 @@ SUITES = [
     "contract_skill_distribution",
     "contract_skill_runtime",
     "contract_skill_dependencies",
+    "contract_skill_python",
+    "contract_skill_admission",
     "contract_skill_install",
     "contract_todo_monitor",
     "contract_plan",
@@ -364,6 +367,7 @@ PRODUCT_ROOT_SUITES = (
     "tests.release.contract_lint",
     "tests.release.contract_dependencies",
     "tests.contract_codex_adapter",
+    "tests.contract_codex_isolation",
     "tests.contract_artifact_directives",
     "tests.contract_runtime_driver",
     "tests.contract_runtime_suspension",
@@ -394,6 +398,7 @@ RUNTIME_BINARY_EXCLUSIVE = frozenset(
         "contract_skill_install",
         "contract_capabilities",
         "integration_serve",
+        "tests.contract_codex_isolation",
     }
 )
 

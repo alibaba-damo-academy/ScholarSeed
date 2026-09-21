@@ -242,6 +242,29 @@ export function activityRows(
     }
     rows.splice(insertion < 0 ? previous : insertion + 1, 0, artifactRow)
   }
+  // A terminal failure is the turn's bottom-line outcome. Retry diagnostics can
+  // reach the renderer before the last reasoning/activity rows, but their event
+  // arrival order must not place the outcome above the work it summarizes.
+  for (const [turnId, outcome] of Object.entries(outcomes ?? {})) {
+    if (outcome !== 'failed' && outcome !== 'unknown') continue
+    const failures = rows.filter((row) => (
+      row.kind === 'item'
+      && row.item.kind === 'error'
+      && row.item.turnId === turnId
+    ))
+    if (failures.length === 0) continue
+    const firstFailure = rows.findIndex((row) => failures.includes(row))
+    const withoutFailures = rows.filter((row) => !failures.includes(row))
+    let lastOwned = -1
+    for (let index = withoutFailures.length - 1; index >= 0; index -= 1) {
+      if (rowTurnId(withoutFailures[index]) === turnId) {
+        lastOwned = index
+        break
+      }
+    }
+    withoutFailures.splice(lastOwned < 0 ? firstFailure : lastOwned + 1, 0, ...failures)
+    rows.splice(0, rows.length, ...withoutFailures)
+  }
   // Only a turn's last content group can still receive new activity items, so
   // it is the only group a running turn may keep in the live state. Artifacts
   // rows are a relocated display bucket and never host activity items.

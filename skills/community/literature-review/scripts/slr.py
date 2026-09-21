@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """slr — current literature-review task and workflow interface.
 
 Bind a workspace with init, configure the task, then use workflow evidence.
@@ -57,7 +57,7 @@ def substitute(command: list[str], workspace: Path) -> list[str]:
         for key, value in mapping.items():
             token = token.replace(key, value)
         out.append(token)
-    if out and out[0] in ("python", "python3"):
+    if out and out[0] == "scholarseed-skill-python":
         out[0] = sys.executable
     return out
 

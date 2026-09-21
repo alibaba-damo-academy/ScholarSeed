@@ -3,7 +3,7 @@
 ## 推荐安装
 
 ```bash
-python3 tools/install_codex.py --scope user --with-network-profile
+scholarseed-skill-python tools/install_codex.py --scope user --with-network-profile
 # 可选：仅为已登录用户注入 PaperHub 增强能力
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 codex --profile agentic-search-quality
@@ -214,14 +214,14 @@ export BRAVE_API_KEY="你的 key"
 
 ```bash
 # 不联网：查看安装、配置来源、key 是否存在和代理环境（不会输出密钥）
-python3 tools/doctor.py
+scholarseed-skill-python tools/doctor.py
 
 # 发出一个最小 PaperHub 请求
-python3 tools/doctor.py --live
+scholarseed-skill-python tools/doctor.py --live
 
 # 单独验证
-python3 tools/paperhub.py title "Attention Is All You Need" --limit 1
-python3 tools/brave.py "Attention Is All You Need paper" --count 1
+scholarseed-skill-python tools/paperhub.py title "Attention Is All You Need" --limit 1
+scholarseed-skill-python tools/brave.py "Attention Is All You Need paper" --count 1
 ```
 
 诊断时可按错误码区分问题：`PAPERHUB_AUTH_MISSING` 是 key 未进入进程，会触发 Web-only

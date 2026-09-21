@@ -1341,6 +1341,7 @@ class CodexTurnRuntime:
                 self._router.forget_item(item_id)
             self.active_skill_inputs.clear()
             self.skill_items.clear()
+            self.provider_failure = None
             if self.turn_done is not None and not self.turn_done.done():
                 self.turn_done.set_result(dict(turn))
             self._settled_turns.add(turn_id)
@@ -1409,7 +1410,11 @@ class CodexTurnRuntime:
         self.provider_incident_id = ""
         self.provider_incident_turn_id = ""
         self.provider_incident_kind = RuntimeIncidentKind.PROVIDER_RETRY
-        self.provider_failure = None
+        self.provider_failure = (
+            terminal_failure
+            if recovered and terminal_failure.retryability is RuntimeRetryability.TERMINAL
+            else None
+        )
 
     async def connection_lost(self, incident: RuntimeIncident, exit_generation: int) -> None:
         self.fs_watch_id = ""

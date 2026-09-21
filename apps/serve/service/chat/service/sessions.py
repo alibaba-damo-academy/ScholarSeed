@@ -2026,6 +2026,9 @@ class SessionService:
             raise CredentialAdmissionError(CredentialAdmissionError.code) from exc
         restart = False
         retained_product_turn = False
+        skill_configurations = await self._runtime.skill_configurations(
+            cwd=live.runtime_workdir, user_id=live.user_id
+        )
         async with live.lifecycle_lock:
             if live.running and live.runtime_session is not None:
                 return
@@ -2045,8 +2048,10 @@ class SessionService:
             )
             environment_changed = dict(desired) != dict(live.process_environment)
             if live.runtime_session is not None:
-                restart = environment_changed or bool(
-                    live.runtime_driver and live.runtime_driver.suspending
+                restart = (
+                    environment_changed
+                    or skill_configurations != live.skill_configurations
+                    or bool(live.runtime_driver and live.runtime_driver.suspending)
                 )
                 if not restart and live.applied_permission_mode != selected_mode:
                     permission_state = await self._apply_permission_intent(live, selected_mode)

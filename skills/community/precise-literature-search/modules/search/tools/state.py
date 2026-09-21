@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Maintain recoverable file-backed state for one outer search round."""
 
 from __future__ import annotations

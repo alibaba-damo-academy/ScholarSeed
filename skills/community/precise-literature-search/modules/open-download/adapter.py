@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Download user-confirmed arXiv-backed PDFs directly from arXiv."""
 
 from __future__ import annotations

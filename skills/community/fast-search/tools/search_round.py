@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run the bounded PaperHub graph used by one Veryfast search.
 
 The complete responses are stored under SESSION/rounds and merged into the

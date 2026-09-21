@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Resolve an immutable round's strategy and prepare only its required files."""
 from __future__ import annotations
 

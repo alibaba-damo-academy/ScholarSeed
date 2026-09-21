@@ -19,6 +19,7 @@
 - `profile.py`：协议身份、版本兼容策略和能力声明的唯一来源。
 - `executable.py`：官方可执行文件发现、版本和启动检查。
 - `environment.py`：运行目录与认证同步；会话恢复不读取或复制 Codex 私有数据库中的 rollout。
+- `isolation.py`：托管 App Server 的发现 Home 与最高优先级配置，禁止从用户 Home 或项目 cwd 继承 instructions、Skill、Plugin、Hook 和 MCP；用户 Home 只回投给派生 shell。
 - `permission.py`：统一权限意图、审批策略及本地服务授权到 Codex 原生配置的映射。
 - `model.py`、`skill.py`、`mcp.py`、`control.py`：原生能力映射、查询与控制。
 
@@ -43,4 +44,4 @@ codex = "scholarseed_codex.provider:provider"
 
 ## 验证
 
-`tests/contract_codex_adapter.py` 检查 ABI 映射与能力声明，Serve 契约检查产品投影。契约测试不能替代真实 Electron 对话、工具调用及官方会话恢复验收。
+`tests/contract_codex_adapter.py` 检查 ABI 映射与能力声明；`tests/contract_codex_isolation.py` 使用真实 App Server 和敌对父目录检查发现隔离；Serve 契约检查产品投影。契约测试不能替代真实 Electron 对话、工具调用及官方会话恢复验收。

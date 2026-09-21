@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Three local, persistent Chrome leases. Unknown cleanup always fails closed.
 
 Lock order: run lock -> pool lock -> nonblocking slot execution lock. The pool

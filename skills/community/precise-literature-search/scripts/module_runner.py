@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run one configured internal module through the stable file contract."""
 
 from __future__ import annotations

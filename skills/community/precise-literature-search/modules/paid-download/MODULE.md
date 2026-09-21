@@ -20,7 +20,7 @@ not permission to install packages or switch to test data. `placeholder.py`
 is an offline test fixture only, never a production fallback.
 
 ```bash
-python3 "$SKILL_DIR/scripts/module_runner.py" \
+scholarseed-skill-python "$SKILL_DIR/scripts/module_runner.py" \
   --module paid-download \
   --input "$RUN_DIR/selection.json" \
   --output "$RUN_DIR/downloads/manifest.json" \
@@ -68,7 +68,7 @@ report is an error, not success.
 For explicit whole-batch skip:
 
 ```bash
-python3 "$SKILL_DIR/scripts/download_recovery.py" skip-and-read \
+scholarseed-skill-python "$SKILL_DIR/scripts/download_recovery.py" skip-and-read \
   --run-dir "$RUN_DIR" --manifest "$RUN_DIR/downloads/manifest.json"
 ```
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Normalize and deduplicate paper records without losing source provenance."""
 
 from __future__ import annotations

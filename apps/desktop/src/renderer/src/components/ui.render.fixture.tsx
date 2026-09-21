@@ -274,6 +274,7 @@ function Fixture(): JSX.Element {
   const [tooltipOpen, setTooltipOpen] = useState(false)
   const [tooltipOpenChangeCount, setTooltipOpenChangeCount] = useState(0)
   const [tooltipUncontrolledOpenChanges, setTooltipUncontrolledOpenChanges] = useState(0)
+  const [tooltipTemporarilyDisabled, setTooltipTemporarilyDisabled] = useState(false)
   const [navigationContextTab, setNavigationContextTab] = useState('')
   const scrollViewportRef = useRef<HTMLDivElement | null>(null)
 
@@ -1471,6 +1472,10 @@ function Fixture(): JSX.Element {
       <Tooltip data-testid="render-tooltip-disabled" content="禁用提示" disabled side="top">
         <Button>禁用说明</Button>
       </Tooltip>
+      <Tooltip data-testid="render-tooltip-toggle-disabled" content="动态禁用提示" disabled={tooltipTemporarilyDisabled} portalled>
+        <Button onClick={() => setTooltipTemporarilyDisabled(true)}>点击禁用提示</Button>
+      </Tooltip>
+      <Button onClick={() => setTooltipTemporarilyDisabled(false)}>重新启用提示</Button>
     </main>
   )
 }

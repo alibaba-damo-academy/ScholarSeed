@@ -66,8 +66,31 @@ from service.identity.utils import (  # noqa: E402
 from service.paths import CONFIG_PATH  # noqa: E402
 from service.paths import SERVICE_BRIDGE_DIR, SERVICE_CASES_DIR  # noqa: E402
 from service.platform.bridge import INTERNAL_BASE_URL_ENV  # noqa: E402
+from service.platform.executables import (  # noqa: E402
+    SKILL_PYTHON_COMMAND,
+    resolve_command,
+    scripts_directory,
+)
 
 CONFIG_SEED_ENV = "SCHOLARSEED_CONFIG_SEED_PATH"
+
+
+def _ensure_skill_python_path() -> None:
+    """Expose the active environment's Skill Python entry point to sessions."""
+
+    launcher = resolve_command(SKILL_PYTHON_COMMAND)
+    if launcher is None:
+        return
+    directory = str(scripts_directory())
+    inherited = os.environ.get("PATH", "")
+    normalized_directory = os.path.normcase(os.path.abspath(directory))
+    entries = [
+        entry
+        for entry in inherited.split(os.pathsep)
+        if entry and os.path.normcase(os.path.abspath(entry)) != normalized_directory
+    ]
+    os.environ["PATH"] = os.pathsep.join((directory, *entries))
+
 
 # 出厂种子只交付「连接形状」, 凭据一律不落进用户配置。出厂曾内嵌一把全体客户端共用的
 # 网关调用方 key, 首启动原样拷进每个 ~/.scholarseed/config.json —— 那把 key 不识别人、
@@ -200,6 +223,7 @@ def seed_user_config(*, source: Path | None = None, target: Path = CONFIG_PATH) 
 
 def serve_main(argv: Optional[List[str]] = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
+    _ensure_skill_python_path()
     if argv and argv[0] == "client":
         return _client_main(argv[1:])
 

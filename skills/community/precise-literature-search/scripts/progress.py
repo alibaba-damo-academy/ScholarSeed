@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Maintain and render the run-wide progress contract."""
 
 from __future__ import annotations

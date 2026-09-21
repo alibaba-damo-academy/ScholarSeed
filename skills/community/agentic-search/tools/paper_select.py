@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Select papers from pool using relevance scoring + diversity optimization.
 
 Usage:
-    python3 paper_select.py --pool pool.json --query "..." --output metadata.json
-    python3 paper_select.py --pool pool.json --query "..." --output metadata.json --budget 5,15,15
+    scholarseed-skill-python paper_select.py --pool pool.json --query "..." --output metadata.json
+    scholarseed-skill-python paper_select.py --pool pool.json --query "..." --output metadata.json --budget 5,15,15
 
 Scoring strategy:
   1. Heuristic relevance scoring (keyword overlap + citation + recency)

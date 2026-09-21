@@ -5,7 +5,9 @@ import type { TFunction } from 'i18next'
 import { SkillDocumentError, SkillCatalogError, deleteSkill, getSkillDocument, getSkills, setSkillActive, SKILL_ERROR_DUPLICATE, type SkillInfo, uploadSkillFile } from '../../api'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { Icon } from '../../icons'
-import { productSkillGroup, skillActivationControl, skillDescription, skillDocumentBody, skillIcon, SKILL_GROUPS, type SkillInstallNotice, skillMutationMessage, type SkillMutationMessage } from '../../skill'
+import { productSkillGroup, skillActivationControl, skillDescription, skillDocumentBody, skillIcon, SKILL_GROUPS, SKILL_LOGIN_REQUIRED, type SkillInstallNotice, skillMutationMessage, type SkillMutationMessage } from '../../skill'
+import { useApp } from '../../store'
+import { useAccountAccess } from './access'
 import { Markdown } from '../primitive/Markdown'
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogPortal, AlertDialogTitle, Badge, Button, Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPortal, DialogTitle, Input, Switch, Tabs, TabsList, TabsTrigger, useToast } from '../ui'
 
@@ -40,6 +42,8 @@ function SkillNotice({ notice }: { notice: SkillPageNotice | string }): React.JS
 }
 
 export function Skills(): React.JSX.Element {
+  const { state } = useApp()
+  const { revision } = useAccountAccess(state.backendReady)
   const { t, i18n } = useTranslation('skills')
   const { t: ui } = useTranslation('ui')
   const { toast } = useToast()
@@ -65,7 +69,7 @@ export function Skills(): React.JSX.Element {
       setLoading(false)
     }
   }, [])
-  React.useEffect(() => { void load() }, [load])
+  React.useEffect(() => { void load() }, [load, revision])
 
   const toggle = async (skill: SkillInfo): Promise<void> => {
     if (!skill.toggleable || toggling) return
@@ -146,10 +150,13 @@ export function Skills(): React.JSX.Element {
                       </div>
                     </CardHeader>
                     <CardContent className="flex-1"><CardDescription className="line-clamp-3" title={description}>{description}</CardDescription>
-                      {skill.unavailable_reason && <p className="text-sm text-[var(--vds-text-secondary)]">{skill.unavailable_reason}</p>}
+                      {skill.unavailable_reason && <p className="text-sm text-[var(--vds-text-secondary)]">{skill.unavailable_reason === SKILL_LOGIN_REQUIRED ? t('loginRequiredHint') : skill.unavailable_reason}</p>}
                     </CardContent>
                     <CardFooter className="mt-0 gap-1 border-t border-[var(--vds-line-1)] pt-[6px]">
-                      <Badge size="sm" variant="secondary">{groupLabel(skill, t)}</Badge><span className="flex-1" />
+                      <Badge size="sm" variant="secondary">{groupLabel(skill, t)}</Badge>
+                      {skill.requires_login && <Badge size="sm" variant="outline">{t('loginRequired')}</Badge>}
+                      {!skill.enabled && <Badge size="sm" variant="secondary">{t('paused')}</Badge>}
+                      <span className="flex-1" />
                       <Button variant="ghost" size="sm" disabled={busy} onClick={() => void view(skill)} data-testid={`skill-view-${skill.name}`}>{t('view')}</Button>
                       {skill.group === 'user' && skill.removable && <Button variant="ghost" size="sm" disabled={busy} onClick={() => setRemoving(skill)} data-testid={`skill-remove-${skill.name}`}>{t('delete')}</Button>}
                     </CardFooter>

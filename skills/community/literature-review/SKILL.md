@@ -1,6 +1,6 @@
 ---
 name: literature-review
-version: "2026.9.21+1"
+version: "2026.9.21+2"
 description: >-
   Produce or revise an evidence-grounded literature review, survey, related-work
   section, or individual chapter from a precise research intent. Discover papers,
@@ -46,8 +46,8 @@ operation, create a visible TODO list using the host's native plan tool (such as
 | Stage | Commands / work | Result → next action |
 |---|---|---|
 | Configure | `doctor --no-network` → `init` → `writing configure` | Bound launcher and authoritative task → supply papers |
-| Papers | `papers import-local` when applicable → `papers budget` → delegate discovery when needed | Imported sources → `workflow evidence` |
-| Evidence | `workflow evidence` | Handle error/review boundaries; `outline_display` → display the packet |
+| Papers | `papers import-local` when applicable → `papers budget` → delegate discovery when needed | Imported sources → `run retrieval_adapt` |
+| Evidence | `run retrieval_adapt` → product-owned retrieval checkpoint → `workflow evidence --from fulltext` | Handle error/review boundaries; `outline_display` → display the packet |
 | Confirm | Display `outline review-packet`; `writing approve` for a real decision | Honor applicable authorization → `manuscript prepare` |
 | Generate | `manuscript prepare` → figure branch and `manuscript generate` concurrently | v1 assembly and one refinement → editable v2 |
 | Publish | `workflow publish` → bounded page check (first page + figure/table pages) → fix observed issues and republish | Deliver; report checks done and their limits |
@@ -60,7 +60,7 @@ operation, create a visible TODO list using the host's native plan tool (such as
 - Use a separate workspace per deliverable; do not overwrite an existing survey. Explicit output destinations take precedence.
 - For an existing task without a launcher, omit `--intent` to preserve its task.
 - Init returns a launcher; use `./<topic>/slr` from the fixed caller directory for later calls. Do not rely on persistent cd, aliases or exported variables.
-- Discover paths only for an invalid entry or a dependency doctor reports missing. The launcher binds Python 3.12.x; `<skill>/scripts/setup` repairs that environment.
+- Discover paths only for an invalid entry or a dependency doctor reports missing. The launcher uses the product Python 3.12.x; `<skill>/scripts/setup` verifies that environment.
 - Configure the sole task through `writing configure --request FILE` (or `-` for stdin).
 - `01_input/writing_request.json` owns immutable original intent, ordered verbatim follow-ups and current effective interpretation. Derived query/output files and stage advice cannot override it; retired requirements files are ignored.
 - Keep local language/scope exceptions and only requested modules. Do not invent length or section quotas from corpus size.
@@ -136,7 +136,7 @@ after timeouts or interruptions. Supply this complete delegation:
 
 ### Return and ownership
 
-- Read the searcher's `status_reason` for unresolved exclusions and shortfalls. After import, or for a local-only task, run `workflow evidence`.
+- Read the searcher's `status_reason` for unresolved exclusions and shortfalls. After import, or for a local-only task, run `run retrieval_adapt` as its own command. Never start `workflow evidence` without `--from`.
 - Venue/citation-floor screening belongs to the deterministic adapter. The search subagent implements excluded-topic requirements semantically during discovery; there is no keyword recheck or extra excluded-topic LLM.
 - AS owns its fallback; do not repeat PaperHub checks or ask for tokens after Web fallback.
 
@@ -144,16 +144,34 @@ after timeouts or interruptions. Supply this complete delegation:
 
 ### Do
 
-Run `workflow evidence`: retrieval_adapt → fulltext → processing → outline generate
-→ review-packet, without new model stages. It stops on errors, retrieval cases
-needing main's judgement, or the outline display boundary; it never approves or
-starts manuscript generation. Use `status --stage workflow` for observed progress.
+Run `run retrieval_adapt` as its own command. Resolve any reported retrieval case
+that needs main's judgement before continuing. Once retrieval is usable, and before
+any full-text or processing command, wait in this same turn for the product-owned
+checkpoint:
+
+`scholarseed-bridge literature review --json '{"workspace":"<actual survey directory relative to the session workdir>","checkpoint":"retrieval"}'`
+
+Keep waiting on that command until it returns. Do not call `request_user_input`,
+construct or relay an authorization question, or poll another tool. When it returns
+`authorization.disposition=authorized`, first mark retrieval complete and full text
+in progress in the existing host plan, then run `workflow evidence --from fulltext`.
+That workflow continues fulltext → processing → outline generate → review-packet,
+without new model stages, and stops on errors or the outline display boundary. On
+rejection, failure, interruption or stale state, make no full-text or later-stage
+writes and end the turn with the retrieval artifacts retained.
+
+The workflow runner also enforces this boundary: an accidental `workflow evidence`
+or `workflow evidence --from retrieval_adapt` can run retrieval only and returns
+`fulltext_authorization`; it never enters full text. Treat that return as a demand to
+execute the same product checkpoint, never as authorization. Use
+`status --stage workflow` for observed progress.
 
 ### Return → action
 
 | Returned boundary | Main action |
 |---|---|
-| retrieval_review | Read reasons/flagged records; report shortfalls and unresolved exclusions. Continue with `workflow evidence --from fulltext` when acceptable. |
+| retrieval_review | Read reasons/flagged records; report shortfalls and unresolved exclusions. When acceptable, run the blocking product checkpoint; only then continue with `workflow evidence --from fulltext`. |
+| fulltext_authorization | Run the blocking product checkpoint above; only an authorized disposition permits `workflow evidence --from fulltext`. |
 | error / stage_review | Handle the named issue; check the failed stage and current preceding inputs before resuming explicitly from that stage, not from discovery. |
 | outline_display | Display the supplied packet using the Confirm sequence, even with automatic continuation authorization. |
 

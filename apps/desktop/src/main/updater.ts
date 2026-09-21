@@ -22,7 +22,12 @@ import {
 } from 'fs'
 import { basename, dirname, join } from 'path'
 
-import { classifyAuthenticodeStatus, publisherSubjectsMatch } from './authenticode.ts'
+import {
+  AUTHENTICODE_REPORT_KEYS,
+  classifyAuthenticodeStatus,
+  parseAuthenticodeReport,
+  publisherSubjectsMatch
+} from './authenticode.ts'
 import { desktopHome, LOGS_DIRNAME, resolveProductConfig } from './backend'
 import { systemCacheDir } from './cachedir.ts'
 import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
@@ -66,11 +71,17 @@ const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_POWERSHELL = 'powershell.exe'
 const WINDOWS_UPDATE_ARGUMENTS = ['--updated', '/S', '--force-run']
 const WINDOWS_INSTALLER_ENV = 'SCHOLARSEED_UPDATE_INSTALLER'
+// 校验脚本把 JSON 报告写进这个 env 指定的文件（而不是 stdout）：stdout 按控制台代码页编码，
+// 承载不了证书 DN 里的中文属地属性；文件编码由 `Set-Content -Encoding UTF8` 显式决定。
+const WINDOWS_VERIFY_REPORT_ENV = 'SCHOLARSEED_UPDATE_VERIFY_REPORT'
+const VERIFY_REPORT_SUFFIX = '.verify.json'
 // Status 的三档语义（valid / 确证坏 / 本机不可判定）与发布者 DN 的同发布者判定在
 // authenticode.ts：纯判定、可单测。用内置 cmdlet 而非内联 WinVerifyTrust，是因为后者依赖
 // Add-Type / [PSCustomObject] / 静态属性赋值，在 PowerShell 受限语言模式下全部被禁（bug 87042987）。
 // chcp.com 报的活动控制台代码页 → TextDecoder 标签。中文 Windows 是 936(GBK)；不在表里或探测
-// 失败都退回 UTF-8（ASCII 子集，对本链路输出的 STATUS/SUBJECT 纯 ASCII 行恒正确）。
+// 失败都退回 UTF-8。**这只影响日志/stderr 的可读性**：签名校验的判定输入走 `Set-Content -Encoding
+// UTF8` 写出的报告文件（见 authenticode.ts parseAuthenticodeReport），与这里的探测结果无关，探测
+// 失败不会再变成一次安全拦截。
 const WINDOWS_CODE_PAGE_ENCODINGS: Readonly<Record<string, string>> = {
   '932': 'shift_jis',
   '936': 'gbk',
@@ -507,7 +518,8 @@ function runCommandAsync(
         resolve({
           status,
           stdout: decodeConsoleOutput(Buffer.concat(stdoutChunks), encoding),
-          stderr: decodeConsoleOutput(Buffer.concat(stderrChunks), encoding)
+          stderr: decodeConsoleOutput(Buffer.concat(stderrChunks), encoding),
+          encoding
         })
       })
     })
@@ -563,6 +575,8 @@ interface AsyncCommandResult {
   status: number | null
   stdout: string
   stderr: string
+  /** 实际用来解码 stdout/stderr 的编码标签。落日志用：探测静默回退时这是唯一的现场证据。 */
+  encoding: string
 }
 
 /** 签名校验失败的类别，决定 installWindows 回报哪种 errorFallback（见 updates.ts）。 */
@@ -583,6 +597,24 @@ class WindowsVerifyError extends Error {
 }
 
 /**
+ * 读回校验脚本写出的报告文件，读完即删。任何失败都返回空串 —— 调用方按「校验没能执行」fail-closed，
+ * 不会因为读不到报告而放行安装。
+ */
+function readVerifyReport(reportPath: string): string {
+  try {
+    return readFileSync(reportPath, 'utf8')
+  } catch {
+    return ''
+  } finally {
+    try {
+      rmSync(reportPath, { force: true })
+    } catch {
+      // 删不掉也只是留一个一次性 UUID 文件名的残留，下一次校验不会读到它。
+    }
+  }
+}
+
+/**
  * 校验待装 Windows 安装包的 Authenticode 签名，要求签名可信且发布者与打包策略一致。
  *
  * 用 PowerShell 内置 cmdlet `Get-AuthenticodeSignature`，而不是内联 C# 调 WinVerifyTrust：后者依赖
@@ -594,8 +626,15 @@ class WindowsVerifyError extends Error {
  * `.SignerCertificate.Subject` 是属性 get，不涉及被禁的方法调用或类型转换。
  *
  * 脚本刻意只用受限模式安全的构造：不 Add-Type、不 [Console]::、不 [PSCustomObject]、不 [uint32]/[Convert]::
- * 静态调用；输出纯 ASCII 的 `STATUS=` / `SUBJECT=` 两行（ASCII 在任何 Windows 代码页下字节一致，Node 侧
- * 解码恒正确）。任一步不通过都抛 WindowsVerifyError（fail-closed），绝不放行未验证的包。
+ * 静态调用；事实经 `ConvertTo-Json -Compress` 汇成一份 JSON 报告后由 `Set-Content -Encoding UTF8` 写进
+ * 一次性文件，Node 按 UTF-8 读回 —— **判定输入完全不经 stdout**。证书 DN 含本地化中文属地属性，而
+ * powershell.exe 的 stdout 按本机控制台代码页编码（中文 Windows 是 936/GBK），Node 侧解码一旦与实际
+ * 代码页不一致就把 DN 打成 U+FFFD，进而被误判成「发布者不符」的安全拦截、更新永久阻断（bug
+ * 87108457）。真机实测已排除两条更省事的出路：本机 chcp 探测（现场客户端已含该探测却仍回退 UTF-8，
+ * 且回退不落日志）、以及靠 `ConvertTo-Json` 把非 ASCII 转义成 `\uXXXX`（PS 5.1.17763 实测不转义）。
+ * 文件编码由 cmdlet 参数显式决定，与代码页和序列化器实现都无关。报告不合规即按「校验没能执行」处理
+ * —— 传输/解码降级永远不落成「发布者不符」的安全拦截（见 authenticode.ts parseAuthenticodeReport）。
+ * 任一步不通过都抛 WindowsVerifyError（fail-closed），绝不放行未验证的包。
  *
  * 代价：cmdlet 走系统默认验签策略（可能联网抓 AIA / 做吊销检查），不像 WinVerifyTrust 能显式关联网。
  * 上一轮真机实测该校验约 1990ms；用户报的「≥2min 才安装」已定位在退出后 NSIS 静默解压、与验签无关，故
@@ -614,43 +653,65 @@ export async function verifyWindowsInstaller(
 ): Promise<void> {
   if (!expectedPublisher) throw new Error('packaged product policy has no Windows publisher')
   const startedAt = Date.now()
-  // 整段作为 PowerShell -Command 传入。除 ${WINDOWS_INSTALLER_ENV} 外不含任何 ${，避免 JS 模板误插值。
-  // 只用受限语言模式允许的构造：cmdlet 调用 + 属性 get + 字符串拼接，无 Add-Type / 类型转换 / 静态赋值。
+  // 报告文件与暂存包同目录（updateCacheDir，我们自己创建并已证明可写），文件名带一次性 UUID：
+  // 上一轮的残留不可能被冒充成本轮结果，也不给同机其他进程留一个可预测的替换目标。
+  const reportPath = join(
+    dirname(installer),
+    `${basename(installer)}.${randomUUID()}${VERIFY_REPORT_SUFFIX}`
+  )
+  // 整段作为 PowerShell -Command 传入。除下面插值的常量外不含任何 ${，避免 JS 模板误插值。
+  // 只用受限语言模式允许的构造：cmdlet 调用 + 属性 get + [string] 转换（core 类型）+ hashtable
+  // 字面量，无 Add-Type / [PSCustomObject] / [Console]:: 静态赋值 / [Convert]:: 静态调用。
+  //
+  // 脚本刻意**什么都不往 stdout 写**：stdout 按控制台代码页编码，承载不了 DN 里的中文属地属性，
+  // 而真机实测 ConvertTo-Json 也不会把它转义成 ASCII（PS 5.1.17763）。报告一律走 -Encoding UTF8
+  // 的文件，编码由 cmdlet 参数决定（bug 87108457）。
   const script = `
 $ErrorActionPreference = 'Stop'
 $signature = Get-AuthenticodeSignature -FilePath $env:${WINDOWS_INSTALLER_ENV}
 $subject = ''
-if ($signature.SignerCertificate) { $subject = $signature.SignerCertificate.Subject }
-Write-Output ('LANGMODE=' + $ExecutionContext.SessionState.LanguageMode)
-Write-Output ('STATUS=' + $signature.Status)
-Write-Output ('SUBJECT=' + $subject)
+if ($signature.SignerCertificate) { $subject = [string]$signature.SignerCertificate.Subject }
+$report = @{ ${AUTHENTICODE_REPORT_KEYS.languageMode} = [string]$ExecutionContext.SessionState.LanguageMode; ${AUTHENTICODE_REPORT_KEYS.status} = [string]$signature.Status; ${AUTHENTICODE_REPORT_KEYS.subject} = $subject } | ConvertTo-Json -Compress
+Set-Content -LiteralPath $env:${WINDOWS_VERIFY_REPORT_ENV} -Value $report -Encoding UTF8
 `
   const result = await runCommandAsync(
     WINDOWS_POWERSHELL,
     ['-NoProfile', '-NonInteractive', '-Command', script],
-    { env: { ...process.env, [WINDOWS_INSTALLER_ENV]: installer }, windowsHide: true }
+    {
+      env: {
+        ...process.env,
+        [WINDOWS_INSTALLER_ENV]: installer,
+        [WINDOWS_VERIFY_REPORT_ENV]: reportPath
+      },
+      windowsHide: true
+    }
   )
-  const statusLine = result.stdout.match(/^STATUS=(.*)$/m)
-  // 命令没跑成（PowerShell 缺失/被策略拦截/没输出 STATUS 行）= 校验**没能执行**，归为环境不可用，
-  // 而非「签名不可信」。原始 stderr/stdout 落盘供定位，界面给手动安装引导（见 windowsInstallFallback）。
-  if (result.status !== 0 || !statusLine) {
+  // stdout 只作诊断，绝不参与判定。
+  const report = parseAuthenticodeReport(readVerifyReport(reportPath))
+  // 两类情况都归「校验**没能执行**」而不是「签名不可信」：命令没跑成（PowerShell 缺失/被策略
+  // 拦截/非零退出），或跑成了但报告读不到、不满足 JSON 契约、或仍带着 U+FFFD 编码降级指纹。
+  // 传输/解码降级绝不能变成一次发布者不符的安全拦截（bug 87108457）。原始输出与实际选用的解码
+  // 编码一并落盘供定位，界面给手动安装引导（见 windowsInstallFallback）。
+  if (result.status !== 0 || report === null) {
     persistUpdateLog(
-      `[update] Windows verification command failed: exit=${result.status} stderr=${result.stderr} stdout=${result.stdout}\n`
+      result.status === 0
+        ? `[update] Windows verification report is unusable: path=${reportPath} stdoutEncoding=${result.encoding} stdout=${result.stdout}\n`
+        : `[update] Windows verification command failed: exit=${result.status} stdoutEncoding=${result.encoding} stderr=${result.stderr} stdout=${result.stdout}\n`
     )
     throw new WindowsVerifyError(
       'Windows Authenticode verification could not be performed',
       'verify-env-unavailable'
     )
   }
-  const status = statusLine[1].trim()
-  const subject = (result.stdout.match(/^SUBJECT=(.*)$/m)?.[1] ?? '').trim()
+  const { status, subject, languageMode } = report
   // LanguageMode 一并落盘：受限语言模式(FullLanguage/ConstrainedLanguage)是这类验签失败的关键背景，
   // 出问题时只有这行能说明当时 PowerShell 处于哪种模式（bug 87042987 的回归验证要求）。
-  const languageMode = (result.stdout.match(/^LANGMODE=(.*)$/m)?.[1] ?? '').trim()
   logTiming(log, `Authenticode status=${status} langMode=${languageMode}`, startedAt)
-  // STATUS/SUBJECT 原样落盘：这两行是区分「确证不可信」与「本机不可判定」、以及发布者 DN 形态
+  // 判定输入与解码编码原样落盘：这两行是区分「确证不可信」与「本机不可判定」、以及发布者 DN 形态
   // 差异的唯一证据；反馈日志包会收走 update.log（feedback.py UPDATE_LOG），下一次同类工单才能定论。
-  persistUpdateLog(`[update] Windows Authenticode verdict input: status=${status} subject=${subject}\n`)
+  persistUpdateLog(
+    `[update] Windows Authenticode verdict input: status=${status} subject=${subject} stdoutEncoding=${result.encoding}\n`
+  )
   const verdict = classifyAuthenticodeStatus(status)
   if (verdict !== 'valid') {
     // 不可判定且签名者与打包策略一致：缺的是本机的链/吊销状态，不是包的身份 —— 单独上报，

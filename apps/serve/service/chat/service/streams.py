@@ -12,6 +12,7 @@ from enum import Enum
 from typing import Any, Callable, Mapping
 
 from damoatrace.recording.redaction import Redactor
+from scholarseed_runtime.contract.incident import RuntimeRetryability
 
 LOGGER = logging.getLogger(__name__)
 DIAGNOSTIC_EVENT = "model_bridge.diagnostic"
@@ -26,6 +27,22 @@ RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "respon
 SSE_DATA = b"data:"
 SSE_EVENT = b"event:"
 SSE_DONE = b"[DONE]"
+CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
+CONTENT_SAFETY_MESSAGE = "The request did not pass content safety review."
+CODEX_INVALID_PROMPT = "invalid_prompt"
+PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
+PROVIDER_FAILURE_CODES = {
+    ("server_error", 400, "internalerror.algo.datainspectionfailed"): CONTENT_SAFETY_BLOCKED,
+}
+TERMINAL_PROVIDER_FAILURES = {
+    CONTENT_SAFETY_BLOCKED: (CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE),
+}
+CODEX_TERMINAL_PROVIDER_FAILURES = {
+    (CODEX_INVALID_PROMPT, CONTENT_SAFETY_BLOCKED): (
+        CONTENT_SAFETY_BLOCKED,
+        CONTENT_SAFETY_MESSAGE,
+    ),
+}
 
 
 class StreamEnd(str, Enum):
@@ -40,9 +57,112 @@ class StreamEnd(str, Enum):
     PROVIDER_ERROR = "provider_error"
 
 
+@dataclass
+class NativeResponseNormalizer:
+    pending: bytes = b""
+    passthrough_line: bool = False
+
+    def feed(self, chunk: bytes) -> tuple[bytes, ...]:
+        output: list[bytes] = []
+        remaining = chunk
+        while remaining:
+            newline = remaining.find(b"\n")
+            if self.passthrough_line:
+                if newline < 0:
+                    output.append(remaining)
+                    break
+                output.append(remaining[: newline + 1])
+                remaining = remaining[newline + 1 :]
+                self.passthrough_line = False
+                continue
+            if newline < 0:
+                self.pending += remaining
+                if len(self.pending) > SSE_BUFFER_LIMIT:
+                    output.append(self.pending)
+                    self.pending = b""
+                    self.passthrough_line = True
+                break
+            self.pending += remaining[: newline + 1]
+            output.append(_normalize_native_response_line(self.pending))
+            self.pending = b""
+            remaining = remaining[newline + 1 :]
+        return tuple(output)
+
+    def finish(self) -> tuple[bytes, ...]:
+        if not self.pending:
+            return ()
+        pending = self.pending
+        self.pending = b""
+        return (pending,)
+
+
+def _normalize_native_response_line(line: bytes) -> bytes:
+    if not line.startswith(SSE_DATA):
+        return line
+    ending = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+    payload_bytes = line[len(SSE_DATA) : len(line) - len(ending) if ending else None].lstrip()
+    try:
+        payload = json.loads(payload_bytes)
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return line
+    if not isinstance(payload, Mapping) or payload.get("type") != "response.failed":
+        return line
+    response = payload.get("response")
+    if not isinstance(response, Mapping):
+        return line
+    error = response.get("error")
+    if not isinstance(error, Mapping):
+        return line
+    code = str(error.get("code") or "").casefold()
+    message = str(error.get("message") or "")
+    match = PROVIDER_ERROR_PREFIX.match(message)
+    if match is None:
+        return line
+    stable_code = PROVIDER_FAILURE_CODES.get((code, int(match.group(1)), match.group(2).casefold()))
+    if stable_code is None:
+        return line
+    normalized_error = dict(error)
+    normalized_error.update(
+        {
+            "code": CODEX_INVALID_PROMPT,
+            "type": CONTENT_SAFETY_BLOCKED,
+            "message": CONTENT_SAFETY_MESSAGE,
+        }
+    )
+    normalized_response = dict(response)
+    normalized_response["error"] = normalized_error
+    normalized_payload = dict(payload)
+    normalized_payload["response"] = normalized_response
+    return SSE_DATA + b" " + json.dumps(normalized_payload, ensure_ascii=False).encode() + ending
+
+
 def metadata_token(value: object) -> str:
     text = str(value or "")
     return text if len(text) <= METADATA_LIMIT and METADATA_PATTERN.fullmatch(text) else ""
+
+
+def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, str]:
+    downstream = fields.get("downstream")
+    if (
+        fields.get("phase") != "finished"
+        or not isinstance(downstream, Mapping)
+        or downstream.get("terminal_event") != "response.failed"
+    ):
+        return {}
+    code = str(downstream.get("error_code") or "")
+    error_type = str(downstream.get("error_type") or "")
+    terminal_failure = TERMINAL_PROVIDER_FAILURES.get(code)
+    if terminal_failure is None:
+        terminal_failure = CODEX_TERMINAL_PROVIDER_FAILURES.get((code, error_type))
+    if terminal_failure is None:
+        return {}
+    product_code, message = terminal_failure
+    return {
+        "error": message,
+        "error_code": product_code,
+        "safe_error": message,
+        "retryability": RuntimeRetryability.TERMINAL.value,
+    }
 
 
 @dataclass

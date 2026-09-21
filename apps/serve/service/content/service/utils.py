@@ -25,27 +25,46 @@ DIRECTORY_PATH_INVALID = "content_directory_path_invalid"
 CONTENT_SOURCE_CHANGED = "content_source_changed"
 NAME_TOO_LONG = "name_too_long"
 WINDOWS_FILENAME_EXCED_RANGE = 206
+WINDOWS_PATH_NOT_FOUND = 3
+WINDOWS_MAX_PATH = 260
 
 
-def name_length_error(error: OSError) -> ContentError | None:
+def name_length_error(error: OSError, path: Path | None = None) -> ContentError | None:
     """Classify only the operating-system name/path length failure.
 
     Returns ``None`` for every other ``OSError`` so callers keep their own
     fallback semantics. Length is the one failure that is actionable for the
     user (shorten the name) and the one we must never impose a fixed character
     limit on, since the byte boundary depends on the filesystem and encoding.
+    Windows reports some full-path overflows as ``ERROR_PATH_NOT_FOUND``;
+    classify that code only when the failed target is at least ``MAX_PATH``.
     """
+    windows_error = getattr(error, "winerror", None)
+    path_exceeds_windows_limit = (
+        path is not None
+        and (
+            windows_error == WINDOWS_PATH_NOT_FOUND
+            or (
+                windows_error is None
+                and error.errno == WINDOWS_PATH_NOT_FOUND
+            )
+        )
+        and len(str(path)) >= WINDOWS_MAX_PATH
+    )
     if (
         error.errno == errno.ENAMETOOLONG
-        or getattr(error, "winerror", None) == WINDOWS_FILENAME_EXCED_RANGE
+        or windows_error == WINDOWS_FILENAME_EXCED_RANGE
+        or path_exceeds_windows_limit
     ):
         return ContentError(NAME_TOO_LONG)
     return None
 
 
-def filesystem_error(error: OSError, fallback: str) -> ContentError:
+def filesystem_error(
+    error: OSError, fallback: str, path: Path | None = None
+) -> ContentError:
     """Preserve actionable length failures without imposing a filesystem limit."""
-    return name_length_error(error) or ContentError(fallback)
+    return name_length_error(error, path) or ContentError(fallback)
 
 
 def read_regular(

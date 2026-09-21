@@ -136,6 +136,7 @@ class _Live:
         self.running = running
         self.user_id = user_id
         self.applied_permission_mode = RuntimePermissionMode.ASK.value
+        self.skill_configurations = ()
         self.runtime_session = _PermissionSession()
         self.runtime_binding = object()
         self.runtime_driver = None
@@ -169,6 +170,9 @@ class _Runtime:
         self.quiescence_deadlines: list[float | None] = []
         self.catalog: SessionCatalogStore | None = None
         self._fail = fail
+
+    async def skill_configurations(self, *, cwd: Path, user_id: str) -> tuple:
+        return ()
 
     async def wait_until_suspended(
         self,
@@ -273,6 +277,8 @@ def _service(
     sessions: dict[str, Any] = {} if live is None else {SESSION_ID: live}
     engine = runtime or _Runtime()
     engine.catalog = catalog
+    if live is not None:
+        live.runtime_workdir = root
     if live is not None and live.runtime_session is not None:
         live.runtime_session.model_switches = engine.model_switches
     service = SessionService(

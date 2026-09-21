@@ -439,6 +439,12 @@ test('Markdown code block copy uses the desktop clipboard bridge and reports the
 })
 
 test('Monaco source editor binds native copy and paste handlers', () => {
-  assert.match(monacoSource, /monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyC[\s\S]*COPY_ACTION/u)
-  assert.match(monacoSource, /monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyV[\s\S]*window\.scholarseed\.pasteClipboard\(\)/u)
+  assert.match(monacoSource, /editContext: false/u)
+  assert.match(monacoSource, /const copyKeybindings = \[monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyC\]/u)
+  assert.match(monacoSource, /copyKeybindings\.push\(monaco\.KeyMod\.WinCtrl \| monaco\.KeyCode\.KeyC\)/u)
+  assert.match(monacoSource, /const copyAction = editor\.addAction\(\{[\s\S]*keybindings: copyKeybindings,[\s\S]*precondition: EDITOR_TEXT_FOCUS,[\s\S]*run: copyCommand/u)
+  assert.match(monacoSource, /copyAction\.dispose\(\)/u)
+  assert.match(monacoSource, /const pasteAction = editor\.addAction\(\{[\s\S]*monaco\.KeyMod\.CtrlCmd \| monaco\.KeyCode\.KeyV[\s\S]*precondition: EDITOR_WRITABLE_FOCUS,[\s\S]*window\.scholarseed\.pasteClipboard\(\)/u)
+  assert.match(monacoSource, /const EDITOR_WRITABLE_FOCUS = 'editorTextFocus && !editorReadonly'/u)
+  assert.match(monacoSource, /pasteAction\.dispose\(\)/u)
 })

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compile the current editable v2; generation metadata never authorizes edits."""
 from __future__ import annotations
 import argparse

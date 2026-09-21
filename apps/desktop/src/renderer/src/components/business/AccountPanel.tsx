@@ -37,7 +37,6 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
-import logoMark from '../../assets/brand-seed-mark.png'
 import type {
   SystemPermissionId,
   SystemPermissionRecord,
@@ -336,7 +335,8 @@ function SettingsPageHeader({
 const SELECTION_PROMPT_LABELS = {
   explain: 'accountPanel.prompts.explain',
   translate: 'accountPanel.prompts.translate',
-  polish: 'accountPanel.prompts.polish'
+  polish: 'accountPanel.prompts.polish',
+  figure: 'accountPanel.prompts.figure'
 } as const
 
 function PromptsPage(): React.JSX.Element {
@@ -821,15 +821,6 @@ function AboutPage(): React.JSX.Element {
       description={t('accountPanel.about.description')}
     >
       <PageBody>
-        <div className={ABOUT_BRAND_CLASS_NAME}>
-          <img alt="" className={ABOUT_MARK_CLASS_NAME} src={logoMark} />
-          <strong className={ABOUT_BRAND_NAME_CLASS_NAME}>
-            {t('accountPanel.brand')}
-          </strong>
-          <small className={SMALL_TEXT_CLASS_NAME} data-testid="about-version">
-            {currentVersionLabel}
-          </small>
-        </div>
         <div className={SECURITY_CARD_CLASS_NAME}>
           <div className={ABOUT_ROW_CLASS_NAME}>
             <span className={cx(ABOUT_ICON_CLASS_NAME, versionIconTone)}>
@@ -1405,7 +1396,7 @@ const STATUS_LABELS: Record<SystemPermissionStatus, string> = {
 }
 
 const SETTINGS_SHELL_CLASS_NAME =
-  'relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--paper)]'
+  'relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--paper)] [--vds-card-radius:var(--vds-settings-card-radius)] [&_.vds-card]:!shadow-none'
 const SETTINGS_DIALOG_SHELL_CLASS_NAME = `${SETTINGS_SHELL_CLASS_NAME} h-full rounded-[inherit]`
 const SETTINGS_DRAG_CLASS_NAME =
   'absolute inset-x-0 top-[var(--vds-space-0)] z-[3] h-[38px]'
@@ -1441,7 +1432,7 @@ const SETTINGS_HEADING_ROW_CLASS_NAME =
 const SETTINGS_LEAD_CLASS_NAME =
   'm-[var(--vds-space-0)] min-w-0 truncate text-[11.5px] leading-[18px] text-[var(--vds-text-tertiary)]'
 const SETTINGS_CARD_CLASS_NAME =
-  'overflow-hidden rounded-[13px] border border-[color-mix(in_srgb,var(--border)_86%,transparent)] bg-[var(--vds-bg-white-default)] shadow-[0_1px_2px_rgb(80_64_36_/_0.03)]'
+  'overflow-hidden rounded-[var(--vds-settings-card-radius)] border border-[color-mix(in_srgb,var(--border)_86%,transparent)] bg-[var(--vds-bg-white-default)] shadow-none'
 const ACCOUNT_SECTION_STACK_CLASS_NAME = 'grid gap-[var(--vds-space-2)]'
 const PROFILE_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} flex min-h-[108px] items-center gap-[var(--vds-space-4)] px-[18px] py-[var(--vds-space-4)]`
 const PROFILE_AVATAR_CLASS_NAME =
@@ -1539,9 +1530,6 @@ const SHARING_SEGMENT_BUTTON_CLASS_NAME =
   'min-h-7 rounded-md border-0 bg-transparent px-[var(--vds-space-3)] text-[10.5px] text-[var(--text-3)] disabled:opacity-50'
 const SHARING_SEGMENT_ACTIVE_CLASS_NAME =
   'bg-[var(--bg-2)] font-[650] text-[var(--c-experience)] shadow-[0_1px_3px_rgb(0_0_0_/_0.1)]'
-const ABOUT_BRAND_CLASS_NAME = 'mb-[18px] grid justify-items-center gap-[6px]'
-const ABOUT_MARK_CLASS_NAME = 'size-[72px] object-contain'
-const ABOUT_BRAND_NAME_CLASS_NAME = 'text-[15px] font-[650] text-[var(--text)]'
 const ABOUT_ROW_CLASS_NAME =
   'flex min-h-[62px] items-center gap-[var(--vds-space-3)] border-b border-[var(--border-soft)] py-[var(--vds-space-2)] last:border-b-0'
 const ABOUT_LINK_ROW_CLASS_NAME = `${ABOUT_ROW_CLASS_NAME} !w-full !justify-start !rounded-[var(--vds-space-0)] !border-x-0 !border-t-0 !bg-transparent !px-[var(--vds-space-0)] !py-[var(--vds-space-0)] !text-left !shadow-none hover:!bg-transparent max-[760px]:grid max-[760px]:[grid-template-columns:auto_minmax(0,1fr)] max-[760px]:[&>span:first-child]:row-span-2 max-[760px]:[&>span:last-child]:col-start-2`
@@ -2631,7 +2619,7 @@ const MODEL_SETTINGS_TAB_CONTENT_CLASS_NAME = 'min-h-0 flex-1 overflow-hidden'
 const MODEL_SETTINGS_EMBEDDED_CLASS_NAME = 'flex h-full min-h-0 flex-col'
 const MODEL_SETTINGS_ACTIONS_CLASS_NAME = 'mb-[12px] flex justify-end'
 const MODEL_SETTINGS_TABLE_CLASS_NAME =
-  'min-h-0 flex-1 overflow-auto rounded-[var(--vds-radius-4)] border border-[var(--vds-line-1)] bg-[var(--vds-surface-raised)]'
+  'min-h-0 flex-1 overflow-auto rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-line-1)] bg-[var(--vds-surface-raised)] shadow-none'
 const MODEL_SETTINGS_TABLE_INNER_CLASS_NAME = 'min-w-[920px]'
 const MODEL_SETTINGS_TABLE_GRID_CLASS_NAME =
   'grid w-full grid-cols-[minmax(260px,1fr)_220px_130px_260px] gap-3'
@@ -2664,7 +2652,7 @@ const MODEL_CONNECTION_PICK_CLASS_NAME =
   'flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-left'
 const MODEL_CONNECTION_TEXT_CLASS_NAME = 'flex min-w-0 flex-1 flex-col items-start'
 const MODEL_CONNECTION_NAME_CLASS_NAME =
-  'w-full overflow-hidden text-ellipsis whitespace-nowrap text-[14px] font-[600] text-[var(--text)]'
+  'w-full break-words text-[14px] font-[600] text-[var(--text)] line-clamp-2'
 const MODEL_CONNECTION_META_CLASS_NAME =
   'w-full overflow-hidden text-ellipsis whitespace-nowrap text-[12px] text-[var(--text-3)]'
 const MODEL_PANE_EMPTY_CLASS_NAME =
@@ -4527,7 +4515,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
           {projects.map((project) => (
             <div
               key={project.id}
-              className="flex min-w-0 max-w-full items-center gap-[12px] rounded-[12px] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)]"
+              className="flex min-w-0 max-w-full items-center gap-[12px] rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)] shadow-none"
               data-testid={`account-archived-${project.id}`}
             >
               <span className="min-w-0 flex-1">

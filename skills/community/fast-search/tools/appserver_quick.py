@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Serve the Veryfast academic-search workflow through one Codex App Server.
 
 The process keeps Codex warm while giving every query a fresh ephemeral thread.
@@ -510,7 +510,7 @@ If the runner shell call yields a running session id, poll that same session unt
 runner exits before reporting completion. Polling is continuation of the one
 runner invocation, not permission to launch another command.
 
-For the runner shell call invoke exactly `python3 "{runner_path}"` before its arguments.
+For the runner shell call invoke exactly `scholarseed-skill-python "{runner_path}"` before its arguments.
 Omit the workdir field. The host already set the correct working directory.
 
 User query:

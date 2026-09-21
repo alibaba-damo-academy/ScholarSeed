@@ -8,7 +8,7 @@
       "description": "Import screening is deterministic: validate metadata, deduplicate and apply numeric/venue constraints. The search subagent owns semantic excluded-topic requirements; no keyword exclusion recheck or additional LLM adjudication runs.",
       "steps": [
         [
-          "python3",
+          "scholarseed-skill-python",
           "${SLR_HOME}/scripts/retrieval/adapt_search_output.py",
           "${WORKSPACE}"
         ]
@@ -34,7 +34,7 @@
       "title": "Acquire the full text of every selected paper",
       "description": "Parse supplied local PDF snapshots first; download other sources from PaperHub and recover trusted abstracts for no-text records. Report fulltext, abstract_only and no_text distinctly.",
       "command": [
-        "python3",
+        "scholarseed-skill-python",
         "${SLR_HOME}/scripts/processing/fetch_fulltext.py",
         "${WORKSPACE}",
         "--concurrency",
@@ -61,7 +61,7 @@
       "description": "Extract current valid cards, freeze citation identities, build indexes and audit metadata. Aggregate all child statuses; selected-paper/card set readiness gates downstream writing. Reuse unchanged cards and archive changed evidence before re-extraction.",
       "steps": [
         [
-          "python3",
+          "scholarseed-skill-python",
           "${SLR_HOME}/scripts/processing/paper_card_tools.py",
           "run",
           "${WORKSPACE}",
@@ -70,17 +70,17 @@
           "20"
         ],
         [
-          "python3",
+          "scholarseed-skill-python",
           "${SLR_HOME}/scripts/processing/build_bib.py",
           "${WORKSPACE}"
         ],
         [
-          "python3",
+          "scholarseed-skill-python",
           "${SLR_HOME}/scripts/processing/build_cards_index.py",
           "${WORKSPACE}"
         ],
         [
-          "python3",
+          "scholarseed-skill-python",
           "${SLR_HOME}/scripts/processing/audit_citation_metadata.py",
           "${WORKSPACE}"
         ]
@@ -157,7 +157,7 @@
       "title": "Compile the editable native v2",
       "description": "Compile current source and dependencies; content diagnostics are advisory. Never regenerate or reassemble v2.",
       "command": [
-        "python3",
+        "scholarseed-skill-python",
         "${SLR_HOME}/scripts/manuscript_publication.py",
         "publish",
         "--workspace",
@@ -180,7 +180,7 @@
       "id": "verify_audit",
       "title": "Local pre-flight audit (no network, no LLM)",
       "command": [
-        "python3",
+        "scholarseed-skill-python",
         "${SLR_HOME}/scripts/manuscript_publication.py",
         "audit",
         "--workspace",
@@ -202,7 +202,7 @@
       "title": "Post-delivery check against the finished artefact",
       "description": "Report current-source diagnostics and compiler result; postcheck renders the first three PDF pages. No generation-state gates.",
       "command": [
-        "python3",
+        "scholarseed-skill-python",
         "${SLR_HOME}/scripts/manuscript_publication.py",
         "postcheck",
         "--workspace",

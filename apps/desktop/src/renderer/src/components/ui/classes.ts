@@ -208,7 +208,7 @@ const TAG_TONE_CLASS_NAMES: Record<
   neutral:
     '[--vds-tag-background:var(--vds-bg-gray-default)] [--vds-tag-border:var(--vds-border-default)] [--vds-tag-color:var(--vds-text-secondary)] [--vds-tag-accent:var(--vds-text-secondary)] [--vds-tag-close-color:var(--vds-text-secondary)] [--vds-tag-close-hover-color:var(--vds-text-primary)]',
   brand:
-    '[--vds-tag-background:var(--vds-brand-light-bg-default)] [--vds-tag-border:var(--vds-brand-text-placeholder)] [--vds-tag-color:var(--vds-brand-text-primary)] [--vds-tag-accent:var(--vds-brand-text-placeholder)] [--vds-tag-close-color:var(--vds-brand-bg-default)] [--vds-tag-close-hover-color:var(--vds-brand-bg-hover)]',
+    '[--vds-tag-background:var(--vds-brand-light-bg-default)] [--vds-tag-border:var(--vds-brand-light-border)] [--vds-tag-color:var(--vds-brand-text-primary)] [--vds-tag-accent:var(--vds-brand-text-placeholder)] [--vds-tag-close-color:var(--vds-brand-bg-default)] [--vds-tag-close-hover-color:var(--vds-brand-bg-hover)]',
   success:
     '[--vds-tag-background:var(--vds-success-light-bg-default)] [--vds-tag-border:var(--vds-success-light-border)] [--vds-tag-color:var(--vds-success-text-primary)] [--vds-tag-accent:var(--vds-success-text-placeholder)] [--vds-tag-close-color:var(--vds-success-bg-default)] [--vds-tag-close-hover-color:var(--vds-success-bg-hover)]',
   warning:

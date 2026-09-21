@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 validate_figures_meta.py — the figure-metadata contract, as a command.
 
@@ -55,7 +55,7 @@ What it checks
 
 Usage
 -----
-    python3 scripts/validate_figures_meta.py <workspace> [--json]
+    scholarseed-skill-python scripts/validate_figures_meta.py <workspace> [--json]
 
 Exit status: 0 when every figure satisfies the contract, 1 when any does not,
 2 when the worklist is missing or unreadable.

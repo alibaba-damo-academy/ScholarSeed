@@ -3,6 +3,7 @@ const crypto = require('node:crypto')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const { stageVerifiedTexlive } = require('../runtime/texlive.cjs')
+const { writeSkillPythonLauncher } = require('../runtime/python.cjs')
 
 const PROJECTS = [
   ['runtime', 'packages/runtime'],
@@ -129,6 +130,7 @@ async function bundle(context, target, environment) {
     fs.chmodSync(path.join(bin, 'node'), 0o755)
   }
   writeConsoleScriptShells(python, bin, target)
+  writeSkillPythonLauncher(bin, python, target.platform)
 }
 
 // uv/pip generate installer-native launchers next to the interpreter:

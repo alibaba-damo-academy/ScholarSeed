@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 citation_formats.py — turn `\\cite{key}` into rendered citations, without LaTeX.
 
@@ -48,7 +48,7 @@ the selection step ran. A key that is in neither is reported, never guessed at.
 
 Usage (also the way to eyeball a style before shipping it):
 
-    python3 scripts/generation/citation_formats.py <references.bib> \\
+    scholarseed-skill-python scripts/generation/citation_formats.py <references.bib> \\
         --style ieee [--keys KEY1,KEY2]
 """
 from __future__ import annotations

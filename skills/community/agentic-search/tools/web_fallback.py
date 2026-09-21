@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Validate public-web paper candidates and write degraded metadata.json.
 
 The host agent discovers candidates through the installed web-search skill and passes

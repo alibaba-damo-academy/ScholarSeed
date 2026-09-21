@@ -111,14 +111,14 @@ class PageIndexFixture:
 
 
 class LiteratureBridgeContracts(unittest.TestCase):
-    def test_product_instructions_preserve_opaque_citation_urls(self) -> None:
+    def test_project_literature_skill_exclusively_owns_opaque_citation_urls(self) -> None:
         skill = " ".join(PROJECT_LITERATURE_SKILL.read_text(encoding="utf-8").split())
         prompt = " ".join(HOST_PROMPT.read_text(encoding="utf-8").split())
 
         for rule in CITATION_IDENTITY_RULES:
             with self.subTest(rule=rule):
                 self.assertIn(rule, skill)
-                self.assertIn(rule, prompt)
+                self.assertNotIn(rule, prompt)
         self.assertIn('print(fragment["citation_url"], "|", preview)', skill)
         self.assertNotIn('fragment["citation_url"][:', skill)
 

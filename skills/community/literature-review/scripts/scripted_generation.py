@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Streaming outline/whole authoring and entry to the chapter/delta coordinator."""
 import argparse
 import asyncio

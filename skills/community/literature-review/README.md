@@ -52,7 +52,7 @@ main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格
 
 TeX 建议安装 MacTeX 或 BasicTeX 后补齐 `bibtex`、CTeX 和所需字体。Debian/Ubuntu 通常需要 `texlive-xetex`、`texlive-latex-extra`、`texlive-lang-chinese`、`texlive-pictures` 和常用字体包。
 
-Python 包统一记录在 `requirements.txt`，由安装脚本放入 skill 自己的 `.venv`，无需手动激活。
+Python 包统一记录在 `requirements.txt`，产品构建将审查过的依赖装入产品 Python，无需激活用户环境。
 
 ## 从压缩包安装
 
@@ -67,7 +67,7 @@ cd ~/.codex/skills/literature-review
 ./scripts/setup
 ```
 
-`./scripts/setup` 会创建 `.venv`、安装 `requirements.txt`，并在配置文件缺失时从样例生成。内部发行包已经包含打包机器当前使用的配置；安装后确认或按目标机器需要调整：
+`./scripts/setup` 会验证产品 Python 及依赖，并在配置文件缺失时从样例生成。内部发行包已经包含打包机器当前使用的配置；安装后确认或按目标机器需要调整：
 
 - `config/model_config.fast.json`：文本与可选 IdeaLab 图片模型的默认 URL 和模型参数；
 - `config/endpoints.json`：SLR 全文获取与上传端点。
@@ -117,7 +117,7 @@ Web-only、摘要缺失、检索数量不足和追踪缺失会显式报告降级
 
 ## 五分钟离线冒烟测试
 
-PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `./.venv/bin/python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。
+PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `scholarseed-skill-python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。
 
 这个测试不调用 PaperHub、模型或图片接口，用于确认压缩包、Python 环境、CLI、引用资产和 workspace 初始化正常：
 
@@ -125,20 +125,20 @@ PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `./.venv/b
 ./scripts/slr stages
 ./scripts/slr citations examples
 ./scripts/slr templates list
-./.venv/bin/python scripts/test_bibtex_entry_types.py
-./.venv/bin/python scripts/test_model_config_env.py
+scholarseed-skill-python scripts/test_bibtex_entry_types.py
+scholarseed-skill-python scripts/test_model_config_env.py
 ./scripts/slr init \
   --workspace ../slr-smoke \
   --intent "综述 2021–2026 年检索增强生成在企业知识库问答中的方法、评测与可靠性进展，并保留更早的奠基工作。"
-./.venv/bin/python -m json.tool ../slr-smoke/01_input/query.json
-./.venv/bin/python -m json.tool ../slr-smoke/01_input/writing_request.json
+scholarseed-skill-python -m json.tool ../slr-smoke/01_input/query.json
+scholarseed-skill-python -m json.tool ../slr-smoke/01_input/writing_request.json
 ```
 
 如果机器有 TeX，再运行：
 
 ```bash
 ./scripts/slr templates check
-./.venv/bin/python scripts/smoke_citation_styles.py
+scholarseed-skill-python scripts/smoke_citation_styles.py
 ```
 
 `init` 不覆盖已有 `writing_request.json` 或同名工作区 launcher。重复测试请换一个 workspace 名称。
@@ -206,7 +206,9 @@ init 返回工作区专属 launcher。已有任务缺少 launcher 时使用
 
 ```bash
 ./my-survey/slr writing configure --request request.json
-./my-survey/slr workflow evidence
+./my-survey/slr run retrieval_adapt
+scholarseed-bridge literature review --json '{"workspace":"my-survey","checkpoint":"retrieval"}'
+./my-survey/slr workflow evidence --from fulltext
 ./my-survey/slr status --stage workflow
 ./my-survey/slr status --stage processing
 ./my-survey/slr papers show --ids 123
@@ -231,11 +233,14 @@ init 返回工作区专属 launcher。已有任务缺少 launcher 时使用
 从原始 skill 入口调用时仍可显式传 `--workspace`。短入口绑定一个工作区和
 skill 版本，不依赖跨工具调用保留 cd 或 export。
 
-main 的正常路径只读 `SKILL.md`。检索导入后使用 `workflow evidence`，连续执行
-适配、全文获取、处理、大纲生成和展示包；错误、检索例外会提前返回，最终总是在
-`outline_display` 停下，已有自动授权也必须展示。处理过检索例外后，可显式
-`workflow evidence --from fulltext`；修复后也可从 processing、outline 或
-review-packet 恢复，起点及其后续阶段都会执行，脚本不自动跳过已完成阶段，也不猜测输入是否仍有效。
+main 的正常路径只读 `SKILL.md`。检索导入后先把 `run retrieval_adapt` 作为独立命令执行，
+再调用书深阻塞式 `literature review(checkpoint=retrieval)` 等待用户授权；只有返回
+`authorization.disposition=authorized` 后才使用 `workflow evidence --from fulltext`
+连续执行全文获取、处理、大纲生成和展示包。不得从不带 `--from` 的
+`workflow evidence` 开始：脚本即使被误调用，也只会执行检索适配并在
+`fulltext_authorization` 边界返回，不会进入全文。错误、检索例外会提前返回，授权后的
+证据链最终总是在 `outline_display` 停下，已有自动授权也必须展示。修复后也可从
+processing、outline 或 review-packet 恢复，起点及其后续阶段都会执行，脚本不自动跳过已完成阶段，也不猜测输入是否仍有效。
 已有大纲仅需重新展示时从 review-packet 开始，不能从 outline 开始。
 章节响应的持久复用由 manuscript generate 自身负责。正文和制图完成后用
 `workflow publish`，连续出版和 postcheck，在 PDF 人工检查处返回；Markdown
@@ -322,7 +327,7 @@ shasum -a 256 -c PACKAGE-MANIFEST.sha256
 
 ## 常见问题
 
-- `Python environment not found at .venv`：运行 `./scripts/setup`。
+- `scholarseed-skill-python is unavailable`：从 ScholarSeed Desktop 或 `scholarseed-serve` 启动该技能。
 - doctor 报 `SCHOLARSEED_ACCOUNT_TOKEN` `MISS`：在启动 Codex 前导出文本 token；
   图片默认可复用该 token，也可以单独设置优先级更高的 `IMAGE_API_KEY`；
   provider URL `MISS` 则设置对应 URL 环境变量或修正 config 默认值。

@@ -33,7 +33,7 @@
 
 ## 快速开始
 
-前提：已安装并登录 Codex CLI，本机有 Python 3.8+。PaperHub API key 是登录用户的
+前提：已安装并登录 Codex CLI，并从 ScholarSeed Desktop 或 `scholarseed-serve` 启动。PaperHub API key 是登录用户的
 增强能力，不是运行前提。
 
 ### 1. 安装
@@ -41,7 +41,7 @@
 在本仓库根目录执行：
 
 ```bash
-python3 tools/install_codex.py --scope user --with-network-profile
+scholarseed-skill-python tools/install_codex.py --scope user --with-network-profile
 ```
 
 这个命令不会安装 Codex。它会安装：
@@ -196,10 +196,10 @@ profile 机制可参考 [Build skills](https://learn.chatgpt.com/docs/build-skil
 
 ```bash
 # 只检查配置和环境，不发网络请求
-python3 tools/doctor.py
+scholarseed-skill-python tools/doctor.py
 
 # 发出一个最小 PaperHub 请求
-python3 tools/doctor.py --live
+scholarseed-skill-python tools/doctor.py --live
 ```
 
 常见状态：
@@ -215,13 +215,13 @@ python3 tools/doctor.py --live
 联网，可以只安装 Skill：
 
 ```bash
-python3 tools/install_codex.py --scope user
+scholarseed-skill-python tools/install_codex.py --scope user
 ```
 
 让某个项目的协作者都能发现它：
 
 ```bash
-python3 tools/install_codex.py --scope repo --repo /path/to/target-repo
+scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/target-repo
 ```
 
 仓库级安装不会修改用户 profile 或 PaperHub 配置。更详细的三档设计和评测边界见

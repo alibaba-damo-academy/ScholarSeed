@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Read a compact, relevance-ranked slice of a persistent search pool."""
 
 import argparse

@@ -18,7 +18,7 @@ import {
   type ProductTask
 } from '../../contracts/tasks'
 import { useApp } from '../../store'
-import { Badge, Button, ProgressBar, ScrollArea } from '../ui'
+import { Button, ProgressBar, ScrollArea, Tag, type TagTone } from '../ui'
 
 import { TaskCenterContext, useTaskCenter, type TaskCenterValue } from './taskCenterContext'
 
@@ -290,14 +290,15 @@ export function TaskCenterProvider({
 }
 
 
-const statusTone = (status: ProductTask['status']): 'danger' | 'neutral' | 'success' | 'warning' =>
-  status === 'completed'
-    ? 'success'
-    : status === 'failed' || status === 'partial'
-      ? 'danger'
-      : status === 'cancelled'
-        ? 'neutral'
-        : 'warning'
+const STATUS_TONES = {
+  queued: 'neutral',
+  running: 'warning',
+  settling: 'warning',
+  completed: 'brand',
+  partial: 'warning',
+  failed: 'danger',
+  cancelled: 'neutral'
+} as const satisfies Record<ProductTask['status'], TagTone>
 
 const STATUS_MESSAGE_KEYS = {
   queued: 'status.queued',
@@ -337,6 +338,8 @@ export function TaskCenter(): React.JSX.Element {
             {tasks.map((task) => {
               const active =
                 task.status === 'queued' || task.status === 'running' || task.status === 'settling'
+              const canCancel = task.status === 'queued' || task.status === 'running'
+              const canRetry = task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled'
               const progress = taskProgressPresentation(task, t)
               return (
                 <article
@@ -349,7 +352,7 @@ export function TaskCenter(): React.JSX.Element {
                         {taskTitleText(task.title, t)}
                       </div>
                     </div>
-                    <Badge size="sm" tone={statusTone(task.status)}>{t(STATUS_MESSAGE_KEYS[task.status])}</Badge>
+                    <Tag className="shrink-0" size="small" tone={STATUS_TONES[task.status]}>{t(STATUS_MESSAGE_KEYS[task.status])}</Tag>
                   </div>
                   {active ? (
                     <ProgressBar
@@ -364,18 +367,20 @@ export function TaskCenter(): React.JSX.Element {
                       {errorText(task)}
                     </p>
                   ) : null}
-                  <div className="mt-3 flex justify-end gap-2">
-                    {task.status === 'queued' || task.status === 'running' ? (
-                      <Button size="sm" variant="outline" onClick={() => void cancel(task)}>
-                        {uiText('cancel')}
-                      </Button>
-                    ) : null}
-                    {task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled' ? (
-                      <Button size="sm" variant="outline" onClick={() => void retry(task)}>
-                        {uiText('retry')}
-                      </Button>
-                    ) : null}
-                  </div>
+                  {canCancel || canRetry ? (
+                    <div className="mt-3 flex justify-end gap-2">
+                      {canCancel ? (
+                        <Button size="sm" variant="outline" onClick={() => void cancel(task)}>
+                          {uiText('cancel')}
+                        </Button>
+                      ) : null}
+                      {canRetry ? (
+                        <Button size="sm" variant="outline" onClick={() => void retry(task)}>
+                          {uiText('retry')}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </article>
               )
             })}

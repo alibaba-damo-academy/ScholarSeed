@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compile both real publication preambles against the active TeX toolchain.
 
 `smoke_citation_styles.py` proves the vendored `.bst` files work; this proves the

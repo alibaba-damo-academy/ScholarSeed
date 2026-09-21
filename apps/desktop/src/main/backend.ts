@@ -33,6 +33,7 @@ import { LineTimestamper, RotatingFileLog } from './logfile'
 import type { BackendFailure } from './failure'
 import { projectCodexRuntimeEnvironment } from './runtime'
 import { bundledCodex, resolveVendoredCodex } from '../../runtime/codex.cjs'
+import { skillPythonLauncherPath, writeSkillPythonLauncher } from '../../runtime/python.cjs'
 import { bundledTexlive, resolveVendoredTexlive } from '../../runtime/texlive.cjs'
 
 export interface BackendHandle {
@@ -70,6 +71,7 @@ interface BackendPaths {
   cwd: string
   rendererDist: string | null
   hookBin: string | null
+  skillBin: string
 }
 
 // Prototype fallback for the packaged app on the build machine: if no relocatable
@@ -122,6 +124,7 @@ const BACKEND_LOG_FILE = 'backend.log'
 export const LOGS_DIRNAME = 'logs'
 const BACKEND_DIR = 'backend'
 const HOOK_BIN_DIR = 'bin'
+const DEV_SKILL_BIN_DIRECTORY = ['tmp', 'desktop-backend', 'bin'] as const
 const NODE_SHIM = process.platform === 'win32' ? 'node.cmd' : 'node'
 const SCHOLARSEED_CODEX_EXECUTABLE_ENV = 'SCHOLARSEED_CODEX_EXECUTABLE'
 const SCHOLARSEED_PYTHON_ENV = 'SCHOLARSEED_PYTHON'
@@ -184,7 +187,8 @@ function resolveBackendPaths(): BackendPaths {
       python: process.env[SCHOLARSEED_PYTHON_ENV] || (hasBundled ? bundledPy : join(REPO_FALLBACK, ...venvPython)),
       cwd: process.env.SCHOLARSEED_REPO || (hasBundled ? bundled : REPO_FALLBACK),
       rendererDist: process.env.SCHOLARSEED_RENDERER_DIST || join(process.resourcesPath, 'renderer'),
-      hookBin: existsSync(bundledNode) ? hookBin : null
+      hookBin: existsSync(bundledNode) ? hookBin : null,
+      skillBin: hookBin
     }
   }
   // dev: app path is apps/desktop → repo root is two levels up
@@ -196,7 +200,8 @@ function resolveBackendPaths(): BackendPaths {
     python: process.env[SCHOLARSEED_PYTHON_ENV] || join(repoRoot, ...venvPython),
     cwd: repoRoot,
     rendererDist: process.env['ELECTRON_RENDERER_URL'] ? null : built,
-    hookBin: null
+    hookBin: null,
+    skillBin: join(repoRoot, ...DEV_SKILL_BIN_DIRECTORY)
   }
 }
 
@@ -359,7 +364,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     handle.port = port
     handle.baseUrl = baseUrl
 
-    const { python, cwd, rendererDist, hookBin } = resolveBackendPaths()
+    const { python, cwd, rendererDist, hookBin, skillBin } = resolveBackendPaths()
     if (!existsSync(python)) {
       handle.error = { kind: 'pythonMissing', path: python }
       log(`[shell] ERROR python not found: ${python}\n`)
@@ -392,6 +397,17 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       log(`[shell] ERROR ${detail}\n`)
       return false
     }
+    try {
+      if (app.isPackaged && !existsSync(skillPythonLauncherPath(skillBin))) {
+        throw new Error(`packaged Skill Python launcher missing: ${skillPythonLauncherPath(skillBin)}`)
+      }
+      if (!app.isPackaged) writeSkillPythonLauncher(skillBin, python)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      handle.error = { kind: 'startupFailed', detail }
+      log(`[shell] ERROR Skill Python launcher setup failed: ${detail}\n`)
+      return false
+    }
     configureDesktopEnvironment(log)
     const inheritedExecutablePath = process.env[PATH_ENV] || ''
     const standardPath = app.isPackaged ? standardExecutablePath() : ''
@@ -417,7 +433,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     const pythonExecutableDirectory = pythonIdentity.scripts
     log(`[shell] TeX Live source=${app.isPackaged ? 'bundled' : 'vendored'} ` +
       `directory=${texliveExecutableDirectory}\n`)
-    // hookBin ahead of pythonExecutableDirectory: the packaged env keeps the
+    // skillBin and hookBin ahead of pythonExecutableDirectory: the packaged env keeps the
     // uv/pip-generated console-script trampolines under python/Scripts (Win)
     // or python/bin (POSIX) because dependencies.py inventory covers them,
     // but those trampolines embed the build-machine Python path and fail
@@ -425,6 +441,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     // relocatable shell directory (backend/bin/); resolving it first hides the
     // broken shells from every process that inherits this PATH.
     const executablePath = mergeExecutablePaths(
+      skillBin,
       hookBin,
       pythonExecutableDirectory,
       codexExecutableDirectory,

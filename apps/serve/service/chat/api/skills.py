@@ -24,6 +24,7 @@ def mount_skill_routes(
     async def list_skills(request: Request, force_reload: bool = False) -> dict:
         try:
             return await skills.payload(
+                user_id=request_user_id(request),
                 force_reload=force_reload,
                 process_environment=await process_environment(request),
             )

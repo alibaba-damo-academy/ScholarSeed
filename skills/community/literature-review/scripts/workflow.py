@@ -12,6 +12,11 @@ from task_contract import atomic_json
 from main_view import compact
 
 EVIDENCE = ('retrieval_adapt', 'fulltext', 'processing', 'outline', 'review-packet')
+FULLTEXT_AUTHORIZATION_BOUNDARY = 'fulltext_authorization'
+FULLTEXT_AUTHORIZATION_ACTION = (
+    'Complete the product-owned full-text authorization checkpoint, then resume with '
+    '`workflow evidence --from fulltext`.'
+)
 
 
 def execute(ws, command):
@@ -106,6 +111,10 @@ def _advance(ws, phase, start, runner):
             unmet = any(not r.get('found', False) for r in summary.get('must_include', []))
             if report['status'] != 'SUCCESS' or summary['flagged_for_review'] or unmet:
                 return finish('retrieval_review', {**summary, 'status_reason': report.get('status_reason', '')}, 'PARTIAL_SUCCESS')
+            return finish(
+                FULLTEXT_AUTHORIZATION_BOUNDARY,
+                {**summary, 'next_action': FULLTEXT_AUTHORIZATION_ACTION},
+            )
         # Fulltext misses are an expected degradation. Processing's existing
         # readiness gate decides whether actual fulltext/abstract evidence works.
         elif report['status'] != 'SUCCESS' and stage != 'fulltext':

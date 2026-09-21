@@ -53,18 +53,41 @@ test('composer has one combined model control at the right of the spacer', () =>
   assert.match(menu, /useEffort\(\)/)
   assert.doesNotMatch(menu, /reasoning-reset/)
   assert.match(menu, /setSubmenu\(null\)\s+set\(\{ modelMenuOpen: false \}\)\s+if \(model.key === selectedModelKey\)/)
-  // 新交互: 一级菜单的思考强度行与更多模型行各自在右侧展开二级菜单;
-  // 无可选档位时强度行禁用并回显占位符。
+  // 新交互: 单弹窗顶部直接展示全模型列表(最大高度 300px, 超出滚动), 思考强度行在
+  // 右侧展开二级菜单; 无可选档位或未选择模型时强度行禁用并回显占位符; 底部为模型管理。
   assert.match(menu, /data-testid="model-effort-row"/)
-  assert.match(menu, /data-testid="model-list-toggle"/)
+  assert.match(menu, /data-testid="model-selector-menu"/)
+  assert.match(menu, /data-testid="model-menu-manage"/)
+  assert.match(menu, /max-h-\[300px\] min-h-0 overflow-y-auto/)
+  // 弹窗固定 200px 宽; 模型名/副标签溢出省略, hover 由 EllipsisText 的 tooltip 显示全文。
+  assert.match(menu, /w-\[var\(--vds-model-menu-width\)\]/)
+  // 思考强度二级弹窗同宽 200px, 不再使用旧的 240px 控件宽 token。
+  assert.doesNotMatch(menu, /--vds-model-controls-width/)
+  assert.match(menu, /<EllipsisText/)
+  assert.match(menu, /wrapperClassName="flex-1"/)
+  // 弹窗整体抬到 modal 层, 菜单内溢出 tooltip 内容层必须再抬一级否则被弹窗盖住。
+  assert.match(menu, /const MODEL_MENU_TOOLTIP_CONTENT_CLASS = '!z-\[calc\(var\(--vds-z-modal\)\+2\)\]'/)
+  assert.match(menu, /tooltipContentClassName=\{MODEL_MENU_TOOLTIP_CONTENT_CLASS\}/)
   assert.match(menu, /effort\.selectable \? effort\.label : '-'/)
-  // 未选择模型(登出后仅剩置灰行): 主按钮回显占位符、强度行上方分割线隐藏、强度行禁用。
+  // 未选择模型(登出后仅剩置灰行): 主按钮回显占位符、强度行禁用。
   assert.match(menu, /const hasCurrentModel = modelAvailable && Boolean\(selectedModel\)/)
   assert.match(menu, /hasCurrentModel \? effort\.label : '-'/)
-  assert.match(menu, /\{hasCurrentModel \? \(\s+<div aria-hidden="true" className="mx-\[var\(--vds-space-2\)\] border-t/)
   assert.match(menu, /disabled=\{!hasCurrentModel \|\| !effort\.selectable \|\| effort\.pending \|\| Boolean\(pending\)\}/)
   assert.match(menu, /hasCurrentModel && effort\.selectable \? effort\.label : '-'/)
   assert.doesNotMatch(menu, /effort\.hasModel/)
+  // 模型行 hover/选中态与对号对齐项目切换菜单: 品牌浅底 + lucide Check。
+  assert.match(menu, /bg-\[var\(--vds-brand-light-bg-default\)\]/)
+  assert.match(menu, /hover:bg-\[var\(--vds-bg-gray-hover-transparent\)\]/)
+  assert.match(menu, /<Check className="text-\[var\(--vds-brand-bg-default\)\]"/)
+  // 模型管理入口不带左侧 icon; 不再有「更多模型」二级入口。
+  assert.doesNotMatch(menu, /model-list-toggle/)
+  assert.doesNotMatch(menu, /models\.moreModels/)
+  assert.doesNotMatch(menu, /Icon name="settings"/)
+  // 模型管理行右侧带小箭头(与强度行一致的 chevron-right)。
+  assert.match(menu, /data-testid="model-menu-manage"[\s\S]{0,500}chevron-right/)
+  // 强度/管理行上方用设计系统分割线(h-px 分隔色), 不是贴上行的上边框。
+  assert.match(menu, /h-px shrink-0 bg-\[var\(--vds-divider-default\)\]/)
+  assert.doesNotMatch(menu, /border-t border-\[var\(--border-soft\)\]/)
   assert.match(menu, /min-w-0 flex-\[0_1_auto\]/)
   assert.doesNotMatch(menu, /compact \? 'max-w-\[160px\]' : 'max-w-\[180px\]'/)
   assert.doesNotMatch(menu, /max-w-\[120px\]|max-w-\[220px\]/)

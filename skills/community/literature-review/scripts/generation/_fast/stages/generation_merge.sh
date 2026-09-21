@@ -77,7 +77,7 @@ printf '%s [STAGE START] %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$STAGE" >> "$GEN_
 # `\ citet{}` malformations, bogus cite keys), so it has to run even when the
 # subagents reported clean.
 log $STAGE "===== validate_drafts ====="
-python3 "$SD/validate_drafts.py"
+scholarseed-skill-python "$SD/validate_drafts.py"
 
 # The gate reads the status FILE, not the exit code: validate_drafts exits 3
 # only when nothing at all was drafted, and exits 0 while individual sections
@@ -114,7 +114,7 @@ fi
 # the ids go into the handshake, because "re-delegate section 3's writer" is
 # only cheap while we are still standing between the two gaps.
 log $STAGE "===== validate_tables ====="
-python3 "$TD/validate_tables.py"
+scholarseed-skill-python "$TD/validate_tables.py"
 EC_VALIDATE_TABLES=$?
 BAD_TABLES=""
 if [ -f "$TS" ]; then
@@ -129,7 +129,7 @@ fi
 
 # ---- 2. Merge sections → full_draft_v1.tex ----
 log $STAGE "===== phase05_merge_full_draft (v1) ====="
-python3 "$MD/phase05_merge_full_draft.py" --stage v1
+scholarseed-skill-python "$MD/phase05_merge_full_draft.py" --stage v1
 if [ ! -f "$MS" ]; then
   log $STAGE "status=FAILED reason=merge_status_missing" >&2
   emit_status "$STAGE" FAILED "phase05_merge_full_draft wrote no status file at $MS"

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Regression checks for long-running image request transport settings."""
 from __future__ import annotations
 

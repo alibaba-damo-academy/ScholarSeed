@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 build_cards_index.py — a one-line-per-paper view of the corpus, for agents.
 
@@ -33,7 +33,7 @@ announce itself.
 
 Usage
 -----
-    python3 scripts/processing/build_cards_index.py <workspace>
+    scholarseed-skill-python scripts/processing/build_cards_index.py <workspace>
 
 Exit status: 0 on SUCCESS or PARTIAL_SUCCESS, 1 on FAILED.
 """

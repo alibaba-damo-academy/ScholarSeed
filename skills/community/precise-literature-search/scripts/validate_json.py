@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Validate the stable JSON contracts without third-party packages."""
 
 from __future__ import annotations

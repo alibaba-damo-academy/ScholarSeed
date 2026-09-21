@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Regression tests for processing retries, circuit breaking, and accounting."""
 from __future__ import annotations
 

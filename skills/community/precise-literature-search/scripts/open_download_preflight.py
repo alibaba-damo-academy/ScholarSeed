@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Route an open-download selection without making any network request."""
 
 from __future__ import annotations

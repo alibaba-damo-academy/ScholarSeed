@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 adapt_search_output.py — turn an agentic search result into the pipeline's corpus.
 
@@ -38,7 +38,7 @@ corpus through full-text processing.
 
 Usage
 -----
-    python3 scripts/retrieval/adapt_search_output.py <workspace> [--json]
+    scholarseed-skill-python scripts/retrieval/adapt_search_output.py <workspace> [--json]
 
 Exit status: 0 when the corpus is usable (SUCCESS or PARTIAL_SUCCESS), 1 when it
 is not.

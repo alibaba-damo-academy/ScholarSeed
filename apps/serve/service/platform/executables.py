@@ -21,6 +21,8 @@ from pathlib import Path
 
 _WINDOWS_OS_NAME = "nt"
 _WINDOWS_EXECUTABLE_SUFFIX = ".exe"
+_WINDOWS_SCRIPT_SUFFIXES = (".exe", ".cmd", ".bat")
+SKILL_PYTHON_COMMAND = "scholarseed-skill-python"
 
 
 def executable_suffix() -> str:
@@ -45,5 +47,10 @@ def resolve_command(name: str) -> Path | None:
 
     if not name:
         return None
-    candidate = scripts_directory() / f"{name}{executable_suffix()}"
-    return candidate if candidate.is_file() else None
+    directory = scripts_directory()
+    suffixes = _WINDOWS_SCRIPT_SUFFIXES if os.name == _WINDOWS_OS_NAME else ("",)
+    for suffix in suffixes:
+        candidate = directory / f"{name}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None

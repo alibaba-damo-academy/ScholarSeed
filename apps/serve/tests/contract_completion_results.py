@@ -23,6 +23,7 @@ from service.chat.service.streams import (
     SSE_BUFFER_LIMIT,
     CompletionDiagnostic,
     StreamObservation,
+    terminal_provider_failure,
 )
 
 
@@ -347,6 +348,35 @@ class CompletionBridgeContract(unittest.TestCase):
         body = b'data: {"type":"response.failed","response":{"error":{"code":"bad","message":"failed"}}}\n\n'
         _, returned = self.model_response(body, native=True, streaming=True)
         self.assertEqual(returned, body)
+
+    def test_native_content_safety_failure_is_normalized_before_codex(self):
+        body = (
+            b'data: {"type":"response.failed","response":{"status":"failed","error":'
+            b'{"code":"server_error","message":"<400> InternalError.Algo.DataInspectionFailed: '
+            b'Output data may contain inappropriate content."}}}\n\n'
+        )
+        _, returned = self.model_response(body, native=True, streaming=True)
+        event = json.loads(returned.removeprefix(b"data: ").strip())
+        error = event["response"]["error"]
+        self.assertEqual(error["code"], "invalid_prompt")
+        self.assertEqual(error["type"], "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(error["message"], "The request did not pass content safety review.")
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["upstream"]["error_code"], "server_error")
+        self.assertEqual(fields["downstream"]["error_code"], "invalid_prompt")
+        self.assertEqual(fields["downstream"]["error_type"], "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "The request did not pass content safety review.",
+                "error_code": "CONTENT_SAFETY_BLOCKED",
+                "safe_error": "The request did not pass content safety review.",
+                "retryability": "terminal",
+            },
+        )
+        unrelated = dict(fields)
+        unrelated["downstream"] = dict(fields["downstream"], error_type="")
+        self.assertEqual(terminal_provider_failure(unrelated), {})
 
     def test_bridge_preserves_native_lite_and_only_translates_chat_tools(self):
         tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]

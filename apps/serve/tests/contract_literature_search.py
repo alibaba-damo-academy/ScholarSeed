@@ -171,6 +171,19 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
 
 
 class LiteratureSearchRouteContract(unittest.TestCase):
+    def test_signed_out_search_is_rejected_without_starting_task(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "aisearch"
+            app = FastAPI()
+            app.state.literature_searches = LiteratureSearchService(FakeInvocations(), root=root)
+            register_literature_search_routes(app)
+            response = TestClient(app).post(
+                "/api/literature/searches", json={"query": "agent systems"}
+            )
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.json(), {"detail": "login_required"})
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_runtime_unavailable_returns_json_503(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "aisearch"
@@ -179,6 +192,11 @@ class LiteratureSearchRouteContract(unittest.TestCase):
                 UnavailableInvocations(), root=root
             )
             register_literature_search_routes(app)
+
+            @app.middleware("http")
+            async def authenticated(request, call_next):
+                request.state.user_id = USER_ID
+                return await call_next(request)
 
             response = TestClient(app).post(
                 "/api/literature/searches", json={"query": "agent systems"}

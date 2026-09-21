@@ -41,7 +41,7 @@ the route.
 Run the cross-platform Python entrypoint with provider `official-api`:
 
 ```text
-python <SKILL_DIR>/scripts/invoke.py --provider official-api --query <query> --limit 20
+scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider official-api --query <query> --limit 20
 ```
 
 The script checks the trimmed `SCHOLARSEED_API_KEY` before making any request. It sends a
@@ -56,7 +56,7 @@ the caller's limit is applied locally. Missing credentials produce the stable
 Run the same entrypoint with provider `visible-browser`:
 
 ```text
-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20
+scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20
 ```
 
 Normal searches launch a visible isolated local browser; `--headless` is diagnostic only.

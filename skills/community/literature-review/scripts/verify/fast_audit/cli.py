@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compatibility direct audit CLI. Not the current slr run verify_audit entry.
 
 Optional Chinese tokenization needs scripts/compatibility/requirements.txt.

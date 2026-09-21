@@ -196,7 +196,7 @@ function TreeRow({
   return (
     <>
       <div
-        className={`vds-tree-row${selected ? ' is-selected' : ''}${linked ? ' is-linked' : ''}${dragSource === node.path ? ' opacity-50' : ''}${dropTarget === node.path && node.kind === 'dir' ? ' !bg-[var(--vds-accent-light-bg-default)] ring-2 ring-inset ring-[var(--vds-accent-light-border)]' : ''}${renaming && resource.nameDraft?.error ? ' !h-auto min-h-[26px] items-start py-1' : ''}`}
+        className={`vds-tree-row ${typeof node.count === 'number' ? '' : '!pr-[var(--vds-space-1)]'} ${node.kind === 'dir' ? 'hover:!pr-[calc(var(--vds-control-height-sm)*2+var(--vds-space-1)*2.5)] focus-within:!pr-[calc(var(--vds-control-height-sm)*2+var(--vds-space-1)*2.5)] has-[[aria-pressed=true]]:!pr-[calc(var(--vds-control-height-sm)*2+var(--vds-space-1)*2.5)]' : 'hover:!pr-[calc(var(--vds-control-height-sm)+var(--vds-space-1)*2)] focus-within:!pr-[calc(var(--vds-control-height-sm)+var(--vds-space-1)*2)] has-[[aria-pressed=true]]:!pr-[calc(var(--vds-control-height-sm)+var(--vds-space-1)*2)]'}${selected ? ' is-selected' : ''}${linked ? ' is-linked' : ''}${dragSource === node.path ? ' opacity-50' : ''}${dropTarget === node.path && node.kind === 'dir' ? ' !bg-[var(--vds-accent-light-bg-default)] ring-2 ring-inset ring-[var(--vds-accent-light-border)]' : ''}${renaming && resource.nameDraft?.error ? ' !h-auto min-h-[26px] items-start py-1' : ''}`}
         style={{
           paddingLeft:
             RESOURCE_TREE_BASE_INDENT + depth * RESOURCE_TREE_INDENT_STEP

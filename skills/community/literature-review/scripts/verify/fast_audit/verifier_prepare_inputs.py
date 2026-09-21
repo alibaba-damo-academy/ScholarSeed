@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """verifier_prepare_inputs — derive `07_verifier/input/*.json` sub-inputs
 from upstream survey artifacts.
 
@@ -7,12 +7,12 @@ lives in the internal module so `runtime/cli.py:cmd_run` can call the exact
 same builders in-process.
 
 Usage:
-    python3 scripts/verify/fast_audit/verifier_prepare_inputs.py \\
+    scholarseed-skill-python scripts/verify/fast_audit/verifier_prepare_inputs.py \\
         [--workspace <path>] [--force] [--include-experiment-data]
 
     # Or from inside a workspace:
     cd workspace_xxx
-    python3 scripts/verify/fast_audit/verifier_prepare_inputs.py
+    scholarseed-skill-python scripts/verify/fast_audit/verifier_prepare_inputs.py
 
 Default behaviour matches what `cli.py run` triggers internally: skip
 `experiment_data.json` because it has no faithful source-of-truth in a

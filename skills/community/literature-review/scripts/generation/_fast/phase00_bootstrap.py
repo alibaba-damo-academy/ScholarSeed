@@ -5,7 +5,7 @@ directories exist, and persists a paper_id -> cite_key map for downstream
 phases.
 
 Usage:
-    python scripts/generation/_fast/phase00_bootstrap.py --workspace <path>
+    scholarseed-skill-python scripts/generation/_fast/phase00_bootstrap.py --workspace <path>
 """
 from __future__ import annotations
 

@@ -1,17 +1,17 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Read and write the bounded state used by one Veryfast search.
 
 Usage:
-    python3 state.py init --dir ./search_session
-    python3 state.py read --dir ./search_session
-    python3 state.py add-papers --dir ./search_session --input new_papers.json
-    python3 state.py add-query --dir ./search_session --query "search query text"
-    python3 state.py add-queries --dir ./search_session --input queries.json
-    python3 state.py record-round --dir ./search_session --input round.json
-    python3 state.py update-coverage --dir ./search_session --subtopic "method_A" --covered true
-    python3 state.py finish-round --dir ./search_session --new-papers 7
-    python3 state.py summary --dir ./search_session
-    python3 state.py budget --dir ./search_session
+    scholarseed-skill-python state.py init --dir ./search_session
+    scholarseed-skill-python state.py read --dir ./search_session
+    scholarseed-skill-python state.py add-papers --dir ./search_session --input new_papers.json
+    scholarseed-skill-python state.py add-query --dir ./search_session --query "search query text"
+    scholarseed-skill-python state.py add-queries --dir ./search_session --input queries.json
+    scholarseed-skill-python state.py record-round --dir ./search_session --input round.json
+    scholarseed-skill-python state.py update-coverage --dir ./search_session --subtopic "method_A" --covered true
+    scholarseed-skill-python state.py finish-round --dir ./search_session --new-papers 7
+    scholarseed-skill-python state.py summary --dir ./search_session
+    scholarseed-skill-python state.py budget --dir ./search_session
 """
 
 import argparse

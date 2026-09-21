@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
+from scholarseed_runtime.contract.command import SkillConfiguration
+from scholarseed_runtime.contract.event import RuntimeValue
 from scholarseed_runtime.contract.inventory import (
     SkillAvailability,
     SkillDependency,
@@ -19,8 +22,63 @@ CODEX_SKILLS_LIST_METHOD = "skills/list"
 CODEX_SKILLS_CONFIGURE_METHOD = "skills/config/write"
 CODEX_SKILL_INVENTORY_ERROR = "codex_skill_inventory_error"
 SKILL_REVISION_ENCODING = "utf-8"
+CODEX_SKILLS_CONFIG_KEY = "skills"
+CODEX_SKILL_RULES_KEY = "config"
+CODEX_SKILL_PATH_KEY = "path"
+CODEX_SKILL_ENABLED_KEY = "enabled"
 
 RequestCallback = Callable[[str, Any], Awaitable[dict[str, Any]]]
+
+
+def session_skill_config(
+    configurations: tuple[SkillConfiguration, ...],
+) -> dict[str, RuntimeValue]:
+    if not configurations:
+        return {}
+    return {
+        CODEX_SKILLS_CONFIG_KEY: {
+            CODEX_SKILL_RULES_KEY: [
+                {
+                    CODEX_SKILL_PATH_KEY: str(configuration.path.expanduser().resolve()),
+                    CODEX_SKILL_ENABLED_KEY: configuration.enabled,
+                }
+                for configuration in configurations
+            ]
+        }
+    }
+
+
+def session_skill_inventory(
+    inventory: SkillInventory, configurations: tuple[SkillConfiguration, ...]
+) -> SkillInventory:
+    if not configurations:
+        return inventory
+    enabled_by_path = {
+        configuration.path.expanduser().resolve(): configuration.enabled
+        for configuration in configurations
+    }
+    skills = tuple(
+        (
+            replace(
+                skill,
+                enabled=enabled_by_path[skill.path.expanduser().resolve()],
+                availability=(
+                    SkillAvailability.AVAILABLE
+                    if enabled_by_path[skill.path.expanduser().resolve()]
+                    else SkillAvailability.DISABLED
+                ),
+            )
+            if skill.path.expanduser().resolve() in enabled_by_path
+            and skill.availability is not SkillAvailability.ERROR
+            else skill
+        )
+        for skill in inventory.skills
+    )
+    revision_payload = json.dumps(
+        [inventory.revision, session_skill_config(configurations)], sort_keys=True
+    )
+    revision = hashlib.sha256(revision_payload.encode(SKILL_REVISION_ENCODING)).hexdigest()
+    return replace(inventory, skills=skills, revision=revision)
 
 
 class CodexSkillControl:
@@ -110,4 +168,4 @@ class CodexSkillControl:
         )
 
 
-__all__ = ["CodexSkillControl"]
+__all__ = ["CodexSkillControl", "session_skill_config", "session_skill_inventory"]

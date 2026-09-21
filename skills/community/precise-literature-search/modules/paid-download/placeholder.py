@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Simulate the paper-dl action-required and explicit-resume protocol."""
 
 from __future__ import annotations

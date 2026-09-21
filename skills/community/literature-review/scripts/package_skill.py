@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Build a clean internal-distribution literature-review tarball with live config."""
 from __future__ import annotations
 

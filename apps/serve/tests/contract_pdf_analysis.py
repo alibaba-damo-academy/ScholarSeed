@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, create_autospec, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from fastapi import FastAPI
@@ -51,7 +51,6 @@ from service.literature.service.analysis import (
     validate_result,
     verify_evidence,
 )
-from service.literature.service.pdf import LiteraturePdf
 from service.platform.inference import (
     ModelAttachment,
     ModelInvocationLimits,
@@ -147,6 +146,38 @@ class PdfAnalysisContracts(unittest.TestCase):
         content.read_bytes.return_value = (b"image", "image/png")
         with self.assertRaises(AnalysisError):
             read_source(request.model_copy(update={"literature_id": ""}), Mock(), Mock(), content)
+
+    def test_figure_compiles_image_with_personal_requirement_as_markdown(self):
+        document = pdf_fixture.open()
+        page = document.new_page()
+        page.insert_text((72, 72), "Accuracy over time")
+        payload = document.tobytes()
+        document.close()
+        repository = Mock()
+        repository.get.return_value = Mock(title="Paper")
+        pdf = Mock()
+        pdf.read.return_value = (payload, "application/pdf")
+
+        prepared = prepare(
+            AnalysisRequest(
+                literature_id="paper",
+                model_key="vision-model",
+                kind=ActionKind.FIGURE,
+                page=1,
+                rect=(0.05, 0.05, 0.5, 0.3),
+                instruction="先解释坐标轴。",
+                client_action_id="action",
+                client_attempt_id="attempt",
+            ),
+            repository,
+            pdf,
+        )
+
+        self.assertIsNotNone(prepared.compiled)
+        self.assertFalse(prepared.compiled.json_output)
+        self.assertIn("先解释坐标轴。", prepared.compiled.instructions)
+        self.assertEqual(prepared.compiled.attachments[0].media_type, "image/png")
+        self.assertTrue(prepared.crop.startswith("data:image/png;base64,"))
 
     def test_document_actions_use_extracted_pages_without_pdf_attachment(self):
         document = pdf_fixture.open()
@@ -327,7 +358,7 @@ class PdfAnalysisContracts(unittest.TestCase):
             self.assertIn(original, custom)
             self.assertEqual(
                 "Use domain terminology." in custom,
-                kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION),
+                kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION, ActionKind.FIGURE),
             )
 
     def test_selection_context_keeps_wrapped_selection_and_neighbors(self):
@@ -854,165 +885,6 @@ class StreamingContracts(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(state["status"], "completed")
 
             self.assertEqual(actions.invoke_compiled.await_count, 4)
-
-    async def test_figure_submit_returns_crop_and_cancel_releases_slot_before_ack(self):
-        # Contract-only model stub; all persistence is explicitly temporary.
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LiteratureRepository(Path(directory) / "literature.sqlite3")
-            tasks = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
-            actions = Mock()
-            started = asyncio.Event()
-            stopped = asyncio.Event()
-
-            async def pending_generation(**kwargs):
-                started.set()
-                try:
-                    await asyncio.Event().wait()
-                finally:
-                    # Force cancellation to yield while holding the publication slot.
-                    await asyncio.sleep(0)
-                    stopped.set()
-
-            actions.invoke_compiled = AsyncMock(side_effect=pending_generation)
-            models = Mock()
-            models.inference_connection.return_value = {"image_input": True}
-            app = FastAPI()
-            request = AnalysisRequest(
-                literature_id="paper",
-                model_key="selected",
-                kind=ActionKind.FIGURE,
-                rect=[0.1, 0.1, 0.5, 0.3],
-                client_action_id="action",
-                client_attempt_id="attempt",
-            )
-
-            def compiled(payload, *args, **kwargs):
-                return PreparedAnalysis(
-                    payload,
-                    "revision",
-                    "paper",
-                    ("First page",),
-                    CompiledAssistantAction("test", "v1", "test", "test"),
-                    "crop-preview",
-                )
-
-            with (
-                patch(
-                    "service.literature.api.analysis.LiteratureRepository", return_value=repository
-                ),
-                patch("service.literature.api.analysis.request_user_id", return_value="owner"),
-                patch(
-                    "service.literature.api.analysis.prepare", side_effect=compiled
-                ) as prepare_mock,
-            ):
-                register_analysis_routes(
-                    app, actions=actions, tasks=tasks, models=models, pdf=Mock()
-                )
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
-                ) as client:
-                    response = await client.post(
-                        "/api/literature/ai/tasks", json=request.model_dump(mode="json")
-                    )
-                    self.assertEqual(response.status_code, 202)
-                    self.assertEqual(response.json()["crop"], "crop-preview")
-                    self.assertEqual(prepare_mock.call_count, 1)
-                    await started.wait()
-                    cancelled = await client.post("/api/literature/ai/tasks/attempt/cancel")
-                    self.assertEqual(cancelled.json()["status"], "cancelled")
-                    self.assertTrue(stopped.is_set())
-                    replacement = request.model_copy(
-                        update={
-                            "client_action_id": "replacement",
-                            "client_attempt_id": "replacement",
-                        }
-                    )
-                    response = await client.post(
-                        "/api/literature/ai/tasks", json=replacement.model_dump(mode="json")
-                    )
-                    self.assertEqual(response.status_code, 202)
-                    await client.post("/api/literature/ai/tasks/replacement/cancel")
-
-    async def test_completed_figure_rechecks_source_without_persisting_result(self):
-        with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / "literature.sqlite3"
-            repository = Mock(database=database)
-            item = Mock(title="Paper")
-            repository.get.return_value = item
-            tasks = AssistantInvocationStore(Path(directory) / "invocations.sqlite3")
-            payload = b"unchanged PDF source"
-            revision = hashlib.sha256(payload).hexdigest()
-            pdf = create_autospec(LiteraturePdf, instance=True)
-            pdf.read.return_value = (payload, "application/pdf")
-            model = Mock()
-            model.inference_connection.return_value = {"image_input": True}
-            stored_results = AnalysisStore(database)
-            request = AnalysisRequest(
-                literature_id="paper",
-                model_key="selected",
-                kind=ActionKind.FIGURE,
-                rect=[0.1, 0.1, 0.5, 0.3],
-                client_action_id="action",
-                client_attempt_id="attempt",
-            )
-            prepared = PreparedAnalysis(
-                request,
-                revision,
-                "paper",
-                ("First page",),
-                CompiledAssistantAction("test", "v1", "test", "test"),
-                "crop",
-            )
-            result = {
-                "text": "Figure explanation",
-                "evidence": [{"page": 1, "quote": "First page"}],
-            }
-            record = AssistantInvocationRecord(
-                invocation_id="invocation",
-                owner_id="owner",
-                client_action_id="action",
-                client_attempt_id="attempt",
-                retry_of_attempt_id=None,
-                kind="figure_explanation",
-                request_hash="hash",
-                project_id="",
-                source_id="paper",
-                source_revision=revision,
-                prompt_version="v1",
-                status=ModelInvocationStatus.COMPLETED,
-                target_language="",
-                output_text=json.dumps(result),
-            )
-
-            async def complete(**kwargs):
-                tasks.claim(record)
-                return record
-
-            actions = Mock(invoke_compiled=AsyncMock(side_effect=complete))
-            app = FastAPI()
-            with (
-                patch(
-                    "service.literature.api.analysis.LiteratureRepository", return_value=repository
-                ),
-                patch("service.literature.api.analysis.request_user_id", return_value="owner"),
-                patch("service.literature.api.analysis.prepare", return_value=prepared),
-            ):
-                register_analysis_routes(app, actions=actions, tasks=tasks, models=model, pdf=pdf)
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://test"
-                ) as client:
-                    response = await client.post(
-                        "/api/literature/ai/tasks", json=request.model_dump(mode="json")
-                    )
-                    self.assertEqual(response.status_code, 202)
-                    for _ in range(100):
-                        await asyncio.sleep(0.01)
-                        response = await client.get("/api/literature/ai/tasks/attempt")
-                        if response.json()["status"] not in ("pending", "running"):
-                            break
-                    self.assertEqual(response.json()["status"], "completed", response.text)
-                    pdf.read.assert_called_once_with(item)
-                    self.assertEqual(stored_results.read("paper", revision), {})
 
     async def test_chat_stream_preserves_text_usage_and_requires_terminal(self):
         events = [

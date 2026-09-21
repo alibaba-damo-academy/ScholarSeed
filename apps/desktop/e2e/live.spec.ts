@@ -288,7 +288,6 @@ test('P0-11 defers a running model selection until the next turn', async ({}, te
     const responsePromise = page.waitForResponse((response) =>
       response.url().endsWith(`/sessions/${sessionId}/model`) && response.request().method() === 'POST')
     await page.getByTestId('model-selector-toggle').click()
-    await page.getByTestId('model-list-toggle').click()
     await page.getByTestId(`model-option-${targetModel}`).click()
     const response = await responsePromise
     const selected = await response.json()
@@ -344,7 +343,6 @@ test('P0-11 defers a running model selection until the next turn', async ({}, te
     await expect(page.getByTestId('user-bubble').first()).toContainText(DEFERRED_MODEL_TURN_PROMPT)
     await expect(page.getByTestId('user-bubble').last()).toContainText(DEFERRED_MODEL_NEXT_PROMPT)
     await page.getByTestId('model-selector-toggle').click()
-    await page.getByTestId('model-list-toggle').click()
     await expect(page.getByTestId(`model-option-${targetModel}`)).toHaveAttribute('data-selected', 'true')
     await expect(page.getByTestId('foreground-error')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'model-selection-after-restart.png') })

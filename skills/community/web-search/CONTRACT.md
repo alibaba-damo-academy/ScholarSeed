@@ -31,8 +31,8 @@ fallback order (`official → native → browser`) is owned by the caller, never
 ## 2. How to invoke
 
 ```text
-python <SKILL_DIR>/scripts/invoke.py --provider official-api    --query <query> --limit 20
-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20 [--headless]
+scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider official-api    --query <query> --limit 20
+scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> --limit 20 [--headless]
 ```
 
 - `--limit` is bounded to **1–20** (`official.MINIMUM_LIMIT` / `MAXIMUM_LIMIT`); default 20.

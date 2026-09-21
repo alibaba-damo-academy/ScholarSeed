@@ -1,21 +1,29 @@
 {
-  "schema": 2,
+  "schema": 3,
+  "required": [],
+  "requires_login": [
+    "fast-search",
+    "agentic-search",
+    "precise-literature-search",
+    "literature-review"
+  ],
   "surfaces": {
     "conversation": {
       "skills": [
         "research-idea-partner",
         "literature-review",
         "precise-literature-search",
-        "fast-search"
+        "agentic-search"
       ],
       "sources": []
     },
     "settings": {
       "skills": [
+        "fast-search",
         "research-idea-partner",
         "literature-review",
         "precise-literature-search",
-        "fast-search"
+        "agentic-search"
       ],
       "sources": [
         "user"

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Prepare native chapter and figure task packets; publish editable v2."""
 import argparse
 import copy

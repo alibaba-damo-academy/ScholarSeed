@@ -9,7 +9,7 @@ import uuid
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from damoatrace.recording.redaction import SECRET_KEYS
 from scholarseed_runtime.contract import (
@@ -33,6 +33,7 @@ from scholarseed_runtime.contract import (
     TurnRequest,
 )
 from scholarseed_runtime.contract.artifact import ArtifactRole
+from scholarseed_runtime.contract.command import SkillConfiguration
 from scholarseed_runtime.contract.evidence import (
     RuntimeProcessEvent,
     RuntimeRpcEvidence,
@@ -162,6 +163,7 @@ from service.chat.service.plan import SessionPlans
 from service.chat.service.publication import PublicationCommand, PublicationService
 from service.chat.service.recording import RecordingService
 from service.chat.service.sources import answer_sources
+from service.chat.service.streams import terminal_provider_failure
 from service.chat.service.tasks import ProductTaskLease
 from service.content.domain.model import ContentError
 from service.platform.bridge import BRIDGE_TOKEN_BYTES, DisplayCardContent, PlanWrite
@@ -205,6 +207,7 @@ class LiveSession:
         thinking: ModelThinking | None = None,
         activity_observer: SessionActivityObserver | None = None,
         answer_filter: CitationAnswerFilter | None = None,
+        skill_inventory_provider: Callable[[Path], Awaitable[SkillInventory]] | None = None,
     ) -> None:
         self.id = session_id
         self.bridge_token = secrets.token_urlsafe(BRIDGE_TOKEN_BYTES)
@@ -228,6 +231,7 @@ class LiveSession:
         # 却要重开 thread, 跑着 turn 时只能等 turn 边界。空串表示未知, 按需重开一次即收敛。
         # 只在进程内有效 —— 会话重开一定按 policy_id 绑定, 两者天然一致。
         self.applied_permission_mode = ""
+        self.skill_configurations: tuple[SkillConfiguration, ...] = ()
         # 会话进程要额外带上的环境变量 (App Server 与 skill 共用的 SCHOLARSEED_API_KEY)。挂在会话上而非只在
         # open 的参数里: relocate 走 rebind → _resume 重开 vendor thread, 那条路上没有
         # 用户凭据可重新签发, 环境必须跟着会话一起搬。
@@ -272,6 +276,7 @@ class LiveSession:
         # ``ledger.active_turn_id`` 不是一回事 —— 后者是 vendor 轮 id，要等 Codex 的 turnStarted
         # 事件回来才落定，而这一轮的模型调用那时可能已经打出去了（会记到上一轮头上）。
         self.active_product_turn_id = ""
+        self._model_bridge_failure: tuple[str, dict[str, str]] | None = None
         self.active_assistant_snapshot_id = ""
         self.active_assistant_revision: int | None = None
         self.active_task_type = ""
@@ -287,6 +292,7 @@ class LiveSession:
         self._duration_estimator = SkillDurationEstimator(events)
         self._artifacts = artifacts
         self._skills = skills
+        self._skill_inventory_provider = skill_inventory_provider
         self._logger = logger
         self._active = False
         self._projection_lock = asyncio.Lock()
@@ -762,6 +768,18 @@ class LiveSession:
                 default=self._runtime_evidence_seq,
             )
             return
+        if event.kind in {
+            RuntimeEventKind.TURN_COMPLETED,
+            RuntimeEventKind.TURN_FAILED,
+            RuntimeEventKind.TURN_INTERRUPTED,
+            RuntimeEventKind.TURN_UNKNOWN,
+        }:
+            model_failure = self._model_bridge_failure
+            self._model_bridge_failure = None
+            if event.kind is RuntimeEventKind.TURN_FAILED and model_failure is not None:
+                client_turn_id, failure = model_failure
+                if client_turn_id == self.active_product_turn_id:
+                    event = replace(event, payload={**dict(event.payload), **failure})
         self._trace.runtime_event(event)
         incident = event_incident(event)
         if incident is not None and event.kind is not RuntimeEventKind.RUNTIME_INCIDENT:
@@ -1374,6 +1392,14 @@ class LiveSession:
 
     def trace_completion(self, fields: Mapping[str, Any]) -> None:
         self._trace.completion(fields)
+        client_turn_id = str(fields.get("client_user_message_id") or "")
+        if (
+            client_turn_id
+            and client_turn_id == self.active_product_turn_id
+            and fields.get("phase") == "finished"
+        ):
+            failure = terminal_provider_failure(fields)
+            self._model_bridge_failure = (client_turn_id, failure) if failure else None
 
     def observe_model(self, client_turn_id: str, actual_model: str) -> None:
         """A late HTTP response must never change another execution's identity."""
@@ -1562,9 +1588,11 @@ class LiveSession:
         """Return one enabled identity from the authoritative runtime inventory."""
 
         inventory = self._skill_inventory
-        if inventory is None or force_reload:
+        if self._skill_inventory_provider is not None:
+            inventory = await self._skill_inventory_provider(self.runtime_workdir)
+        elif inventory is None or force_reload:
             inventory = await self.refresh_skills(force_reload=force_reload)
-        rows = self._skills.payloads(inventory, load_skill_state())
+        rows = self._skills.payloads(inventory, load_skill_state(), user_id=self.user_id)
         return next(
             (row for row in rows if bool(row.get("active")) and str(row.get("name") or "") == name),
             None,

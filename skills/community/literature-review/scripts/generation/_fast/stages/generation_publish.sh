@@ -54,7 +54,7 @@ printf '%s [STAGE START] %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$STAGE" >> "$GEN_
 # Exits 3 when every table failed; a dropped table costs a \input line, not the
 # document, so it degrades rather than blocks.
 log $STAGE "===== validate_tables ====="
-python3 "$TD/validate_tables.py"
+scholarseed-skill-python "$TD/validate_tables.py"
 EC_TABLES=$?
 
 # ---- 2. Figure bookkeeping (advisory) ----
@@ -70,9 +70,9 @@ if [ -f "$GEN_DIR/_internal/manuscript_contract.json" ]; then
   EC_IMAGES=0
   EC_LATEX=0
 else
-  python3 "$FD/generate_images.py" --concurrency 4 --resume-only
+  scholarseed-skill-python "$FD/generate_images.py" --concurrency 4 --resume-only
   EC_IMAGES=$?
-  python3 "$FD/write_latex.py"
+  scholarseed-skill-python "$FD/write_latex.py"
   EC_LATEX=$?
 fi
 if [ "$EC_TABLES" -ne 0 ] || [ "$EC_IMAGES" -ne 0 ] || [ "$EC_LATEX" -ne 0 ]; then
@@ -98,7 +98,7 @@ done
 # agentic path the LLM stage config it used (`refinement_full`) is gone anyway;
 # the flag makes that independent of what the config file happens to contain.
 log $STAGE "===== phase05b_insert_assets ====="
-if ! python3 "$MD/phase05b_insert_assets.py" --no-llm-scrub; then
+if ! scholarseed-skill-python "$MD/phase05b_insert_assets.py" --no-llm-scrub; then
   emit_status "$STAGE" FAILED "asset insertion failed in this invocation; prior status cannot authorize publication"
   exit 1
 fi
@@ -118,7 +118,7 @@ fi
 
 # ---- 5. Quality check (hard gate) ----
 log $STAGE "===== phase06_quality_check ====="
-if ! python3 "$PUB/phase06_quality_check.py"; then
+if ! scholarseed-skill-python "$PUB/phase06_quality_check.py"; then
   emit_status "$STAGE" FAILED "quality rules failed in this invocation"
   exit 1
 fi
@@ -138,7 +138,7 @@ fi
 
 # ---- 6. Sanitize LaTeX (monotone — never escalates) ----
 log $STAGE "===== phase06b_sanitize_latex ====="
-if ! python3 "$PUB/phase06b_sanitize_latex.py"; then
+if ! scholarseed-skill-python "$PUB/phase06b_sanitize_latex.py"; then
   emit_status "$STAGE" FAILED "LaTeX normalization failed in this invocation"
   exit 1
 fi
@@ -146,7 +146,7 @@ fi
 # ---- 7. Compile (clean→publish PDF; fixable failure→defer MD fallback for the
 #         agent's compile fix loop; engine-missing→emit MD now; never blocks) ----
 log $STAGE "===== phase07_compile_latex ====="
-if ! python3 "$PUB/phase07_compile_latex.py"; then
+if ! scholarseed-skill-python "$PUB/phase07_compile_latex.py"; then
   emit_status "$STAGE" FAILED "LATEX_COMPILE_ERROR: current compile failed; previous success is invalid"
   exit 1
 fi
@@ -169,7 +169,7 @@ fi
 # NOTE: generation_report.json written here is not the last word either — the
 # agent runs its compile fix loop + `slr finalize` afterwards.
 log $STAGE "===== phase08_finalize ====="
-python3 "$PUB/phase08_finalize.py"
+scholarseed-skill-python "$PUB/phase08_finalize.py"
 rc=$?
 if [ $rc -ne 0 ] || [ ! -f "$FINAL_REPORT" ]; then
   log $STAGE "status=FAILED reason=finalize_failed rc=$rc" >&2

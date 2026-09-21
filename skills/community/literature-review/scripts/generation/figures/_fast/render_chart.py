@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """render_chart.py — draw one chart from a CSV. It draws; it never computes.
 
 The contract, and why it is worth enforcing
@@ -70,7 +70,7 @@ Two documented fault-injection hooks, used by the tests and by nothing else:
 
 Usage
 -----
-    python3 render_chart.py --csv DATA.csv --out FIG.png \\
+    scholarseed-skill-python render_chart.py --csv DATA.csv --out FIG.png \\
         --chart-type bar --x-label "Year" --y-label "Number of papers" \\
         [--vector FIG.pdf] [--title T] [--language chinese] \\
         [--x-label-fallback Year] [--y-label-fallback "Number of papers"] \\

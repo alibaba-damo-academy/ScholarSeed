@@ -13,6 +13,7 @@ const { verifyAsarClosure } = require('./closure.cjs')
 const { verifyNotices } = require('./notices.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
 const { verifyPython } = require('../../../scripts/python.cjs')
+const { skillPythonLauncherPath } = require('../runtime/python.cjs')
 const { probe: probeTexlive, stagedEngines } = require('../runtime/texlive.cjs')
 
 const CONTEXT_ENV = 'SCHOLARSEED_BUILD_CONTEXT'
@@ -111,6 +112,7 @@ function layout(application, frozen) {
     selected,
     resources,
     python: resourcePath(path.join(resources, 'backend'), selected.pythonRelative),
+    skillPython: skillPythonLauncherPath(path.join(resources, 'backend', 'bin'), frozen.platform),
     codex: resourcePath(path.join(resources, 'backend'), selected.codexRelative),
     rg: path.join(resources, 'backend', 'bin', selected.ripgrepName),
     executable: frozen.platform === 'darwin'
@@ -170,7 +172,8 @@ async function verifyContent(application, frozen, signed = false) {
     path.join(current.resources, 'renderer', 'index.html'),
     path.join(current.resources, 'defaults', 'config.json'),
     path.join(current.resources, 'product.json'),
-    path.join(current.resources, 'backend', 'skills.lock.json')]
+    path.join(current.resources, 'backend', 'skills.lock.json'),
+    current.skillPython]
   for (const filename of required) fs.accessSync(filename, fs.constants.R_OK)
   if (await sha256(required[5]) !== frozen.config.sha256 ||
       await sha256(required[6]) !== frozen.product.sha256 ||

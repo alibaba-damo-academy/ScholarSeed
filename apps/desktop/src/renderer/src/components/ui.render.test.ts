@@ -1689,6 +1689,21 @@ test('icon buttons keep square geometry without text-button padding and loading 
 })
 
 
+test('disabled tooltip forgets previous hover before being enabled again', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByRole('button', { name: '点击禁用提示', exact: true })
+    const content = page.getByRole('tooltip').filter({ hasText: '动态禁用提示' })
+    await trigger.hover()
+    await content.waitFor({ state: 'visible' })
+    await trigger.click()
+    await content.waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '重新启用提示', exact: true }).click()
+    assert.equal(await content.count(), 0)
+    await trigger.hover()
+    await content.waitFor({ state: 'visible' })
+  })
+})
+
 test('visible tooltip dismisses on Escape without moving focused trigger', async () => {
   await withFixture(async page => {
     const root = page.getByTestId('render-tooltip')

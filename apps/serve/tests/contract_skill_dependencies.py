@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -16,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "apps" / "serve" / "pyproject.toml"
 WORKSPACE_SCRIPT = REPO_ROOT / "scripts" / "workspace.cjs"
 BUNDLE_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "bundle.cjs"
+SKILL_PYTHON_RUNTIME = REPO_ROOT / "apps" / "desktop" / "runtime" / "python.cjs"
 BUILD_SCRIPT = REPO_ROOT / "apps" / "desktop" / "scripts" / "build.cjs"
 DEPENDENCIES = (
     REPO_ROOT / "apps" / "serve" / "service" / "capabilities" / "service" / "dependencies.py"
@@ -58,6 +61,12 @@ REQUIRED_PRODUCT_DEPENDENCIES = frozenset(
     }
 )
 FORBIDDEN_PRODUCT_DEPENDENCIES = frozenset({"fpdf2", "pikepdf", "questionary", "tqdm"})
+SKILL_COMMAND_SUFFIXES = frozenset({"", ".json", ".md", ".py", ".sh"})
+NAKED_PYTHON_COMMAND = re.compile(
+    r"(?m)^(?:#!\s*/usr/bin/env\s+|[ \t]*(?:\$[ \t]+)?)(?:python|python3)(?:[ \t]|$)"
+    r'|^[ \t]*["\'](?:python|python3)["\'][ \t]*,?[ \t]*$',
+)
+PYTHON_PROCESS_METHODS = frozenset({"call", "check_call", "check_output", "Popen", "run"})
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -160,12 +169,15 @@ def _merged_path_arguments(source: str) -> list[str]:
 
 def _runtime_uses_one_interpreter() -> None:
     backend = BACKEND_SOURCE.read_text(encoding="utf-8")
+    bundle = BUNDLE_SCRIPT.read_text(encoding="utf-8")
+    launcher = SKILL_PYTHON_RUNTIME.read_text(encoding="utf-8")
     adapter = PAID_DOWNLOAD_ADAPTER.read_text(encoding="utf-8")
     check("Electron 显式注入产品 Python", "[SCHOLARSEED_PYTHON_ENV]: python" in backend)
     order = _merged_path_arguments(backend)
     inherited = order.index("inheritedExecutablePath") if "inheritedExecutablePath" in order else -1
     check("PATH 合并保留继承的宿主 PATH", inherited > 0, str(order))
     for name in (
+        "skillBin",
         "hookBin",
         "pythonExecutableDirectory",
         "codexExecutableDirectory",
@@ -173,6 +185,24 @@ def _runtime_uses_one_interpreter() -> None:
     ):
         position = order.index(name) if name in order else -1
         check(f"{name} 在继承的宿主 PATH 之前", 0 <= position < inherited, f"order={order}")
+    check(
+        "开发 Desktop 生成 Skill Python launcher",
+        "writeSkillPythonLauncher(skillBin, python)" in backend,
+    )
+    check(
+        "安装包生成目标平台 Skill Python launcher",
+        "writeSkillPythonLauncher(bin, python, target.platform)" in bundle,
+    )
+    check(
+        "Skill Python launcher 只按相对路径定位解释器",
+        "path.relative(launcherDirectory" in launcher
+        and "fs.realpathSync" in launcher
+        and "SCHOLARSEED_PYTHON" not in launcher,
+    )
+    check(
+        "Windows Skill Python launcher 原样转发参数",
+        "%*" in launcher,
+    )
     check(
         "paid-download 使用活动解释器模块入口",
         '[sys.executable, "-m", "paper_dl"]' in adapter,
@@ -185,6 +215,45 @@ def _runtime_uses_one_interpreter() -> None:
         product_policy >= 0
         and product_entry > product_policy
         and standalone_fallback > product_entry,
+    )
+
+
+def _skills_use_product_python_command() -> None:
+    naked_commands: list[str] = []
+    hardcoded_children: list[str] = []
+    for path in sorted(COMMUNITY_SKILLS.rglob("*")):
+        if not path.is_file() or path.suffix not in SKILL_COMMAND_SUFFIXES:
+            continue
+        try:
+            source = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if NAKED_PYTHON_COMMAND.search(source):
+            naked_commands.append(str(path.relative_to(COMMUNITY_SKILLS)))
+        if path.suffix != ".py":
+            continue
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Call)
+                or not isinstance(node.func, ast.Attribute)
+                or node.func.attr not in PYTHON_PROCESS_METHODS
+                or not node.args
+                or not isinstance(node.args[0], (ast.List, ast.Tuple))
+                or not node.args[0].elts
+            ):
+                continue
+            executable = node.args[0].elts[0]
+            if isinstance(executable, ast.Constant) and executable.value in {"python", "python3"}:
+                hardcoded_children.append(f"{path.relative_to(COMMUNITY_SKILLS)}:{node.lineno}")
+    check("Skill 命令不再使用裸 python/python3", not naked_commands, str(naked_commands))
+    check(
+        "Skill Python 子进程不写死解释器",
+        not hardcoded_children,
+        str(hardcoded_children),
     )
 
 
@@ -218,6 +287,7 @@ def main() -> int:
     _registry_and_package_manifests_agree()
     _builds_install_into_product_python()
     _runtime_uses_one_interpreter()
+    _skills_use_product_python_command()
     _bundled_toolchain_is_staged_and_proved()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

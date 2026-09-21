@@ -19,7 +19,9 @@ import {
   useToast
 } from '../../components/ui'
 import { useApp } from '../../store'
+import { writeClipboard } from '../../components/primitive/clipboard'
 import {
+  currentShortcutPlatform,
   effectiveShortcutBindings,
   matchesBinding,
   shortcutBindings,
@@ -82,6 +84,11 @@ const LINE_COMMENT_ACTION = 'editor.action.commentLine'
 const INDENT_ACTION = 'editor.action.indentLines'
 const OUTDENT_ACTION = 'editor.action.outdentLines'
 const COPY_ACTION = 'editor.action.clipboardCopyAction'
+const SELECTION_COPY_ACTION = 'workbench.copySelection'
+const CLIPBOARD_PASTE_ACTION = 'workbench.pasteClipboard'
+const EDITOR_WRITABLE_FOCUS = 'editorTextFocus && !editorReadonly'
+const EDITOR_TEXT_FOCUS = 'editorTextFocus'
+const CLIPBOARD_TEXT_TYPE = 'text/plain'
 const UNDO_COMMAND = 'undo'
 const REDO_COMMAND = 'redo'
 const HISTORY_ACTION_SOURCE = 'markdown-source-toolbar'
@@ -250,6 +257,7 @@ export function MonacoDocument({
     const performance = editorPerformanceFor(session.bytes.byteLength)
     const editor = editorFor(host, sessionId, session.source.path, session.text, {
       readOnly: (!isMarkdownSource && viewKind === 'preview') || !session.capabilities.can_edit,
+      editContext: false,
       automaticLayout: true,
       ...performance,
       find: { addExtraSpaceOnTop: false },
@@ -343,11 +351,45 @@ export function MonacoDocument({
       }
     }
     host.addEventListener('keydown', handleEditActionShortcut, true)
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC, () => {
-      editor.trigger(SHORTCUT_ACTION_SOURCE, COPY_ACTION, null)
+    const selectedText = (): string | null => {
+      if (!editor.hasTextFocus()) return null
+      const selections = editor.getSelections()?.filter(selection => !selection.isEmpty()) ?? []
+      if (!selections.length) return null
+      return selections.map(selection => model.getValueInRange(selection)).join(model.getEOL())
+    }
+    const handleCopy = (event: ClipboardEvent): void => {
+      const text = selectedText()
+      if (text === null || !event.clipboardData) return
+      event.clipboardData.setData(CLIPBOARD_TEXT_TYPE, text)
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+    const copyCommand = (): void => {
+      const text = selectedText()
+      if (text === null) {
+        editor.trigger(SHORTCUT_ACTION_SOURCE, COPY_ACTION, null)
+        return
+      }
+      void writeClipboard(text).catch(() => toast({ title: t('markdown.codeCopyFailed'), tone: 'error' }))
+    }
+    host.addEventListener('copy', handleCopy, true)
+    const copyKeybindings = [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC]
+    if (currentShortcutPlatform() === 'mac') {
+      copyKeybindings.push(monaco.KeyMod.WinCtrl | monaco.KeyCode.KeyC)
+    }
+    const copyAction = editor.addAction({
+      id: SELECTION_COPY_ACTION,
+      label: uiText('copy.idle'),
+      keybindings: copyKeybindings,
+      precondition: EDITOR_TEXT_FOCUS,
+      run: copyCommand
     })
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV, () => {
-      void window.scholarseed.pasteClipboard()
+    const pasteAction = editor.addAction({
+      id: CLIPBOARD_PASTE_ACTION,
+      label: t('code.paste'),
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyV],
+      precondition: EDITOR_WRITABLE_FOCUS,
+      run: async () => { await window.scholarseed.pasteClipboard() }
     })
     for (const commandId of CODE_COMMANDS) {
       const effective = effectiveShortcutBindings(commandId, appState.shortcutOverrides)
@@ -423,6 +465,9 @@ export function MonacoDocument({
       saveView(tabId, editor.saveViewState())
       host.removeEventListener('focusout', handleFindWidgetFocusOut)
       host.removeEventListener('keydown', handleEditActionShortcut, true)
+      host.removeEventListener('copy', handleCopy, true)
+      copyAction.dispose()
+      pasteAction.dispose()
       if (pendingFindBlurFrame !== null) cancelAnimationFrame(pendingFindBlurFrame)
       selectionListener.dispose()
       contentListener.dispose()

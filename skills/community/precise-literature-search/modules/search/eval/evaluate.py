@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Evaluate tiered search metadata against a title-based ground-truth set."""
 
 from __future__ import annotations

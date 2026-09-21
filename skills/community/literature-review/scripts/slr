@@ -2,16 +2,9 @@
 set -euo pipefail
 
 SLR_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SLR_SKILL_ROOT="$(dirname "$SLR_LAUNCHER_DIR")"
-SLR_VENV_PYTHON="$SLR_SKILL_ROOT/.venv/bin/python"
-
-if [ ! -x "$SLR_VENV_PYTHON" ]; then
-  echo "[slr] Python environment not found at .venv" >&2
-  echo "[slr] create it with: ./scripts/setup" >&2
+if ! command -v scholarseed-skill-python >/dev/null 2>&1; then
+  echo "[slr] scholarseed-skill-python is unavailable" >&2
+  echo "[slr] launch this skill from ScholarSeed Desktop or scholarseed-serve" >&2
   exit 1
 fi
-
-"$SLR_VENV_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 12), "SLR requires bound Python 3.12.x; run scripts/setup"'
-
-export PATH="$SLR_SKILL_ROOT/.venv/bin:$PATH"
-exec "$SLR_VENV_PYTHON" "$SLR_LAUNCHER_DIR/slr.py" "$@"
+exec scholarseed-skill-python "$SLR_LAUNCHER_DIR/slr.py" "$@"

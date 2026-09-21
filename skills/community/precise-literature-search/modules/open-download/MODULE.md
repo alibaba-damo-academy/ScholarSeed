@@ -28,7 +28,7 @@ User-visible progress calls this the `arXiv` batch. Do not label it generic OA: 
 ## Invocation
 
 ```bash
-python3 "$SKILL_DIR/scripts/module_runner.py" \
+scholarseed-skill-python "$SKILL_DIR/scripts/module_runner.py" \
   --module open-download \
   --input "$RUN_DIR/selection.json" \
   --output "$RUN_DIR/downloads/manifest.json" \

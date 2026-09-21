@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 Paper Processing CLI — Script-Driven (LLM calls inside script)
 
@@ -76,35 +76,35 @@ Reading Depth 矩阵
 使用示例
 ================================================================================
   # 查看待处理数量
-  python3 paper_card_tools.py list-pending /path/to/workspace
+  scholarseed-skill-python paper_card_tools.py list-pending /path/to/workspace
 
   # 快速模式 — 只出 card (模型由 model_config.json 的 processing stage 决定)
-  python3 paper_card_tools.py run /path/to/workspace --concurrency 20
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --concurrency 20
 
   # 深度模式 — 全部开启
-  python3 paper_card_tools.py run /path/to/workspace \\
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace \\
     --with-delta --with-ideation --with-source-map --relevance L1 --concurrency 20
 
   # 限制处理数量 + 单线程 (调试用)
-  python3 paper_card_tools.py run /path/to/workspace --limit 3 --concurrency 1
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --limit 3 --concurrency 1
 
   # 指定所有论文为 L2 relevance (partial depth)
-  python3 paper_card_tools.py run /path/to/workspace --relevance L2
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --relevance L2
 
   # 只开 delta (提取论文间进展关系)
-  python3 paper_card_tools.py run /path/to/workspace --with-delta
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --with-delta
 
   # 只开 ideation (提取 idea claims)
-  python3 paper_card_tools.py run /path/to/workspace --with-ideation
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --with-ideation
 
   # 开启 thinking/reasoning 模式
-  python3 paper_card_tools.py run /path/to/workspace --thinking
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --thinking
 
   # 指定输出目录
-  python3 paper_card_tools.py run /path/to/workspace --output-dir /tmp/output
+  scholarseed-skill-python paper_card_tools.py run /path/to/workspace --output-dir /tmp/output
 
   # 查看处理统计
-  python3 paper_card_tools.py stats /path/to/workspace
+  scholarseed-skill-python paper_card_tools.py stats /path/to/workspace
 """
 from __future__ import annotations
 

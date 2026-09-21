@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Lock the original Claude Code BibTeX entry-type behavior."""
 from __future__ import annotations
 

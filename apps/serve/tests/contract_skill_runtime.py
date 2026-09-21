@@ -26,13 +26,16 @@ from service.capabilities.service.prebundle import (
     verify_locked_pack,
 )
 from service.capabilities.service.skills import (
+    SKILL_LOGIN_REQUIRED_REASON,
     SKILL_RECOVERY_VERSION,
     SkillCatalog,
+    SkillPresentation,
     SkillProductState,
     workspace_recovery_key,
 )
 from service.capabilities.service.source import compile_source_skills, write_source_lock
 from service.chat.runtime.composition import LiveSessionService
+from service.chat.runtime.live import LiveSession
 from service.cli.prebundle import main as prebundle_main
 
 from .contract_skill_prebundle import _inputs
@@ -266,6 +269,116 @@ class SkillRuntimeContracts(unittest.TestCase):
 
 
 class SkillEnablementCompositionContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_login_and_pause_are_independent_live_admission_conditions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundled_root = root / "bundled"
+            manifest = self._manifest(bundled_root, "restricted")
+            inventory = SkillInventory(
+                cwd=root,
+                revision="native",
+                skills=(self._view("restricted", manifest, enabled=True),),
+            )
+            catalog = SkillCatalog(
+                bundled_root=bundled_root,
+                user_root=root / "user",
+                presentation=SkillPresentation(
+                    surfaces={}, required=frozenset(), requires_login=frozenset({"restricted"})
+                ),
+            )
+            identities: set[str] = set()
+            catalog.bind_authentication(identities.__contains__)
+            state = SkillProductState()
+            signed_out = catalog.payloads(inventory, state, user_id="account")[0]
+            self.assertTrue(signed_out["enabled"])
+            self.assertFalse(signed_out["active"])
+            self.assertEqual(signed_out["unavailable_reason"], SKILL_LOGIN_REQUIRED_REASON)
+            self.assertEqual(
+                catalog.session_enablement(inventory, state, user_id="account"),
+                ((manifest.resolve(), False),),
+            )
+            self.assertEqual(
+                catalog.desired_enablement(inventory, state), ((manifest.resolve(), True),)
+            )
+            identities.add("account")
+            self.assertTrue(catalog.payloads(inventory, state, user_id="account")[0]["active"])
+            self.assertEqual(
+                catalog.session_enablement(inventory, state, user_id="account"),
+                ((manifest.resolve(), True),),
+            )
+            self.assertFalse(catalog.payloads(inventory, state, user_id="other")[0]["active"])
+            paused = SkillProductState(disabled_skills=frozenset({"restricted"}))
+            row = catalog.payloads(inventory, paused, user_id="account")[0]
+            self.assertFalse(row["active"])
+            self.assertFalse(row["enabled"])
+            self.assertEqual(
+                catalog.session_enablement(inventory, paused, user_id="account"),
+                ((manifest.resolve(), False),),
+            )
+            identities.clear()
+            self.assertFalse(catalog.payloads(inventory, state, user_id="account")[0]["active"])
+            self.assertEqual(state.disabled_skills, frozenset())
+            identities.add("account")
+            live = object.__new__(LiveSession)
+            live._skills = catalog
+            live._skill_inventory = SkillInventory(
+                cwd=root,
+                revision="old-session",
+                skills=(self._view("restricted", manifest, enabled=False),),
+            )
+            live._skill_inventory_provider = AsyncMock(return_value=inventory)
+            live.runtime_workdir = root
+            live.user_id = "account"
+            with patch("service.chat.runtime.live.load_skill_state", return_value=state):
+                self.assertIsNotNone(await live.skill_identity_by_name("restricted"))
+                identities.clear()
+                self.assertIsNone(await live.skill_identity_by_name("restricted"))
+
+    async def test_script_admission_rechecks_current_identity_and_preference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundled_root = root / "bundled"
+            manifest = self._manifest(bundled_root, "restricted")
+            inventory = SkillInventory(
+                cwd=root,
+                revision="native",
+                skills=(self._view("restricted", manifest, enabled=True),),
+            )
+            catalog = SkillCatalog(
+                bundled_root=bundled_root,
+                user_root=root / "user",
+                presentation=SkillPresentation(
+                    surfaces={}, required=frozenset(), requires_login=frozenset({"restricted"})
+                ),
+            )
+            identities = {"account"}
+            catalog.bind_authentication(identities.__contains__)
+            runtime = object.__new__(LiveSessionService)
+            runtime._skills = catalog
+            runtime.skill_inventory = AsyncMock(return_value=inventory)
+            script = manifest.parent / "scripts" / "run.py"
+            with patch(
+                "service.chat.runtime.composition.load_skill_state",
+                return_value=SkillProductState(),
+            ):
+                row = await runtime.skill_admission(path=script, cwd=root, user_id="account")
+                self.assertTrue(row["active"])
+                identities.clear()
+                row = await runtime.skill_admission(path=script, cwd=root, user_id="account")
+                self.assertFalse(row["active"])
+                self.assertIsNone(
+                    await runtime.skill_admission(
+                        path=root / "outside.py", cwd=root, user_id="account"
+                    )
+                )
+            identities.add("account")
+            with patch(
+                "service.chat.runtime.composition.load_skill_state",
+                return_value=SkillProductState(disabled_skills=frozenset({"restricted"})),
+            ):
+                row = await runtime.skill_admission(path=script, cwd=root, user_id="account")
+                self.assertFalse(row["active"])
+
     @staticmethod
     def _view(name: str, path: Path, *, enabled: bool) -> SkillView:
         return SkillView(

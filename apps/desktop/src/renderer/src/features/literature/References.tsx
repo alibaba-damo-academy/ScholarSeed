@@ -271,7 +271,8 @@ function ReferencesList({ payload }: { payload: ReferencesContent }): React.JSX.
                             <DropdownMenuContent align="end" className={MENU_BOUNDS}>
                               <DropdownMenuItem disabled={Boolean(saved[reference.ref_id])} onSelect={() => void add(reference)}>{t('join.direct')}</DropdownMenuItem>
                               <DropdownMenuSub>
-                                <DropdownMenuSubTrigger openOnHover disabled={collectionsLoading}>{t('join.collection')}</DropdownMenuSubTrigger>
+                                {/* 已添加的文献与「直接加入」同步置灰, 避免重复加入。 */}
+                                <DropdownMenuSubTrigger openOnHover disabled={collectionsLoading || Boolean(saved[reference.ref_id])}>{t('join.collection')}</DropdownMenuSubTrigger>
                                 <DropdownMenuSubContent className={MENU_BOUNDS} autoFocus={false}>
                                   {collectionsLoading ? <DropdownMenuItem disabled>{t('references.loadingCollections')}</DropdownMenuItem> : collectionsError ? <DropdownMenuItem onSelect={() => void loadCollections()}>{t(collectionsError.key)}{collectionsError.detail && <span> {collectionsError.detail}</span>}</DropdownMenuItem> : <DestinationRows nodes={collectionTree} parent={rootDestination} choose={(node) => { setMenuOpenFor(null); void add(reference, node.collectionId ?? '') }} create={(parent) => openCreate(reference, parent)} />}
                                 </DropdownMenuSubContent>

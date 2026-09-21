@@ -11,6 +11,7 @@ from typing import Any
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 
 CODEX_PROVIDER_FAILED = "codex_provider_failed"
+CONTENT_SAFETY_BLOCKED = "CONTENT_SAFETY_BLOCKED"
 PROVIDER_FAILURE_MESSAGE = "The model provider rejected the request."
 PROVIDER_QUOTA_MESSAGE = "The model provider allocation quota is exhausted."
 PROVIDER_RATE_LIMIT_MESSAGE = "The model provider rate limit was reached."
@@ -25,9 +26,20 @@ _SSE_EVENT_ERROR = "event:error"
 _SSE_DATA_PREFIX = "data:"
 _HTTP_ERROR_PREFIX = re.compile(r"^unexpected status (\d{3})\b[^:]*:\s*", re.IGNORECASE)
 _SSE_HTTP_STATUS = re.compile(r"^:HTTP_STATUS/(\d{3})\s*$", re.MULTILINE)
+_PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
 _CONTENT_POLICY_CODES = frozenset(
     {"content_safety_blocked", "content_policy_violation", "content_filter"}
 )
+_CODE_BY_PROVIDER_SIGNATURE = {
+    (
+        "server_error",
+        400,
+        "internalerror.algo.datainspectionfailed",
+    ): CONTENT_SAFETY_BLOCKED,
+}
+_CODE_BY_NORMALIZED_FAILURE = {
+    ("invalid_prompt", PROVIDER_CONTENT_POLICY_MESSAGE.casefold()): CONTENT_SAFETY_BLOCKED,
+}
 
 _QUOTA_CODES = frozenset(
     {
@@ -80,6 +92,7 @@ _TERMINAL_CODES = (
 )
 _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
+    PROVIDER_CONTENT_POLICY_MESSAGE.casefold(): CONTENT_SAFETY_BLOCKED,
 }
 _SAFE_MESSAGES = {
     **dict.fromkeys(_CONTENT_POLICY_CODES, PROVIDER_CONTENT_POLICY_MESSAGE),
@@ -124,11 +137,12 @@ def provider_failure(value: Any) -> ProviderFailure:
         sse_error = _http_error(details)
         http_status = http_status or _http_status(details)
     if sse_error is not None:
-        nested_code, _nested_message = unpack_error(sse_error)
+        nested_code, nested_message = unpack_error(sse_error)
         code = nested_code or code
-        message = _safe_message(code)
+        message = nested_message or message
     if not code:
         code = _CODE_BY_MESSAGE.get(message.casefold(), "")
+    code = _canonical_provider_code(code, message)
     normalized = code.casefold()
     message = _safe_message(code)
     return ProviderFailure(
@@ -152,8 +166,23 @@ def _safe_message(code: str) -> str:
     return _SAFE_MESSAGES.get(code.casefold(), PROVIDER_FAILURE_MESSAGE)
 
 
+def _canonical_provider_code(code: str, message: str) -> str:
+    normalized = _CODE_BY_NORMALIZED_FAILURE.get((code.casefold(), message.casefold()))
+    if normalized is not None:
+        return normalized
+    match = _PROVIDER_ERROR_PREFIX.match(message)
+    if match is None:
+        return code
+    signature = (code.casefold(), int(match.group(1)), match.group(2).casefold())
+    return _CODE_BY_PROVIDER_SIGNATURE.get(signature, code)
+
+
 def _http_status(message: str) -> int | None:
-    match = _HTTP_ERROR_PREFIX.match(message) or _SSE_HTTP_STATUS.search(message)
+    match = (
+        _HTTP_ERROR_PREFIX.match(message)
+        or _SSE_HTTP_STATUS.search(message)
+        or _PROVIDER_ERROR_PREFIX.match(message)
+    )
     if match is None:
         return None
     status = int(match.group(1))

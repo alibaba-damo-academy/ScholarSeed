@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compatibility v1/v2 refinement validator for explicit legacy callers.
 
 Current chapter_delta uses manuscript_delta patch integrity and the three content

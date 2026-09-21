@@ -1,5 +1,6 @@
 /** Narrow device skill operations shared by preload and main. No arbitrary URLs. */
 export const SKILLS_CHANNEL = 'scholarseed:device-skills'
+export const SKILL_CATALOG_CHANGED_EVENT = 'scholarseed:skill-catalog-changed'
 export const SKILLS_PATH = '/api/capabilities/skills'
 export const SKILL_SURFACE_CONVERSATION = 'conversation'
 export const SKILL_SURFACE_SETTINGS = 'settings'

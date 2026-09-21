@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run upstream Balanced's two phases through the shared search contracts."""
 from __future__ import annotations
 

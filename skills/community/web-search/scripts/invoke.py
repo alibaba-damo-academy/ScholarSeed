@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Publish one official or visible-browser search result as an Invocation artifact."""
 
 from __future__ import annotations

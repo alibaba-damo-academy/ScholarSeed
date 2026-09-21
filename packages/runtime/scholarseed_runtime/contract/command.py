@@ -64,6 +64,7 @@ class OpenSessionRequest:
     base_instructions: str = ""
     developer_instructions: str = ""
     skill_roots: tuple[Path, ...] = ()
+    skill_configurations: tuple[SkillConfiguration, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     required_capabilities: tuple[RuntimeCapabilityName, ...] = ()
     ephemeral: bool = False
@@ -84,6 +85,7 @@ class ResumeSessionRequest:
     base_instructions: str = ""
     developer_instructions: str = ""
     skill_roots: tuple[Path, ...] = ()
+    skill_configurations: tuple[SkillConfiguration, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     reservation_id: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)

@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Brave Web Search tool with PaperHub reconciliation.
 
 Usage:
-    python3 brave.py "reinforcement learning agentic search 2024 arxiv" --count 10
+    scholarseed-skill-python brave.py "reinforcement learning agentic search 2024 arxiv" --count 10
     
 Env:
     BRAVE_API_KEY - required
@@ -107,7 +107,7 @@ def reconcile_with_paperhub(brave_results):
 
         try:
             result = subprocess.run(
-                ["python3", os.path.join(os.path.dirname(__file__), "paperhub.py"),
+                [sys.executable, os.path.join(os.path.dirname(__file__), "paperhub.py"),
                  "title", title_clean[:80], "--limit", "3"],
                 capture_output=True, text=True, timeout=30
             )

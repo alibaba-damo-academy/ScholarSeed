@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Create explicit placeholder PDFs for selected open-access demo papers."""
 
 from __future__ import annotations

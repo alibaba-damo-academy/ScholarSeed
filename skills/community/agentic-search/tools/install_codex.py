@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Install this repository as a native Codex skill without overwriting files.
 
 Examples:
-    python3 tools/install_codex.py --scope user --with-network-profile
-    python3 tools/install_codex.py --scope repo --repo /path/to/project
+    scholarseed-skill-python tools/install_codex.py --scope user --with-network-profile
+    scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/project
 """
 
 import argparse

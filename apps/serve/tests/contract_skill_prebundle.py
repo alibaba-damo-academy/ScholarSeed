@@ -206,6 +206,7 @@ def _catalog_exposes_only_product_roots() -> None:
                         sources=frozenset({"user"}),
                     ),
                 },
+                required=frozenset(),
             ),
         )
         state = SkillProductState(
@@ -363,6 +364,24 @@ def _catalog_exposes_only_product_roots() -> None:
             and by_name["user-skill"]["active"] is False
             and by_name["user-skill"]["toggleable"] is True,
             str(by_name["user-skill"]),
+        )
+        required_catalog = SkillCatalog(
+            bundled_root=bundled_root,
+            user_root=user_root,
+            presentation=SkillPresentation(
+                surfaces={},
+                required=frozenset({"bundled-skill"}),
+            ),
+        )
+        required = {str(row["name"]): row for row in required_catalog.payloads(inventory, state)}
+        check(
+            "产品必需技能忽略停用偏好并保持不可切换",
+            required["bundled-skill"]["enabled"] is True
+            and required["bundled-skill"]["active"] is True
+            and required["bundled-skill"]["toggleable"] is False
+            and dict(required_catalog.desired_enablement(inventory, state))[bundled.resolve()]
+            is True,
+            str(required["bundled-skill"]),
         )
 
 

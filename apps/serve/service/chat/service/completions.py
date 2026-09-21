@@ -23,7 +23,12 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
-from service.chat.service.streams import CompletionDiagnostic, StreamEnd, metadata_token
+from service.chat.service.streams import (
+    CompletionDiagnostic,
+    NativeResponseNormalizer,
+    StreamEnd,
+    metadata_token,
+)
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
 from service.inference.reasoning import (
     ThinkingParameters,
@@ -978,12 +983,16 @@ class CompletionBridge:
                 if call.revoked or not upstream.active:
                     raise asyncio.CancelledError()
                 if native_response:
+                    normalizer = NativeResponseNormalizer()
                     async for chunk in response.aiter_bytes():
                         call.diagnostic.upstream.feed(chunk)
                         observation.feed(chunk)
-                        yield chunk
+                        for normalized_chunk in normalizer.feed(chunk):
+                            yield normalized_chunk
                         upstream_stream = call.diagnostic.upstream
                         if upstream_stream.error_seen and not upstream_stream.terminal:
+                            for normalized_chunk in normalizer.finish():
+                                yield normalized_chunk
                             yield _sse(
                                 {
                                     "type": "response.failed",
@@ -1005,6 +1014,8 @@ class CompletionBridge:
                             )
                             call.diagnostic.upstream_end = StreamEnd.PROVIDER_ERROR.value
                             return
+                    for normalized_chunk in normalizer.finish():
+                        yield normalized_chunk
                     call.diagnostic.upstream_end = StreamEnd.EOF.value
                     return
                 async for chunk in chat_stream_to_responses(

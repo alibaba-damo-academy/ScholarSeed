@@ -6,6 +6,7 @@ import {
   type SkillInfo
 } from '../../api.ts'
 import { isAbsoluteInputPath } from '../../input.ts'
+import { SKILL_LOGIN_REQUIRED } from '../../skill.ts'
 
 export const AI_TASK_STARTERS = Object.freeze([
   {
@@ -42,6 +43,7 @@ export const AI_TASK_STARTER_SKILL_NAMES: ReadonlySet<string> = new Set(
 )
 
 export type TaskStarterSkillFailure =
+  | 'login_required'
   | 'missing'
   | 'disabled'
   | 'dependencies'
@@ -62,6 +64,7 @@ export function resolveTaskStarterSkill(
   | { reference?: never; failure: TaskStarterSkillFailure } {
   const skill = skills.find((candidate) => candidate.name === name)
   if (!skill) return { failure: 'missing' }
+  if (skill.unavailable_reason === SKILL_LOGIN_REQUIRED) return { failure: 'login_required' }
   if (skill.enabled === false || skill.active === false) return { failure: 'disabled' }
   if (skill.dependency_status && skill.dependency_status !== 'ready') {
     return { failure: 'dependencies' }

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """compute_chart_data.py — derive a survey's chart numbers from its own corpus.
 
 Why this file exists, and why it is separate from the renderer
@@ -43,8 +43,8 @@ empty string then), so the renderer has exactly one input shape to parse.
 
 Usage
 -----
-    python3 compute_chart_data.py --list
-    python3 compute_chart_data.py --workspace WS --statistic papers_per_year \\
+    scholarseed-skill-python compute_chart_data.py --list
+    scholarseed-skill-python compute_chart_data.py --workspace WS --statistic papers_per_year \\
         --out-dir DIR [--basename NAME] [--top-n 12]
 
 Exit status: 0 computed, 1 bad input (missing corpus, unknown statistic,

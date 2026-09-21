@@ -20,7 +20,7 @@ test('PDF evidence navigation groups duplicate pages without losing supporting q
 
 test('figure explanation omits page navigation while other reading outputs retain it', () => {
   const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
-  assert.match(source, /output\(floatingResult, false\)/)
+  assert.match(source, /<Markdown text=\{floatingResult\?\.text \?\? figureText\}/)
   assert.match(source, /output\(floatingResult, true\)/)
   assert.match(source, /showEvidence && evidencePages\(content.evidence\)/)
 })
@@ -49,7 +49,7 @@ test('PDF rail actions are icon-only and side panels can fill the PDF area', () 
   assert.match(floatingWindow, /data-testid="floating-window-toggle-size"/)
 })
 
-test('figure explanation keeps a stable toolbar button and supports continuous selection', () => {
+test('figure explanation keeps a stable toolbar button and replaces in-flight streams', () => {
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
   const viewer = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   const zh = JSON.parse(readFileSync(new URL('../../../../localization/locales/zh/pdf.json', import.meta.url), 'utf8'))
@@ -58,10 +58,11 @@ test('figure explanation keeps a stable toolbar button and supports continuous s
   assert.match(reading, /data-testid="pdf-figure-explanation"/)
   assert.match(reading, /<HoverCardContent side="bottom"/)
   assert.doesNotMatch(reading, /reading\.figureScope/)
-  assert.match(reading, /figureQueue\.current = \[region\]/)
+  assert.match(reading, /figureAbort\.current\?\.abort\(\)/)
+  assert.match(reading, /invokeFigure\(request, figureController\.signal/)
+  assert.doesNotMatch(reading, /figureQueue|figureQueued/)
   assert.doesNotMatch(reading, /figureHistory|setFigureHistory/)
-  assert.match(reading, /floatingResult \? <Card[\s\S]*: \(busy \|\| cropPreview\) \? <Card/)
-  assert.match(reading, /kind === 'figure_explanation'\) setCropPreview\(''\)/)
+  assert.match(reading, /floatingResult \|\| busy \|\| cropPreview \|\| jobs\.figure_explanation\?\.error \? <Card/)
   assert.doesNotMatch(reading, /figureResult', \{ index:/)
   assert.doesNotMatch(reading, /figureResultPending', \{ index:/)
   assert.equal(zh.reading.figureResult, '选区 · 第 {{page}} 页')
@@ -76,8 +77,8 @@ test('figure explanation keeps a stable toolbar button and supports continuous s
   assert.match(reading, /zoom: FIGURE_GUIDE_SCALE/)
   assert.match(reading, /gridTemplateColumns: '220px minmax\(0, 1fr\)'/)
   assert.match(reading, /variant=\{figure \? 'primary' : 'outline'\}/)
-  assert.match(reading, /onClose=\{\(\) => \{ setFloating\(null\); if \(floating === 'figure_explanation'\) exitFigureSelection\(\) \}\}/)
-  assert.match(reading, /onClick=\{\(\) => \{ setFloating\(null\); onExclusiveSurfaceOpen\(\); setFigure\(true\) \}\}/)
+  assert.match(reading, /onClose=\{\(\) => \{ setFloating\(null\); if \(floating === 'figure_explanation'\) \{ void cancel\('figure_explanation'\); exitFigureSelection\(\) \} \}\}/)
+  assert.match(reading, /figurePromptGuide/)
   assert.match(reading, /<HoverCardTrigger asChild onClick=\{\(\) => \{ if \(figure\) exitFigureSelection\(\); else \{ onExclusiveSurfaceOpen\(\); setFigure\(true\); setFigureGuideOpen\(false\) \}/)
   assert.match(reading, /<rect x="160" y="36" width="24" height="96"/)
   assert.match(reading, /M178 168L190 224L202 207L220 223L230 212L212 196L230 184/)

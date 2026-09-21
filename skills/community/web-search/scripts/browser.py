@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run a bounded web search in a visible, isolated local browser."""
 
 from __future__ import annotations

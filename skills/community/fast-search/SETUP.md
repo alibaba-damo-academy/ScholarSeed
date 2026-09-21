@@ -5,7 +5,7 @@
 ```bash
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 export WEB_SEARCH_SKILL_PATH="/absolute/path/to/web-search"  # 非标准安装位置才需要
-python3 tools/appserver_quick.py --serve-jsonl
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
 
 Worker 会自行启动 `codex --search app-server`，为每个请求显式配置模型、reasoning
@@ -154,7 +154,7 @@ web-search，并用 `codex --search` 或用户级配置为其 native provider �
 
 ```bash
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
-python3 tools/appserver_quick.py --serve-jsonl
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
 
 Worker 自行启动本地 Codex App Server，使用 stdio JSONL 通信，并在每个请求中显式
@@ -189,11 +189,11 @@ https://developers.openai.com/codex/app-server/
 不要直接在共享仓库中写机器配置。复制一份到部署目录，再用以下任一方式选择：
 
 ```bash
-python3 tools/appserver_quick.py --serve-jsonl \
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
   --config /etc/agentic-search/veryfast.json
 
 export AGENTIC_SEARCH_VERYFAST_CONFIG=/etc/agentic-search/veryfast.json
-python3 tools/appserver_quick.py --serve-jsonl
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
 
 配置优先级从低到高为：程序兜底值、仓库默认文件、部署配置文件、现有的
@@ -202,14 +202,14 @@ PaperHub/缓存项；模型、effort 和 service tier 使用配置文件或启�
 合并结果，不启动 Codex，也不需要 PaperHub key：
 
 ```bash
-python3 tools/appserver_quick.py --print-effective-config \
+scholarseed-skill-python tools/appserver_quick.py --print-effective-config \
   --config /etc/agentic-search/veryfast.json
 ```
 
 所有 Worker 启动参数都可以覆盖配置文件，例如账号没有默认模型或 priority 权限时：
 
 ```bash
-python3 tools/appserver_quick.py --serve-jsonl \
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
   --config /etc/agentic-search/veryfast.json \
   --model <账号可用的模型> \
   --effort low \
@@ -297,16 +297,16 @@ Worker 根据实际可观察到的 App Server 事件，可能输出以下精简�
 
 ```bash
 # 不联网：查看安装、配置来源、key 是否存在和代理环境（不会输出密钥）
-python3 tools/doctor.py
+scholarseed-skill-python tools/doctor.py
 
 # 发出一个最小 PaperHub 请求
-python3 tools/doctor.py --live
+scholarseed-skill-python tools/doctor.py --live
 
 # 单独验证
-python3 tools/paperhub.py title "Attention Is All You Need" --limit 1
+scholarseed-skill-python tools/paperhub.py title "Attention Is All You Need" --limit 1
 
 # 不启动 Codex，检查最终 Worker 配置
-python3 tools/appserver_quick.py --print-effective-config
+scholarseed-skill-python tools/appserver_quick.py --print-effective-config
 ```
 
 诊断时可按错误码区分问题：`PAPERHUB_AUTH_MISSING` 是 key 未进入进程，

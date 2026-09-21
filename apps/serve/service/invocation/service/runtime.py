@@ -105,10 +105,12 @@ class OneShotExecution:
         record: InvocationRecord,
         projector: InvocationEventProjector,
         queue: asyncio.Queue[dict],
+        user_id: str = "",
     ) -> None:
         self._service = service
         self.record = record
         self.id = record.invocation_id
+        self.user_id = user_id
         self.bridge_token = secrets.token_urlsafe(BRIDGE_TOKEN_BYTES)
         self.workspace = Path(record.workspace).resolve()
         self.projector = projector
@@ -117,6 +119,10 @@ class OneShotExecution:
         self.pending_callbacks: dict[str, RuntimeCallbackRequest] = {}
         self.artifact_lock = asyncio.Lock()
         self.closed = asyncio.Event()
+
+    @property
+    def runtime_workdir(self) -> Path:
+        return self.workspace
 
     @property
     def publication_turn_id(self) -> str:
@@ -193,6 +199,7 @@ class InvocationService:
                 profile=request.skill.profile,
                 cwd=self._root,
                 process_environment=process_environment,
+                user_id=user_id,
             )
         permission_mode = (
             skill.permission_mode
@@ -240,7 +247,7 @@ class InvocationService:
             skill=record.skill,
         )
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=INVOCATION_QUEUE_SIZE)
-        execution = OneShotExecution(self, record, projector, queue)
+        execution = OneShotExecution(self, record, projector, queue, user_id=prepared.user_id)
         self._active[record.invocation_id] = execution
         await execution.emit(
             projector.envelope(

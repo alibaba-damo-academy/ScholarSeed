@@ -1,6 +1,7 @@
-import type { SelectionLocator } from '../../contracts/workbench'
-import { sseData } from '../../sse'
-import type { TranslationTarget } from './language'
+import type { SelectionLocator } from '../../contracts/workbench.ts'
+import { postActionStream, type ActionActivity } from '../../action.ts'
+import { apiFetch } from '../../api.ts'
+import type { TranslationTarget } from './language.ts'
 
 export type ResourceAction = 'explain' | 'polish' | 'translate'
 export interface ResourceInput {
@@ -26,38 +27,32 @@ export interface ResourceResult {
   error_code: string
   error_detail: string
 }
-export interface ResourceActivity { type: 'accepted' | 'started' | 'output_delta' | 'output_completed'; invocation_id: string; text: string; item_id: string }
+export type ResourceActivity = ActionActivity
 const PREFIX = '/api/resource/ai'
-const base = (): string => window.scholarseed?.getApiBase() ?? ''
-const ACTIVITIES = new Set(['accepted', 'started', 'output_delta', 'output_completed'])
+const STREAM_ERROR = 'resource_stream_incomplete'
+
+function parseResourceResult(value: unknown): ResourceResult | null {
+  if (!value || typeof value !== 'object') return null
+  const result = value as Record<string, unknown>
+  return typeof result.task_id === 'string' && result.task_id
+    && typeof result.invocation_id === 'string' && result.invocation_id === result.task_id
+    && typeof result.output === 'string'
+    ? result as unknown as ResourceResult
+    : null
+}
 
 export async function invokeResource(action: ResourceAction, request: ResourceRequest, signal: AbortSignal, observe: (event: ResourceActivity) => void): Promise<ResourceResult> {
-  const response = await fetch(base() + PREFIX + '/' + action, {
-    method: 'POST', credentials: 'include', signal,
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' }, body: JSON.stringify(request)
+  return postActionStream({
+    path: PREFIX + '/' + action,
+    body: request,
+    signal,
+    protocolError: STREAM_ERROR,
+    parseResult: parseResourceResult,
+    onActivity: observe
   })
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null)
-    throw new Error(typeof payload?.detail === 'string' ? payload.detail : `http_${response.status}`)
-  }
-  if (!response.body) throw new Error('resource_stream_incomplete')
-  let id = ''
-  for await (const frame of sseData(response.body)) {
-    const event = JSON.parse(frame)
-    if (event.type === 'error') throw new Error(event.error)
-    if (event.type === 'result') {
-      const result = event.result as ResourceResult
-      if (!result?.task_id || typeof result.output !== 'string' || (id && id !== result.task_id)) throw new Error('resource_stream_incomplete')
-      return result
-    }
-    if (!ACTIVITIES.has(event.type) || !event.invocation_id || (id && id !== event.invocation_id)) throw new Error('resource_stream_incomplete')
-    id = event.invocation_id
-    observe(event)
-  }
-  throw new Error('resource_stream_incomplete')
 }
 
 export async function cancelResource(taskId: string): Promise<boolean> {
-  const response = await fetch(`${base()}${PREFIX}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', credentials: 'include' })
+  const response = await apiFetch(`${PREFIX}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
   return response.ok
 }

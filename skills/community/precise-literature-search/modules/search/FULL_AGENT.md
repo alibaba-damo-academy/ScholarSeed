@@ -46,8 +46,8 @@ Resolve every path from the supplied `SKILL_DIR`.
 PaperHub covers both openly accessible and paywalled literature and is the primary source. Put the current iteration's keyword/title work in one internal batch file and invoke it once:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/tools/search_round.py" --batch "$WORK/results/iteration-001-search-batch.json" --work-dir "$WORK"
-python3 "$SKILL_DIR/modules/search/tools/search_round.py" --batch "$WORK/results/iteration-001-citations-batch.json" --work-dir "$WORK"
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/search_round.py" --batch "$WORK/results/iteration-001-search-batch.json" --work-dir "$WORK"
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/search_round.py" --batch "$WORK/results/iteration-001-citations-batch.json" --work-dir "$WORK"
 ```
 
 The search batch uses `phase: "search"` and a `queries` array of `keyword`/`title` objects. The citation batch uses `phase: "citations"`, 3-5 numeric `citation_ids`, and `citation_limit`. Include `iteration` and optional `inspect_concepts` in both. The runner saves full results, normalizes and merges papers, updates state/query log after each completed operation, paces requests, and returns no more than 20 abstract-bearing evidence records. Keep `workers=1`.
@@ -113,11 +113,11 @@ For web results from any leg:
 The batch runner owns PaperHub result merge and query logging. Use these tools only for Web results, exceptional manual recovery, a different bounded concept slice, or the final provenance audit:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/tools/pool.py" merge --work-dir "$WORK" --input "$RESULT"
-python3 "$SKILL_DIR/modules/search/tools/pool.py" summary --work-dir "$WORK" --limit 12
-python3 "$SKILL_DIR/modules/search/tools/pool.py" review --work-dir "$WORK" --limit 20
-python3 "$SKILL_DIR/modules/search/tools/pool_inspect.py" --work-dir "$WORK" --concepts "concept one,concept two" --limit 20
-python3 "$SKILL_DIR/modules/search/tools/pool_inspect.py" --work-dir "$WORK" --provenance-audit --limit 20 --citation-limit 20
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/pool.py" merge --work-dir "$WORK" --input "$RESULT"
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/pool.py" summary --work-dir "$WORK" --limit 12
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/pool.py" review --work-dir "$WORK" --limit 20
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/pool_inspect.py" --work-dir "$WORK" --concepts "concept one,concept two" --limit 20
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/pool_inspect.py" --work-dir "$WORK" --provenance-audit --limit 20 --citation-limit 20
 ```
 
 Initialize and update recoverable state with `tools/state.py`. Record every query with actual source (`paperhub` or `agent_web`), mode, result path, returned IDs, new IDs, elapsed seconds, sanitized endpoint, status, and error. Do not record credentials, tokens, endpoint query parameters, or hidden chat state.
@@ -181,7 +181,7 @@ item records `angle`, planned `source` (`paperhub` or `web`), `mode` (`keyword`
 or `web`), `query`, and `purpose`. Validate the plan:
 
 ```bash
-python3 "$SKILL_DIR/scripts/validate_json.py" --contract "$PLAN_CONTRACT" --input "$WORK/plan.json"
+scholarseed-skill-python "$SKILL_DIR/scripts/validate_json.py" --contract "$PLAN_CONTRACT" --input "$WORK/plan.json"
 ```
 
 Do not begin retrieval with a contract-invalid plan.
@@ -286,7 +286,7 @@ eligibility review and persisted decision cache. Use the following baseline comm
 `--exclude-id "ID"` for each excluded ID:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/paper_select.py" \
+scholarseed-skill-python "$SKILL_DIR/modules/search/paper_select.py" \
   --request "$REQUEST_JSON" --intent "$RUN_DIR/intent.json" --pool "$WORK/pool.json" \
   --output "$WORK/selection.json" --max-results 20
 ```
@@ -300,7 +300,7 @@ mode's set-level ranking and tiering among papers that pass the shared gate.
 Run:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/finalize.py" \
+scholarseed-skill-python "$SKILL_DIR/modules/search/finalize.py" \
   --input "$REQUEST_JSON" \
   --work-dir "$WORK" \
   --output "$ROUND_DIR/metadata.json" \

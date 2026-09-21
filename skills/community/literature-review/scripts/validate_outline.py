@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Validate a compact one/two-level outline and explicit user constraints.
 
 Required node fields are section_id, title and description. Paper assignments,

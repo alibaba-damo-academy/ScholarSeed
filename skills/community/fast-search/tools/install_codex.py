@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Install the Veryfast workflow as a native Codex skill.
 
 Examples:
-    python3 tools/install_codex.py --scope user --with-search-config
-    python3 tools/install_codex.py --scope repo --repo /path/to/project
+    scholarseed-skill-python tools/install_codex.py --scope user --with-search-config
+    scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/project
 """
 
 import argparse

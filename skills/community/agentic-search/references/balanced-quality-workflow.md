@@ -32,7 +32,7 @@ PaperHub-unavailable fallback in `SKILL.md`; do not ask the user for a token.
 ## Initialize
 
 ```bash
-python3 "SKILL_DIR/tools/state.py" init \
+scholarseed-skill-python "SKILL_DIR/tools/state.py" init \
   --dir "RESULT_DIR/session" --query "FULL_USER_QUERY" --mode MODE
 ```
 
@@ -73,7 +73,7 @@ and citation as two phases of one logical round: search uses
 model-selected PaperHub anchors. Run:
 
 ```bash
-python3 "SKILL_DIR/tools/search_round.py" \
+scholarseed-skill-python "SKILL_DIR/tools/search_round.py" \
   --plan "RESULT_DIR/round1_search.json" \
   --session "RESULT_DIR/session" --workers 1 --inspect
 ```
@@ -117,7 +117,7 @@ rounds complete, or the deadline enters the finalization reserve.
 Use the search runner's bounded evidence view normally. For different concepts:
 
 ```bash
-python3 "SKILL_DIR/tools/pool_inspect.py" \
+scholarseed-skill-python "SKILL_DIR/tools/pool_inspect.py" \
   --session "RESULT_DIR/session" --concepts "entity,mechanism,method" --limit 20
 ```
 
@@ -126,7 +126,7 @@ ad-hoc scripts over `pool.json`. Use `--abstract-chars 0` for already-assessed
 candidates. Before final selection, run exactly one compact provenance audit:
 
 ```bash
-python3 "SKILL_DIR/tools/pool_inspect.py" \
+scholarseed-skill-python "SKILL_DIR/tools/pool_inspect.py" \
   --session "RESULT_DIR/session" --provenance-audit \
   --limit 100 --citation-limit 20
 ```
@@ -146,7 +146,7 @@ Write compact model choices to `selection.json` using the final-selection schema
 in [output-schema.md](output-schema.md), then hydrate and validate deterministically:
 
 ```bash
-python3 "SKILL_DIR/tools/finalize.py" \
+scholarseed-skill-python "SKILL_DIR/tools/finalize.py" \
   --session "RESULT_DIR/session" \
   --selection "RESULT_DIR/selection.json" \
   --output-dir "RESULT_DIR" --strict-counts --json-only

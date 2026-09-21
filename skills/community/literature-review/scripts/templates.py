@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Registry and integrity checks for the one rendered template and citation styles."""
 from __future__ import annotations
 

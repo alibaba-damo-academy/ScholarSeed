@@ -12,7 +12,7 @@
 
 ## 先选择使用方式
 
-前提：已安装并登录 Codex CLI、本机有 Python 3.8+、已安装 `web-search` skill，并持有 PaperHub API key。
+前提：已安装并登录 Codex CLI、从 ScholarSeed Desktop 或 `scholarseed-serve` 启动、已安装 `web-search` skill，并持有 PaperHub API key。
 以下命令都在仓库根目录执行。
 
 | 方式 | 适合场景 | 优点 | 需要注意 |
@@ -32,7 +32,7 @@
 ### 1. 安装
 
 ```bash
-python3 tools/install_codex.py --scope user --with-search-config
+scholarseed-skill-python tools/install_codex.py --scope user --with-search-config
 ```
 
 默认使用符号链接，因此需要保留仓库目录；不能使用符号链接时加 `--mode copy`。
@@ -86,7 +86,7 @@ codex --search -s workspace-write \
 让某个项目中的协作者都能发现这个 skill：
 
 ```bash
-python3 tools/install_codex.py --scope repo --repo /path/to/target-repo
+scholarseed-skill-python tools/install_codex.py --scope repo --repo /path/to/target-repo
 ```
 
 它会创建 `/path/to/target-repo/.agents/skills/agentic-search`。`web-search` 仍需另行安装到
@@ -105,7 +105,7 @@ agentic-search 与已安装的 web-search；不会复制或下载后者。
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 # 仅当 web-search 不在标准 skill 目录或 agentic-search 的同级目录时需要：
 export WEB_SEARCH_SKILL_PATH="/absolute/path/to/web-search"
-python3 tools/appserver_quick.py --serve-jsonl
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl
 ```
 
 ### 2. 接入请求和进度
@@ -126,7 +126,7 @@ Worker 严格串行，需要并发时由后端运行有界 Worker 池。
 单题冒烟验证：
 
 ```bash
-python3 tools/appserver_quick.py \
+scholarseed-skill-python tools/appserver_quick.py \
   --query "检索增强生成中的引用可靠性评估" \
   --output-dir /absolute/path/to/result
 ```
@@ -137,13 +137,13 @@ python3 tools/appserver_quick.py \
 `--config` 或 `AGENTIC_SEARCH_VERYFAST_CONFIG` 加载；启动参数优先级最高：
 
 ```bash
-python3 tools/appserver_quick.py --serve-jsonl \
+scholarseed-skill-python tools/appserver_quick.py --serve-jsonl \
   --config /etc/agentic-search/veryfast.json \
   --model <账号可用的模型> --effort low --service-tier default
 ```
 
 ```bash
-python3 tools/appserver_quick.py --print-effective-config \
+scholarseed-skill-python tools/appserver_quick.py --print-effective-config \
   --config /etc/agentic-search/veryfast.json
 ```
 
@@ -171,8 +171,8 @@ runtime native Web Search 可作为兼容结果，失败时必须在同一 turn 
 ## 诊断
 
 ```bash
-python3 tools/doctor.py
-python3 tools/doctor.py --live
+scholarseed-skill-python tools/doctor.py
+scholarseed-skill-python tools/doctor.py --live
 ```
 
 `api_key_present: false` 表示 key 没有进入当前进程；`PAPERHUB_AUTH_MISSING` 表示缺少 key，`PAPERHUB_HTTP_401` 表示 key 无效。诊断输出只显示 key 是否存在，不打印其内容。

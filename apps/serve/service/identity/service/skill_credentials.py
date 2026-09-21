@@ -120,6 +120,9 @@ class SkillCredentialService:
         who = self._identity(credential) if credential else None
         return bool(who and who.get("user_id") == user_id and self._current(user_id) == credential)
 
+    def authenticated(self, user_id: str) -> bool:
+        return self._authorized(user_id, self._current(user_id))
+
     def clear_credentials(self) -> None:
         """身份模式切换时清缓存，并使正在签发的旧授权失效。"""
 

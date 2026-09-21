@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Machine-local self-configuration for the search tools.
 
 Reads an optional, machine-specific config file selected by
 AGENTIC_SEARCH_CONFIG, or tools/search_config.json as a compatibility fallback,
 and applies it to the process environment at import time, so the tools "just work"
-when invoked as `python3 tools/paperhub.py ...` with no shell setup — no reliance
+when invoked as `scholarseed-skill-python tools/paperhub.py ...` with no shell setup — no reliance
 on the agent remembering to export env vars, and no changes to the global shell
 profile.
 

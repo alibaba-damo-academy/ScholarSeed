@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Import an independent search result without interpreting AS tools or state."""
 from __future__ import annotations
 

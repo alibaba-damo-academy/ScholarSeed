@@ -7,6 +7,18 @@ const SKILL_ICONS: Readonly<Record<string, IconName>> = Object.freeze({
 })
 
 export const SKILL_ICON_FALLBACK: IconName = 'skills'
+export const SKILL_LOGIN_REQUIRED = 'login_required'
+
+export function skillCallable(skill: {
+  enabled: boolean
+  active: boolean
+  requires_login?: boolean
+  dependency_status?: string
+}, authenticated = true): boolean {
+  return skill.enabled && skill.active
+    && (!skill.requires_login || authenticated)
+    && (!skill.dependency_status || skill.dependency_status === 'ready')
+}
 
 export function skillDescription(
   skill: { descriptions?: Record<string, string> | null; blurb?: string; description?: string },

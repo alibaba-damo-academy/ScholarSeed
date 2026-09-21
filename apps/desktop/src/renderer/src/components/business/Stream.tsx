@@ -177,7 +177,7 @@ const TOOL_RUN_SUMMARY_CLASS =
 const TOOL_RUN_STATE_CLASS =
   'inline-flex items-center justify-end gap-[5px] overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] text-[var(--text-3)]'
 const TOOL_RUN_STEP_STATUS_CLASS =
-  'inline-flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]'
+  'inline-flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-tertiary)]'
 const TOOL_RUN_STATUS_TONE_CLASS: Record<string, string> = {
   'is-running': 'text-[var(--c-fact)]',
   'is-done': 'text-[var(--c-experience)]',
@@ -198,19 +198,21 @@ const TOOL_RUN_STEP_CLASS =
 const TOOL_RUN_STEP_TRIGGER_CLASS =
   '!flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
 const TOOL_RUN_STEP_NAME_CLASS =
-  'shrink-0 font-medium text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-secondary)]'
+  'shrink-0 font-medium text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
 const TOOL_RUN_STEP_CARET_CLASS =
   'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]/step:rotate-90 group-[.is-open]/step:text-[var(--text-2)]'
 const TOOL_RUN_STEP_CONTENT_CLASS =
   'grid min-h-0 grid-rows-[0fr] opacity-0 pointer-events-none transition-[grid-template-rows,opacity] duration-[260ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]/step:grid-rows-[1fr] group-[.is-open]/step:opacity-100 group-[.is-open]/step:pointer-events-auto'
 const TOOL_RUN_IO_STACK_CLASS =
-  'ml-[calc(var(--vds-space-4)*2)] mr-[var(--vds-space-2)] mb-[var(--vds-space-3)] flex flex-col gap-[var(--vds-space-3)] pt-[var(--vds-space-2)]'
+  'ml-[calc(var(--vds-space-4)*2)] mr-[var(--vds-space-2)] mb-[var(--vds-space-3)] flex flex-col gap-[var(--vds-space-3)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)]'
+const TOOL_RUN_MARKDOWN_CLASS =
+  '!font-mono !text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)] !text-[var(--vds-text-secondary)] [&_code]:!text-[length:var(--vds-font-body-lv1)] [&_code]:!leading-[var(--vds-lh-body-lv1)] [&_table]:!text-[length:var(--vds-font-body-lv1)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
 const TOOL_RUN_IO_LABEL_CLASS =
   'mb-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] font-medium text-[var(--vds-text-secondary)]'
 const TOOL_RUN_IO_CLASS =
   'm-[var(--vds-space-0)] max-h-[240px] overflow-auto rounded-[var(--vds-radius-3)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] font-mono text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
 const ACTIVITY_LINE_CLASS =
-  'group/activity my-[var(--vds-space-2)] !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-[var(--vds-space-1)] text-left text-[12.5px] leading-[1.45] !text-[var(--text-3)] shadow-none transition-colors duration-150 hover:!bg-[var(--hover-bg)] hover:!text-[var(--text-2)]'
+  'group/activity my-[var(--vds-space-2)] !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-[var(--vds-space-1)] text-left text-[12.5px] leading-[1.45] !text-[var(--text-3)] shadow-none transition-colors duration-150 hover:!bg-[var(--vds-bg-white-hover-transparent)] hover:!text-[var(--text-2)]'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
 type WebSearchItem = Extract<ConvItem, { kind: 'web_search' }>
@@ -689,14 +691,16 @@ export function Stream({
       onWheel={() => { focusedSessionRef.current = null }}
       onPointerDown={() => { focusedSessionRef.current = null }}
       onKeyDown={() => { focusedSessionRef.current = null }}
-      className="conversation-stream [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)]"
+      className={cx(
+        'conversation-stream [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
+        home ? 'pt-0' : 'pt-[var(--vds-space-4)]'
+      )}
       style={{
         flex: home ? 'none' : 1,
         minHeight: 0,
         overflowY: home ? 'visible' : 'auto',
-        padding: home
-          ? '0 var(--vds-conversation-inline-gutter) 8px'
-          : '26px var(--vds-conversation-inline-gutter) 10px',
+        paddingInline: 'var(--vds-conversation-inline-gutter)',
+        paddingBottom: home ? '8px' : '10px',
         userSelect: 'text',
         WebkitUserSelect: 'text',
         cursor: 'auto'
@@ -1047,7 +1051,7 @@ function DeliveryCard({
   }
   return (
     <div
-      className="flex items-center gap-[12px] rounded-[9px] border border-[var(--border)] bg-[var(--bg-2)] px-[14px] py-[13px] shadow-[0_1px_2px_rgb(0_0_0/5%)] [margin:-10px_0_28px_41px] @max-[44rem]:m-[var(--vds-space-0)] @max-[44rem]:mb-[18px] @max-[44rem]:grid @max-[44rem]:grid-cols-[30px_minmax(0,1fr)_34px] @max-[44rem]:grid-areas-[icon_copy_action] @max-[44rem]:gap-[9px] @max-[44rem]:rounded-[10px] @max-[44rem]:p-[10px]"
+      className="flex items-center gap-[12px] rounded-[9px] border border-[var(--border)] bg-[var(--bg-2)] px-[14px] py-[13px] [margin:-10px_0_28px_41px] @max-[44rem]:m-[var(--vds-space-0)] @max-[44rem]:mb-[18px] @max-[44rem]:grid @max-[44rem]:grid-cols-[30px_minmax(0,1fr)_34px] @max-[44rem]:grid-areas-[icon_copy_action] @max-[44rem]:gap-[9px] @max-[44rem]:rounded-[10px] @max-[44rem]:p-[10px]"
       data-testid="delivery-card"
     >
       <div className="grid size-[34px] flex-none place-items-center rounded-[7px] bg-[var(--bg-3)] text-[var(--text-2)] @max-[44rem]:[grid-area:icon] @max-[44rem]:size-[30px]">
@@ -1155,13 +1159,13 @@ function ActivityStatusIcon({
   status: ToolItem['status']
 }): React.JSX.Element {
   if (status === 'running') {
-    return <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
+    return <Spinner imageSrc={aiThinking} size="sm" className="!size-[var(--vds-icon-7)] shrink-0" aria-hidden="true" />
   }
   return (
     <IconFont
       type={ACTIVITY_STATUS_ICONS[status]}
       className={cx(
-        'inline-flex size-4 shrink-0 items-center justify-center',
+        'inline-flex size-[var(--vds-icon-7)] shrink-0 items-center justify-center !text-[length:var(--vds-icon-7)]',
         TOOL_RUN_STATUS_TONE_CLASS[`is-${status}`]
       )}
     />
@@ -1675,7 +1679,7 @@ function ThinkingActivityStep({
             {t('stream.thought')}
           </span>
           <span aria-hidden="true">·</span>
-          <span className="min-w-0 flex-1 truncate text-[var(--vds-text-tertiary)]">
+          <span className="min-w-0 flex-1 truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
             {visibleMarkdownText(item.text)}
           </span>
           <span className={TOOL_RUN_STEP_CARET_CLASS}>
@@ -1686,19 +1690,20 @@ function ThinkingActivityStep({
       <CollapsibleContent
         className={cx(
           TOOL_RUN_IO_CLASS,
-          '!ml-[calc(var(--vds-space-4)*2)] !mr-[var(--vds-space-2)] !mb-[var(--vds-space-3)] !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] !whitespace-normal !bg-[var(--vds-surface-muted)] [&>.md]:!font-mono [&>.md]:!text-[length:var(--vds-font-body-lv1)] [&>.md]:!leading-[var(--vds-lh-body-lv1)] [&>.md]:!text-[var(--vds-text-secondary)] [&_.md-p]:!my-[var(--vds-space-2)] [&_.md-p:first-child]:!mt-0 [&_.md-p:last-child]:!mb-0'
+          '!ml-[calc(var(--vds-space-4)*2)] !mr-[var(--vds-space-2)] !mb-[var(--vds-space-3)] !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] !whitespace-normal !bg-[var(--vds-surface-muted)]'
         )}
         data-testid="thinking-activity-content"
       >
         {item.itemId ? (
           <AnnotatedAnswer
             citationEnabled={false}
+            markdownClassName={TOOL_RUN_MARKDOWN_CLASS}
             text={item.text}
             selectionEnabled
             messageId={`item:${item.itemId}`}
           />
         ) : (
-          <Markdown text={item.text} />
+          <Markdown text={item.text} className={TOOL_RUN_MARKDOWN_CLASS} />
         )}
       </CollapsibleContent>
     </Collapsible>
@@ -2928,7 +2933,7 @@ function HilCard({
         data-hil-kind="permission"
         data-hil-resolved="false"
         data-hil-state={item.hilState ?? 'pending'}
-        className="grid min-h-[64px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-transparent px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
+        className="grid min-h-[64px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
         onKeyDown={(event) => {
           if (event.repeat || submitting) return
           if (event.key === 'Escape') {
@@ -3027,8 +3032,13 @@ function HilCard({
       data-hil-state={item.hilState ?? 'pending'}
       className={cx(
         presentation === 'dock'
-          ? 'mb-0 min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]'
-          : 'mb-[var(--vds-space-4)] min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]',
+          ? 'mb-0 min-w-0 p-[var(--vds-space-4)]'
+          : 'mb-[var(--vds-space-4)] min-w-0 p-[var(--vds-space-4)]',
+        'border border-solid border-[var(--vds-border-default)]',
+        /* 权限卡与执行计划卡片一致: 12px 圆角 + raised 背景; 问句卡保持原样。 */
+        isQuestion
+          ? 'rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-white-default)]'
+          : 'rounded-[var(--vds-radius-6)] bg-[var(--vds-surface-raised)]',
         scrollableQuestion && 'flex min-h-0 flex-1 flex-col overflow-hidden'
       )}
     >
@@ -3856,7 +3866,7 @@ function UserBubble({
         )}
         <div
           className={cx(
-            'relative box-border w-auto max-w-full overflow-hidden rounded-[16px_16px_6px_16px] border border-[var(--border-soft)] bg-[var(--bubble-user)] px-[15px] pb-[12px] pt-[11px]',
+            'relative box-border w-auto max-w-full overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] pb-[12px] pt-[11px]',
             steer && 'border-dashed border-[var(--accent)]'
           )}
           data-testid="user-bubble"
@@ -3982,7 +3992,43 @@ function UserBubble({
               })}
             </div>
           ) : null}
-          <div className="whitespace-pre-wrap font-serif text-[15px] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
+          {item.refs?.some(
+            (reference) =>
+              ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
+              reference.type !== 'assistant_context'
+          ) && (
+            <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
+              {item
+                .refs!.filter(
+                  (reference) =>
+                    ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
+                    reference.type !== 'assistant_context'
+                )
+                .map((reference) => (
+                  <span
+                    key={reference.type + reference.id}
+                    className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
+                    title={t('stream.referenceSent', {
+                      type: reference.type,
+                      id: reference.id
+                    })}
+                  >
+                    <span className="flex-none font-semibold text-[var(--accent-ink)]">
+                      {userMessageRefType(reference.type, t)}
+                    </span>
+                    <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
+                      {reference.title}
+                    </span>
+                    {reference.status && (
+                      <span className="flex-none text-[9px] text-[var(--text-3)]">
+                        {reference.status}
+                      </span>
+                    )}
+                  </span>
+                ))}
+            </div>
+          )}
+          <div className="whitespace-pre-wrap font-serif text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
             {item.text}
           </div>
           {annotations.length > 0 ? (
@@ -4052,42 +4098,6 @@ function UserBubble({
               />
             </div>
           )}
-          {item.refs?.some(
-            (reference) =>
-              ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
-              reference.type !== 'assistant_context'
-          ) && (
-            <div className="mt-[9px] flex flex-wrap gap-[6px] border-t border-[var(--border-soft)] pt-[var(--vds-space-2)]">
-              {item
-                .refs!.filter(
-                  (reference) =>
-                    ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
-                    reference.type !== 'assistant_context'
-                )
-                .map((r) => (
-                  <span
-                    key={r.type + r.id}
-                    className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
-                    title={t('stream.referenceSent', {
-                      type: r.type,
-                      id: r.id
-                    })}
-                  >
-                    <span className="flex-none font-semibold text-[var(--accent-ink)]">
-                      {userMessageRefType(r.type, t)}
-                    </span>
-                    <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
-                      {r.title}
-                    </span>
-                    {r.status && (
-                      <span className="flex-none text-[9px] text-[var(--text-3)]">
-                        {r.status}
-                      </span>
-                    )}
-                  </span>
-                ))}
-            </div>
-          )}
           {confirming &&
             createPortal(
               <RewindConfirmation
@@ -4140,7 +4150,7 @@ function InteractionReply({
       data-testid="interaction-reply"
       data-interaction-request-id={item.requestId}
     >
-      <div className="grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] gap-[10px] rounded-[16px_16px_6px_16px] border border-[var(--border-soft)] bg-[var(--bubble-user)] px-[15px] py-[12px]">
+      <div className="grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] gap-[10px] rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] py-[12px]">
         {rows.map((row, index) => (
           <div
             key={`${row.question}:${index}`}

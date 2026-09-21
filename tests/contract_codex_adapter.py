@@ -18,6 +18,7 @@ from packaging.specifiers import SpecifierSet
 import scholarseed_codex.catalog as catalog_module
 import scholarseed_codex.environment as codex_environment
 import scholarseed_codex.executable as codex_host
+import scholarseed_codex.isolation as codex_isolation
 import scholarseed_codex.pool as pool_module
 from scholarseed_codex.activity import subagent_lifecycle_payload
 from scholarseed_codex.capacity import CapacityPolicy, HostRole
@@ -46,6 +47,7 @@ from scholarseed_codex.provider import (
 )
 from scholarseed_codex.router import AgentRoute, ThreadRouter
 from scholarseed_codex.session import CodexRuntimeSession
+from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_runtime.contract import (
     ActorKind,
@@ -80,6 +82,7 @@ from scholarseed_runtime.contract import (
     RuntimeSecret,
     TurnRequest,
 )
+from scholarseed_runtime.contract.command import SkillConfiguration
 from scholarseed_runtime.contract.evidence import (
     RuntimeProcessEvent,
     RuntimeProcessEventKind,
@@ -94,7 +97,12 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRetryability,
 )
 from scholarseed_runtime.contract.input import CollaborationMode
-from scholarseed_runtime.contract.inventory import ModelInventory, SkillInventory
+from scholarseed_runtime.contract.inventory import (
+    ModelInventory,
+    SkillAvailability,
+    SkillInventory,
+    SkillView,
+)
 from scholarseed_runtime.contract.resource import ResourcePurpose, ResourceRequest, ResourceState
 from tests.contract_codex_capacity import ControlledHost
 
@@ -1160,6 +1168,63 @@ def test_environment_removal() -> None:
     asyncio.run(scenario())
 
 
+def test_managed_codex_isolation() -> None:
+    print("== managed Codex isolation ==")
+    with tempfile.TemporaryDirectory() as temporary:
+        runtime_home = Path(temporary) / "codex runtime"
+        inherited = {
+            "HOME": "/Users/research user",
+            "USERPROFILE": r"C:\Users\research user",
+            "XDG_CONFIG_HOME": "/Users/research user/.config",
+        }
+        environment, arguments = codex_isolation.managed_codex_launch(
+            runtime_home,
+            {"MODEL_KEY": "model-fixture"},
+            (
+                CodexRuntimeLaunchArgument(option="--strict-config"),
+                CodexRuntimeLaunchArgument(option="-c", value="project_doc_max_bytes=999"),
+            ),
+            inherited_environment=inherited,
+        )
+        discovery_home = runtime_home.resolve() / codex_isolation.CODEX_DISCOVERY_HOME_DIRNAME
+        resolved = codex_host._resolve_launch_arguments(arguments, environment)
+        check(
+            "managed process uses only the product Codex and discovery homes",
+            environment["CODEX_HOME"] == str(runtime_home.resolve())
+            and environment["HOME"] == str(discovery_home)
+            and environment["USERPROFILE"] == str(discovery_home)
+            and environment["XDG_CONFIG_HOME"]
+            == str(discovery_home / codex_isolation.XDG_CONFIG_DIRNAME)
+            and environment["MODEL_KEY"] == "model-fixture"
+            and discovery_home.is_dir(),
+            str(environment),
+        )
+        check(
+            "managed flags override ambient project instructions and extensions",
+            resolved.count("--strict-config") == 1
+            and resolved[-2:]
+            == (
+                "-c",
+                'shell_environment_policy.set.XDG_CONFIG_HOME="/Users/research user/.config"',
+            )
+            and "project_root_markers=[]" in resolved
+            and "project_doc_max_bytes=0" in resolved
+            and "mcp_servers={}" in resolved
+            and "plugins={}" in resolved
+            and "marketplaces={}" in resolved
+            and "hooks={}" in resolved
+            and "features.skip_host_skill_discovery=true" in resolved,
+            str(resolved),
+        )
+        check(
+            "spawned shells retain the original cross-platform home values",
+            'shell_environment_policy.set.HOME="/Users/research user"' in resolved
+            and 'shell_environment_policy.set.USERPROFILE="C:\\\\Users\\\\research user"'
+            in resolved,
+            str(resolved),
+        )
+
+
 def test_control_hosts_stay_resident() -> None:
     print("== control hosts stay warm within the separate control budget ==")
     readiness = CodexRuntimeReadiness(
@@ -1246,7 +1311,13 @@ def test_control_hosts_stay_resident() -> None:
 def test_session_skill_root_projection(_catalog: AsyncMock) -> None:
     print("== skill roots survive session admission and resume ==")
     roots = (ROOT / "bundled-skills", ROOT / "user-skills")
-    request = OpenSessionRequest(product_session_id="skill-roots", cwd=ROOT, skill_roots=roots)
+    configurations = (SkillConfiguration(roots[0] / "private" / "SKILL.md", False),)
+    request = OpenSessionRequest(
+        product_session_id="skill-roots",
+        cwd=ROOT,
+        skill_roots=roots,
+        skill_configurations=configurations,
+    )
     session = CodexRuntimeSession(request)
     check(
         "open projects product-selected skill roots", session._native.request.skill_roots == roots
@@ -1300,7 +1371,12 @@ def test_session_skill_root_projection(_catalog: AsyncMock) -> None:
                 side_effect=AssertionError("contract cannot launch a process"),
             ),
         ):
-            request = ResumeSessionRequest(binding=binding, cwd=ROOT, skill_roots=roots)
+            request = ResumeSessionRequest(
+                binding=binding,
+                cwd=ROOT,
+                skill_roots=roots,
+                skill_configurations=configurations,
+            )
             receipt = await runtime.reserve(
                 ResourceRequest(
                     "skill-roots-resume",
@@ -1328,12 +1404,86 @@ def test_session_skill_root_projection(_catalog: AsyncMock) -> None:
 
     resumed = asyncio.run(resume())
     check(
+        "resume applies per-session skill rules without a global write",
+        resumed._native.request.thread_config.get("skills")
+        == session_skill_config(configurations)["skills"],
+    )
+    check(
         "resume retains roots and the native thread identity",
         resumed._native.request.skill_roots == roots
         and resumed._native.request.resume_session_id == binding.opaque_session_ref
         and resumed.binding.opaque_session_ref == binding.opaque_session_ref
         and resumed.binding.runtime_id == binding.runtime_id
         and resumed._required_capabilities == frozenset((RuntimeCapabilityName.WEB_SEARCH,)),
+    )
+
+
+def test_session_skill_configuration() -> None:
+    print("== transient per-session skill configuration ==")
+    restricted_path = ROOT / "skills" / "restricted" / "SKILL.md"
+    available_path = ROOT / "skills" / "available" / "SKILL.md"
+    configurations = (
+        SkillConfiguration(restricted_path, False),
+        SkillConfiguration(available_path, True),
+    )
+
+    async def configure() -> dict:
+        session = CodexRuntimeSession(
+            OpenSessionRequest(
+                product_session_id="skill-config",
+                cwd=ROOT,
+                skill_configurations=configurations,
+            )
+        )
+        with patch("scholarseed_codex.session.source_model_provider", return_value=("", {})):
+            await session._configure_model_connection()
+        return dict(session._native.request.thread_config)
+
+    config = asyncio.run(configure())
+    check(
+        "open translates neutral skill rules into native session configuration",
+        config["skills"]
+        == {
+            "config": [
+                {"path": str(restricted_path), "enabled": False},
+                {"path": str(available_path), "enabled": True},
+            ]
+        },
+    )
+    check("unspecified skill rules preserve native defaults", session_skill_config(()) == {})
+    inventory = SkillInventory(
+        cwd=ROOT,
+        revision="native-skills",
+        skills=(
+            SkillView("restricted", restricted_path, "", SkillAvailability.AVAILABLE, True),
+            SkillView("available", available_path, "", SkillAvailability.DISABLED, False),
+        ),
+    )
+    effective = session_skill_inventory(inventory, configurations)
+    check(
+        "session inventory reflects transient rules in both directions",
+        not effective.skills[0].enabled
+        and effective.skills[0].availability is SkillAvailability.DISABLED
+        and effective.skills[1].enabled
+        and effective.skills[1].availability is SkillAvailability.AVAILABLE,
+    )
+    check(
+        "session projection does not mutate control inventory",
+        inventory.skills[0].enabled and not inventory.skills[1].enabled,
+    )
+    check(
+        "transient availability participates in the inventory revision",
+        effective.revision != inventory.revision
+        and effective.revision == session_skill_inventory(inventory, configurations).revision
+        and effective.revision
+        != session_skill_inventory(
+            inventory, (SkillConfiguration(restricted_path, True),)
+        ).revision,
+    )
+    check(
+        "session configuration separates native pool identities",
+        pool_module._environment_digest({}, (), (), session_skill_config(configurations))
+        != pool_module._environment_digest({}, (), (), {}),
     )
 
 
@@ -2154,13 +2304,23 @@ def test_upstream_inspection_launch() -> None:
 
     asyncio.run(scenario())
     request = captured[0]
-    check(
-        "upstream inspection has no private sidecar environment",
-        request.process_environment == {"CODEX_HOME": str(ROOT)},
+    resolved = codex_host._resolve_launch_arguments(
+        request.launch_arguments,
+        request.process_environment,
     )
     check(
-        "upstream inspection has no private launch arguments",
-        request.executable == "/official/codex" and request.launch_arguments == (),
+        "upstream inspection uses the managed discovery boundary",
+        request.process_environment["CODEX_HOME"] == str(ROOT)
+        and request.process_environment["HOME"]
+        == str(ROOT / codex_isolation.CODEX_DISCOVERY_HOME_DIRNAME),
+    )
+    check(
+        "upstream inspection disables ambient project configuration",
+        request.executable == "/official/codex"
+        and "--strict-config" in resolved
+        and "project_root_markers=[]" in resolved
+        and "project_doc_max_bytes=0" in resolved
+        and "mcp_servers={}" in resolved,
     )
 
 
@@ -2220,8 +2380,10 @@ def main() -> int:
     test_session_scoped_web_search_projection()
     test_opaque_launch_secret_projection()
     test_environment_removal()
+    test_managed_codex_isolation()
     test_control_hosts_stay_resident()
     test_session_skill_root_projection()
+    test_session_skill_configuration()
     test_permission_intent_projection()
     test_permission_reconfiguration()
     test_model_reconfiguration()

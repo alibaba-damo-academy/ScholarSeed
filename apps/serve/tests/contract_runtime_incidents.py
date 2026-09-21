@@ -64,6 +64,7 @@ from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.incidents import event_incident, incident_data
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import readiness_payload
+from service.chat.service.streams import CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE
 from service.chat.service.turns import TurnService
 
 PRODUCT_SESSION_ID = "runtime-incident-session"
@@ -998,6 +999,73 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime_failure["error"]["code"], "insufficient_quota")
         self.assertEqual(product_failure["status"], "error")
         self.assertEqual(product_failure["error"]["code"], "insufficient_quota")
+
+    async def test_model_bridge_terminal_failure_enriches_same_turn_runtime_failure(self) -> None:
+        client_turn_id = "client-content-safety-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "downstream": {
+                    "terminal_event": "response.failed",
+                    "error_code": CONTENT_SAFETY_BLOCKED,
+                },
+            }
+        )
+
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
+        self.assertEqual(record.payload["code"], CONTENT_SAFETY_BLOCKED)
+        self.assertEqual(record.payload["message"], CONTENT_SAFETY_MESSAGE)
+        self.assertFalse(record.payload["retryable"])
+
+    async def test_later_same_turn_bridge_result_replaces_stale_content_failure(self) -> None:
+        client_turn_id = "client-retried-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "downstream": {
+                    "terminal_event": "response.failed",
+                    "error_code": CONTENT_SAFETY_BLOCKED,
+                },
+            }
+        )
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "downstream": {
+                    "terminal_event": "response.failed",
+                    "error_code": "different_terminal_failure",
+                },
+            }
+        )
+
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(record.payload["code"], "codex_provider_failed")
+        self.assertEqual(record.payload["message"], "The model provider rejected the request.")
+        self.assertTrue(record.payload["retryable"])
 
     async def test_failed_incident_is_an_error_but_recovery_states_are_not(self) -> None:
         await self.emit(

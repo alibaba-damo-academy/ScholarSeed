@@ -126,7 +126,7 @@ def _probe_free(candidate: Path, reserved: frozenset[Path]) -> bool:
     try:
         exists = candidate.exists()
     except OSError as error:
-        length_error = name_length_error(error)
+        length_error = name_length_error(error, candidate)
         if length_error is not None:
             raise length_error from error
         raise
@@ -281,6 +281,7 @@ def _create_bytes_document(
 
     cleaned = validate_name(name)
     parent_dir = _parent_directory(space, parent)
+    target = parent_dir / cleaned
     temporary = f"{CREATE_TEMP_PREFIX}{uuid.uuid4().hex}"
     descriptor = None
     output = None
@@ -294,6 +295,7 @@ def _create_bytes_document(
             filename = (
                 cleaned if index == 1 else f"{Path(cleaned).stem} ({index}){Path(cleaned).suffix}"
             )
+            target = parent_dir / filename
             os.lseek(output, 0, os.SEEK_SET)
             os.ftruncate(output, 0)
             _write_stage(output, content(filename))
@@ -306,7 +308,7 @@ def _create_bytes_document(
             return node_for(space, parent_dir / filename)
         raise ContentError(TOO_MANY_DUPLICATES)
     except OSError as exc:
-        raise filesystem_error(exc, WRITE_FAILED) from exc
+        raise filesystem_error(exc, WRITE_FAILED, target) from exc
     finally:
         if descriptor is not None:
             try:
@@ -606,13 +608,14 @@ def create_folder(space: ProjectSpace, parent: str, name: str) -> FileAssetRef:
 
     cleaned = validate_name(name)
     parent_dir = _parent_directory(space, parent)
+    target = parent_dir / cleaned
     try:
         target = unique_path(parent_dir, cleaned)
         target.mkdir(parents=False)
     except PermissionError as exc:
         raise ContentError(PARENT_NOT_WRITABLE) from exc
     except OSError as exc:
-        raise filesystem_error(exc, WRITE_FAILED) from exc
+        raise filesystem_error(exc, WRITE_FAILED, target) from exc
     return node_for(space, target)
 
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Render an indented outline with captions under their owning sections.
 
 Paper assignments, rationale and planning details remain internal.

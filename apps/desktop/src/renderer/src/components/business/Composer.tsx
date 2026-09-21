@@ -63,8 +63,9 @@ import { ReferencePicker } from './References'
 import { SkillAdd } from './Skills'
 import { StatusStrip } from './StatusStrip'
 import { fuzzyFilter } from '../../fuzzy'
-import { skillDescription } from '../../skill'
-import { SKILL_SURFACE_CONVERSATION } from '../../../../skills'
+import { skillCallable, skillDescription } from '../../skill'
+import { SKILL_SURFACE_CONVERSATION, SKILL_SURFACE_SETTINGS } from '../../../../skills'
+import { useAccountAccess } from './access'
 import {
   buildTurnInput,
   canSubmitComposer,
@@ -444,6 +445,7 @@ export function Composer({
   surface?: SessionSurface
 }): React.JSX.Element {
   const { state, set, appendThread, patchThread, act } = useApp()
+  const { authenticated, revision: skillRevision } = useAccountAccess(state.backendReady)
   const documents = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const { t, i18n } = useTranslation('components')
@@ -558,6 +560,7 @@ export function Composer({
   const [skillPanelOpen, setSkillPanelOpen] = React.useState(false)
   const [skillRows, setSkillRows] = React.useState<SkillInfo[] | null>(null)
   const [skillRowsLoading, setSkillRowsLoading] = React.useState(true)
+  const [selectedSkillCatalog, setSelectedSkillCatalog] = React.useState<{ revision: number; selection: string; rows: SkillInfo[] } | null>(null)
   const [skillQuery, setSkillQuery] = React.useState('')
   const [skillVisibleCount, setSkillVisibleCount] =
     React.useState(PLUS_MENU_PAGE_SIZE)
@@ -845,6 +848,23 @@ export function Composer({
   const atContext = Boolean(atContextSourceId)
   const atResourceContext = atContextSourceId === RESOURCE_CONTEXT_KIND
   const pendingRefs = state.composerRefs
+  const selectedSkillNames = pendingRefs.filter((reference) => reference.type === 'skill').map((reference) => reference.id)
+  const selectedSkillKey = JSON.stringify(selectedSkillNames)
+  React.useEffect(() => {
+    if (!state.backendReady || selectedSkillKey === '[]') return
+    let current = true
+    void getSkills(SKILL_SURFACE_SETTINGS).then((rows) => {
+      if (current) setSelectedSkillCatalog({ revision: skillRevision, selection: selectedSkillKey, rows })
+    }).catch(() => {
+      if (current) setSelectedSkillCatalog({ revision: skillRevision, selection: selectedSkillKey, rows: [] })
+    })
+    return () => { current = false }
+  }, [state.backendReady, selectedSkillKey, skillRevision])
+  const selectedSkillsReady = selectedSkillNames.length === 0 || (
+    selectedSkillCatalog?.revision === skillRevision
+    && selectedSkillCatalog.selection === selectedSkillKey
+    && selectedSkillNames.every((name) => selectedSkillCatalog.rows.some((skill) => skill.name === name && skillCallable(skill, authenticated)))
+  )
   const hasComposerReferenceCards = pendingRefs.length > 0
   // 运行中发送会进入产品持久队列；插话必须由用户对指定队列项显式触发。
   const runtimeAdmission = readinessAdmission(thread, state.runtimeReadiness)
@@ -866,7 +886,7 @@ export function Composer({
   // 只会在执行面被拒, 所以发送在这里就闭门, 并在卡片上方给出两条出路。
   const modelAvailable = hasSelectableModel(state.catalog.models)
   const canSend = canSubmitComposer({
-    runtimeReady: runtimeReady && activeThread(state).terminated !== true,
+    runtimeReady: runtimeReady && selectedSkillsReady && activeThread(state).terminated !== true,
     creditsAvailable: !creditBlocked,
     modelAvailable,
     launching,
@@ -1201,7 +1221,7 @@ export function Composer({
     void getSkills(SKILL_SURFACE_CONVERSATION)
       .then((rows) => {
         if (!current) return
-        setSkillRows(rows)
+        setSkillRows(rows.filter((skill) => skillCallable(skill, authenticated)))
         setSkillRowsLoading(false)
       })
       .catch((error: unknown) => {
@@ -1216,7 +1236,7 @@ export function Composer({
     return () => {
       current = false
     }
-  }, [skillPickerOpen])
+  }, [skillPickerOpen, skillRevision, authenticated])
 
   // 跳到任一非对话 surface 后把引用候选栏视为已取消；下一次真实输入会由 onChange 复位。
   React.useEffect(() => {
@@ -1457,7 +1477,7 @@ export function Composer({
   ): Promise<boolean> => {
     // Fail closed at the action boundary as well as through disabled UI.  This
     // also covers Enter and the desktop driver during a live/authorization turn.
-    if (state.turnLaunch || interrupting || creditBlocked || !modelAvailable)
+    if (state.turnLaunch || interrupting || creditBlocked || !modelAvailable || !selectedSkillsReady)
       return false
     const v = message.trim()
     if (!v && !references.length) return false
@@ -2342,6 +2362,11 @@ export function Composer({
           </div>
         )}
 
+        {!selectedSkillsReady && <div role="status" className={NO_MODEL_HINT_CLASS} data-testid="composer-skill-unavailable">
+          <span>{t('composer.selectedSkillUnavailable')}</span>
+          {!authenticated && <Button variant="ghost" size="sm" onClick={() => set({ loginOpen: true })}>{t('composer.noModelLogin')}</Button>}
+          <Button variant="ghost" size="sm" onClick={() => act.openSettings('skills')}>{t('composer.manageSkills')}</Button>
+        </div>}
         <div className={composerInputShellClass(surface)}>
           {visibleQueuedMessages.length > 0 && (
             <div
@@ -3434,21 +3459,20 @@ export function Composer({
                     )
                   })}
                   {fullAccessConfirmOpen && (
-                    <div className="mx-[var(--vds-space-1)] mb-[var(--vds-space-1)] mt-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-t border-[var(--vds-warning-light-border)] bg-[var(--vds-warning-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]">
-                      <div className="flex items-center gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)] text-[var(--vds-warning-text-primary)]">
-                        <Icon name="shield" size={13} />
+                    /* 上边框去掉: 确认区仅靠警告底色与圆角与菜单项区分, 不再加分割线。 */
+                    <div className="mx-[var(--vds-space-1)] mb-[var(--vds-space-1)] mt-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] bg-[var(--vds-warning-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]">
+                      {/* 标题前不再加 shield icon; 按钮统一用 Button 组件 variant/size, 不手写样式。 */}
+                      <div className="text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)] text-[var(--vds-warning-text-primary)]">
                         <span>{MODE_FULL_ACCESS_CONFIRM_TITLE}</span>
                       </div>
                       <p className="mb-[var(--vds-space-2)] mt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
                         {MODE_FULL_ACCESS_CONFIRM_BODY}
                       </p>
-                      <div className="flex justify-end gap-[7px]">
+                      <div className="flex justify-end gap-[var(--vds-space-1)]">
                         <Button
                           type="button"
                           variant="ghost"
-                          size="content"
-                          unstyled
-                          className="rounded-[var(--vds-radius-2)] border-0 px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] hover:bg-[var(--vds-bg-white-hover)]"
+                          size="sm"
                           onClick={() => setFullAccessConfirmOpen(false)}
                         >
                           {t('composer.cancel')}
@@ -3456,10 +3480,8 @@ export function Composer({
                         <Button
                           type="button"
                           data-testid="mode-bypassPermissions-confirm"
-                          variant="danger"
-                          size="content"
-                          unstyled
-                          className="rounded-[var(--vds-radius-2)] border-0 bg-[var(--vds-warning-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-static-white)] hover:bg-[var(--vds-bg-white-hover)] hover:text-[var(--vds-warning-text-primary)]"
+                          variant="warning"
+                          size="sm"
                           onClick={() => requestMode('bypassPermissions')}
                         >
                           {t('composer.enable')}

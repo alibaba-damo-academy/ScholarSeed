@@ -23,6 +23,6 @@
   --vds-layout-inline-metadata-max-width: min(180px, 28vw);
   --vds-layout-reading-width: 720px;
   --vds-conversation-content-width: 760px;
-  --vds-conversation-inline-gutter: 13px;
+  --vds-conversation-inline-gutter: calc(var(--vds-space-4) - var(--vds-conversation-scrollbar-width));
   --vds-conversation-scrollbar-width: 9px;
 }

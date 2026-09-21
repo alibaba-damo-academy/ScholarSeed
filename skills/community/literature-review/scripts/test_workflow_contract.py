@@ -103,14 +103,14 @@ class WorkspaceTest(unittest.TestCase):
 
     def test_processing_last_success_cannot_hide_missing_cards(self):
         self.corpus(40,2)
-        stage={'id':'processing','steps':[['python3','fixture'] for _ in range(4)],'writes':[], 'status':{'kind':'trailing_json'}}
+        stage={'id':'processing','steps':[['scholarseed-skill-python','fixture'] for _ in range(4)],'writes':[], 'status':{'kind':'trailing_json'}}
         outputs=[(0,json.dumps({'status':'PARTIAL_SUCCESS','failed':2})),*[(0,json.dumps({'status':'SUCCESS'})) for _ in range(3)]]
         args=SimpleNamespace(profile='fast',workspace=str(self.ws),stage='processing',dry_run=False,tail=0)
         stream=io.StringIO()
         with patch.object(slr,'find_stage',return_value=stage),patch.object(slr,'run_command',side_effect=outputs),contextlib.redirect_stdout(stream):rc=slr.cmd_run(args)
         result=json.loads(stream.getvalue());self.assertNotEqual(rc,0);self.assertEqual(result['status'],'PARTIAL_SUCCESS')
         self.assertEqual(result['usable_card_count'],38);self.assertEqual(len(result['steps']),4);self.assertFalse(result['ready_for_outline'])
-        self.assertEqual(slr.substitute(['python3','example'],self.ws)[0],sys.executable)
+        self.assertEqual(slr.substitute(['scholarseed-skill-python','example'],self.ws)[0],sys.executable)
 
     def test_approval_requires_response_and_rejects_stale_packet(self):
         from operator_cli import review_packet, approve

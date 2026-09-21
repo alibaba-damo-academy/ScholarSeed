@@ -45,20 +45,20 @@ user is speaking another language.
 Start or update a stage:
 
 ```bash
-python3 "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" update \
+scholarseed-skill-python "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" update \
   --stage search --activity "Querying PaperHub" --current 2 --total 12 --completed 18
 ```
 
 Emit a heartbeat only when the last running event is at least 20 seconds old:
 
 ```bash
-python3 "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" heartbeat
+scholarseed-skill-python "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" heartbeat
 ```
 
 For an immediate user stop:
 
 ```bash
-python3 "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" update \
+scholarseed-skill-python "$SKILL_DIR/scripts/progress.py" --run-dir "$RUN_DIR" update \
   --stage download --activity "Waiting for login" --status action_required \
   --action "Complete login in the dedicated Chrome, then tell the host to continue."
 ```

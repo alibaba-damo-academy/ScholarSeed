@@ -302,7 +302,7 @@ def require_workspace(ws: "Workspace", script: str) -> None:
     raise SystemExit(
         f"{script}: {ws.root} is not an slr workspace "
         f"(no 01_input/ under it).\n"
-        f"  Pass the workspace explicitly:  python3 .../{script} <workspace>\n"
+        f"  Pass the workspace explicitly:  scholarseed-skill-python .../{script} <workspace>\n"
         f"  or export SLR_WORKSPACE=<workspace> before the call.\n"
         f"  Resolved from: "
         + ("SLR_WORKSPACE" if os.environ.get("SLR_WORKSPACE", "").strip()

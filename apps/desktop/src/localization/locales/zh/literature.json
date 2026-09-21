@@ -5,6 +5,8 @@
     "returnProject": "返回项目"
   },
   "panel": {
+    "loginRequired": "登录后可检索新文献",
+    "login": "登录",
     "projectLiterature": "本项目文献",
     "collapseProjectLiterature": "收起本项目文献",
     "expandProjectLiterature": "展开本项目文献",
@@ -193,8 +195,8 @@
     "invocation_runtime_failed": "启动对话失败，请确认模型已配置且有效",
     "invocation_runtime_unavailable": "当前 Codex Runtime 不可用或版本不兼容，请升级或切换到受支持的 Codex 后重试。",
     "invocation_workspace_unavailable": "AI 检索工作目录不可用，请检查存储目录后重试。",
-    "invocation_skill_not_found": "未找到 agentic-search 技能，请重新安装或更新书深。",
-    "invocation_skill_unavailable": "agentic-search 技能当前未启用，请启用后重试。"
+    "invocation_skill_not_found": "快速检索能力缺失，请重新安装或更新书深。",
+    "invocation_skill_unavailable": "快速检索能力当前不可用，请重启或更新书深后重试。"
   },
   "pdfImport": {
     "choose": "选择要导入的 PDF",
@@ -370,7 +372,7 @@
     "unreadable": "检索结果暂不可读取。",
     "retryDescription": "本次检索结果暂不可读取，请重试。",
     "opening": "正在打开本次检索结果…",
-    "viewAll": "在文献库查看全部结果",
+    "viewAll": "查看全部结果",
     "query": "精准文献检索",
     "search": "文献检索",
     "status": {

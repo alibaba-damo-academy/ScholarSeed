@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Adapt a user-provided paper-dl CLI to the paid-download contract."""
 
 from __future__ import annotations

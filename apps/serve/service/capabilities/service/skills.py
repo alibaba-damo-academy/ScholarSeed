@@ -8,7 +8,7 @@ import shutil
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from scholarseed_runtime.contract.inventory import (
     SkillAvailability,
@@ -56,7 +56,10 @@ SKILL_DESCRIPTION_LOCALE_PATTERN = re.compile(
     r"^description[_-]([a-zA-Z]{2,3}(?:[-_][a-zA-Z0-9]{2,8})*)$"
 )
 SKILL_PRESENTATION_FILE = Path(__file__).resolve().parents[1] / "catalog.json"
-SKILL_PRESENTATION_SCHEMA = 2
+SKILL_PRESENTATION_SCHEMA = 3
+SKILL_PRESENTATION_REQUIRED_KEY = "required"
+SKILL_PRESENTATION_LOGIN_KEY = "requires_login"
+SKILL_LOGIN_REQUIRED_REASON = "login_required"
 SKILL_SURFACE_CONVERSATION = "conversation"
 SKILL_SURFACE_SETTINGS = "settings"
 SKILL_PRESENTATION_NAMES_KEY = "skills"
@@ -98,6 +101,8 @@ class SkillSurfacePresentation:
 @dataclass(frozen=True)
 class SkillPresentation:
     surfaces: Mapping[str, SkillSurfacePresentation]
+    required: frozenset[str]
+    requires_login: frozenset[str] = frozenset()
 
 
 def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresentation:
@@ -107,7 +112,19 @@ def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresen
     if value.get("schema") != SKILL_PRESENTATION_SCHEMA:
         raise ValueError("unsupported skill presentation schema")
     raw_surfaces = value.get("surfaces")
-    if not isinstance(raw_surfaces, Mapping) or set(value) != {"schema", "surfaces"}:
+    raw_required = value.get(SKILL_PRESENTATION_REQUIRED_KEY)
+    raw_login = value.get(SKILL_PRESENTATION_LOGIN_KEY, [])
+    if (
+        not isinstance(raw_surfaces, Mapping)
+        or not isinstance(raw_required, list)
+        or not all(isinstance(name, str) and name for name in raw_required)
+        or len(raw_required) != len(set(raw_required))
+        or not isinstance(raw_login, list)
+        or not all(isinstance(name, str) and name for name in raw_login)
+        or len(raw_login) != len(set(raw_login))
+        or set(value)
+        - {"schema", "surfaces", SKILL_PRESENTATION_REQUIRED_KEY, SKILL_PRESENTATION_LOGIN_KEY}
+    ):
         raise ValueError("invalid skill presentation policy")
     surfaces: dict[str, SkillSurfacePresentation] = {}
     for surface, policy in raw_surfaces.items():
@@ -136,7 +153,9 @@ def load_skill_presentation(path: Path = SKILL_PRESENTATION_FILE) -> SkillPresen
             skills=frozenset(names),
             sources=frozenset(sources),
         )
-    return SkillPresentation(surfaces=surfaces)
+    return SkillPresentation(
+        surfaces=surfaces, required=frozenset(raw_required), requires_login=frozenset(raw_login)
+    )
 
 
 def load_skill_state(path: Path = SERVICE_SKILL_STATE_FILE) -> SkillProductState:
@@ -232,8 +251,48 @@ class SkillCatalog:
         self._bundled_root = bundled_root.expanduser().resolve()
         self._user_root = user_root.expanduser().resolve()
         self._presentation = presentation or load_skill_presentation()
+        self._authenticated: Callable[[str], bool] = lambda _user_id: False
         # 目录指纹按内容签名复用: 全量重算要逐文件读字节, 而它每次列表请求都会跑一遍。
         self._fingerprints: dict[Path, tuple[tuple[tuple[str, int, int], ...], str]] = {}
+
+    def bind_authentication(self, authenticated: Callable[[str], bool]) -> None:
+        self._authenticated = authenticated
+
+    def requires_login(self, skill: SkillView) -> bool:
+        return (
+            self.source(skill.path) == SKILL_SOURCE_BUILTIN
+            and skill.name in self._presentation.requires_login
+        )
+
+    def availability_revision(self, user_id: str) -> tuple[object, ...]:
+        state = load_skill_state()
+        return (
+            self._authenticated(user_id),
+            tuple(sorted(state.disabled_skills)),
+            tuple(sorted(state.deleted_skills)),
+        )
+
+    def session_enablement(
+        self, inventory: SkillInventory, state: SkillProductState, *, user_id: str
+    ) -> tuple[tuple[Path, bool], ...]:
+        authenticated = self._authenticated(user_id)
+        return tuple(
+            sorted(
+                (
+                    (
+                        self.manifest(skill.path).expanduser().resolve(),
+                        (self.required(skill.name) or skill.name not in state.disabled_skills)
+                        and (
+                            self.source(skill.path) != SKILL_SOURCE_USER
+                            or skill.name not in state.deleted_skills
+                        )
+                        and (not self.requires_login(skill) or authenticated),
+                    )
+                    for skill in self.product_skills(inventory)
+                ),
+                key=lambda row: str(row[0]),
+            )
+        )
 
     def payloads(
         self,
@@ -242,6 +301,7 @@ class SkillCatalog:
         *,
         available_mcp_tools: Iterable[str] = (),
         surface: str | None = None,
+        user_id: str = "",
     ) -> list[dict[str, Any]]:
         mcp_tools = frozenset(str(value) for value in available_mcp_tools)
         errors = {
@@ -259,6 +319,7 @@ class SkillCatalog:
                     mcp_tools=mcp_tools,
                     inventory_errors=errors,
                     runtime_revision=inventory.revision,
+                    authenticated=self._authenticated(user_id),
                 )
             )
         return sorted(rows, key=lambda row: (str(row["category"]), str(row["name"])))
@@ -298,7 +359,7 @@ class SkillCatalog:
                 continue
             if source == SKILL_SOURCE_USER and skill.name in state.deleted_skills:
                 continue
-            enabled = skill.name not in state.disabled_skills
+            enabled = self.required(skill.name) or skill.name not in state.disabled_skills
             rows.append((manifest, enabled))
         return tuple(rows)
 
@@ -375,10 +436,16 @@ class SkillCatalog:
     def removable(self, path: Path) -> bool:
         return self.source(path) != SKILL_SOURCE_BUILTIN
 
-    def toggleable(self, path: Path) -> bool:
+    def required(self, name: str) -> bool:
+        return name in self._presentation.required
+
+    def toggleable(self, skill: SkillView) -> bool:
         """Return whether the product permits changing this skill's enablement."""
 
-        return self.source(path) in {SKILL_SOURCE_BUILTIN, SKILL_SOURCE_USER}
+        return not self.required(skill.name) and self.source(skill.path) in {
+            SKILL_SOURCE_BUILTIN,
+            SKILL_SOURCE_USER,
+        }
 
     def manifest(self, path: Path) -> Path:
         return self._manifest(path)
@@ -391,6 +458,7 @@ class SkillCatalog:
         mcp_tools: frozenset[str],
         inventory_errors: Mapping[str, str],
         runtime_revision: str,
+        authenticated: bool,
     ) -> dict[str, Any]:
         manifest = self._manifest(skill.path)
         directory = manifest.parent
@@ -407,15 +475,24 @@ class SkillCatalog:
         ]
         dependency_state = self._aggregate_dependency_state(dependencies)
         runtime_error = inventory_errors.get(str(manifest.expanduser().resolve()), "")
-        product_enabled = skill.name not in state.disabled_skills
+        product_enabled = self.required(skill.name) or skill.name not in state.disabled_skills
         runtime_enabled = skill.enabled and skill.availability == SkillAvailability.AVAILABLE
-        active = product_enabled and runtime_enabled and dependency_state == SKILL_DEPENDENCY_READY
+        requires_login = self.requires_login(skill)
+        login_available = not requires_login or authenticated
+        active = (
+            product_enabled
+            and runtime_enabled
+            and login_available
+            and dependency_state == SKILL_DEPENDENCY_READY
+        )
         unavailable_reason = self._unavailable_reason(
             product_enabled=product_enabled,
             runtime_enabled=runtime_enabled,
             runtime_error=runtime_error,
             dependencies=dependencies,
         )
+        if product_enabled and not login_available:
+            unavailable_reason = SKILL_LOGIN_REQUIRED_REASON
         version = str(metadata.get("version") or hub_record.get("version") or "").strip()
         if not version and fingerprint:
             version = f"{SKILL_LOCAL_VERSION_PREFIX}-{fingerprint[:12]}"
@@ -461,10 +538,11 @@ class SkillCatalog:
             "updated_at": self._mtime(manifest),
             "active": active,
             "enabled": product_enabled,
+            "requires_login": requires_login,
             "builtin": source == SKILL_SOURCE_BUILTIN,
             "imported": source == SKILL_SOURCE_USER,
             "removable": self.removable(manifest),
-            "toggleable": self.toggleable(manifest),
+            "toggleable": self.toggleable(skill),
             "dependency_status": dependency_state,
             "unavailable_reason": unavailable_reason,
             "dependencies": dependencies,

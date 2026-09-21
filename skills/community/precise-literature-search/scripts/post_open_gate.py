@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Choose the required workflow step after the arXiv-only download batch."""
 
 from __future__ import annotations

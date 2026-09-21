@@ -2,6 +2,7 @@ import { onJoinedCollectionCreated, type CreatedCollectionNotice } from './joinS
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
 import { useTranslation } from 'react-i18next'
 import React, { useEffect, useMemo, useState } from 'react'
+import { useAccountAccess } from '../../components/business/access'
 import {
   ArrowRight,
   EllipsisVertical,
@@ -122,7 +123,8 @@ type DeleteTarget =
     }
 
 export function LiteraturePanel(): React.JSX.Element {
-  const { act, state } = useApp()
+  const { act, state, set } = useApp()
+  const { authenticated } = useAccountAccess(state.backendReady)
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const projectId = state.homeSelectedProjectId ?? undefined
@@ -544,6 +546,7 @@ export function LiteraturePanel(): React.JSX.Element {
     }
   }
   const startSearch = async (): Promise<void> => {
+    if (!authenticated || searching) return
     const query = discovery.trim()
     if (!query) {
       setSearchError({ key: 'panel.error.queryRequired' })
@@ -616,7 +619,7 @@ export function LiteraturePanel(): React.JSX.Element {
               <Button
                 aria-label={t('panel.search')}
                 className="!size-[var(--vds-control-height-xs)] !min-h-0 !min-w-[var(--vds-control-height-xs)] !p-0 [&_svg]:!size-[var(--vds-icon-7)]"
-                disabled={searching || !discovery.trim()}
+                disabled={!authenticated || searching || !discovery.trim()}
                 icon={
                   searching ? (
                     <Spinner size="sm" />
@@ -629,6 +632,10 @@ export function LiteraturePanel(): React.JSX.Element {
               />
             </div>
           </div>
+          {!authenticated && <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]" data-testid="literature-search-login">
+            <span>{t('panel.loginRequired')}</span>
+            <Button variant="ghost" size="sm" onClick={() => set({ loginOpen: true })}>{t('panel.login')}</Button>
+          </div>}
         </CollapsibleContent>
       </Collapsible>
       {discoveryOpen && searchError ? (

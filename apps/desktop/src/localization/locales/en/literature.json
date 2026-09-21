@@ -5,6 +5,8 @@
     "returnProject": "Back to project"
   },
   "panel": {
+    "loginRequired": "Sign in to search for new literature.",
+    "login": "Sign in",
     "projectLiterature": "Project literature",
     "collapseProjectLiterature": "Collapse project literature",
     "expandProjectLiterature": "Expand project literature",
@@ -199,8 +201,8 @@
     "invocation_runtime_failed": "Could not start the conversation. Make sure a model is configured and valid.",
     "invocation_runtime_unavailable": "The current Codex runtime is unavailable or incompatible. Upgrade or switch to a supported Codex version and try again.",
     "invocation_workspace_unavailable": "The AI search working directory is unavailable. Check the storage directory and try again.",
-    "invocation_skill_not_found": "The agentic-search skill was not found. Reinstall or update ScholarSeed.",
-    "invocation_skill_unavailable": "The agentic-search skill is disabled. Enable it and try again."
+    "invocation_skill_not_found": "The quick search capability is missing. Reinstall or update ScholarSeed.",
+    "invocation_skill_unavailable": "The quick search capability is unavailable. Restart or update ScholarSeed and try again."
   },
   "pdfImport": {
     "choose": "Select PDFs to import",
@@ -383,7 +385,7 @@
     "unreadable": "Search results are currently unavailable.",
     "retryDescription": "These search results are currently unavailable. Try again.",
     "opening": "Opening search results…",
-    "viewAll": "View all results in the library",
+    "viewAll": "View all results",
     "query": "Targeted literature search",
     "search": "Literature search",
     "status": {

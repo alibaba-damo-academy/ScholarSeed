@@ -16,7 +16,11 @@ from scholarseed_codex.activity import auto_approval_payload
 from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.events import translate_event
-from scholarseed_codex.failure import PROVIDER_CREDITS_MESSAGE, provider_failure
+from scholarseed_codex.failure import (
+    PROVIDER_CONTENT_POLICY_MESSAGE,
+    PROVIDER_CREDITS_MESSAGE,
+    provider_failure,
+)
 from scholarseed_codex.files import (
     is_artifact_candidate,
     observed_changes,
@@ -546,6 +550,63 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
             "unexpected status 400 Bad Request: malformed",
         ):
             self.assertNotEqual(provider_failure(raw).code, "CONTENT_SAFETY_BLOCKED")
+
+    async def test_content_policy_response_failure_signature_survives_terminal(self) -> None:
+        self.state.active_turn_id = "policy-turn"
+        error = {
+            "code": "server_error",
+            "message": (
+                "<400> InternalError.Algo.DataInspectionFailed: "
+                "Output data may contain inappropriate content."
+            ),
+        }
+        await self.state.notification(
+            "error",
+            {
+                "turnId": "policy-turn",
+                "willRetry": True,
+                "error": {"message": PROVIDER_CONTENT_POLICY_MESSAGE},
+            },
+            generation=1,
+        )
+        await self.state.notification(
+            "turn/plan/updated",
+            {"turnId": "policy-turn", "plan": []},
+            generation=1,
+        )
+        self.assertEqual(self.state.provider_failure.code, "CONTENT_SAFETY_BLOCKED")
+        await self.state.notification(
+            "turn/completed",
+            {"turn": {"id": "policy-turn", "status": "failed"}},
+            generation=1,
+        )
+        self.assertEqual(self.events[-1].payload["error_code"], "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(
+            self.events[-1].payload["retryability"], RuntimeRetryability.TERMINAL.value
+        )
+        failure = provider_failure(error)
+        self.assertEqual(failure.code, "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(failure.http_status, 400)
+        normalized_failure = provider_failure(
+            {"code": "invalid_prompt", "message": PROVIDER_CONTENT_POLICY_MESSAGE}
+        )
+        self.assertEqual(normalized_failure.code, "CONTENT_SAFETY_BLOCKED")
+        self.assertEqual(normalized_failure.retryability, RuntimeRetryability.TERMINAL)
+        self.assertEqual(
+            provider_failure(
+                {"code": "server_error", "message": "The model provider is unavailable."}
+            ).code,
+            "server_error",
+        )
+        self.assertEqual(
+            provider_failure(
+                {
+                    "code": "server_error",
+                    "message": "Arbitrary prose InternalError.Algo.DataInspectionFailed",
+                }
+            ).code,
+            "server_error",
+        )
 
     async def test_provider_sse_failure_is_redacted_and_survives_sparse_terminal(self) -> None:
         self.state.active_turn_id = "quota-turn"

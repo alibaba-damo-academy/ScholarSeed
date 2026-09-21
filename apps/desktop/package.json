@@ -12,7 +12,7 @@
   },
   "scripts": {
     "preinstall": "node ../../scripts/toolchain.cjs check",
-    "pretest": "node ../../scripts/toolchain.cjs check && node --test runtime/codex.test.cjs runtime/browser.test.cjs runtime/texlive.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
+    "pretest": "node ../../scripts/toolchain.cjs check && node --test runtime/codex.test.cjs runtime/browser.test.cjs runtime/python.test.cjs runtime/texlive.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
     "postinstall": "install-electron",
     "predev": "npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
     "dev": "electron-vite dev",

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Deterministically rank a Veryfast result pool and write metadata.json.
 
 Veryfast search deliberately spends its only model turn on entity resolution and

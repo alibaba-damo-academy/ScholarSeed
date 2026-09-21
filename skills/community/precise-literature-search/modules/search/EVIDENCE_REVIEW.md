@@ -10,7 +10,7 @@ never dump the complete pool. Obtain keys for at most 20 candidate IDs in one
 call, reusing the returned scope/intent keys throughout this review:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/selection_evidence.py" context \
+scholarseed-skill-python "$SKILL_DIR/modules/search/selection_evidence.py" context \
   --request "$REQUEST_JSON" --work-dir "$WORK" --id ID1 --id ID2
 ```
 
@@ -74,7 +74,7 @@ the cache to turn metadata into full-text evidence. Write a JSON array at
 ```
 
 ```bash
-python3 "$SKILL_DIR/modules/search/selection_evidence.py" save-hypotheses \
+scholarseed-skill-python "$SKILL_DIR/modules/search/selection_evidence.py" save-hypotheses \
   --request "$REQUEST_JSON" --work-dir "$WORK" --input "$WORK/hypotheses-input.json"
 ```
 
@@ -86,7 +86,7 @@ verification is programmatic; the rationale remains the agent's assessment.
 Before a repeated entity review or on resume, reuse valid cached decisions:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/selection_evidence.py" read-hypotheses \
+scholarseed-skill-python "$SKILL_DIR/modules/search/selection_evidence.py" read-hypotheses \
   --request "$REQUEST_JSON" --work-dir "$WORK"
 ```
 

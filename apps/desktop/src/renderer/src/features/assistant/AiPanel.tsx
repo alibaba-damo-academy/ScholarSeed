@@ -59,7 +59,7 @@ import {
 import { Icon } from '../../icons'
 import { feedback } from '../../contracts/feedback'
 import { SESSION_TITLE_MAX_LENGTH } from '../../model'
-import { SKILL_SURFACE_CONVERSATION } from '../../../../skills'
+import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { activeThread, assistantProject, useApp } from '../../store'
 import { serveSessionNode } from '../../tree'
 import { AssistantContextQuote } from './Quote'
@@ -190,13 +190,9 @@ export function AiPanel(): React.JSX.Element {
     starter: (typeof AI_TASK_STARTERS)[number]
   ): Promise<void> => {
     const request = ++taskStarterRequest.current
-    act.askAiFromPanel(
-      t(starter.promptKey),
-      'taskType' in starter ? starter.taskType : undefined
-    )
     let skills
     try {
-      skills = await getSkills(SKILL_SURFACE_CONVERSATION)
+      skills = await getSkills(SKILL_SURFACE_SETTINGS)
     } catch {
       if (request === taskStarterRequest.current) {
         set({ foregroundError: feedback('components', 'composer.skillFailed') })
@@ -205,9 +201,13 @@ export function AiPanel(): React.JSX.Element {
     }
     if (request !== taskStarterRequest.current) return
     const result = resolveTaskStarterSkill(skills, starter.skillName)
+    if (result.failure === 'login_required') {
+      set({ loginOpen: true })
+      return
+    }
     if (result.failure) {
       const failureKeys: Record<
-        TaskStarterSkillFailure,
+        Exclude<TaskStarterSkillFailure, 'login_required'>,
         | 'composer.skillMissing'
         | 'composer.skillDisabled'
         | 'composer.skillDependencies'
@@ -225,6 +225,10 @@ export function AiPanel(): React.JSX.Element {
       })
       return
     }
+    act.askAiFromPanel(
+      t(starter.promptKey),
+      'taskType' in starter ? starter.taskType : undefined
+    )
     set((current) => ({
       composerRefs: [
         ...current.composerRefs.filter((reference) => (
@@ -859,9 +863,9 @@ export function AiPanel(): React.JSX.Element {
       <Translation />
 
       {/* 真实会话流：0.1 的 Stream，含活动、工具、HIL 权限卡、产物。 */}
-      <div className="vds-ai-stream flex min-h-0 flex-1 flex-col overflow-hidden pt-[var(--vds-space-1)] pb-[var(--vds-space-2)] [&>.conversation-stream]:!pt-0 [&>.conversation-stream]:!pb-0" data-testid="ai-stream">
+      <div className="vds-ai-stream flex min-h-0 flex-1 flex-col overflow-hidden pt-0 pb-[var(--vds-space-2)] [&>.conversation-stream]:!pt-[var(--vds-space-4)] [&>.conversation-stream]:!pb-0" data-testid="ai-stream">
         {state.activeSession === null && !state.turnLaunch ? (
-          <div className="vds-ai-stream-empty mx-auto w-[calc(100%-2*(var(--vds-conversation-inline-gutter)+var(--vds-conversation-scrollbar-width)))] max-w-[var(--vds-conversation-content-width)] flex min-h-full flex-col justify-center px-0 pt-[26px] pb-[34px]">
+          <div className="vds-ai-stream-empty mx-auto w-[calc(100%-2*(var(--vds-conversation-inline-gutter)+var(--vds-conversation-scrollbar-width)))] max-w-[var(--vds-conversation-content-width)] flex min-h-full flex-col justify-center !px-0 pt-[26px] pb-[34px]">
             <h3>{t('panel.startTitle')}</h3>
             <p>{t('panel.startDescription')}</p>
             <div className="vds-ai-task-starters">

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run the complete deterministic tail of a Quick academic search.
 
 The agent supplies one high-information search plan.  This runner initializes

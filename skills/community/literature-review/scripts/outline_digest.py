@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compatibility corpus-digest CLI. Current outline generation uses evidence.py.
 
 Paper IDs and citation keys remain distinct; this helper is also named by
@@ -107,7 +107,7 @@ def load_cite_keys(workspace: Path) -> tuple[dict, str]:
                 "was found, so no real cite keys exist for this corpus. The "
                 "`cite:` column below repeats the paper id — it is NOT what "
                 "\\cite{} will spell. Run "
-                "`python3 scripts/processing/build_bib.py <workspace>` to mint "
+                "`scholarseed-skill-python scripts/processing/build_bib.py <workspace>` to mint "
                 "them. Nothing about the outline changes: paper_ids are what "
                 "the outline carries either way.")
 

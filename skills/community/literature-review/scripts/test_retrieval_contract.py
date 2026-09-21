@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Offline contract test for current agentic-search -> SLR adaptation."""
 from __future__ import annotations
 

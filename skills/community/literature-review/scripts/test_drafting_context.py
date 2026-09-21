@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Regression tests for section-local drafting evidence and insight contracts."""
 from __future__ import annotations
 

@@ -5,6 +5,9 @@
     "user": "我的",
     "label": "技能分类"
   },
+  "loginRequired": "需登录",
+  "loginRequiredHint": "登录后才能使用此技能，未登录也可管理启用偏好。",
+  "paused": "已暂停",
   "loadFailed": "技能加载失败，请重试。",
   "toggleFailed": "技能状态更新失败，请重试。",
   "documentFailed": "说明加载失败，请重试。",

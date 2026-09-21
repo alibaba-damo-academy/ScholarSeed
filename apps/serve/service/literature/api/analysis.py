@@ -12,16 +12,19 @@ from dataclasses import replace
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from service.assistant.api.stream import SSE_HEADERS, SSE_MEDIA_TYPE, action_stream
 from service.assistant.persistence.invocations import (
     AssistantInvocationRecord,
     AssistantInvocationStore,
 )
 from service.assistant.service.actions import AssistantActionService
+from service.chat.service.events import sse_encode
 from service.chat.service.models import ModelService
 from service.identity.utils import request_user_id
 from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.analysis import (
+    ActionKind,
     AnalysisError,
     AnalysisErrorCode,
     AnalysisRequest,
@@ -33,6 +36,7 @@ from service.literature.service.analysis import (
     read_source,
     validate_result,
 )
+from service.literature.service.figure import FigureActionService, FigureCommand
 from service.literature.service.pdf import LiteraturePdf
 from service.platform.content import ContentPort
 from service.platform.inference import ModelInvocationStatus
@@ -63,9 +67,17 @@ def register_analysis_routes(
     models: ModelService,
     pdf: LiteraturePdf,
     content: ContentPort | None = None,
+    figures: FigureActionService | None = None,
 ) -> None:
     repository = LiteratureRepository()
     results = AnalysisStore(repository.database)
+    figure_actions = figures or FigureActionService(
+        actions=actions,
+        tasks=tasks,
+        repository=repository,
+        pdf=pdf,
+        content=content,
+    )
     running: dict[tuple[str, str], asyncio.Task] = {}
     states: dict[tuple[str, str], dict] = {}
     locks: set[tuple[str, str, str]] = set()
@@ -366,6 +378,14 @@ def register_analysis_routes(
 
     @app.post(f"{PREFIX}/tasks", status_code=202)
     async def submit(payload: AnalysisRequest, request: Request) -> dict:
+        if payload.kind is ActionKind.FIGURE:
+            raise HTTPException(
+                422,
+                {
+                    "code": AnalysisErrorCode.FIGURE_STREAM_REQUIRED.value,
+                    "diagnostic": "",
+                },
+            )
         owner = request_user_id(request)
         key = (owner, payload.client_attempt_id)
         if key in states or tasks.get_attempt(key[1], owner):
@@ -384,6 +404,58 @@ def register_analysis_routes(
         states[key] = {"task_id": key[1], "status": "pending"}
         running[key] = asyncio.create_task(execute(prepared, owner))
         return {**states[key], "crop": prepared.crop}
+
+    @app.post(f"{PREFIX}/figure")
+    async def figure(payload: AnalysisRequest, request: Request) -> StreamingResponse:
+        if payload.kind is not ActionKind.FIGURE or SSE_MEDIA_TYPE not in request.headers.get(
+            "accept", ""
+        ):
+            raise HTTPException(
+                422,
+                {
+                    "code": AnalysisErrorCode.FIGURE_STREAM_REQUIRED.value,
+                    "diagnostic": "",
+                },
+            )
+        owner = request_user_id(request)
+        try:
+            connection = models.inference_connection(payload.model_key, user_id=owner)
+            if not connection.get("image_input"):
+                raise AnalysisError(AnalysisErrorCode.IMAGE_INPUT_UNSUPPORTED)
+            prepared = await asyncio.to_thread(figure_actions.prepare, payload)
+        except (AnalysisError, ValueError, OSError, RuntimeError) as error:
+            raise HTTPException(
+                422, failure_detail(error, AnalysisErrorCode.PREPARATION_FAILED)
+            ) from error
+
+        async def stream():
+            yield sse_encode(
+                {
+                    "type": "prepared",
+                    "source_id": payload.source_id,
+                    "source_revision": prepared.revision,
+                    "title": prepared.title,
+                    "page": payload.page,
+                    "rect": payload.rect,
+                    "crop": prepared.crop,
+                }
+            )
+            async for event in action_stream(
+                figure_actions, FigureCommand(owner_id=owner, prepared=prepared)
+            ):
+                yield event
+
+        return StreamingResponse(stream(), media_type=SSE_MEDIA_TYPE, headers=SSE_HEADERS)
+
+    @app.post(f"{PREFIX}/figure/{{invocation_id}}/cancel")
+    async def cancel_figure(invocation_id: str, request: Request) -> dict:
+        accepted = await figure_actions.cancel(
+            invocation_id=invocation_id,
+            owner_id=request_user_id(request),
+        )
+        if not accepted:
+            raise HTTPException(404, {"code": AnalysisErrorCode.TASK_MISSING.value})
+        return {"accepted": True}
 
     @app.get(f"{PREFIX}/tasks/{{task_id}}")
     async def get_task(task_id: str, request: Request) -> dict:

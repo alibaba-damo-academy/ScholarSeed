@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Lossless field projections; this module never imports a model client."""
 import argparse
 import json

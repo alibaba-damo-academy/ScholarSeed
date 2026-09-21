@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compatibility scan used by the old writing review/apply interface.
 
 Not an additional review or gate of current manuscript generation."""

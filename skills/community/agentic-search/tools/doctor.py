@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Report local agentic-search/Codex network readiness; optionally test APIs."""
 
 import argparse

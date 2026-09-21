@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 build_bib.py — freeze the corpus bibliography and its cite keys, once, early.
 
@@ -40,7 +40,7 @@ Outputs
 
 Usage
 -----
-    python3 scripts/processing/build_bib.py <workspace>
+    scholarseed-skill-python scripts/processing/build_bib.py <workspace>
 
 Exit status: 0 on SUCCESS or PARTIAL_SUCCESS, 1 on FAILED.
 """

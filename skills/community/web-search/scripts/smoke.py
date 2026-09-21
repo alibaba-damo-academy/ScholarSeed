@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run a real credential-safe smoke test against the official search API."""
 
 from __future__ import annotations

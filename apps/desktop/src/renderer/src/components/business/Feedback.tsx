@@ -15,9 +15,10 @@ import { Diagnostics } from './Diagnostics'
 // 日志包只能在 serve 侧打；身份也只认 serve 侧验签后的 user_id）。
 //
 // 关于「附带对话记录」这个勾选：它会把 LLM trace（完整提问与模型输出，也就是用户的研究
-// 内容）打进日志包上传。因此它默认关闭，且文案必须把范围写全 —— 设置页「数据共享」区
-// 承诺的是不做**被动**上传用于产品改进，这里是用户为排障主动、单次、知情地交出，两者
-// 不冲突；但一旦默认勾上或文案含糊，就变成违背承诺了。
+// 内容）打进日志包上传。它默认勾选 —— 排障时拿不到 trace 的反馈基本无法定位，而默认关闭
+// 的实际效果就是绝大多数反馈都没有 trace。因此口径是「默认附带、可取消」，文案必须把范围
+// 和取消方式写全：设置页「数据共享」区承诺的是不做**被动**上传用于产品改进，这里是用户为
+// 排障主动、单次地交出当前这一个会话，两者不冲突；但文案一旦含糊，默认勾选就变成默认偷传。
 
 const DESCRIPTION_MAX = 5000
 // 下限就是「非空」—— 与 serve 侧 FeedbackService 和 Damoclaw 的 `description.strip()` 完全对齐。
@@ -80,7 +81,7 @@ export function Feedback({
   const { t } = useTranslation('components')
   const [description, setDescription] = React.useState('')
   const [includeLogs, setIncludeLogs] = React.useState(true)
-  const [includeTrace, setIncludeTrace] = React.useState(false)
+  const [includeTrace, setIncludeTrace] = React.useState(true)
   const [images, setImages] = React.useState<File[]>([])
   // 自动截图作为独立、显著、可删的预附件; 不混进手动 images chip, 提交时再合并到首位。
   const [autoShot, setAutoShot] = React.useState<File | null>(

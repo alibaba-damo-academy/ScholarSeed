@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Audit corpus BibTeX completeness for every supported citation style.
 
 PaperHub values are treated as authoritative.  This script checks only whether

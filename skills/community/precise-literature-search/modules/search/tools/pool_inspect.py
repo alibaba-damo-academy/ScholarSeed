@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Return bounded, relevance/diversity-aware views of the persistent pool."""
 
 from __future__ import annotations

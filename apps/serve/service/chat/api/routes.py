@@ -214,6 +214,7 @@ def create_chat_app(
         project_resolver=project_policy.project_for,
     )
     skill_credentials = skill_credentials_from_env()
+    skill_catalog.bind_authentication(skill_credentials.authenticated)
     session_service = SessionService(
         workspace,
         sessions,

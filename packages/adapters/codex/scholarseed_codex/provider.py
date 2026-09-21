@@ -17,10 +17,10 @@ from time import time
 from scholarseed_codex.capacity import CapacityPolicy
 from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.environment import (
-    CODEX_HOME_ENV,
     configured_codex_executable,
     prepare_codex_runtime_home,
 )
+from scholarseed_codex.isolation import managed_codex_launch
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
     CODEX_DISPLAY_NAME,
@@ -172,6 +172,7 @@ class CodexRuntimeProvider:
             base_instructions=request.base_instructions,
             developer_instructions=request.developer_instructions,
             skill_roots=request.skill_roots,
+            skill_configurations=request.skill_configurations,
             artifact_directives=request.artifact_directives,
             required_capabilities=resumed_capabilities(binding),
             timing=request.timing,
@@ -336,6 +337,11 @@ class CodexRuntimeProvider:
     ) -> CodexRuntimeControl:
         executable = configured_codex_executable()
         runtime_home = prepare_codex_runtime_home(native_authentication=authentication_required)
+        process_environment, launch_arguments = managed_codex_launch(
+            runtime_home,
+            environment,
+            (),
+        )
         control = CodexRuntimeControl(
             CodexControlRequest(
                 request_id=f"runtime-inspect-{uuid.uuid4().hex}",
@@ -348,8 +354,9 @@ class CodexRuntimeProvider:
                     service_name="scholarseed",
                 ),
                 skill_roots=roots,
-                process_environment={**environment, CODEX_HOME_ENV: str(runtime_home)},
+                process_environment=process_environment,
                 remove_environment=remove_environment,
+                launch_arguments=launch_arguments,
                 authentication_required=authentication_required,
                 timing=timing,
             ),

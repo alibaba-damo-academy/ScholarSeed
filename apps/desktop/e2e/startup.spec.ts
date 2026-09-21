@@ -55,7 +55,6 @@ test('model menu excludes retired native Codex and offers configured connections
   try {
     const page = await desktop.launch()
     await page.getByTestId('model-selector-toggle').click()
-    await page.getByTestId('model-list-toggle').click()
 
     const options = page.locator('[data-testid^="model-option-"]')
     await expect(options).toHaveCount(1)
@@ -324,7 +323,6 @@ test('model selection closes immediately while a slow switch is pending', async 
     await page.getByTestId('activity-literature').click()
     if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
     await page.getByTestId('model-selector-toggle').click()
-    await page.getByTestId('model-list-toggle').click()
     await page.getByTestId('model-option-slow-switch-model').click()
     await expect(page.getByTestId('model-option-slow-switch-model')).toHaveCount(0)
     await expect(page.getByTestId('model-selector-toggle')).toContainText('切换中')

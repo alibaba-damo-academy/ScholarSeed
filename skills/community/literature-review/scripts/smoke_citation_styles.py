@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Compile one natbib document with every vendored citation style."""
 from __future__ import annotations
 

@@ -364,7 +364,10 @@ function windowsVerifyScript() {
     .find(declaration => declaration.name.getText(source) === 'script')
   assert.ok(declaration?.initializer, 'script literal not found')
   return runInNewContext(declaration.initializer.getText(source), {
-    WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_UPDATE_INSTALLER'
+    WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_UPDATE_INSTALLER',
+    WINDOWS_VERIFY_REPORT_ENV: 'SCHOLARSEED_UPDATE_VERIFY_REPORT',
+    // 报告契约值在 authenticode.ts 只存一份；这里的字面量必须与它一致，下面单独钉死。
+    AUTHENTICODE_REPORT_KEYS: { languageMode: 'LanguageMode', status: 'Status', subject: 'Subject' }
   })
 }
 test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdlet, no shell', () => {
@@ -380,9 +383,38 @@ test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdl
   assert.doesNotMatch(script, /\[PSCustomObject\]/)
   assert.doesNotMatch(script, /WinVerifyTrust/)
   assert.doesNotMatch(script, /\[Convert\]::|\[uint32\]/)
-  // 输出纯 ASCII 的 STATUS=/SUBJECT= 两行，Node 侧按行解析（ASCII 在任何 Windows 代码页下字节一致）。
-  assert.match(script, /Write-Output \('STATUS='/)
-  assert.match(script, /Write-Output \('SUBJECT='/)
+  // 判定输入一律走 `-Encoding UTF8` 的报告文件，脚本什么都不往 stdout 写（bug 87108457）：证书 DN 带
+  // 中文属地属性（L=杭州市 / S=浙江省 / OID.1.3.6.1.4.1.311.60.2.1.1=西湖区），而 powershell.exe 的
+  // stdout 按本机控制台代码页编码（中文 Windows 是 936/GBK），Node 侧解码一旦与实际代码页不一致，这几个
+  // 属性就变成 U+FFFD，与构建期冻结的期望串必然不符 → 一次**解码降级**被误判成「发布者不符」的**安全
+  // 拦截**、更新永久阻断。真机（PS 5.1.17763 / chcp 936）已实测否掉两条更省事的路：ConvertTo-Json 不会
+  // 把非 ASCII 转义成 \uXXXX；chcp 探测在现场客户端里已存在却仍回退到 UTF-8。文件编码由 cmdlet 参数
+  // 显式决定，与代码页和序列化器实现都无关。
+  assert.match(script, /ConvertTo-Json -Compress/)
+  assert.match(script, /Set-Content -LiteralPath \$env:SCHOLARSEED_UPDATE_VERIFY_REPORT/)
+  assert.match(script, /-Encoding UTF8/)
+  assert.doesNotMatch(script, /Write-Output/)
+  assert.match(UPDATER_SOURCE, /WINDOWS_VERIFY_REPORT_ENV = 'SCHOLARSEED_UPDATE_VERIFY_REPORT'/)
+  // 枚举字段一律先 [string] 再进 JSON：否则序列化出来是底层整数，Node 侧拿到 0 而不是 'Valid'。
+  assert.match(script, /\[string\]\$signature\.Status/)
+  assert.match(script, /\[string\]\$ExecutionContext\.SessionState\.LanguageMode/)
+  // 报告从文件读、读完即删；文件名带一次性 UUID，上一轮残留不可能被冒充成本轮结果。报告不合规 ==
+  // 校验没能执行，归 verify-env-unavailable，不得落成发布者不符的安全拦截。
+  assert.match(UPDATER_SOURCE, /parseAuthenticodeReport\(readVerifyReport\(reportPath\)\)/)
+  assert.match(UPDATER_SOURCE, /if \(result\.status !== 0 \|\| report === null\) \{/)
+  assert.match(UPDATER_SOURCE, /randomUUID\(\)/)
+  assert.match(UPDATER_SOURCE, /VERIFY_REPORT_SUFFIX = '\.verify\.json'/)
+  assert.match(UPDATER_SOURCE, /rmSync\(reportPath, \{ force: true \}\)/)
+  assert.doesNotMatch(UPDATER_SOURCE, /parseAuthenticodeReport\(result\.stdout\)/)
+  assert.doesNotMatch(UPDATER_SOURCE, /\^SUBJECT=/)
+  // 契约值单一来源：脚本插值的键名与解析器读的键名都出自 authenticode.ts，且必须与上面沙箱里的
+  // 字面量一致（否则脚本与解析器会各自漂移，而两侧的形状断言都还是绿的）。
+  assert.match(AUTHENTICODE_SOURCE, /languageMode: 'LanguageMode'/)
+  assert.match(AUTHENTICODE_SOURCE, /status: 'Status'/)
+  assert.match(AUTHENTICODE_SOURCE, /subject: 'Subject'/)
+  assert.match(AUTHENTICODE_SOURCE, /export function parseAuthenticodeReport/)
+  // U+FFFD 是编码降级的指纹，真实证书 DN 里不可能出现；出现即拒绝判定。
+  assert.match(AUTHENTICODE_SOURCE, /includes\(REPLACEMENT_CHARACTER\)\) return null/)
   // fail-closed：仅 Valid 放行，且发布者必须与打包策略一致。三档判定与 DN 同发布者判定归
   // authenticode.ts（纯函数、有单测），updater 只消费判定结果。
   assert.match(AUTHENTICODE_SOURCE, /AUTHENTICODE_VALID = 'Valid'/)
@@ -406,6 +438,11 @@ test('Windows subprocess output is decoded by console code page, not blindly as 
   assert.match(UPDATER_SOURCE, /WINDOWS_CODE_PAGE_ENCODINGS/)
   assert.match(UPDATER_SOURCE, /'936': 'gbk'/)
   assert.doesNotMatch(UPDATER_SOURCE, /chunk\.toString\('utf8'\)/)
+  // 探测只服务日志/stderr 可读性：判定输入走 ASCII-only JSON 报告，与探测结果无关。探测有两条静默
+  // 回退（chcp 没跑成、TextDecoder 不认标签），87108457 现场因此无法定论是哪一条 —— 实际选用的编码
+  // 必须落进 update.log。
+  assert.match(UPDATER_SOURCE, /encoding: string/)
+  assert.match(UPDATER_SOURCE, /stdoutEncoding=\$\{result\.encoding\}/)
 })
 test('Windows install failures are classified and never surface raw stderr to the user', () => {
   // bug 87042987：区分「校验环境不可用」与「签名不可信」，原始诊断只落 update.log，界面给结构化本地化

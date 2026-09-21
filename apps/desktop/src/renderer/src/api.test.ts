@@ -14,8 +14,33 @@ import {
   createSubscriptionProfile, parseOpenSessionResponse, classifySessionResumeFailure, interruptSession, respondHil,
   DiagnosticOperationError, getDiagnosticPolicy, getSkillDocument, getSkills,
   getGlobalPermissionMode, setGlobalPermissionMode, GLOBAL_PERMISSION_MODES,
-  SkillCatalogError, SkillDocumentError
+  SkillCatalogError, SkillDocumentError, setSkillActive
 } from './api.ts'
+import { SKILL_CATALOG_CHANGED_EVENT } from '../../skills.ts'
+
+test('only successful skill preference mutations invalidate open catalogs', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const requests: unknown[] = []
+  const events: string[] = []
+  let status = 200
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    scholarseed: { deviceSkills: async (request: unknown) => { requests.push(request); return { status, body: '{}' } } },
+    dispatchEvent: (event: Event) => { events.push(event.type); return true }
+  } })
+  try {
+    assert.equal(await setSkillActive('literature-review', false), true)
+    status = 503
+    assert.equal(await setSkillActive('literature-review', true), false)
+    assert.deepEqual(requests, [
+      { operation: 'toggle', name: 'literature-review', enabled: false },
+      { operation: 'toggle', name: 'literature-review', enabled: true }
+    ])
+    assert.deepEqual(events, [SKILL_CATALOG_CHANGED_EVENT])
+  } finally {
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 
 test('all permission choices can be restored and persisted as the new-session default', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')

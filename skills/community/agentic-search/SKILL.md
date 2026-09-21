@@ -104,7 +104,7 @@ exhausted source-level transport error, switch to public-web retrieval:
    `metadata.json` or `fallback_event.json` directly:
 
 ```bash
-python3 "SKILL_DIR/tools/web_fallback.py" \
+scholarseed-skill-python "SKILL_DIR/tools/web_fallback.py" \
   --query "FULL_USER_QUERY" --mode "quick|balanced|quality" \
   --paperhub-error-code "ERROR_CODE_FROM_RUNNER" \
   --output-dir "RESULT_DIR" <<'JSON'
@@ -162,7 +162,7 @@ Make exactly one shell call. Repeat `--keyword` and `--title` flags for the
 planned queries:
 
 ```bash
-python3 "SKILL_DIR/tools/quick_search.py" \
+scholarseed-skill-python "SKILL_DIR/tools/quick_search.py" \
   --query "FULL_USER_QUERY" \
   --concepts "entity,mechanism,method,dataset" \
   --keyword "central relation query" \

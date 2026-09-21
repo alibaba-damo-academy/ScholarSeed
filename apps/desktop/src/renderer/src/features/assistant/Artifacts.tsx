@@ -462,7 +462,8 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
     }
     setLiteratureCollections(view.collections.map((collection) => collection.name).filter((name) => name !== UNFILED_COLLECTION))
   }
-  const primaryMeta = [artifactType(primary, a('artifactEntry.file')), a('artifactEntry.source')].join(' · ')
+  /* 副标题只展示文件类型, 不再拼接「· Agent 产物」来源后缀。 */
+  const primaryMeta = artifactType(primary, a('artifactEntry.file'))
   const links = state.aiPanel.sessionId === thread.sessionId
     ? state.aiPanel.artifactLinks.filter((link): link is ArtifactResourceLink => link.destination === 'resources' && link.artifact_id === primary.artifact_id)
     : []
@@ -490,7 +491,8 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
     <>
       <ContextMenu open={contextMenuOpen} onOpenChange={setContextMenuOpen}>
         <ContextMenuTrigger asChild>
-          <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)]" padding="sm" variant="tinted" data-artifact-role={primary.role}>
+          {/* 与执行计划卡片一致: bordered 背景/边框 + 12px 圆角 + 无阴影。 */}
+          <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] !shadow-none [--vds-card-radius:var(--vds-radius-6)]" padding="sm" data-artifact-role={primary.role}>
             <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]" data-testid={`turn-artifact-${primary.artifact_id}`}>
               <span className="grid size-8 shrink-0 place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]"><Icon name="doc" size={20} sw={1.8} /></span>
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">

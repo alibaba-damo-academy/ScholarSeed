@@ -50,7 +50,7 @@ printf '%s [STAGE START] %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$STAGE" >> "$GEN_
 # _internal/{cite_keys,leaf_index,query_meta}.json. Everything downstream —
 # including the subagents in both gaps — reads those.
 log $STAGE "===== phase00_bootstrap ====="
-python3 "$SLR_HOME/scripts/generation/_fast/phase00_bootstrap.py"
+scholarseed-skill-python "$SLR_HOME/scripts/generation/_fast/phase00_bootstrap.py"
 rc=$?
 if [ $rc -ne 0 ]; then
   log $STAGE "status=FAILED reason=bootstrap_failed rc=$rc" >&2
@@ -62,7 +62,7 @@ fi
 # One item per leaf section, each carrying the papers, claims and figure/table
 # placeholders that section may use. This is the fan-out list for gap 1.
 log $STAGE "===== collect_drafting_worklist ====="
-python3 "$SLR_HOME/scripts/generation/drafting/_fast/collect_drafting_worklist.py"
+scholarseed-skill-python "$SLR_HOME/scripts/generation/drafting/_fast/collect_drafting_worklist.py"
 rc=$?
 if [ $rc -ne 0 ]; then
   log $STAGE "status=FAILED reason=collect_drafting_worklist_failed rc=$rc" >&2
@@ -98,7 +98,7 @@ fi
 # this worklist. The writer's row material comes from its drafting item's
 # `planned_tables[].papers`; this file is what the CHECKER reads.
 log $STAGE "===== collect_table_specs ====="
-python3 "$TD/collect_table_specs.py"
+scholarseed-skill-python "$TD/collect_table_specs.py"
 EC_TABLES=$?
 
 # ---- 4. Figure worklist ----
@@ -106,7 +106,7 @@ EC_TABLES=$?
 # writers instead of waiting behind all of them. Both figure and prose use the
 # same outline plan as their consistency contract; no draft refresh is needed.
 log $STAGE "===== collect_figures ====="
-python3 "$FD/collect_figures.py"
+scholarseed-skill-python "$FD/collect_figures.py"
 EC_FIGURES=$?
 
 N_TABLES=$(json_len "$TABLES_WL" items)

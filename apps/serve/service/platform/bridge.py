@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +19,9 @@ TASK_ACTIVATE_ROUTE = BRIDGE_ROUTE_PREFIX + "task/activate"
 HISTORY_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "history/"
 ARTIFACT_PUBLISH_ROUTE = BRIDGE_ROUTE_PREFIX + "artifact/publish"
 DISPLAY_CARD_ROUTE = BRIDGE_ROUTE_PREFIX + "display-card"
+SKILL_ADMISSION_ROUTE = BRIDGE_ROUTE_PREFIX + "skill/admit"
+SKILL_CAPABILITY = "skill"
+SKILL_ADMISSION_OPERATION = "admit"
 BRIDGE_TIMEOUT_SECONDS = 30
 BRIDGE_TOKEN_BYTES = 32
 BRIDGE_MAX_REQUEST_BYTES = 16_384
@@ -137,6 +141,19 @@ class BridgeCaller(Protocol):
 
     id: str
     bridge_token: str
+
+
+class SkillCaller(BridgeCaller, Protocol):
+    user_id: str
+
+    @property
+    def runtime_workdir(self) -> Path: ...
+
+
+class SkillAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
 
 
 class TaskActivate(BaseModel):
@@ -313,6 +330,10 @@ BRIDGE_REQUESTS: dict[tuple[str, str], tuple[type[BaseModel], str]] = {
 BRIDGE_REQUESTS[("artifact", "publish")] = (ArtifactPublish, ARTIFACT_PUBLISH_ROUTE)
 BRIDGE_REQUESTS[("display-card", "publish")] = (DisplayCard, DISPLAY_CARD_ROUTE)
 BRIDGE_REQUESTS[("task", "activate")] = (TaskActivate, TASK_ACTIVATE_ROUTE)
+BRIDGE_REQUESTS[(SKILL_CAPABILITY, SKILL_ADMISSION_OPERATION)] = (
+    SkillAdmission,
+    SKILL_ADMISSION_ROUTE,
+)
 BRIDGE_REQUESTS.update(
     {
         ("resource", operation): (request, RESOURCE_ROUTE_PREFIX + operation)

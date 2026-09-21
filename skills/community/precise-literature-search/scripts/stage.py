@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Standalone workflow commands: bounded JSON handoffs, validation, and resumable gates."""
 from __future__ import annotations
 

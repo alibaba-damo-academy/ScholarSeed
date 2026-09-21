@@ -19,7 +19,7 @@ def bind(workspace, skill):
 set -euo pipefail
 SLR_BOUND_WORKSPACE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec SKILL_PYTHON SKILL_DRIVER "$SLR_BOUND_WORKSPACE" "$@"
-'''.replace('SKILL_PYTHON',shlex.quote(str(skill/'.venv/bin/python'))).replace('SKILL_DRIVER',shlex.quote(str(skill/'scripts/workspace_entry.py')))
+'''.replace('SKILL_PYTHON', 'scholarseed-skill-python').replace('SKILL_DRIVER',shlex.quote(str(skill/'scripts/workspace_entry.py')))
     with path.open('x') as f: f.write(body)
     path.chmod(0o755)
     return path

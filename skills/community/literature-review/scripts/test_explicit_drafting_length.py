@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """No inferred quotas; explicit document constraints survive legacy drafting."""
 import json
 from pathlib import Path

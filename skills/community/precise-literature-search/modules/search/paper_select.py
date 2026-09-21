@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Deterministically select a relevant and diverse bounded paper set."""
 
 from __future__ import annotations

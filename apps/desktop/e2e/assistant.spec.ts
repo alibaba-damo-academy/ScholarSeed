@@ -636,7 +636,8 @@ for (const scope of ['resource', 'literature'] as const) {
     const prompts = {
       explain: '用中文解释，术语 lattice 使用“晶格”。',
       translate: '译为中文时，将 lattice 译为“晶格”，保留专业语义。',
-      polish: "Use formal academic English; replace 'very good' with 'effective'."
+      polish: "Use formal academic English; replace 'very good' with 'effective'.",
+      figure: '先说明坐标轴和图例，再解释关键趋势。'
     }
     const sourceText = 'A lattice method is very good for analyzing complex systems.'
     const source = 'resources/prompts.md'

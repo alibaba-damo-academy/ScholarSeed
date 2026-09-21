@@ -15,11 +15,12 @@
   --vds-control-padding-md: 0 var(--vds-space-4);
   --vds-control-padding-lg: 0 var(--vds-space-5);
   --vds-control-radius: var(--vds-radius-4);
-  --vds-settings-prompt-radius: 13px;
-  --vds-settings-model-panel-radius: 13px;
-  --vds-settings-api-key-card-radius: 13px;
-  --vds-settings-files-card-radius: 13px;
-  --vds-settings-shortcut-card-radius: 13px;
+  --vds-settings-card-radius: var(--vds-radius-6);
+  --vds-settings-prompt-radius: var(--vds-settings-card-radius);
+  --vds-settings-model-panel-radius: var(--vds-settings-card-radius);
+  --vds-settings-api-key-card-radius: var(--vds-settings-card-radius);
+  --vds-settings-files-card-radius: var(--vds-settings-card-radius);
+  --vds-settings-shortcut-card-radius: var(--vds-settings-card-radius);
   --vds-toolbar-icon-gap: 2px;
   --vds-toolbar-divider-margin: 7px;
   --vds-surface-raised: var(--vds-bg-white-default);
@@ -230,6 +231,7 @@
   --vds-drawer-radius: var(--vds-radius-5);
   --vds-drawer-side-width: 360px;
   --vds-model-menu-max-width: min(320px, calc(100vw - var(--vds-space-6)));
+  --vds-model-menu-width: min(200px, calc(100vw - var(--vds-space-6)));
   --vds-model-controls-width: min(240px, calc(100vw - var(--vds-space-6)));
   --vds-tooltip-z-index: var(--vds-z-tooltip);
   --vds-tooltip-max-width: 240px;

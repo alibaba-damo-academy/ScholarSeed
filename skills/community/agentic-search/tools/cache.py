@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Content-addressed cache for tool calls, for reproducible benchmark iteration.
 
 Problem: PaperHub (ES) and web search can return different results for the same

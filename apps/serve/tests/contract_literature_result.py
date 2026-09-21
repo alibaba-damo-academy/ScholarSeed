@@ -126,21 +126,10 @@ class LiteratureResultContract(unittest.TestCase):
     def test_precise_skill_requires_selected_list_before_one_click_authorization(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
-        prompt_stage = prompt.index("stage.py authorize-download")
-        publication = prompt.index('"checkpoint":"selection"', prompt_stage)
-        authorization = prompt.index("product-owned `精准检索授权` decision", publication)
-        continuation = prompt.index("authorization.disposition=authorized", authorization)
-        self.assertLess(prompt_stage, publication)
-        self.assertLess(publication, authorization)
-        self.assertLess(authorization, continuation)
-        self.assertIn("selection.json", prompt)
-        self.assertIn("metadata.json", prompt)
-        self.assertIn(
-            "Do not call `request_user_input`, construct or relay an authorization", prompt
-        )
-        self.assertIn("the skill must not repeat its own authorization", prompt)
-        self.assertIn("already authorized in the Session", prompt)
-        self.assertIn("ScholarSeed also observes the candidate files", prompt)
+        self.assertIn("use the installed precise-literature-search skill", prompt.lower())
+        self.assertIn('"checkpoint":"search"', prompt)
+        self.assertNotIn('"checkpoint":"selection"', prompt)
+        self.assertNotIn("stage.py authorize-download", prompt)
         self.assertIn("selection.json", skill)
         self.assertIn("metadata.json", skill)
         self.assertIn("Do not start either download route", skill)
@@ -152,17 +141,35 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertLess(skill_stage, skill_publication)
         self.assertLess(skill_publication, skill_download)
 
+    def test_precise_skill_exclusively_owns_confirmation(self) -> None:
+        skill = PRECISE_SKILL.read_text(encoding="utf-8")
+        prompt = HOST_PROMPT.read_text(encoding="utf-8")
+
+        self.assertIn("Before starting — mandatory confirmation", skill)
+        self.assertIn("Then STOP and wait for an explicit affirmative response", skill)
+        self.assertIn("Follow the installed skill's confirmation", prompt)
+        self.assertNotIn("skip its additional clarification and confirmation", prompt)
+
+    def test_research_idea_uses_checkpoint_owned_one_click_authorization(self) -> None:
+        prompt = HOST_PROMPT.read_text(encoding="utf-8")
+
+        self.assertIn('"checkpoint":"candidates"', prompt)
+        self.assertIn("the product owns the `想法原文授权` interaction", prompt)
+        self.assertIn("Do not call `literature authorize`, `request_user_input`", prompt)
+        self.assertNotIn("authorization_type=research_idea_fulltext", prompt)
+        self.assertNotIn("Use the returned question object unchanged", prompt)
+
     def test_precise_skill_requires_final_checkpoint_before_claiming_delivery(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
 
-        for content in (skill, prompt):
-            checkpoint = content.index('"checkpoint":"final"')
-            claim_gate = content.index("Claim delivery only", checkpoint)
-            self.assertLess(checkpoint, claim_gate)
-            self.assertIn("final_report.md", content[checkpoint:])
-            self.assertIn("paper_summary.md", content[checkpoint:])
-            self.assertIn("report.md", content[checkpoint:])
+        checkpoint = skill.index('"checkpoint":"final"')
+        claim_gate = skill.index("Claim delivery only", checkpoint)
+        self.assertLess(checkpoint, claim_gate)
+        self.assertIn("final_report.md", skill[checkpoint:])
+        self.assertIn("paper_summary.md", skill[checkpoint:])
+        self.assertIn("report.md", skill[checkpoint:])
+        self.assertNotIn('"checkpoint":"final"', prompt)
 
     @staticmethod
     def write(path: Path, value: dict) -> None:

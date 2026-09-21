@@ -14,6 +14,7 @@ from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, Conten
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.assets import MARKDOWN_SUFFIX
 from service.content.service.port import ContentService, ProjectRegistry
+from service.content.service.utils import filesystem_error
 from service.platform.content import AssetKind
 from service.resources.api.routes import register_resource_routes
 
@@ -89,6 +90,25 @@ class FolderNames(unittest.TestCase):
                         self.create("new")
                     self.assertEqual(caught.exception.code, code)
 
+    def test_windows_path_not_found_is_name_too_long_only_for_long_targets(self):
+        windows_error = OSError(errno.ENOENT, "path not found")
+        windows_error.winerror = 3
+        long_name = "a" * 260
+        with patch("pathlib.Path.exists", side_effect=windows_error):
+            with self.assertRaises(ContentError) as caught:
+                self.create(long_name)
+        self.assertEqual(caught.exception.code, "name_too_long")
+        with patch("pathlib.Path.exists", return_value=False), patch(
+            "pathlib.Path.mkdir", side_effect=windows_error
+        ):
+            with self.assertRaises(ContentError) as caught:
+                self.create(long_name)
+        self.assertEqual(caught.exception.code, "name_too_long")
+        self.assertEqual(
+            filesystem_error(windows_error, "write_failed", Path("C:/short/target")).code,
+            "write_failed",
+        )
+
     def test_markdown_names_and_content(self):
         for create in (
             lambda name: self.content.create(self.project.id, self.parent, name, AssetKind.FILE),
@@ -148,6 +168,17 @@ class FolderNames(unittest.TestCase):
                     self.content.create_text(self.project.id, self.parent, "note", "正文")
                 self.assertEqual(caught.exception.code, "name_too_long")
             self.assertEqual(list((Path(self.project.root) / self.parent).iterdir()), [])
+
+    def test_markdown_path_not_found_is_name_too_long(self):
+        windows_error = OSError(errno.ENOENT, "path not found")
+        windows_error.winerror = 3
+        with patch("pathlib.Path.exists", return_value=False), patch(
+            "service.content.service.port.publish_descriptor", side_effect=windows_error
+        ):
+            with self.assertRaises(ContentError) as caught:
+                self.content.create_text(self.project.id, self.parent, "a" * 260, "正文")
+        self.assertEqual(caught.exception.code, "name_too_long")
+        self.assertEqual(list((Path(self.project.root) / self.parent).iterdir()), [])
 
     def test_rename_to_long_name_is_actionable(self):
         long_name = "新建文件夹" * 100

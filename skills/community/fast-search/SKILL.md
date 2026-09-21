@@ -131,7 +131,7 @@ Make exactly one shell call. Repeat `--keyword` and `--title` flags for the
 planned queries:
 
 ```bash
-python3 "SKILL_DIR/tools/quick_search.py" \
+scholarseed-skill-python "SKILL_DIR/tools/quick_search.py" \
   --query "FULL_USER_QUERY" \
   --concepts "entity,mechanism,method,dataset" \
   --keyword "central relation query" \

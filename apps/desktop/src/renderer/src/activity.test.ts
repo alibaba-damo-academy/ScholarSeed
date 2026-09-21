@@ -133,6 +133,24 @@ test('groups internal thinking with tools while preserving user-facing commentar
   assert.equal(rows[5].kind === 'item' ? rows[5].item.kind : '', 'agent')
 })
 
+test('places a terminal failure below late same-turn reasoning', () => {
+  const rows = activityRows([
+    { kind: 'user', text: 'answer exactly', turnId: 'failed-turn' },
+    { kind: 'error', title: 'failed', message: 'blocked', turnId: 'failed-turn' },
+    { kind: 'thinking', text: 'provider retry', turnId: 'failed-turn', itemId: 'reasoning-1' },
+    { kind: 'user', text: 'next question', turnId: 'next-turn' }
+  ], { 'failed-turn': 'failed' })
+
+  assert.deepEqual(rows.map((row) => (
+    row.kind === 'item' ? [row.item.turnId, row.item.kind] : [row.turnId, row.kind]
+  )), [
+    ['failed-turn', 'user'],
+    ['failed-turn', 'activity'],
+    ['failed-turn', 'error'],
+    ['next-turn', 'user']
+  ])
+})
+
 test('keeps final artifacts visible as one turn-owned group outside collapsed activity', () => {
   const items: ConvItem[] = [
     { kind: 'user', text: 'analyze', turnId: 'turn-artifact' },

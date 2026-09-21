@@ -27,6 +27,7 @@ from service.capabilities.service.skills import (
     replace_skill_state,
     save_skill_state,
 )
+from service.identity.utils import request_user_id
 from service.paths import SERVICE_SKILLS_DIR
 
 SKILL_ERROR_DUPLICATE = "duplicate_name"
@@ -140,7 +141,9 @@ def register_capability_routes(
         except Exception as exc:
             raise HTTPException(503, "codex_skill_inventory_unavailable") from exc
         return {
-            "skills": catalog.payloads(discovered, state, surface=surface),
+            "skills": catalog.payloads(
+                discovered, state, surface=surface, user_id=request_user_id(request)
+            ),
             "revision": discovered.revision,
             "cwd": str(discovered.cwd),
             "errors": [
@@ -163,12 +166,12 @@ def register_capability_routes(
     @app.delete("/api/capabilities/skills/{name}/activate")
     async def deactivate_skill(name: str, request: Request) -> dict[str, Any]:
         skill, state = await find_skill(request, name)
-        if not catalog.toggleable(skill.path):
+        if not catalog.toggleable(skill):
             raise HTTPException(
                 409,
                 {
                     "code": SKILL_ERROR_IMMUTABLE,
-                    "message": "系统预置技能默认开启，不可关闭",
+                    "message": "产品必需技能始终开启，不可关闭",
                     "name": name,
                 },
             )

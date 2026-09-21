@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run one PaperHub search round from a JSON plan with bounded concurrency.
 
 The complete responses are stored under SESSION/rounds and merged into the

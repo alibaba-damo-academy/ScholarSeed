@@ -48,7 +48,7 @@ rewrite the plan, expand its queries, or repeat its entity analysis. Validate it
 once before retrieval:
 
 ```bash
-python3 "$SKILL_DIR/scripts/validate_json.py" --contract search-plan-current --input "$WORK/plan.json"
+scholarseed-skill-python "$SKILL_DIR/scripts/validate_json.py" --contract search-plan-current --input "$WORK/plan.json"
 ```
 
 If a prepared file is missing or validation fails, return a compact error
@@ -63,7 +63,7 @@ Write a `phase: "search"` batch containing only the planned keyword query with
 limit 1, then invoke:
 
 ```bash
-python3 "$SKILL_DIR/modules/search/tools/search_round.py" \
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/search_round.py" \
   --batch "$WORK/results/iteration-001-search-batch.json" \
   --work-dir "$WORK"
 ```
@@ -129,7 +129,7 @@ chosen evidenced numeric ID:
 ```
 
 ```bash
-python3 "$SKILL_DIR/modules/search/tools/search_round.py" \
+scholarseed-skill-python "$SKILL_DIR/modules/search/tools/search_round.py" \
   --batch "$WORK/results/iteration-001-citations-batch.json" --work-dir "$WORK"
 ```
 

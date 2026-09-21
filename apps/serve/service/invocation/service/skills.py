@@ -98,6 +98,7 @@ class InvocationSkillResolver:
         profile: str | None = None,
         cwd: Path,
         process_environment: Mapping[str, str],
+        user_id: str = "",
     ) -> ResolvedSkill:
         try:
             inventory = await self._runtime.skill_inventory(
@@ -108,7 +109,7 @@ class InvocationSkillResolver:
             )
         except Exception as error:
             raise InvocationSkillRuntimeError() from error
-        rows = self._catalog.payloads(inventory, load_skill_state())
+        rows = self._catalog.payloads(inventory, load_skill_state(), user_id=user_id)
         row = next((item for item in rows if str(item.get("id") or "") == skill_id), None)
         if row is None:
             raise InvocationSkillError(SKILL_NOT_FOUND)

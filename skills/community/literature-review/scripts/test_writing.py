@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Behavior tests for hybrid drafting, selected publication, and review safety."""
 import asyncio
 import json

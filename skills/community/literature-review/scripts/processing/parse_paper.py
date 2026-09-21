@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Parse one downloaded PDF/LaTeX archive into caption-preserving #N text."""
 from pathlib import Path
 import argparse

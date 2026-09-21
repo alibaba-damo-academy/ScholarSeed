@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Regression tests for the public outline-check wrapper contract."""
 from __future__ import annotations
 

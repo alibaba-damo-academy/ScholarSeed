@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Canonical execution policy for the Veryfast academic-search workflow.
 
 The persisted internal mode remains ``quick`` for output-schema compatibility,

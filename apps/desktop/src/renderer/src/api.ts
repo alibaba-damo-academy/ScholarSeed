@@ -22,7 +22,7 @@ import type {
   WebSearchAction,
   WebSearchResult
 } from './model'
-import type { DeviceSkillRequest, SkillSurface } from '../../skills'
+import { SKILL_CATALOG_CHANGED_EVENT, type DeviceSkillRequest, type SkillSurface } from '../../skills.ts'
 
 const base = (): string => window.scholarseed?.getApiBase() ?? ''
 
@@ -2188,6 +2188,7 @@ export const deletePersonalApiProfile = (id: string): Promise<ModelSelectionResp
 
 export interface SkillInfo {
   name: string
+  requires_login?: boolean
   display_name?: string
   version?: string
   fingerprint?: string
@@ -2329,6 +2330,7 @@ async function skillMutationResponse(fetchResponse: () => Promise<Response>): Pr
       }
       return { ok: false, error: detail || `HTTP ${response.status}` }
     }
+    window.dispatchEvent(new Event(SKILL_CATALOG_CHANGED_EVENT))
     return { ok: true, name: payload?.installed?.name ?? payload?.name }
   } catch (error) {
     return { ok: false, error: String(error) }
@@ -2356,6 +2358,7 @@ export async function getSkills(surface?: SkillSurface): Promise<SkillInfo[]> {
 export async function setSkillActive(name: string, active: boolean): Promise<boolean> {
   try {
     const response = await deviceSkillFetch({ operation: 'toggle', name, enabled: active })
+    if (response.ok) window.dispatchEvent(new Event(SKILL_CATALOG_CHANGED_EVENT))
     return response.ok
   } catch {
     return false

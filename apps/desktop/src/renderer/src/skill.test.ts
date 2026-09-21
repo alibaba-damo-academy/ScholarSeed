@@ -7,10 +7,22 @@ import {
   skillDocumentBody,
   skillIcon,
   skillDescription,
+  skillCallable,
   SKILL_GROUPS,
   skillMutationMessage,
   SKILL_ICON_FALLBACK
 } from './skill.ts'
+
+test('callability separates local preference from current account and dependency availability', () => {
+  const skill = { enabled: true, active: true, requires_login: true }
+  assert.equal(skillCallable(skill, false), false)
+  assert.equal(skillCallable(skill, true), true)
+  assert.equal(skillCallable({ ...skill, enabled: false }, true), false)
+  assert.equal(skillCallable({ ...skill, active: false }, true), false)
+  assert.equal(skillCallable({ ...skill, dependency_status: 'missing' }, true), false)
+  assert.equal(skillCallable({ ...skill, requires_login: false }, false), true)
+  assert.equal(skill.enabled, true)
+})
 
 test('maps controlled Service skill icon tokens and falls back safely', () => {
   assert.equal(skillIcon('doc'), 'doc')

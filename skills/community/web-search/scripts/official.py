@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Call ScholarSeed's official bounded public-web search API."""
 
 from __future__ import annotations

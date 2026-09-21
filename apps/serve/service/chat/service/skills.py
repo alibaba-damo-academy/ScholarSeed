@@ -50,6 +50,7 @@ class SkillService:
         *,
         force_reload: bool = False,
         process_environment: Mapping[str, str] | None = None,
+        user_id: str = "",
     ) -> dict[str, Any]:
         inventory = await self.inventory(
             force_reload=force_reload,
@@ -63,6 +64,7 @@ class SkillService:
                 revision=inventory.revision,
             ),
             load_skill_state(),
+            user_id=user_id,
         )
         return {
             "runtime_id": self.runtime_id,

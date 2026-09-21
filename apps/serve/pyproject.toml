@@ -87,6 +87,7 @@ scholarseed = "service.cli.desktop:main"
 scholarseed-serve = "service.cli.serve:serve_main"
 scholarseed-desktop = "service.cli.desktop:main"
 scholarseed-bridge = "service.cli.bridge:main"
+scholarseed-skill-python = "service.cli.skill_python:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

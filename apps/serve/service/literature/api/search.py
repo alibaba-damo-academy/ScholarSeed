@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.status import (
+    HTTP_401_UNAUTHORIZED,
     HTTP_404_NOT_FOUND,
     HTTP_422_UNPROCESSABLE_CONTENT,
     HTTP_503_SERVICE_UNAVAILABLE,
@@ -28,6 +29,7 @@ LITERATURE_SEARCH_STATUS_ROUTE = LITERATURE_SEARCH_ROUTE_PREFIX + "/result-statu
 SSE_MEDIA_TYPE = "text/event-stream"
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 SEARCH_QUERY_MAX_CHARS = 20_000
+SEARCH_LOGIN_REQUIRED = "login_required"
 
 
 class LiteratureSearchCreate(BaseModel):
@@ -53,6 +55,8 @@ def register_literature_search_routes(app: FastAPI) -> None:
 
     @app.post(LITERATURE_SEARCH_ROUTE_PREFIX, status_code=202)
     async def create_search(command: LiteratureSearchCreate, request: Request) -> dict:
+        if not getattr(request.state, "user_id", ""):
+            raise HTTPException(HTTP_401_UNAUTHORIZED, SEARCH_LOGIN_REQUIRED)
         try:
             task = await _service(request).create(
                 command.query,

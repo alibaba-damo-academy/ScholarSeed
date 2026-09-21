@@ -295,6 +295,7 @@
     "unavailable": "Cannot read this text file.",
     "toolbar": "Text editing toolbar",
     "undo": "Undo",
+    "paste": "Paste",
     "redo": "Redo",
     "find": "Find",
     "replace": "Replace",

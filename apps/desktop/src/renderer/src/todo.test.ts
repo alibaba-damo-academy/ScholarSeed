@@ -262,6 +262,47 @@ test('collapsed plan summary truncates through the shared ellipsis tooltip compo
   assert.doesNotMatch(TODO_PANEL_SOURCE, /data-testid="todo-current"[\s\S]*title=\{summaryLabel\}/)
 })
 
+test('plan header collapses the elapsed time when narrow and restores it when wide', () => {
+  // 宽度不足(描述压到极限仍溢出)时把「· 时间」折叠为零宽, 让出空间给描述;
+  // 宽度恢复后再内联展示; ResizeObserver 驱动。
+  assert.match(TODO_PANEL_SOURCE, /elapsedHidden \? '!-ml-\[var\(--vds-space-2\)\] !w-0 !max-w-0 overflow-hidden' : 'inline-flex'/)
+  // 用时不再用 tooltip 展示, 横幅内不应残留用时 Tooltip 包裹与受控 hover 状态。
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /setElapsedTipOpen/)
+  assert.match(TODO_PANEL_SOURCE, /const observer = new ResizeObserver\(update\)/)
+  // 展示态看描述是否被截断; 折叠态用描述 wrapper 的 ml-auto 剩余自动外边距量真实空余
+  // (scrollWidth 不溢出时恒等于 clientWidth, 量不出空余, 会导致宽度恢复后仍不恢复内联)。
+  assert.match(TODO_PANEL_SOURCE, /if \(!hidden\) return currentText \? currentText\.scrollWidth > currentText\.clientWidth : hidden/)
+  assert.match(TODO_PANEL_SOURCE, /const slack = Number\.parseFloat\(window\.getComputedStyle\(currentWrapper\)\.marginLeft\) \|\| 0/)
+  assert.match(TODO_PANEL_SOURCE, /return slack < elapsedNeedRef\.current/)
+  assert.match(TODO_PANEL_SOURCE, /<EllipsisText ref=\{currentTextRef\}[\s\S]*data-testid="todo-current"/)
+  // hooks 必须在条件 return 之前, 否则渲染 hook 顺序不稳定导致白屏(React #310)。
+  assert.match(TODO_PANEL_SOURCE, /observer\.observe\(button\)[\s\S]*if \(currentTurnOnly/)
+  // 描述 wrapper 不能 flex-1: 否则隐藏时间后的空余宽度被吸收, 宽度恢复时再显示条件恒假。
+  assert.match(TODO_PANEL_SOURCE, /data-testid="todo-current"[\s\S]*wrapperClassName="ml-auto min-w-0"/)
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /wrapperClassName="ml-auto min-w-0 flex-1"/)
+})
+
+test('elapsed time uses the default font at body-lv1 size with tertiary color', () => {
+  assert.match(TODO_PANEL_SOURCE, /<span ref=\{elapsedRef\} className="shrink-0 whitespace-nowrap text-\[length:var\(--vds-font-body-lv1\)\] text-\[var\(--vds-text-tertiary\)\]"/)
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /<span ref=\{elapsedRef\} className="[^"]*font-mono/)
+})
+
+test('pending steps use the lucide circle-dashed mark instead of the disabled glyph', () => {
+  assert.match(TODO_PANEL_SOURCE, /todo: \{ lucide: CircleDashed, messageKey: 'todo\.status\.todo'/)
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /todo: \{ mark: 'a-line-status-notfull'/)
+})
+
+test('lucide status marks keep iconfont glyph metrics and line-box alignment', () => {
+  // .iconfont 全局 16px → lucide 用同档 icon-8; svg 无行盒 → min-h-[1lh] 兜底与文字首行居中。
+  assert.match(TODO_PANEL_SOURCE, /inline-grid min-h-\[1lh\] shrink-0 place-items-center/)
+  assert.match(TODO_PANEL_SOURCE, /<LucideMark aria-hidden="true" className="size-\[var\(--vds-icon-8\)\]" \/>/)
+})
+
+test('plan card uses the 12px radius token', () => {
+  assert.match(TODO_PANEL_SOURCE, /!rounded-\[var\(--vds-radius-6\)\]/)
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /!rounded-\[var\(--vds-radius-4\)\]/)
+})
+
 test('the composer shows only the current turn while task monitor retains the latest snapshot', () => {
   assert.match(AI_PANEL_SOURCE, /<TodoPanel compact currentTurnOnly \/>/)
   assert.match(TASK_MONITOR_SOURCE, /<TodoPanel \/>/)

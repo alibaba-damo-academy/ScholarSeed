@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """
 fetch_fulltext.py — acquire the full text of every selected paper.
 
@@ -49,7 +49,7 @@ evenly, and the two are indistinguishable from a single percentage.
 
 Usage
 -----
-    python3 scripts/processing/fetch_fulltext.py <workspace> [--concurrency 8]
+    scholarseed-skill-python scripts/processing/fetch_fulltext.py <workspace> [--concurrency 8]
 
 Exit status: 0 when the corpus is usable (SUCCESS or PARTIAL_SUCCESS), 1 when it
 is not.

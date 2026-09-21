@@ -2,6 +2,7 @@ import { modelDisabledReason, modelDisplayLabels } from './profile'
 import { feedback } from '../../contracts/feedback'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
+import { Check } from 'lucide-react'
 
 import {
   getModels,
@@ -19,6 +20,7 @@ import { modelDefaultEffort } from '../../reasoning'
 import { useApp } from '../../store'
 import {
   Button,
+  EllipsisText,
   Popover,
   PopoverContent,
   PopoverTrigger
@@ -39,12 +41,12 @@ import { useEffort } from './Effort'
 
 const MODEL_ROW_CLASS = (selected: boolean, disabled: boolean): string =>
   [
-    'mb-[var(--vds-space-1)] flex min-h-8 w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
+    'mb-[var(--vds-space-1)] flex min-h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[7px] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left text-[14px]',
     selected
-      ? 'bg-[var(--vds-bg-white-active)]'
-      : 'bg-transparent hover:bg-[var(--vds-bg-white-hover)]',
+      ? 'bg-[var(--vds-brand-light-bg-default)]'
+      : 'bg-transparent hover:bg-[var(--vds-bg-gray-hover-transparent)]',
     disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
-    'transition-[background,color,border-color] duration-[120ms]'
+    'transition-[background-color] duration-150'
   ].join(' ')
 const MODEL_CHIP_CLASS = [
   'group flex min-h-8 items-center justify-between gap-[6px] rounded-[8px] border-0 bg-transparent px-[12px] py-[5px]',
@@ -52,8 +54,7 @@ const MODEL_CHIP_CLASS = [
   'hover:bg-[var(--vds-surface-hover)] focus-visible:bg-[var(--vds-surface-hover)]'
 ].join(' ')
 const MODEL_CHIP_FRAME_CLASS = 'relative min-w-0 flex-[0_1_auto]'
-// 弹框容器只负责定位与并排布局, 一级/二级卡片各自携带圆角抬升表面,
-// 对应设计稿中左主菜单、右二级菜单的双卡结构。
+// 单弹窗卡片携带圆角抬升表面; 思考强度展开时右侧再并排一张二级卡片。
 const MENU_SHEET_CLASS = [
   'flex flex-col rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)]',
   'shadow-[var(--vds-shadow-2-center)]'
@@ -66,14 +67,12 @@ const MENU_ENTRY_CLASS = (active: boolean, disabled: boolean): string =>
     disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
     'transition-[background,color] duration-[120ms]'
   ].join(' ')
-const MODEL_MENU_PANEL_CLASS = [
-  // 宽度跟随目录内容收口, 上限仍是原来的 320px 与视口边距的较小者: 短模型名不再撑出
-  // 大片空白, 长个人模型标签照旧在上限内换行。
-  'max-h-[min(270px,36vh)] w-fit max-w-[var(--vds-model-menu-max-width)]',
-  'p-[var(--vds-space-2)]'
-].join(' ')
-// 模型列表自己滚动, 底部「模型管理」入口钉在面板下沿, 不跟着列表滚走。
-const MODEL_MENU_LIST_CLASS = 'min-h-0 flex-1 overflow-y-auto overscroll-contain'
+// 模型列表在单弹窗内自己滚动: 最大高度 300px, 超出滚动; 下方强度/管理入口钉住不滚走。
+const MODEL_MENU_LIST_CLASS =
+  'max-h-[300px] min-h-0 overflow-y-auto overscroll-contain'
+// 单弹窗 PopoverContent 被抬到 modal 层(!z-modal+1), portal tooltip 默认的 z-tooltip
+// 会被整张弹窗盖住; 菜单内溢出 tooltip 的内容层再抬一级才能浮在弹窗之上。
+const MODEL_MENU_TOOLTIP_CONTENT_CLASS = '!z-[calc(var(--vds-z-modal)+2)]'
 const MODEL_MENU_MANAGE_CLASS = [
   'flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 bg-transparent',
   'px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
@@ -106,15 +105,19 @@ function ModelRow({
       onClick={() => !model.disabled && onSelect(model)}
       title={model.disabled ? modelDisabledReason(model, account) : undefined}
     >
-      <span className="min-w-0 flex-1 whitespace-normal break-words text-[length:var(--vds-font-body-lv1)] font-medium leading-relaxed text-[var(--vds-text-primary)]">
-        {modelDisplayLabels(model, account).label}
-      </span>
-      {trailing}
-      <span
-        className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]"
-        aria-hidden
+      <EllipsisText
+        wrapperClassName="flex-1"
+        className={`text-[length:var(--vds-font-body-lv1)] font-medium leading-relaxed ${selected ? 'text-[var(--vds-brand-bg-default)]' : 'text-[var(--vds-text-primary)]'}`}
+        tooltipContentClassName={MODEL_MENU_TOOLTIP_CONTENT_CLASS}
+        tooltipPortalled
       >
-        {selected ? '✓' : ''}
+        {modelDisplayLabels(model, account).label}
+      </EllipsisText>
+      {trailing}
+      <span className="flex w-[18px] shrink-0 items-center justify-center" aria-hidden>
+        {selected ? (
+          <Check className="text-[var(--vds-brand-bg-default)]" size={18} strokeWidth={1.8} />
+        ) : null}
       </span>
     </Button>
   )
@@ -131,7 +134,7 @@ export function ModelMenu({
   const { t: account } = useTranslation('account')
   const { models, subscriptionGroups } = state.catalog
   const effort = useEffort()
-  const [submenu, setSubmenu] = React.useState<'effort' | 'models' | null>(null)
+  const [submenu, setSubmenu] = React.useState<'effort' | null>(null)
   const selectedModelKey = effectiveSessionModelKey(
     models,
     state.model,
@@ -182,8 +185,7 @@ export function ModelMenu({
     if (!state.modelMenuOpen) return
     const selected = panelRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
     selected?.scrollIntoView({ block: 'nearest' })
-    if (submenu === 'models') selected?.focus()
-    else controlsRef.current?.focus()
+    controlsRef.current?.focus()
   }, [state.modelMenuOpen, selectedModelKey, submenu])
 
   const selectModel = async (model: ModelInfo): Promise<void> => {
@@ -303,32 +305,88 @@ export function ModelMenu({
             tabIndex={-1}
             role="menu"
             aria-label={t('models.selection')}
-            data-testid="model-controls-menu"
-            className={`${MENU_SHEET_CLASS} w-[var(--vds-model-controls-width)] p-[var(--vds-space-1)]`}
+            data-testid="model-selector-menu"
+            className={`${MENU_SHEET_CLASS} w-[var(--vds-model-menu-width)] p-[var(--vds-space-1)]`}
           >
-            {modelAvailable && selectedModel ? (
-              <div
-                data-testid="model-current"
-                className="flex items-center gap-[var(--vds-space-2)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[length:var(--vds-font-body-lv1)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]">
-                    {modelDisplayLabels(selectedModel, account).label}
-                  </span>
-                  {modelDisplayLabels(selectedModel, account).providerLabel ? (
-                    <span className="block truncate text-[length:var(--vds-font-caption)] leading-relaxed text-[var(--vds-text-tertiary)]">
-                      {modelDisplayLabels(selectedModel, account).providerLabel}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]" aria-hidden>
-                  ✓
-                </span>
-              </div>
-            ) : null}
-            {hasCurrentModel ? (
-              <div aria-hidden="true" className="mx-[var(--vds-space-2)] border-t border-[var(--border-soft)]" />
-            ) : null}
+            <div ref={panelRef} className={MODEL_MENU_LIST_CLASS}>
+              {subscriptionModels.length > 0 && (
+                <>
+                  {subscriptionGroups.map(({ provider, label }) => {
+                    const group = subscriptionModels.filter(
+                      (model) => model.provider === provider
+                    )
+                    if (group.length === 0) return null
+                    const blocked = group.filter((model) => model.disabled)
+                    return (
+                      <div key={provider} className="mb-[var(--vds-space-1)]">
+                        <div className="px-[10px] pb-[2px] pt-[var(--vds-space-1)] text-[10px] font-[var(--vds-fw-medium)] text-[var(--text-3)]">
+                          {label}
+                        </div>
+                        {blocked.length > 0 && (
+                          <div className="mb-[var(--vds-space-2)] flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border border-[var(--border-soft)] bg-[var(--bg-3)] px-[10px] py-[var(--vds-space-2)] text-[11px] leading-[1.35] text-[var(--text-3)]">
+                            <span className="flex-1">
+                              {modelDisabledReason(blocked[0], account)}
+                            </span>
+                            <Button
+                              type="button"
+                              size="content"
+                              unstyled
+                              className="rounded-[var(--vds-radius-2)] border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[10.5px] text-[var(--text-2)] transition-[background,color,border-color] duration-[120ms] hover:bg-[var(--vds-bg-white-hover)]"
+                              onClick={() => void recheckSubscription()}
+                            >
+                              {t('models.recheck')}
+                            </Button>
+                          </div>
+                        )}
+                        {group.map((model) => (
+                          <ModelRow
+                            key={model.key}
+                            model={model}
+                            selected={modelAvailable && model.key === selectedModelKey}
+                            onSelect={(picked) => void selectModel(picked)}
+                          />
+                        ))}
+                      </div>
+                    )
+                  })}
+                </>
+              )}
+
+              {apiModels.length > 0 && (
+                <>
+                  {apiModels.map((model) => (
+                    <ModelRow
+                      key={model.key}
+                      model={model}
+                      selected={modelAvailable && model.key === selectedModelKey}
+                      onSelect={(picked) => void selectModel(picked)}
+                      trailing={
+                        <EllipsisText
+                          wrapperClassName="max-w-[40%] shrink-0"
+                          className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]"
+                          tooltipContentClassName={MODEL_MENU_TOOLTIP_CONTENT_CLASS}
+                          tooltipPortalled
+                        >
+                          {modelDisplayLabels(model, account).providerLabel || (model.source === 'personal' ? t('models.personal') : model.provider || t('models.builtin'))}
+                        </EllipsisText>
+                      }
+                    />
+                  ))}
+                </>
+              )}
+
+              {models.some((model) => model.source === 'personal') && (
+                <div className="px-[10px] pb-[var(--vds-space-1)] pt-[6px] text-[9.5px] leading-[1.35] text-[var(--text-3)]">
+                  {t('models.effect')}
+                </div>
+              )}
+              {models.length === 0 && (
+                <div className="px-[10px] py-[var(--vds-space-2)] text-[11px] text-[var(--text-3)]">
+                  {t('models.empty')}
+                </div>
+              )}
+            </div>
+            <div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
             <Button
               type="button"
               role="menuitem"
@@ -350,19 +408,20 @@ export function ModelMenu({
                 <Icon name="chevron-right" size={12} />
               </span>
             </Button>
-            <div aria-hidden="true" className="mx-[var(--vds-space-2)] border-t border-[var(--border-soft)]" />
+            <div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
             <Button
               type="button"
               role="menuitem"
-              data-testid="model-list-toggle"
+              data-testid="model-menu-manage"
+              className={MODEL_MENU_MANAGE_CLASS}
               size="content"
               unstyled
-              className={MENU_ENTRY_CLASS(submenu === 'models', false)}
-              aria-haspopup="menu"
-              aria-expanded={submenu === 'models'}
-              onClick={() => setSubmenu(submenu === 'models' ? null : 'models')}
+              onClick={() => {
+                set({ modelMenuOpen: false })
+                act.openSettings('models')
+              }}
             >
-              <span className="min-w-0 flex-1 text-left">{t('models.moreModels')}</span>
+              <span className="min-w-0 flex-1">{t('models.manage')}</span>
               <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
                 <Icon name="chevron-right" size={12} />
               </span>
@@ -374,7 +433,7 @@ export function ModelMenu({
               role="menu"
               aria-label={t('models.effortRow')}
               data-testid="model-effort-menu"
-              className={`${MENU_SHEET_CLASS} w-[var(--vds-model-controls-width)] p-[var(--vds-space-1)]`}
+              className={`${MENU_SHEET_CLASS} w-[var(--vds-model-menu-width)] p-[var(--vds-space-1)]`}
             >
               <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-caption)] leading-relaxed text-[var(--vds-text-tertiary)]">
                 {t('models.effortHint')}
@@ -408,107 +467,6 @@ export function ModelMenu({
             </div>
           ) : null}
 
-          {submenu === 'models' ? (
-            <div
-              role="menu"
-              aria-label={t('models.selection')}
-              data-testid="model-selector-menu"
-              className={`${MENU_SHEET_CLASS} ${MODEL_MENU_PANEL_CLASS}`}
-            >
-          <div ref={panelRef} className={MODEL_MENU_LIST_CLASS}>
-            {subscriptionModels.length > 0 && (
-              <>
-                {subscriptionGroups.map(({ provider, label }) => {
-                  const group = subscriptionModels.filter(
-                    (model) => model.provider === provider
-                  )
-                  if (group.length === 0) return null
-                  const blocked = group.filter((model) => model.disabled)
-                  return (
-                    <div key={provider} className="mb-[var(--vds-space-1)]">
-                      <div className="px-[10px] pb-[2px] pt-[var(--vds-space-1)] text-[10px] font-[var(--vds-fw-medium)] text-[var(--text-3)]">
-                        {label}
-                      </div>
-                      {blocked.length > 0 && (
-                        <div className="mb-[var(--vds-space-2)] flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border border-[var(--border-soft)] bg-[var(--bg-3)] px-[10px] py-[var(--vds-space-2)] text-[11px] leading-[1.35] text-[var(--text-3)]">
-                          <span className="flex-1">
-                            {modelDisabledReason(blocked[0], account)}
-                          </span>
-                          <Button
-                            type="button"
-                            size="content"
-                            unstyled
-                            className="rounded-[var(--vds-radius-2)] border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[10.5px] text-[var(--text-2)] transition-[background,color,border-color] duration-[120ms] hover:bg-[var(--vds-bg-white-hover)]"
-                            onClick={() => void recheckSubscription()}
-                          >
-                            {t('models.recheck')}
-                          </Button>
-                        </div>
-                      )}
-                      {group.map((model) => (
-                        <ModelRow
-                          key={model.key}
-                          model={model}
-                          selected={modelAvailable && model.key === selectedModelKey}
-                          onSelect={(picked) => void selectModel(picked)}
-                        />
-                      ))}
-                    </div>
-                  )
-                })}
-              </>
-            )}
-
-            {apiModels.length > 0 && (
-              <>
-                {apiModels.map((model) => (
-                  <ModelRow
-                    key={model.key}
-                    model={model}
-                    selected={modelAvailable && model.key === selectedModelKey}
-                    onSelect={(picked) => void selectModel(picked)}
-                    trailing={
-                      <span className="max-w-[40%] whitespace-normal break-words text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]">
-                        {modelDisplayLabels(model, account).providerLabel || (model.source === 'personal' ? t('models.personal') : model.provider || t('models.builtin'))}
-                      </span>
-                    }
-                  />
-                ))}
-              </>
-            )}
-
-            {models.some((model) => model.source === 'personal') && (
-              <div className="px-[10px] pb-[var(--vds-space-1)] pt-[6px] text-[9.5px] leading-[1.35] text-[var(--text-3)]">
-                {t('models.effect')}
-              </div>
-            )}
-            {models.length === 0 && (
-              <div className="px-[10px] py-[var(--vds-space-2)] text-[11px] text-[var(--text-3)]">
-                {t('models.empty')}
-              </div>
-            )}
-          </div>
-          <div className="mt-[var(--vds-space-1)] border-t border-[var(--border-soft)] pt-[var(--vds-space-1)]">
-            <Button
-              type="button"
-              role="menuitem"
-              data-testid="model-menu-manage"
-              className={MODEL_MENU_MANAGE_CLASS}
-              size="content"
-              unstyled
-              onClick={() => {
-                set({ modelMenuOpen: false })
-                act.openSettings('models')
-              }}
-            >
-              <span className="flex-none text-[var(--vds-text-tertiary)]">
-                <Icon name="settings" size={14} />
-              </span>
-              <span className="min-w-0 flex-1">{t('models.manage')}</span>
-            </Button>
-          </div>
-            </div>
-          ) : null}
         </PopoverContent>
       </div>
     </Popover>

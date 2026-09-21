@@ -18,12 +18,12 @@ from scholarseed_codex.capacity import HostRole
 from scholarseed_codex.catalog import model_catalog_argument
 from scholarseed_codex.directive import parse_declarations
 from scholarseed_codex.environment import (
-    CODEX_HOME_ENV,
     configured_codex_executable,
     prepare_codex_runtime_home,
     source_model_provider,
 )
 from scholarseed_codex.events import RUNTIME_EVENT_SCHEMA_VERSION, translate_event
+from scholarseed_codex.isolation import managed_codex_launch
 from scholarseed_codex.permission import CODEX_PERMISSION_POLICIES, local_socket_permissions
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
@@ -51,6 +51,7 @@ from scholarseed_codex.protocol.session import (
     CodexToolResponse,
 )
 from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
+from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
@@ -263,6 +264,11 @@ class CodexRuntimeSession:
             request.permission.local_sockets,
             network_access=request.permission.network_access,
         )
+        process_environment, launch_arguments = managed_codex_launch(
+            runtime_home,
+            dict(launch_environment or {}),
+            launch_arguments,
+        )
         self._native = CodexThreadSession(
             CodexSessionOpenRequest(
                 request_id=request.product_session_id,
@@ -272,10 +278,7 @@ class CodexRuntimeSession:
                     resume_binding.opaque_session_ref if resume_binding is not None else ""
                 ),
                 model=request.model.model_ref,
-                process_environment={
-                    **dict(launch_environment or {}),
-                    CODEX_HOME_ENV: str(runtime_home),
-                },
+                process_environment=process_environment,
                 remove_environment=request.launch_secrets.remove_environment,
                 sandbox=permission_policy.sandbox,
                 permissions_profile=permissions_profile,
@@ -303,6 +306,7 @@ class CodexRuntimeSession:
         self._binding: RuntimeBinding | None = None
         self._permission = request.permission
         self._model = request.model
+        self._skill_configurations = request.skill_configurations
 
     async def prepare_resource(self, request_id: str, deadline: float) -> PoolReservation:
         if not self._model_prepared:
@@ -516,6 +520,7 @@ class CodexRuntimeSession:
         intent = self._request.model
         request = self._native.request
         config = session_thread_config(self._required_capabilities)
+        config.update(session_skill_config(self._skill_configurations))
         if intent.reasoning_effort:
             config[CODEX_REASONING_EFFORT_CONFIG] = intent.reasoning_effort
         if intent.service_tier:
@@ -987,6 +992,7 @@ class CodexRuntimeSession:
                     cwd=self._request.cwd,
                     force_reload=request.refresh,
                 )
+                skills = session_skill_inventory(skills, self._skill_configurations)
                 values[kind.value] = json_value(skills)
                 revisions.append(skills.revision)
             elif kind is InventoryKind.MCP:

@@ -447,12 +447,12 @@ function SelectionActions({
               >
                 {w('selection.add')}
               </Button>
-              <Divider orientation="vertical" className="[--vds-divider-margin-vertical:0_var(--vds-space-1)]" />
             </>
           )
         }]
       : [])
-  ].sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  ].filter((item) => React.Children.toArray(item.actions).length > 0)
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
   const toolbarActions = (
     <div className="contents [--vds-control-padding-sm:0_calc(var(--vds-space-1)*1.5)]">
       {selection.locator.kind === "calc" && (
@@ -460,8 +460,13 @@ function SelectionActions({
           {selection.locator.sheet} · {selection.locator.range}
         </Badge>
       )}
-      {orderedActions.map((item) => (
-        <React.Fragment key={item.id}>{item.actions}</React.Fragment>
+      {orderedActions.map((item, index) => (
+        <React.Fragment key={item.id}>
+          {item.actions}
+          {item.id === ADD_CONTEXT_ACTION_ID && index < orderedActions.length - 1 && (
+            <Divider orientation="vertical" className="[--vds-divider-margin-vertical:0_var(--vds-space-1)]" />
+          )}
+        </React.Fragment>
       ))}
     </div>
   );

@@ -45,7 +45,7 @@ CONVERSATION_SKILLS = {
     "research-idea-partner",
     "literature-review",
     "precise-literature-search",
-    "fast-search",
+    "agentic-search",
 }
 
 
@@ -79,12 +79,14 @@ def main() -> int:
         conversation = client.get("/api/capabilities/skills?surface=conversation")
         assert conversation.status_code == 200, conversation.text
         conversation_skills = {item["name"]: item for item in conversation.json()["skills"]}
-        assert set(conversation_skills) == CONVERSATION_SKILLS
+        assert set(conversation_skills) == CONVERSATION_SKILLS, set(conversation_skills)
         assert conversation_skills["research-idea-partner"]["descriptions"]["zh"]
         settings = client.get("/api/capabilities/skills?surface=settings")
         assert settings.status_code == 200, settings.text
         settings_skills = {item["name"]: item for item in settings.json()["skills"]}
-        assert set(settings_skills) == CONVERSATION_SKILLS | {"demo-skill"}
+        assert set(settings_skills) == CONVERSATION_SKILLS | {"demo-skill", "fast-search"}, set(
+            settings_skills
+        )
         assert settings_skills["demo-skill"]["active"] is True
         assert client.get("/api/capabilities/skills?surface=unknown").status_code == 422
 
@@ -98,7 +100,18 @@ def main() -> int:
             == (SERVICE_BUNDLED_SKILLS_DIR / "web-search" / "SKILL.md").resolve()
         )
 
-        builtin = next(item for item in skills.values() if item["group"] == "scholarseed")
+        fast_search = skills["fast-search"]
+        assert fast_search["enabled"] is True
+        assert fast_search["active"] is False
+        assert fast_search["requires_login"] is True
+        assert fast_search["unavailable_reason"] == "login_required"
+        assert fast_search["toggleable"] is True
+        paused_toggle = client.delete("/api/capabilities/skills/fast-search/activate")
+        assert paused_toggle.status_code == 200, paused_toggle.text
+        assert "fast-search" in load_skill_state().disabled_skills
+        assert client.post("/api/capabilities/skills/fast-search/activate").status_code == 200
+
+        builtin = skills["agentic-search"]
         state = load_skill_state()
         save_skill_state(
             replace_skill_state(
@@ -129,6 +142,9 @@ def main() -> int:
         }
         assert refreshed[builtin["name"]]["runtime_enabled"] is False
         assert refreshed[builtin["name"]]["active"] is False
+        assert refreshed["fast-search"]["enabled"] is True
+        assert refreshed["fast-search"]["runtime_enabled"] is True
+        assert refreshed["fast-search"]["active"] is False
         immutable = client.delete(f"/api/capabilities/skills/{builtin['name']}")
         assert immutable.status_code == 403, immutable.text
         assert immutable.json()["detail"] == "内置技能不可删除"

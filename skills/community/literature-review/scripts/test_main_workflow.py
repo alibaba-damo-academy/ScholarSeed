@@ -149,15 +149,20 @@ class WorkflowTest(unittest.TestCase):
     def run_phase(self, phase='evidence', start=None):
         return advance(self.ws, phase, start, self.runner)
 
-    def test_evidence_chain_stops_for_display_even_with_auto_authorization(self):
+    def test_default_evidence_stops_before_fulltext_authorization(self):
         result = self.run_phase()
-        self.assertEqual(self.calls, [['run', 'retrieval_adapt'], ['run', 'fulltext'],
-                         ['run', 'processing'], ['outline', 'generate'], ['outline', 'review-packet']])
-        self.assertEqual(result['boundary'], 'outline_display')
+        self.assertEqual(self.calls, [['run', 'retrieval_adapt']])
+        self.assertEqual(result['boundary'], 'fulltext_authorization')
         self.assertEqual(result['retrieval']['outside_time_range_retained']['count'], 2)
+        self.assertEqual(json.loads((self.ws / '_status/workflow.json').read_text()), result)
+
+    def test_authorized_fulltext_resume_reaches_outline_display(self):
+        result = self.run_phase(start='fulltext')
+        self.assertEqual(self.calls, [['run', 'fulltext'], ['run', 'processing'],
+                         ['outline', 'generate'], ['outline', 'review-packet']])
+        self.assertEqual(result['boundary'], 'outline_display')
         self.assertIn('outline', result['result'])
         self.assertNotIn('outline', compact(result)['result'])
-        self.assertEqual(json.loads((self.ws / '_status/workflow.json').read_text()), result)
 
     def test_partial_retrieval_stops_before_acquisition(self):
         self.responses['retrieval_adapt'] = (0, {'status': 'PARTIAL_SUCCESS', 'status_reason': 'thin corpus'})
@@ -184,14 +189,14 @@ class WorkflowTest(unittest.TestCase):
     def test_abstract_fallback_continues_and_keeps_material_counts(self):
         self.responses['fulltext'] = (0, {'status': 'PARTIAL_SUCCESS',
             'material_counts': {'fulltext': 0, 'abstract_only': 40, 'no_text': 0}})
-        result = self.run_phase()
+        result = self.run_phase(start='fulltext')
         self.assertEqual(result['boundary'], 'outline_display')
         self.assertEqual(compact(result)['fulltext']['material_counts']['abstract_only'], 40)
 
     def test_processing_gap_blocks_outline(self):
         self.responses['processing'] = (1, {'status': 'PARTIAL_SUCCESS',
             'ready_for_outline': False, 'issues': [{'paper_id': 'p3', 'reason': 'no_card'}]})
-        result = self.run_phase()
+        result = self.run_phase(start='fulltext')
         self.assertEqual(result['boundary'], 'error')
         self.assertEqual(result['result']['issues'][0]['paper_id'], 'p3')
         self.assertEqual(self.calls[-1], ['run', 'processing'])

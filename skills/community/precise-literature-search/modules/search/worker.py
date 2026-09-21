@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Decision-only interface for the saved balance strategy (no new search policy)."""
 from __future__ import annotations
 

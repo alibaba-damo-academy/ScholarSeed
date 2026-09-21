@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Hydrate a model-authored selection and render validated final artifacts.
 
 The agent chooses paper IDs/titles, tiers, reasons, and covered subtopics. This

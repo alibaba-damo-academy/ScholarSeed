@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Small, dependency-free I/O helpers shared by bundled modules."""
 
 from __future__ import annotations

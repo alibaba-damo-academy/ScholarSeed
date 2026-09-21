@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Prepare a search plan before delegation; for the single-paper quick mode."""
 
 from __future__ import annotations

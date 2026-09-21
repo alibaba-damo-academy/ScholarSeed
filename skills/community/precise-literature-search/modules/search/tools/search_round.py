@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Run one batched PaperHub search or citation phase with bounded stdout."""
 
 from __future__ import annotations

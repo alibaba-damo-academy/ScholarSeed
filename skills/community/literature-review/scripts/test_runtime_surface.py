@@ -90,8 +90,8 @@ class CurrentSurfaceTest(unittest.TestCase):
             home = Path(tmp)
             profile = home / 'profile.json'
             profile.write_text(json.dumps({'stages': [
-                {'id': 'current', 'command': ['python3', '${SLR_HOME}/current.py']},
-                {'id': 'old', 'legacy': True, 'command': ['python3', '${SLR_HOME}/absent.py']}]}))
+                {'id': 'current', 'command': ['scholarseed-skill-python', '${SLR_HOME}/current.py']},
+                {'id': 'old', 'legacy': True, 'command': ['scholarseed-skill-python', '${SLR_HOME}/absent.py']}]}))
             (home / 'current.py').write_text('')
             with patch.object(preflight._slr_paths, 'HOME', home), \
                  patch.object(preflight._slr_paths, 'config_path', return_value=profile):

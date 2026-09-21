@@ -1597,7 +1597,7 @@ const initialProtocolUrl = findCallbackUrl(process.argv)
 if (initialProtocolUrl) pendingProtocolUrl = initialProtocolUrl
 
 // 注册为 scholarseed:// 协议的默认处理程序 (需要在 ready 之前请求单例锁)
-// Headless acceptance runs stay isolated; interactive development and packaged
+// Headless acceptance and electron-vite development runs stay isolated; packaged
 // launches share one process so the OS callback can be delivered reliably.
 const singleInstanceLockRequired = requiresSingleInstanceLock(
   process.env['ELECTRON_RENDERER_URL'],

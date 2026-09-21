@@ -54,18 +54,23 @@ LITERATURE_PUBLICATION_SCRIPT = (
     Path(__file__).resolve().parents[3]
     / "skills/community/literature-review/scripts/manuscript_publication.py"
 )
+LITERATURE_SKILL_FILE = (
+    Path(__file__).resolve().parents[3] / "skills/community/literature-review/SKILL.md"
+)
 
 
 class LiteratureReviewContract(unittest.TestCase):
-    def test_product_prompt_preserves_slr_intake_and_output_decision_order(self) -> None:
+    def test_literature_review_skill_owns_intake_and_output_decision_order(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
-        intake = "After init, use `writing configure --request`"
-        after_outline = "After the outline review packet is available"
-        output_question = "ask for citation format and template together"
+        skill = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")
+        intake = "writing configure --request"
+        after_outline = "outline review-packet"
+        output_question = "Ask for citation format and template together"
 
-        self.assertIn(intake, prompt)
-        self.assertIn(after_outline, prompt)
-        self.assertLess(prompt.index(after_outline), prompt.index(output_question))
+        self.assertIn(intake, skill)
+        self.assertLess(skill.index(after_outline), skill.index(output_question))
+        self.assertNotIn(intake, prompt)
+        self.assertNotIn(output_question, prompt)
 
     def test_review_checkpoint_does_not_replace_explicit_artifact_publication(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
@@ -121,6 +126,21 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertIn("do not call `request_user_input`, construct or relay a question", prompt)
         self.assertIn("make no full-text or later-stage writes", prompt)
         self.assertNotIn("checkpoint retrieval", prompt)
+
+    def test_skill_cannot_cross_the_retrieval_authorization_boundary(self) -> None:
+        instructions = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")
+        evidence = instructions[instructions.index("## 3. Evidence") :]
+        retrieval = "Run `run retrieval_adapt` as its own command"
+        checkpoint = "`scholarseed-bridge literature review --json"
+        authorization = "`authorization.disposition=authorized`"
+        resume = "`workflow evidence --from fulltext`"
+
+        self.assertLess(evidence.index(retrieval), evidence.index(checkpoint))
+        self.assertLess(evidence.index(checkpoint), evidence.index(authorization))
+        self.assertLess(evidence.index(authorization), evidence.index(resume))
+        self.assertIn("Never start `workflow evidence` without `--from`", instructions)
+        self.assertIn("it never enters full text", instructions)
+        self.assertIn("Do not call `request_user_input`", instructions)
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()

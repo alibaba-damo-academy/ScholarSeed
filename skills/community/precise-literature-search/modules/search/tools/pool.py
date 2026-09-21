@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Merge normalized query results into a persistent pool and print compact views."""
 
 from __future__ import annotations

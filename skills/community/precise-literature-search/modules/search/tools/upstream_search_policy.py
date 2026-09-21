@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Canonical execution policies for tiered academic search.
 
 The policy is intentionally data-only.  Agents, command-line launchers, and

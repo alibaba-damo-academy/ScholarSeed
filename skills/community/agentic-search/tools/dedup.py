@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Paper deduplication tool.
 
 Usage:
-    python3 dedup.py --input papers.json
-    cat papers.json | python3 dedup.py
+    scholarseed-skill-python dedup.py --input papers.json
+    cat papers.json | scholarseed-skill-python dedup.py
     
 Reads a JSON array of paper objects, deduplicates by normalized title,
 outputs deduplicated array.

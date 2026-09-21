@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """Query PaperHub while keeping full records out of agent tool output."""
 
 from __future__ import annotations

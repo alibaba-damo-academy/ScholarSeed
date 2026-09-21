@@ -154,6 +154,7 @@ OWNER = SessionPrincipal("codex-owner")
 # 产品默认提示词 (属于产品资产, 由组合根注入 adapter)。
 # 直接复用产品层声明的路径常量, 避免测试自己再拼一遍产品布局。
 PRODUCT_PROMPT = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
+MAX_DEVELOPER_INSTRUCTION_CHARS = 32_000
 
 
 class FakeSkillControl:
@@ -756,9 +757,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(
             "`request_user_input` tool to ask it as one structured question card", prompt
         )
-        self.assertIn(
+        self.assertNotIn(
             "For this task, replace the general ONE-item/plain-text clarification loop", prompt
         )
+        self.assertIn("Use the installed precise-literature-search skill", prompt)
+
+    def test_developer_prompt_stays_within_progressive_loading_budget(self) -> None:
+        self.assertLessEqual(len(developer_instructions()), MAX_DEVELOPER_INSTRUCTION_CHARS)
 
     def test_product_prompt_publishes_only_user_facing_deliverables(self) -> None:
         prompt = developer_instructions(output_directory="outputs")
@@ -3622,6 +3627,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
                     ready=stage != "readiness",
                     executable="codex",
                 )
+                service.skill_inventory = AsyncMock(return_value=await self.live.refresh_skills())
                 with (
                     patch.object(service, "readiness", AsyncMock(return_value=readiness)),
                     patch.object(runtime_module, "SessionTrace", Mock()),
@@ -3763,6 +3769,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             with patch.object(
                 service, "_session_options", wraps=service._session_options
             ) as session_options:
+                service.skill_inventory = AsyncMock(return_value=await self.live.refresh_skills())
                 result = await service.invoke_once(
                     invocation_id="one-shot-invocation",
                     owner_id="owner-1",

@@ -50,6 +50,10 @@ test('ready task starter skill becomes a typed composer reference', () => {
 })
 
 test('task starter skill failures stay explicit', () => {
+  assert.deepEqual(
+    resolveTaskStarterSkill([skill({ requires_login: true, active: false, unavailable_reason: 'login_required' })], 'precise-literature-search'),
+    { failure: 'login_required' }
+  )
   assert.deepEqual(resolveTaskStarterSkill([], 'precise-literature-search'), {
     failure: 'missing'
   })

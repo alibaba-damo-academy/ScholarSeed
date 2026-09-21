@@ -286,6 +286,7 @@
     "unavailable": "无法读取这份文本文件。",
     "toolbar": "文本编辑工具栏",
     "undo": "撤销",
+    "paste": "粘贴",
     "redo": "重做",
     "find": "查找",
     "replace": "替换",

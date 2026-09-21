@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env scholarseed-skill-python
 """PaperHub search tool - keyword/title search, citation lookup, paper details.
 
 Usage:
-    python3 paperhub.py keyword "reinforcement learning search agent" --limit 20
-    python3 paperhub.py title "Attention Is All You Need"
-    python3 paperhub.py references 257767360,12345
-    python3 paperhub.py papers 257767360,12345
+    scholarseed-skill-python paperhub.py keyword "reinforcement learning search agent" --limit 20
+    scholarseed-skill-python paperhub.py title "Attention Is All You Need"
+    scholarseed-skill-python paperhub.py references 257767360,12345
+    scholarseed-skill-python paperhub.py papers 257767360,12345
 """
 
 import argparse
