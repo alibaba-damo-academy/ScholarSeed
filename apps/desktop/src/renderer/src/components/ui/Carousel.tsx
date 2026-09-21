@@ -6,7 +6,10 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type HTMLAttributes,
@@ -25,6 +28,7 @@ interface CarouselContextValue {
   canScrollPrev: boolean
   count: number
   direction: CarouselDirection
+  loop: boolean
   orientation: CarouselOrientation
   scrollNext: () => void
   scrollPrev: () => void
@@ -72,7 +76,7 @@ const CAROUSEL_CLASS_NAME = 'vds-carousel relative w-[min(420px,100%)]'
 const CAROUSEL_VERTICAL_CLASS_NAME = 'vds-carousel--vertical w-[min(320px,100%)]'
 const CAROUSEL_VIEWPORT_CLASS_NAME = 'vds-carousel__viewport overflow-hidden rounded-[var(--vds-radius-4)]'
 const CAROUSEL_CONTENT_CLASS_NAME =
-  'vds-carousel__content flex gap-[var(--vds-space-4)] transition-transform duration-[var(--vds-duration-normal)] ease-[var(--vds-ease-standard)] will-change-transform motion-reduce:transition-none'
+  'vds-carousel__content flex gap-[var(--vds-space-4)] transition-transform duration-[var(--vds-carousel-transition-duration)] ease-[var(--vds-carousel-transition-ease)] will-change-transform motion-reduce:transition-none'
 const CAROUSEL_CONTENT_VERTICAL_CLASS_NAME =
   'vds-carousel__content--vertical flex-col h-[calc(96px*var(--vds-carousel-visible-items,1)+var(--vds-space-4)*(var(--vds-carousel-visible-items,1)-1))]'
 const CAROUSEL_ITEM_CLASS_NAME =
@@ -90,12 +94,20 @@ const CAROUSEL_NEXT_VERTICAL_CLASS_NAME =
 const CAROUSEL_CONTROL_ICON_CLASS_NAME =
   'vds-carousel__control-icon inline-grid place-items-center text-[length:var(--vds-font-subhead)] leading-none'
 const CAROUSEL_INDICATORS_CLASS_NAME =
-  'vds-carousel__indicators mt-[var(--vds-space-4)] flex items-center justify-center gap-[20px]'
+  'vds-carousel__indicators mt-[var(--vds-space-4)] flex items-center justify-center gap-[var(--vds-carousel-indicator-gap)]'
 const CAROUSEL_INDICATOR_CLASS_NAME =
   'vds-carousel__indicator relative h-[4px] w-[16px] overflow-hidden rounded-[214px] border-0 bg-[var(--vds-carousel-indicator-track)] p-0 [appearance:none] transition-[background-color,width] duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)] data-[active=true]:w-[27px] focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
 const CAROUSEL_INDICATOR_PROGRESS_CLASS_NAME =
   'vds-carousel__indicator-progress absolute inset-y-0 left-0 w-full origin-left rounded-[inherit] bg-[var(--vds-carousel-indicator-value)]'
 const DEFAULT_AUTO_PLAY_INTERVAL_MS = 4000
+const MILLISECONDS_PER_SECOND = 1000
+
+function carouselTransform(index: number, orientation: CarouselOrientation, visibleItems: number): string {
+  const offset = orientation === 'vertical'
+    ? `calc(-${index} * (96px + var(--vds-space-4)))`
+    : `calc(-${index} * ((100% + var(--vds-space-4)) / ${visibleItems}))`
+  return orientation === 'vertical' ? `translateY(${offset})` : `translateX(${offset})`
+}
 
 function normalizedIntervalMs(intervalMs: number | undefined): number {
   if (!Number.isFinite(intervalMs)) return DEFAULT_AUTO_PLAY_INTERVAL_MS
@@ -186,7 +198,7 @@ export const Carousel = forwardRef<HTMLDivElement, CarouselProps>(
 
   return (
     <CarouselContext.Provider
-      value={{ activeIndex, autoPlayIntervalMs: normalizedAutoPlayIntervalMs, autoPlayPaused, canScrollNext, canScrollPrev, count, direction, orientation, scrollNext, scrollPrev, setActiveIndex, setAutoPlayPaused, visibleItems: visibleCount }}
+      value={{ activeIndex, autoPlayIntervalMs: normalizedAutoPlayIntervalMs, autoPlayPaused, canScrollNext, canScrollPrev, count, direction, loop, orientation, scrollNext, scrollPrev, setActiveIndex, setAutoPlayPaused, visibleItems: visibleCount }}
     >
       <div
         aria-roledescription={t('carousel.role')}
@@ -206,10 +218,47 @@ Carousel.displayName = 'Carousel'
 
 export const CarouselContent = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ children, className, onMouseEnter, onMouseLeave, style, ...props }, ref) => {
-    const { activeIndex, orientation, setAutoPlayPaused, visibleItems } = useCarousel('CarouselContent')
-    const offset = orientation === 'vertical'
-      ? `calc(-${activeIndex} * (96px + var(--vds-space-4)))`
-      : `calc(-${activeIndex} * ((100% + var(--vds-space-4)) / ${visibleItems}))`
+    const { activeIndex, direction, loop, orientation, setAutoPlayPaused, visibleItems } = useCarousel('CarouselContent')
+    const items = Children.toArray(children)
+    const maxIndex = Math.max(items.length - visibleItems, 0)
+    const cloneCount = loop && maxIndex > 0 ? visibleItems : 0
+    const contentRef = useRef<HTMLDivElement>(null)
+    const previousIndex = useRef(activeIndex)
+    useImperativeHandle(ref, () => contentRef.current!, [])
+
+    useLayoutEffect(() => {
+      const previous = previousIndex.current
+      previousIndex.current = activeIndex
+      const content = contentRef.current
+      if (!content || !cloneCount || previous === activeIndex) return
+      const wrapsNext = direction === 'next' && previous === maxIndex && activeIndex === 0
+      const wrapsPrev = direction === 'prev' && previous === 0 && activeIndex === maxIndex
+      if (!wrapsNext && !wrapsPrev) return
+
+      const computedStyle = window.getComputedStyle(content)
+      const duration = computedStyle.transitionProperty === 'none'
+        ? 0
+        : Number.parseFloat(computedStyle.transitionDuration) * MILLISECONDS_PER_SECOND
+      const easing = computedStyle.transitionTimingFunction
+      const transitionProperty = content.style.transitionProperty
+      content.style.transitionProperty = 'none'
+      const animation = content.animate(
+        [
+          { transform: carouselTransform(previous + cloneCount, orientation, visibleItems) },
+          { transform: carouselTransform(wrapsNext ? items.length + cloneCount : 0, orientation, visibleItems) }
+        ],
+        { duration, easing }
+      )
+      let cancelled = false
+      void animation.finished.then(() => {
+        if (!cancelled) content.style.transitionProperty = transitionProperty
+      }, () => undefined)
+      return () => {
+        cancelled = true
+        animation.cancel()
+        content.style.transitionProperty = transitionProperty
+      }
+    }, [activeIndex, cloneCount, direction, items.length, maxIndex, orientation, visibleItems])
     return (
       <div
         className={CAROUSEL_VIEWPORT_CLASS_NAME}
@@ -224,15 +273,17 @@ export const CarouselContent = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDiv
       >
         <div
           className={cx(CAROUSEL_CONTENT_CLASS_NAME, orientation === 'vertical' && CAROUSEL_CONTENT_VERTICAL_CLASS_NAME, className)}
-          ref={ref}
+          ref={contentRef}
           style={{
             ...style,
             '--vds-carousel-visible-items': String(visibleItems),
-            transform: orientation === 'vertical' ? `translateY(${offset})` : `translateX(${offset})`
+            transform: carouselTransform(activeIndex + cloneCount, orientation, visibleItems)
           } as CSSProperties}
           {...props}
         >
+          {cloneCount > 0 && <div className="contents" aria-hidden="true" inert>{items.slice(-cloneCount)}</div>}
           {children}
+          {cloneCount > 0 && <div className="contents" aria-hidden="true" inert>{items.slice(0, cloneCount)}</div>}
         </div>
       </div>
     )

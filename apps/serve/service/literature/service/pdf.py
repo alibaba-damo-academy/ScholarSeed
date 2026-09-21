@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pymupdf
-
 from service.content.domain.model import ContentError
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import (
@@ -12,6 +10,7 @@ from service.literature.schema import (
     LiteratureItem,
     LiteratureView,
 )
+from service.platform.pdf import PdfDocumentError, PdfPasswordError, pdf_document_info
 
 from .attachment import LiteratureAttachmentContent
 
@@ -62,14 +61,15 @@ class LiteraturePdf:
         return payload, media_type
 
     def page_count(self, item: LiteratureItem) -> int:
-        """Read only the PDF container page table; never materialize payload bytes."""
+        """Read the managed PDF through the shared structure boundary."""
 
-        # 附件恒为托管目录里的独占副本, 位置就是可以直接交给 pymupdf 的绝对路径。
-        path = self.location_attachment(self.primary(item.id))
-        with pymupdf.open(path) as pdf:
-            if pdf.needs_pass:
-                raise ContentError("pdf_password_required")
-            return int(pdf.page_count)
+        payload, _media_type = self.read(item)
+        try:
+            return pdf_document_info(payload).page_count
+        except PdfPasswordError as error:
+            raise ContentError("pdf_password_required") from error
+        except PdfDocumentError as error:
+            raise ContentError("pdf_parse_failed") from error
 
     def project(self, project_id: str, view: LiteratureView) -> LiteratureView:
         del project_id

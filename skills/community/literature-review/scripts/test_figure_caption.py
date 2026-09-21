@@ -11,6 +11,8 @@ import types
 import unittest
 from unittest.mock import patch
 
+import pypdfium2
+
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'lib'),str(ROOT/'scripts'),str(ROOT/'scripts/generation/figures/_fast')]
 from figure_caption import caption_text, caption_latex, caption_errors
@@ -74,9 +76,8 @@ class CaptionTest(unittest.TestCase):
             document.write_text(r'\documentclass{article}\usepackage[T1]{fontenc}\usepackage{graphicx}\begin{document}'+text+r'\end{document}')
             run=subprocess.run(['pdflatex','-interaction=nonstopmode','-halt-on-error',document.name],cwd=document.parent,capture_output=True,text=True)
             self.assertEqual(run.returncode,0,run.stdout[-2000:])
-            import fitz
-            with fitz.open(document.with_suffix('.pdf')) as pdf:
-                rendered=' '.join(' '.join(p.get_text() for p in pdf).split())
+            with pypdfium2.PdfDocument(document.with_suffix('.pdf')) as pdf:
+                rendered=' '.join(' '.join(pdf[index].get_textpage().get_text_bounded() for index in range(len(pdf))).split())
             self.assertIn('12% coverage',rendered)
             self.assertIn('AT&T',rendered)
             self.assertIn('literal { brace.',rendered)

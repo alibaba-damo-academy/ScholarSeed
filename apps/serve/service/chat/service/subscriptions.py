@@ -58,10 +58,14 @@ class SubscriptionService:
         bridge: CompletionBridge,
         *,
         client: httpx.AsyncClient | None = None,
+        shared_ownership: bool = False,
     ) -> None:
         self.profiles = profiles
         self.credentials = credentials
         self.bridge = bridge
+        # machine 轴下连接归这台机器: 授权事务、目录任务、热桥一律按机器级归属身份键控,
+        # 因此账号登出不该撕它们(见 logout)。
+        self._shared_ownership = bool(shared_ownership)
         self.client = client or httpx.AsyncClient(
             timeout=OAUTH_HTTP_TIMEOUT_SECONDS,
             follow_redirects=False,
@@ -101,14 +105,17 @@ class SubscriptionService:
             "billing": SUBSCRIPTION_BILLING,
         }
 
-    async def login(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+    async def login(
+        self, owner_id: str, connection_id: str, *, user_id: str = ""
+    ) -> dict[str, Any]:
         profile = self.profile(owner_id, connection_id)
         if self.credentials.read(owner_id, connection_id).state == CredentialState.CONNECTED:
             raise OAuthFailure("oauth_disconnect_before_login")
         epoch = self._owner_epochs[owner_id]
         generation = self.credentials.read(owner_id, connection_id).generation
         authorization = self.authorizations[profile[OAUTH_PROVIDER_KEY]]
-        result = await authorization.start(owner_id, connection_id)
+        # user_id 是真实账号, 只作凭据行的 owner 戳; 事务键控仍按归属身份 owner_id。
+        result = await authorization.start(owner_id, connection_id, account_id=user_id)
         if (
             self._owner_epochs[owner_id] != epoch
             or self.credentials.read(owner_id, connection_id).generation != generation
@@ -142,6 +149,11 @@ class SubscriptionService:
         self.bridge.revoke_connection(owner_id, connection_id)
 
     async def logout(self, owner_id: str) -> None:
+        if self._shared_ownership:
+            # 连接归这台机器: 授权事务、目录任务与热桥都按机器级归属身份键控, 账号登出既不
+            # 该吊销它们, 拿真实账号也匹配不上它们的键。显式返回, 不靠键失配"碰巧"什么也不做。
+            LOGGER.info("subscription_logout_skipped_shared_ownership owner=%s", owner_id)
+            return
         self._owner_epochs[owner_id] = self._owner_epochs.get(owner_id, 0) + 1
         for profile in self.profiles.list(owner_id=owner_id)["profiles"]:
             if is_oauth_connection(profile):
@@ -188,6 +200,14 @@ class SubscriptionService:
                     task.cancel()
 
     async def models(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        return await self._directory(owner_id, connection_id, complete=False)
+
+    async def catalog(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        return await self._directory(owner_id, connection_id, complete=True)
+
+    async def _directory(
+        self, owner_id: str, connection_id: str, *, complete: bool
+    ) -> dict[str, Any]:
         self.profile(owner_id, connection_id)
         owner_epoch = self._owner_epochs[owner_id]
         scope = (owner_id, connection_id)
@@ -195,7 +215,7 @@ class SubscriptionService:
         task = asyncio.current_task()
         self._directories[task] = scope
         try:
-            result = await self._models(owner_id, connection_id)
+            result = await self._models(owner_id, connection_id, complete=complete)
             if (
                 self._owner_epochs[owner_id] != owner_epoch
                 or self._connection_epochs.get(scope, 0) != connection_epoch
@@ -206,7 +226,9 @@ class SubscriptionService:
         finally:
             self._directories.pop(task, None)
 
-    async def _models(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+    async def _models(
+        self, owner_id: str, connection_id: str, *, complete: bool = False
+    ) -> dict[str, Any]:
         profile = self.profile(owner_id, connection_id)
         policy = OAUTH_PROVIDERS[profile[OAUTH_PROVIDER_KEY]]
         material = await self.resolve(owner_id, connection_id, require_enabled=False)
@@ -265,6 +287,8 @@ class SubscriptionService:
         except (ValueError, KeyError, TypeError):
             raise OAuthFailure("oauth_models_invalid") from None
         self.profile(owner_id, connection_id)
+        if complete:
+            return payload
         return {"ok": True, "models": models, "message": ""}
 
     async def validate_models(
@@ -322,6 +346,7 @@ class SubscriptionService:
             connection_id=connection_id,
             session_id=session_id,
             credential_resolver=self.resolve,
+            catalog_resolver=self.catalog,
             request_policy=request_policy,
             model_routes=model_routes,
             trust_env=SUBSCRIPTION_TRUST_ENV,

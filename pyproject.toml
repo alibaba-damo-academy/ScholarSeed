@@ -30,12 +30,15 @@ desktop = [
 dev = [
     "black>=24",
     "build>=1",
+    "dmgbuild==1.6.7; sys_platform == 'darwin'",
     "isort>=5",
     "jsonschema>=4",
     "mypy>=1.15,<2",
-    "pylint>=3.3,<4",
+    "pyright[nodejs]==1.1.414",
+    "ruff==0.16.8",
     "pytest>=9.1,<10",
     "pytest-asyncio>=1.4,<2",
+    "reportlab>=4.4,<6",
     "types-PyYAML>=6.0.12",
     "types-openpyxl>=3.1",
 ]  # 格式化、静态检查与测试运行器 (make fmt / make lint / make typecheck / pytest)
@@ -96,6 +99,7 @@ venvPath = "."
 venv = ".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
+analyzeUnannotatedFunctions = true
 include = ["apps/serve/service", "packages/runtime/scholarseed_runtime", "packages/adapters", "scripts"]
 exclude = [
     "**/node_modules",
@@ -106,6 +110,7 @@ exclude = [
     "tmp",
     "apps/desktop",
     "packages/damoatrace",
+    "apps/serve/service/capabilities/skills",
 ]
 # Tool 子类 execute(inputs: <具体 Pydantic 模型>) 对基类 execute(inputs: BaseModel) 做参数收窄,
 # 是工具系统的**有意设计** (每个工具声明自己的输入模型); LSP 逆变告警在此模式下是噪音, 关掉。
@@ -138,90 +143,32 @@ exclude = '''(?x)(
   | (^|/)(dist|build)/
 )'''
 
-[tool.pylint.main]
-py-version = "3.12"
-ignore-paths = [
-    "^apps/desktop/.*$",
-    "^packages/damoatrace/.*$",
-    # 技能源码是随仓开源的一方技能资产 (skills/community/), 由 prebundle 契约与技能自身的
-    # 门禁校验; 编译产出 apps/serve/service/capabilities/skills/ 是生成物, 不手工维护。
-    "^skills/.*$",
-    "^apps/serve/service/capabilities/skills/.*$",
-    "(^|/)node_modules/.*$",
-    "(^|/)__pycache__/.*$",
-    "(^|/)\\.venv/.*$",
-    "^tmp/.*$",
-    "(^|/)(dist|build)/.*$",
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+preview = true
+force-exclude = true
+extend-exclude = [
+    "apps/desktop",
+    "packages/damoatrace",
+    "skills",
+    "apps/serve/service/capabilities/skills",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv",
+    "tmp",
+    "**/dist",
+    "**/build",
 ]
 
-[tool.pylint.format]
-max-line-length = 100
-
-[tool.pylint.imports]
-# Pylint only exposes an explicit third-party classification. Treat workspace
-# distributions as installed dependencies for its ordering check so ignored legacy
-# checkout directories cannot make the result depend on local filesystem residue.
-known-third-party = [
-    "scholarseed_runtime",
-    "damoatrace",
-    "service",
-    "scholarseed_codex",
-    "scholarseed_dsh",
-]
-
-[tool.pylint.messages_control]
-# 这些是项目已有的文档与复杂度约定，不是可靠的缺陷信号：格式由 black/isort
-# 负责，公开文档由 Markdown/skill 资产承载。其余的运行时边界类告警也在这里统一处理：
-# agent 的 provider、sandbox、plugin 和 callback 边界必须保留原始异常/兼容签名，不能为了
-# 迎合静态启发式改变恢复语义。E/F 级错误、导入位置、未解析依赖和真实成员访问仍保持启用。
-disable = [
-    "attribute-defined-outside-init",
-    "broad-exception-caught",
-    "chained-comparison",
-    "consider-using-in",
-    "consider-using-with",
-    "cyclic-import",
-    "disallowed-name",
-    "duplicate-code",
-    "f-string-without-interpolation",
-    "global-statement",
-    "invalid-name",
-    "invalid-overridden-method",
-    "line-too-long",
-    "logging-fstring-interpolation",
-    "missing-class-docstring",
-    "missing-function-docstring",
-    "missing-module-docstring",
-    "no-else-return",
-    "protected-access",
-    "raise-missing-from",
-    "redefined-builtin",
-    "redefined-outer-name",
-    "simplifiable-condition",
-    "subprocess-run-check",
-    "superfluous-parens",
-    "too-many-nested-blocks",
-    "too-few-public-methods",
-    "too-many-arguments",
-    "too-many-boolean-expressions",
-    "too-many-branches",
-    "too-many-instance-attributes",
-    "too-many-lines",
-    "too-many-locals",
-    "too-many-positional-arguments",
-    "too-many-public-methods",
-    "too-many-return-statements",
-    "too-many-statements",
-    "try-except-raise",
-    "unnecessary-comprehension",
-    # Protocol / stub 声明惯例: platform 层 Port 的方法体是 docstring + `...`。
-    # pylint 认为有 docstring 后 `...` 多余, 但去掉它会让「这是声明、不是实现」这层
-    # 意图消失 (typeshed 同样保留)。全仓 Port 方法一致采用此写法。
-    "unnecessary-ellipsis",
-    "unspecified-encoding",
-    "unused-argument",
-    "unused-variable",
-    "use-dict-literal",
+[tool.ruff.lint]
+select = ["E", "F", "PL", "B006", "B018", "B023", "D419"]
+ignore = [
+    "E501", "F541", "F841",
+    "PLR0904", "PLR0911", "PLR0912", "PLR0913", "PLR0914", "PLR0915",
+    "PLR0916", "PLR0917", "PLR1702", "PLR1714", "PLR1716",
+    "PLW0603", "PLW1510", "PLW1514",
+    "PLC1901", "PLC2701", "PLR2004", "PLR6104", "PLR6201", "PLR6301", "PLW0717",
 ]
 
 

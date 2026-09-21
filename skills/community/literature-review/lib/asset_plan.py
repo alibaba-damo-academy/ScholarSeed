@@ -40,7 +40,7 @@ def plan_errors(outline, allowed):
                     if not isinstance(asset.get(field),str) or not asset[field].strip():errors.append(where+': nonempty '+field+' required')
                 if isinstance(asset.get('caption_draft'),str):
                     from figure_caption import caption_errors
-                    errors.extend(where+': '+e for e in caption_errors(asset['caption_draft']))
+                    errors.extend(where+': '+e for e in caption_errors(asset['caption_draft'], field='caption_draft'))
                 pids=asset.get('paper_ids')
                 if not isinstance(pids,list) or any(not isinstance(pid,str) for pid in pids):errors.append(where+': paper_ids must be an array of source IDs')
                 elif set(pids)-set(allowed):errors.append(where+': paper_ids absent from selected evidence: '+str(sorted(set(pids)-set(allowed))))

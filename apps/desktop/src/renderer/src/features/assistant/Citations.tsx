@@ -82,7 +82,7 @@ export function CitationLink({ sessionId, answerId, text, range, handle, childre
   sessionId: string; answerId: string; text: string; range?: CitationLinkRange; handle?: string; children: React.ReactNode; displayNumber?: number; onResolved?: (source: CitationResolution) => void
 }): React.JSX.Element {
   const { t, statuses, location } = useCitationText()
-  const { state, act } = useApp()
+  const { act } = useApp()
   const workspace = useWorkspaceController()
   const trigger = useRef<HTMLButtonElement>(null)
   const mounted = useRef(true)
@@ -118,8 +118,7 @@ export function CitationLink({ sessionId, answerId, text, range, handle, childre
   const reveal = async (source: CitationResolution): Promise<void> => {
     const tabId = await workspace.revealCitation(source, source.matches[0])
     if (mounted.current) {
-      act.activateTab(tabId)
-      if (state.aiPanel.cover) act.toggleAiPanelCover()
+      act.activateTab(tabId, { returnToExpandedAssistantOnClose: true })
     }
   }
   const open = async (): Promise<void> => {

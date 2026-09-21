@@ -3,7 +3,6 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { createFormatters } from '../../../../localization/format'
-import { useAccountIdentity } from '../../components/business/AccountMenu'
 import attachmentIconHtml from '../../assets/icon-html.png'
 import attachmentIconImg from '../../assets/icon-img.png'
 import attachmentIconMusic from '../../assets/icon-music.png'
@@ -81,16 +80,15 @@ import {
   classifyPaperMetaFailure,
   canSyncMetadata,
   PAPER_META_FAILURE_KEYS,
-  needsMetadataSync,
   paperMetaDescriptionKey,
   paperMetaDiff,
   paperMetaFields,
   paperMetaPickedFields,
-  paperMetaRecord,
+  paperMetaTitleKey,
   requiresConfirmation,
   selectPaperMetaQuery,
   type PaperMetaDiffRow,
-  type PaperMetaRecord
+  type PaperMetaMatch
 } from './metadata'
 import { LiteratureNotes } from './Notes'
 import { AttachmentImportDialog } from './Import'
@@ -349,6 +347,7 @@ function StatusCard({
   reason,
   failure,
   tone = 'default',
+  testId,
   children
 }: {
   icon: React.ReactNode
@@ -356,6 +355,7 @@ function StatusCard({
   reason?: string
   failure?: string
   tone?: 'default' | 'warning'
+  testId?: string
   children?: React.ReactNode
 }): React.JSX.Element {
   const { t: literature } = useTranslation('literature')
@@ -371,7 +371,7 @@ function StatusCard({
     <span className={`inline-flex shrink-0 ${iconClassName}`}>{icon}</span>
   )
   return (
-    <div className={cardClassName}>
+    <div className={cardClassName} data-testid={testId}>
       {reason ? (
         <Tooltip align="start" content={reason} portalled side="bottom">
           {iconNode}
@@ -1003,7 +1003,6 @@ export function LiteratureDetail({
   const { t: literature } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const { act, state } = useApp()
-  const { user } = useAccountIdentity(state.backendReady)
   const { toast } = useToast()
   const format = createFormatters(state.lang)
   const projectId = state.homeSelectedProjectId ?? undefined
@@ -1027,7 +1026,7 @@ export function LiteratureDetail({
     useState<LiteratureAttachmentSummary | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>(DETAIL_TAB.info)
   const [syncing, setSyncing] = useState(false)
-  const [syncMatch, setSyncMatch] = useState<PaperMetaRecord | null>(null)
+  const [syncMatch, setSyncMatch] = useState<PaperMetaMatch | null>(null)
   const [syncPicked, setSyncPicked] = useState<Set<string>>(new Set())
   const [syncMissed, setSyncMissed] = useState(false)
   const [identifierFocus, setIdentifierFocus] = useState<{
@@ -1188,11 +1187,12 @@ export function LiteratureDetail({
     }
   }
   /**
-   * 同步元数据: DOI/arXiv 公开 BibTeX 优先，标题搜索需要账号。
+   * 同步元数据: DOI/arXiv 公开 BibTeX 优先，都没有才按标题检索 OpenAlex，三条腿都免登录。
    *
    * doi/arxiv 是标识符解析, 命中即唯一, 直接落库; title 是模糊匹配, 命中先弹逐字段
-   * 对比确认框 (默认只勾选与现值不同的字段)。配额用尽单独提示 (用户能行动),
-   * 未命中给出补充标识入口, 其余失败一律「同步元数据失败」。
+   * 对比确认框 (默认只勾选与现值不同的字段) —— 确认与否只看维度, 不看响应形状,
+   * 因为 serve 侧三腿同形返回 `{ success, fields, bib_type? }`。上游限流单独提示
+   * (用户能行动), 未命中给出补充标识入口, 其余失败一律「同步元数据失败」。
    */
   const syncMetadata = async (): Promise<void> => {
     if (!item || syncing) return
@@ -1202,12 +1202,8 @@ export function LiteratureDetail({
     setError(null)
     try {
       const payload = await fetchPaperMeta(query)
-      if (payload.fields) {
-        await applyMetadata(payload.fields, payload.bib_type)
-        return
-      }
-      const record = paperMetaRecord(payload)
-      if (!record) {
+      const fields = paperMetaFields(payload)
+      if (!Object.keys(fields).length) {
         setSyncMissed(true)
         toast({ title: literature('detail.sync.missed'), tone: 'error' })
         return
@@ -1215,15 +1211,15 @@ export function LiteratureDetail({
       if (requiresConfirmation(query.dimension)) {
         setSyncPicked(
           new Set(
-            paperMetaDiff(record, item)
+            paperMetaDiff(fields, item)
               .filter((row) => row.current !== row.next)
               .map((row) => row.field)
           )
         )
-        setSyncMatch(record)
+        setSyncMatch({ fields, bibType: payload.bib_type })
         return
       }
-      await applyMetadata(paperMetaFields(record))
+      await applyMetadata(fields, payload.bib_type)
     } catch (reason) {
       const kind = classifyPaperMetaFailure(reason instanceof LiteratureApiError ? reason.failure : null)
       toast({
@@ -1240,7 +1236,7 @@ export function LiteratureDetail({
     setIdentifierFocus({ field, nonce: Date.now() })
   }
   const syncQuery = item ? selectPaperMetaQuery(item) : null
-  const showSync = Boolean(item && canSyncMetadata(item, Boolean(user)))
+  const showSync = Boolean(item && canSyncMetadata(item))
   const fulltextAvailable = isAttachmentAvailable(item?.primary_attachment)
   const hasFulltextIdentifier = (currentItem: Detail): boolean =>
     Boolean(currentItem.doi?.trim() || currentItem.arxiv?.trim())
@@ -1259,12 +1255,27 @@ export function LiteratureDetail({
    * 无全文提示卡: 状态 (尚无/丢失/失败) + 下一步操作。
    *
    * 与元信息卡同屏时操作降为次级 (需求: 双卡只突出一个主操作, 元信息为主);
-   * 失败态把真实原因常驻展示, 并给「重试」「添加 PDF」两条出路。
+   * 「上传全文」是常驻出路 (无标识也能自己补 PDF), 状态自己的动作排在它右边;
+   * 失败态额外把真实原因常驻展示。
    */
   const fulltextCard = (currentItem: Detail, secondary: boolean): React.JSX.Element => {
     const lost = currentItem.primary_attachment != null
     const failure = failureKind === 'fulltext' ? arxivError : null
     const actionVariant = secondary ? 'secondary' : undefined
+    // 上传全文是这张卡的常驻入口: 没有 DOI/arXiv 也能自己补 PDF, 所以各状态共用同一个
+    // 按钮, 状态自己的动作排在它右边。入口只有 primaryInput 一个 (单文件 + 仅 PDF)。
+    const uploadFulltext = (
+      variant: React.ComponentProps<typeof Button>['variant']
+    ): React.JSX.Element => (
+      <Button
+        size="sm"
+        variant={variant}
+        loading={uploading === 'primary'}
+        onClick={() => primaryInput.current?.click()}
+      >
+        {literature('detail.uploadFulltext')}
+      </Button>
+    )
     return (
       <StatusCard
         icon={<StickyNote size={18} />}
@@ -1288,6 +1299,7 @@ export function LiteratureDetail({
       >
         {failure ? (
           <>
+            {uploadFulltext('secondary')}
             <Button
               size="sm"
               variant={actionVariant}
@@ -1296,43 +1308,33 @@ export function LiteratureDetail({
             >
               {literature('detail.retry')}
             </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={uploading === 'primary'}
-              onClick={() => primaryInput.current?.click()}
-            >
-              {literature('detail.addPdf')}
-            </Button>
           </>
         ) : lost ? (
-          <Button
-            size="sm"
-            variant={actionVariant}
-            loading={uploading === 'primary'}
-            onClick={() => primaryInput.current?.click()}
-          >
-            {literature('detail.choosePdf')}
-          </Button>
-        ) : hasFulltextIdentifier(currentItem) ? (
-          <Button
-            size="sm"
-            variant={actionVariant}
-            loading={fetchingArxiv}
-            onClick={() => void fetchArxiv()}
-          >
-            {fetchingArxiv
-              ? literature('detail.fetching')
-              : literature('detail.fetchFulltext')}
-          </Button>
+          uploadFulltext(actionVariant)
         ) : (
-          <Button
-            size="sm"
-            variant={actionVariant}
-            onClick={() => focusIdentifier('arxiv')}
-          >
-            {literature('detail.supplementArxiv')}
-          </Button>
+          <>
+            {uploadFulltext('secondary')}
+            {hasFulltextIdentifier(currentItem) ? (
+              <Button
+                size="sm"
+                variant={actionVariant}
+                loading={fetchingArxiv}
+                onClick={() => void fetchArxiv()}
+              >
+                {fetchingArxiv
+                  ? literature('detail.fetching')
+                  : literature('detail.fetchFulltext')}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant={actionVariant}
+                onClick={() => focusIdentifier('arxiv')}
+              >
+                {literature('detail.supplementArxiv')}
+              </Button>
+            )}
+          </>
         )}
       </StatusCard>
     )
@@ -1472,7 +1474,7 @@ export function LiteratureDetail({
               label={literature('relations.deleteAttachment')}
               variant="ghostIcon"
               className="enabled:hover:!text-[var(--vds-error-text-primary)] enabled:active:!text-[var(--vds-error-text-primary)] enabled:hover:[&_.vds-icon]:!text-[var(--vds-error-text-primary)] enabled:active:[&_.vds-icon]:!text-[var(--vds-error-text-primary)]"
-              icon={<Icon name="trash" size={16} />}
+              icon={<Trash size={16} />}
               onClick={() => setDeleteTarget(attachment)}
             />
             <AttachmentImportDialog
@@ -1814,8 +1816,9 @@ export function LiteratureDetail({
               <div className="mb-[var(--vds-space-3)] grid gap-[var(--vds-space-2)]">
                 {showSync && syncQuery ? (
                   <StatusCard
+                    testId="literature-sync-banner"
                     icon={<Info size={18} />}
-                    title={literature(needsMetadataSync(item) ? 'detail.sync.bannerTitle' : 'detail.sync.action')}
+                    title={literature(paperMetaTitleKey(syncQuery.dimension))}
                     tone="warning"
                     reason={literature(
                       paperMetaDescriptionKey(syncQuery.dimension)
@@ -1832,6 +1835,7 @@ export function LiteratureDetail({
                     ) : null}
                     <Button
                       size="sm"
+                      variant="outline"
                       loading={syncing}
                       icon={<Icon name="refresh" size={14} />}
                       onClick={() => void syncMetadata()}
@@ -2009,7 +2013,7 @@ export function LiteratureDetail({
               <div className="min-h-0 overflow-y-auto">
                 <PaperMetaDiffView
                   item={item}
-                  rows={paperMetaDiff(syncMatch, item)}
+                  rows={paperMetaDiff(syncMatch.fields, item)}
                   selected={syncPicked}
                   onToggle={(field, checked) =>
                     setSyncPicked((current) => {
@@ -2036,7 +2040,8 @@ export function LiteratureDetail({
                 onClick={() => {
                   if (syncMatch)
                     void applyMetadata(
-                      paperMetaPickedFields(syncMatch, syncPicked)
+                      paperMetaPickedFields(syncMatch.fields, syncPicked),
+                      syncMatch.bibType
                     )
                 }}
               >

@@ -59,6 +59,14 @@
     "nextTurn": "模型与思考深度将在下一轮生效。"
   },
   "reasoning": {
+    "noneShort": "不思考",
+    "minimalShort": "极低",
+    "lowShort": "低",
+    "mediumShort": "中",
+    "highShort": "高",
+    "xhighShort": "超高",
+    "maxShort": "最高",
+    "ultraShort": "极高",
     "none": "不思考 (none)",
     "minimal": "极低 (minimal)",
     "low": "低 (low)",

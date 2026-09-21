@@ -17,6 +17,18 @@ class ModelWireProtocol(str, Enum):
     CHAT_COMPLETIONS = "chat_completions"
 
 
+class ModelToolProtocol(str, Enum):
+    PROVIDER_NATIVE = "provider_native"
+    JSON_SCHEMA = "json_schema"
+
+
+@dataclass(frozen=True)
+class ModelCapabilities:
+    tool_protocol: ModelToolProtocol = ModelToolProtocol.PROVIDER_NATIVE
+    input_modalities: tuple[str, ...] | None = None
+    reasoning_efforts: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class ModelCredential:
     """Ephemeral secret material; never persist or include in runtime evidence."""
@@ -64,9 +76,12 @@ class ModelIntent:
     reasoning_effort: str = ""
     thinking: ModelThinking | None = None
     service_tier: str = ""
+    capabilities: ModelCapabilities = ModelCapabilities()
 
 
 __all__ = [
+    "ModelCapabilities",
+    "ModelToolProtocol",
     "ModelConnectionMode",
     "ModelCredential",
     "ModelCredentialPort",

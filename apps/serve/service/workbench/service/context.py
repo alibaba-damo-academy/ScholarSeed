@@ -15,7 +15,6 @@ from pathlib import PurePosixPath
 from typing import Any
 from zipfile import BadZipFile
 
-import pymupdf
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
 
@@ -39,6 +38,8 @@ from service.platform.context import (
 )
 from service.platform.pdf import (
     PdfSelectionError,
+    pdf_document_info,
+    pdf_page_layout,
     pdf_selection_matches,
     resolve_pdf_selection,
 )
@@ -306,14 +307,10 @@ def _action_context(
     if locator_kind in (LOCATOR_TEXT, LOCATOR_MARKDOWN):
         return _bounded_context(payload.decode(UTF8_ENCODING), selected)
     if locator_kind == LOCATOR_PDF:
-        document = pymupdf.open(stream=payload, filetype="pdf")
-        try:
-            page_number = _integer(locator, "page")
-            if page_number < 1 or page_number > document.page_count:
-                raise SelectionLocatorError("pdf_page")
-            return _bounded_context(document[page_number - 1].get_text(), selected)
-        finally:
-            document.close()
+        page_number = _integer(locator, "page")
+        if page_number < 1 or page_number > pdf_document_info(payload).page_count:
+            raise SelectionLocatorError("pdf_page")
+        return _bounded_context(pdf_page_layout(payload, page_number).text, selected)
     if locator_kind == LOCATOR_WRITER:
         processor = _writer_processor(source_id, locator)
         try:

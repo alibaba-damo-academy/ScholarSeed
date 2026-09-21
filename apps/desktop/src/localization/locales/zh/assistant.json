@@ -74,8 +74,6 @@
     "shrink": "缩小对话",
     "expand": "放大对话",
     "close": "关闭",
-    "projectSessions": "本项目的对话",
-    "unassignedSessions": "未归属的对话",
     "searchPlaceholder": "搜索会话名称和消息",
     "searchLabel": "搜索历史会话",
     "loadingSessions": "正在加载会话…",

@@ -59,6 +59,14 @@
     "nextTurn": "Model and reasoning effort changes will apply on the next turn."
   },
   "reasoning": {
+    "noneShort": "None",
+    "minimalShort": "Minimal",
+    "lowShort": "Low",
+    "mediumShort": "Medium",
+    "highShort": "High",
+    "xhighShort": "Extra high",
+    "maxShort": "Max",
+    "ultraShort": "Ultra",
     "none": "none",
     "minimal": "minimal",
     "low": "low",

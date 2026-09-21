@@ -13,6 +13,10 @@ CODEX_LOCAL_FILE_CONTEXT = (
     "User-selected local file (use this exact path when the request refers to the "
     "attached file): {identity}"
 )
+CODEX_LOCAL_DIRECTORY_CONTEXT = (
+    "User-selected local directory (use this exact directory path when the request refers to "
+    "the attached folder; its contents have not been read): {identity}"
+)
 
 
 def serialize_input(turn_input: TurnInput, cwd: Path) -> list[dict[str, Any]]:
@@ -32,6 +36,21 @@ def serialize_input(turn_input: TurnInput, cwd: Path) -> list[dict[str, Any]]:
                 {
                     "type": "text",
                     "text": CODEX_LOCAL_FILE_CONTEXT.format(
+                        identity=json.dumps(
+                            {"name": item.name or path.name, "path": str(path)},
+                            ensure_ascii=False,
+                        )
+                    ),
+                }
+            )
+        elif item.kind == InputKind.DIRECTORY:
+            if item.path is None:
+                raise ValueError("local directory input requires a path")
+            path = item.path.expanduser()
+            serialized.append(
+                {
+                    "type": "text",
+                    "text": CODEX_LOCAL_DIRECTORY_CONTEXT.format(
                         identity=json.dumps(
                             {"name": item.name or path.name, "path": str(path)},
                             ensure_ascii=False,

@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Dict, Sequence
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from service.identity.api.handoff import build_handoff_router
@@ -95,7 +96,7 @@ def register_auth(
     async def logout(request: Request) -> Dict[str, Any]:
         credential = bearer_or_cookie(request)
         # 先解析再吊销: 吊销后这条凭据就认不出人了, 拿不到要摘的槽位。
-        who = auth.identity(credential)
+        who = await run_in_threadpool(auth.identity, credential)
         ok = auth.logout(credential)
         if account_tokens is not None and who is not None:
             # 不摘的话这份 JWT 会一直留在进程内存里可被出站调用取用, 直到 serve 重启。
@@ -196,7 +197,11 @@ def register_auth_middleware(
         # 是否因“无身份”而 401，仍单独交给 protects 决定，未登录可用因此不变。
         credential = bearer_or_cookie(request)
         request.state.auth_credential_present = bool(credential)
-        who = service.identity(credential) if credential else None
+        # identity 内部是同步 httpx。稳态下它只读内存缓存，但冷启动首拉与 JWKS 的 kid
+        # 未命中仍会出网最多 HTTP_TIMEOUT_S：在 async middleware 里直接调会把整个事件
+        # 循环冻住（连带所有并发请求），故挪进线程池。sync 路由（/api/auth/me）由
+        # FastAPI 自己放线程池，不需要这一层。
+        who = await run_in_threadpool(service.identity, credential) if credential else None
         request.state.auth_identity_rejected = bool(credential) and who is None
         if who is not None:
             request.state.user_id = who["user_id"]

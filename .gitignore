@@ -32,7 +32,7 @@ dist/
 build/
 target/
 out/
-release/
+/release/
 .output/
 .tmp*
 tmp/
@@ -59,6 +59,7 @@ blob-report/
 .env.*
 !.env.example
 secrets.*
+!apps/serve/service/chat/runtime/secrets.py
 *.pem
 *.key
 *.p12

@@ -10,7 +10,11 @@ import {
   setDefaultModel,
   setSessionModel
 } from '../../api'
-import { personalModelId, selectedSessionModelKey } from '../../catalog'
+import {
+  hasSelectableModel,
+  personalModelId,
+  selectedSessionModelKey
+} from '../../catalog'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import {
@@ -20,6 +24,7 @@ import {
   PopoverTrigger
 } from '../ui'
 import IconFont from '../primitive'
+import { Effort, useEffort } from './Effort'
 
 // ModelMenu.tsx — the model picker, anchored under the composer control row
 // (PRD 2.1.2 modification 1). It keeps the three catalogue groups the product
@@ -46,13 +51,7 @@ const MODEL_CHIP_CLASS = [
   'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
   'hover:bg-[var(--vds-surface-hover)] focus-visible:bg-[var(--vds-surface-hover)]'
 ].join(' ')
-// 触发器外框宽度: 跟随内容宽度, 紧凑态(AI 面板)以 160px 收口、完整态以 180px 收口,
-// 工具栏够宽时不再被固定宽度提前截断; 收窄时仍可压缩, 由内部标签走 ellipsis。
-const MODEL_CHIP_FRAME_CLASS = (compact: boolean): string =>
-  [
-    'relative min-w-0 flex-[0_1_auto]',
-    compact ? 'max-w-[160px]' : 'max-w-[180px]'
-  ].join(' ')
+const MODEL_CHIP_FRAME_CLASS = 'relative min-w-0 flex-[0_1_auto]'
 const MODEL_MENU_PANEL_CLASS = [
   // 宽度跟随目录内容收口, 上限仍是原来的 320px 与视口边距的较小者: 短模型名不再撑出
   // 大片空白, 长个人模型标签照旧在上限内换行。
@@ -118,23 +117,29 @@ export function ModelMenu({
   const { t } = useTranslation('components')
   const { t: account } = useTranslation('account')
   const { models, subscriptionGroups } = state.catalog
+  const effort = useEffort()
+  const [showModels, setShowModels] = React.useState(false)
   const selectedModelKey = selectedSessionModelKey(
     state.model,
     state.activeSession,
     state.threads
   )
   const selectedModel = models.find((model) => model.key === selectedModelKey)
+  // 一个可选模型都没有时（未登录且未配置自有连接），持久化的默认键即使还指向某个置灰行,
+  // 也不该再把它当「当前模型」展示: 按钮回到「选择模型」, 灰行上也不留选中标记。
+  const modelAvailable = hasSelectableModel(models)
   // 选中的模型可能已不在目录里(用户在模型管理里关掉了它的显示、停用了那条连接, 或删了它)。
   // 此时**不自动换成别的模型** —— 如实标不可用, 由用户决定。渲染必须走模型段而不是整串,
   // 否则复合 key 会以 `personal-<hex>:<model>` 的形态泄漏成用户可见文案。
   const unavailableModelId = selectedModel
     ? ''
     : personalModelId(selectedModelKey)
-  const selectedLabel =
-    (selectedModel && modelDisplayLabels(selectedModel, account).label) ||
-    (unavailableModelId &&
-      t('models.unavailable', { model: unavailableModelId })) ||
-    (compact ? t('models.choose') : '—')
+  const selectedLabel = !modelAvailable
+    ? t('models.choose')
+    : (selectedModel && modelDisplayLabels(selectedModel, account).label) ||
+      (unavailableModelId &&
+        t('models.unavailable', { model: unavailableModelId })) ||
+      (compact ? t('models.choose') : '—')
   const subscriptionModels = React.useMemo(
     () => models.filter((model) => model.billing === 'subscription' && model.source !== 'builtin'),
     [models]
@@ -144,6 +149,7 @@ export function ModelMenu({
     [models]
   )
   const panelRef = React.useRef<HTMLDivElement | null>(null)
+  const controlsRef = React.useRef<HTMLButtonElement | null>(null)
   const switching = React.useRef(false)
   const [pending, setPending] = React.useState<{
     sessionId: string | null
@@ -157,14 +163,15 @@ export function ModelMenu({
   // off-screen, so open at the selection instead of making the user hunt for it.
   React.useEffect(() => {
     if (!state.modelMenuOpen) return
-    panelRef.current
-      ?.querySelector<HTMLElement>('[data-selected="true"]')
-      ?.scrollIntoView({ block: 'nearest' })
-  }, [state.modelMenuOpen, selectedModelKey])
+    const selected = panelRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
+    selected?.scrollIntoView({ block: 'nearest' })
+    if (showModels) selected?.focus()
+    else controlsRef.current?.focus()
+  }, [state.modelMenuOpen, selectedModelKey, showModels])
 
   const selectModel = async (model: ModelInfo): Promise<void> => {
     if (switching.current) return
-    set({ modelMenuOpen: false })
+    setShowModels(false)
     if (model.key === selectedModelKey) return
     const sessionId = state.activeSession
     switching.current = true
@@ -226,9 +233,12 @@ export function ModelMenu({
   return (
     <Popover
       open={state.modelMenuOpen}
-      onOpenChange={(open) => set({ modelMenuOpen: open })}
+      onOpenChange={(open) => {
+        if (open) setShowModels(false)
+        set({ modelMenuOpen: open })
+      }}
     >
-      <div className={MODEL_CHIP_FRAME_CLASS(compact)}>
+      <div className={MODEL_CHIP_FRAME_CLASS}>
         <PopoverTrigger asChild>
           <Button
             type="button"
@@ -237,23 +247,21 @@ export function ModelMenu({
             size="content"
             unstyled
             disabled={Boolean(pending)}
-            aria-busy={Boolean(pendingHere)}
+            aria-busy={Boolean(pendingHere) || effort.pending}
             title={
               pendingHere
                 ? t('models.switchingTo', { model: modelDisplayLabels(pendingHere.model, account).label })
-                : t('models.selection')
+                : `${selectedLabel} · ${effort.label}`
             }
             aria-expanded={state.modelMenuOpen}
           >
-            {!compact && (
-              <span className="text-[var(--text-3)]">{t('models.name')}</span>
-            )}
             <span
               className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left text-[var(--text)]"
               title={unavailableModelId ? t('models.reenable') : undefined}
             >
               {pendingHere ? t('models.switching') : selectedLabel}
             </span>
+            <span className="shrink-0 text-[var(--vds-text-tertiary)]">{effort.label}</span>
             <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
               <IconFont
                 type="icon-a-line-switch-arrow-down-s"
@@ -264,10 +272,41 @@ export function ModelMenu({
         </PopoverTrigger>
 
         <PopoverContent
+          align="end"
           aria-label={t('models.selection')}
-          data-testid="model-selector-menu"
-          className={MODEL_MENU_PANEL_CLASS}
+          data-testid={showModels ? 'model-selector-menu' : 'model-controls-menu'}
+          className={showModels ? MODEL_MENU_PANEL_CLASS : '!z-[var(--vds-z-select-content)] !w-[var(--vds-model-controls-width)] !gap-[var(--vds-space-1)] !p-[var(--vds-space-3)]'}
         >
+          {!showModels ? (
+            <>
+              <div className="flex justify-center">
+                <Button
+                  ref={controlsRef}
+                  data-testid="model-list-toggle"
+                  variant="ghost"
+                  size="content"
+                  className="h-auto w-fit max-w-full min-w-0 flex-nowrap gap-[var(--vds-space-1)] px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
+                  aria-disabled={effort.pending || Boolean(pending)}
+                  onClick={() => {
+                    if (!effort.pending && !pending) setShowModels(true)
+                  }}
+                >
+                  <span className="min-w-0 truncate">{selectedLabel}</span>
+                  <span aria-hidden="true" className="shrink-0 text-[var(--vds-text-tertiary)]">·</span>
+                  <span className="shrink-0 whitespace-nowrap text-[var(--vds-brand-text-primary)]">{effort.label}</span>
+                </Button>
+              </div>
+              <Effort
+                key={`${state.activeSession}:${selectedModelKey}`}
+                value={effort.value}
+                options={effort.options}
+                disabled={effort.disabled || Boolean(pending)}
+                pending={effort.pending}
+                onSelect={(value) => void effort.select(value)}
+              />
+            </>
+          ) : (
+            <>
           <div ref={panelRef} className={MODEL_MENU_LIST_CLASS}>
             {subscriptionModels.length > 0 && (
               <>
@@ -302,7 +341,7 @@ export function ModelMenu({
                         <ModelRow
                           key={model.key}
                           model={model}
-                          selected={model.key === selectedModelKey}
+                          selected={modelAvailable && model.key === selectedModelKey}
                           onSelect={(picked) => void selectModel(picked)}
                         />
                       ))}
@@ -318,7 +357,7 @@ export function ModelMenu({
                   <ModelRow
                     key={model.key}
                     model={model}
-                    selected={model.key === selectedModelKey}
+                    selected={modelAvailable && model.key === selectedModelKey}
                     onSelect={(picked) => void selectModel(picked)}
                     trailing={
                       <span className="max-w-[40%] whitespace-normal break-words text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]">
@@ -360,6 +399,8 @@ export function ModelMenu({
               <span className="min-w-0 flex-1">{t('models.manage')}</span>
             </Button>
           </div>
+            </>
+          )}
         </PopoverContent>
       </div>
     </Popover>

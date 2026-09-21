@@ -9,8 +9,8 @@ import logging
 import re
 from dataclasses import dataclass, replace
 from enum import Enum
+from io import BytesIO
 
-import pymupdf
 from json_repair import loads as load_repaired_json
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,13 @@ from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.pdf import LiteraturePdf
 from service.platform.content import ContentPort
 from service.platform.inference import ModelAttachment, ReasoningPolicy
+from service.platform.pdf import (
+    PdfPageLayout,
+    PdfRect,
+    pdf_document_text,
+    pdf_page_layout,
+    render_pdf_page,
+)
 
 PROMPT_VERSION = "pdf-analysis/v5"
 MAX_PDF_BYTES = 30 * 1024 * 1024
@@ -380,42 +387,37 @@ def selection_context(context: str, selected: str) -> str:
 
 
 def selection_page_context(
-    page: pymupdf.Page,
+    page: PdfPageLayout,
     selected: str,
     quads: list[tuple[float, float, float, float]],
 ) -> str:
     """Read selection context from its visual column before falling back to the page."""
     if not normalize(selected):
         raise AnalysisError(AnalysisErrorCode.SELECTION_UNLOCATED)
-    bounds = page.rect
     selected_rects = [
-        pymupdf.Rect(
-            left * bounds.width,
-            top * bounds.height,
-            right * bounds.width,
-            bottom * bounds.height,
+        PdfRect(
+            left * page.width,
+            top * page.height,
+            right * page.width,
+            bottom * page.height,
         )
         for left, top, right, bottom in quads
         if 0 <= left < right <= 1 and 0 <= top < bottom <= 1
     ]
-    blocks = [
-        (pymupdf.Rect(block[:4]), block[4].strip())
-        for block in page.get_text("blocks", sort=False)
-        if block[6] == 0 and block[4].strip()
-    ]
+    blocks = [(block.bounds, block.text) for block in page.blocks if block.text]
     column_context = ""
     if selected_rects:
-        selection_bounds = pymupdf.Rect(selected_rects[0])
+        selection_bounds = selected_rects[0]
         for rect in selected_rects[1:]:
-            selection_bounds |= rect
+            selection_bounds = selection_bounds.union(rect)
         anchors = [(rect, text) for rect, text in blocks if rect.intersects(selection_bounds)]
         if anchors:
-            column_bounds = pymupdf.Rect(anchors[0][0])
+            column_bounds = anchors[0][0]
             for rect, _ in anchors[1:]:
-                column_bounds |= rect
+                column_bounds = column_bounds.union(rect)
             column_width = max(column_bounds.width, selection_bounds.width)
 
-            def same_column(rect: pymupdf.Rect) -> bool:
+            def same_column(rect: PdfRect) -> bool:
                 overlap = max(
                     0.0,
                     min(rect.x1, column_bounds.x1) - max(rect.x0, column_bounds.x0),
@@ -431,10 +433,10 @@ def selection_page_context(
                 text
                 for _, text in sorted(
                     (block for block in blocks if same_column(block[0])),
-                    key=lambda block: (block[0].y0, block[0].x0),
+                    key=lambda block: (block[0].top, block[0].x0),
                 )
             )
-    page_context = page.get_text(sort=False)
+    page_context = page.text
     for candidate in (column_context, page_context):
         if not candidate:
             continue
@@ -491,43 +493,41 @@ def prepare(
     revision = hashlib.sha256(data).hexdigest()
     if request.revision and request.revision.removeprefix("sha256:") != revision:
         raise AnalysisError(AnalysisErrorCode.SOURCE_CHANGED)
-    with pymupdf.open(stream=data, filetype="pdf") as document:
-        if request.page > len(document):
-            raise AnalysisError(AnalysisErrorCode.PAGE_OUT_OF_RANGE)
-        pages = tuple(page.get_text(sort=True) for page in document)
-        context = "\n".join(
-            f"[第 {index + 1} 页]\n{pages[index]}"
-            for index in range(max(0, request.page - 2), min(len(pages), request.page + 1))
+    pages = pdf_document_text(data)
+    if request.page > len(pages):
+        raise AnalysisError(AnalysisErrorCode.PAGE_OUT_OF_RANGE)
+    page_layout = pdf_page_layout(data, request.page)
+    context = "\n".join(
+        f"[第 {index + 1} 页]\n{pages[index]}"
+        for index in range(max(0, request.page - 2), min(len(pages), request.page + 1))
+    )
+    selected = request.text.strip()
+    if request.kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION):
+        context = selection_page_context(page_layout, selected, request.quads)
+    else:
+        context = context[:CONTEXT_CHARS]
+    attachments: tuple[ModelAttachment, ...] = ()
+    crop = ""
+    if request.kind == ActionKind.FIGURE:
+        if request.rect is None:
+            raise AnalysisError(AnalysisErrorCode.REGION_REQUIRED)
+        x, y, width, height = request.rect
+        if min(x, y) < 0 or min(width, height) <= 0 or x + width > 1 or y + height > 1:
+            raise AnalysisError(AnalysisErrorCode.REGION_OUT_OF_RANGE)
+        clip = PdfRect(
+            x * page_layout.width,
+            y * page_layout.height,
+            (x + width) * page_layout.width,
+            (y + height) * page_layout.height,
         )
-        selected = request.text.strip()
-        if request.kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION):
-            context = selection_page_context(document[request.page - 1], selected, request.quads)
-        else:
-            context = context[:CONTEXT_CHARS]
-        attachments: tuple[ModelAttachment, ...] = ()
-        crop = ""
-        if request.kind == ActionKind.FIGURE:
-            if request.rect is None:
-                raise AnalysisError(AnalysisErrorCode.REGION_REQUIRED)
-            x, y, width, height = request.rect
-            if min(x, y) < 0 or min(width, height) <= 0 or x + width > 1 or y + height > 1:
-                raise AnalysisError(AnalysisErrorCode.REGION_OUT_OF_RANGE)
-            page = document[request.page - 1]
-            bounds = page.rect
-            clip = pymupdf.Rect(
-                x * bounds.width,
-                y * bounds.height,
-                (x + width) * bounds.width,
-                (y + height) * bounds.height,
-            )
-            pixmap = page.get_pixmap(
-                matrix=pymupdf.Matrix(CROP_SCALE, CROP_SCALE), clip=clip, alpha=False
-            )
-            if min(pixmap.width, pixmap.height) < MIN_CROP_PIXELS:
-                raise AnalysisError(AnalysisErrorCode.REGION_TOO_SMALL)
-            encoded = base64.b64encode(pixmap.tobytes("png")).decode()
-            attachments = (ModelAttachment("image/png", encoded, "figure.png"),)
-            crop = f"data:image/png;base64,{encoded}"
+        image = render_pdf_page(data, request.page, scale=CROP_SCALE, crop=clip)
+        if min(image.size) < MIN_CROP_PIXELS:
+            raise AnalysisError(AnalysisErrorCode.REGION_TOO_SMALL)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        encoded = base64.b64encode(output.getvalue()).decode()
+        attachments = (ModelAttachment("image/png", encoded, "figure.png"),)
+        crop = f"data:image/png;base64,{encoded}"
     if request.kind == ActionKind.INTERPRETATION and request.module not in (*ALL_MODULES, "all"):
         raise AnalysisError(AnalysisErrorCode.MODULE_UNSUPPORTED)
     payload = {

@@ -78,6 +78,70 @@ NOTE_MIGRATION_COLUMNS = {
     "position": "INTEGER NOT NULL DEFAULT 0",
 }
 
+SORT_ASCENDING = "ASC"
+SORT_DESCENDING = "DESC"
+#: 列表原始序：新增时间倒序，同一时间按 id 收敛。附件排序的次级键复用它，
+#: 这样「有附件的整组提前」之后组内仍是用户在未排序列表里看到的顺序。
+DEFAULT_SORT_KEY = "created_at"
+DEFAULT_SORT_COLUMN = "i.created_at"
+DEFAULT_SORT_DIRECTION = SORT_DESCENDING
+#: 所有排序共用的稳定兜底键，避免同值行的顺序随查询计划漂移。
+ROW_TIEBREAK = f"i.id {SORT_ASCENDING}"
+#: 曲别针列的排序键。
+ATTACHMENT_SORT_KEY = "attachment"
+ATTACHMENT_PRESENT = 0
+ATTACHMENT_ABSENT = 1
+ATTACHMENT_SORT_COLUMN = (
+    "CASE WHEN EXISTS (SELECT 1 FROM literature_attachments a WHERE a.literature_id=i.id)"
+    f" THEN {ATTACHMENT_PRESENT} ELSE {ATTACHMENT_ABSENT} END"
+)
+#: 可排序列 → SQL 表达式。不可排序的键落到原始序，与既有行为一致。
+SORT_COLUMNS = {
+    "title": "i.title",
+    "citation_key": "i.citation_key",
+    "item_type": "i.item_type",
+    "bib_type": "i.bib_type",
+    "subtitle": "i.subtitle",
+    "creator": "i.authors",
+    "publication": "i.publication",
+    "year": "i.year",
+    "published_date": "i.published_date",
+    "doi": "i.doi",
+    "arxiv": "i.arxiv",
+    "isbn": "i.isbn",
+    "url": "i.url",
+    "volume": "i.volume",
+    "number": "i.number",
+    "pages": "i.pages",
+    "publisher": "i.publisher",
+    "address": "i.address",
+    "created_at": "i.created_at",
+    "updated_at": "i.updated_at",
+}
+
+
+def _sort_direction(order: str) -> str:
+    """把 API 的 order 参数翻译成 SQL 方向。"""
+
+    return SORT_ASCENDING if order == "asc" else SORT_DESCENDING
+
+
+def _order_by(sort: str, order: str) -> str:
+    """构造列表 ORDER BY 子句。
+
+    附件排序只有「有 / 没有」两个值，因此次级键必须是原始序而不是全局 id 兜底，
+    否则组内顺序会被 id 重排、和用户在默认列表里看到的不一致。
+    """
+
+    direction = _sort_direction(order)
+    if sort == ATTACHMENT_SORT_KEY:
+        return (
+            f"{ATTACHMENT_SORT_COLUMN} {direction},"
+            f"{DEFAULT_SORT_COLUMN} {DEFAULT_SORT_DIRECTION},{ROW_TIEBREAK}"
+        )
+    column = SORT_COLUMNS.get(sort, DEFAULT_SORT_COLUMN)
+    return f"{column} {direction},{ROW_TIEBREAK}"
+
 
 def _json_value(value: Any) -> Any:
     if isinstance(value, Enum):
@@ -287,7 +351,7 @@ class LiteratureRepository:
         tag_ids: tuple[str, ...] = (),
         without_collection: bool = False,
         without_project: bool = False,
-        sort: str = "created_at",
+        sort: str = DEFAULT_SORT_KEY,
         order: str = "desc",
         limit: int = 200,
         offset: int = 0,
@@ -304,31 +368,7 @@ class LiteratureRepository:
         if recent_only:
             sql += " AND i.created_at >= ?" if " WHERE " in sql else " WHERE i.created_at >= ?"
             args.append(time.time() - 7 * 86400)
-        sort_columns = {
-            "title": "i.title",
-            "citation_key": "i.citation_key",
-            "item_type": "i.item_type",
-            "bib_type": "i.bib_type",
-            "subtitle": "i.subtitle",
-            "creator": "i.authors",
-            "publication": "i.publication",
-            "year": "i.year",
-            "published_date": "i.published_date",
-            "doi": "i.doi",
-            "arxiv": "i.arxiv",
-            "isbn": "i.isbn",
-            "url": "i.url",
-            "volume": "i.volume",
-            "number": "i.number",
-            "pages": "i.pages",
-            "publisher": "i.publisher",
-            "address": "i.address",
-            "created_at": "i.created_at",
-            "updated_at": "i.updated_at",
-        }
-        column = sort_columns.get(sort, "i.created_at")
-        direction = "ASC" if order == "asc" else "DESC"
-        sql = f"SELECT DISTINCT i.* {sql} ORDER BY {column} {direction},i.id ASC LIMIT ? OFFSET ?"
+        sql = f"SELECT DISTINCT i.* {sql} ORDER BY {_order_by(sort, order)} LIMIT ? OFFSET ?"
         args.extend((limit, offset))
         with connect(self.database) as c:
             return tuple(self._item(c, r, project_id) for r in c.execute(sql, args))
@@ -374,7 +414,9 @@ class LiteratureRepository:
             where.append("p.project_id=?")
             args.append(project_id)
         if without_project:
-            where.append("NOT EXISTS (SELECT 1 FROM literature_projects p WHERE p.literature_id=i.id)")
+            where.append(
+                "NOT EXISTS (SELECT 1 FROM literature_projects p WHERE p.literature_id=i.id)"
+            )
         if collection_ids:
             placeholders = ",".join("?" for _ in collection_ids)
             sql += (
@@ -395,7 +437,11 @@ class LiteratureRepository:
             else:
                 where.append("c.project_id IS NULL")
         elif without_collection:
-            collection_scope = "c.project_id=?" if project_id else "1=1" if without_project else "c.project_id IS NULL"
+            collection_scope = (
+                "c.project_id=?"
+                if project_id
+                else "1=1" if without_project else "c.project_id IS NULL"
+            )
             where.append(
                 "NOT EXISTS (SELECT 1 FROM literature_collection_items ci "
                 "JOIN literature_collections c ON c.id=ci.collection_id "
@@ -1584,15 +1630,25 @@ class LiteratureRepository:
             return tuple(identifier for identifier in literature_ids if identifier in existing)
 
     def link_project(
-        self, identifiers: tuple[str, ...], project_id: str
+        self,
+        identifiers: tuple[str, ...],
+        project_id: str,
+        collection_ids: tuple[str, ...] = (),
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Associate existing catalogue items with one validated project atomically."""
+        """Associate existing catalogue items with one validated project atomically.
+
+        ``collection_ids`` 是该项目下的分类。入项目与落分类必须在同一个事务里写完:
+        分成两步时, 分类校验失败会把文献留在项目根上, 而调用方看到的是整体失败。
+        分类按项目作用域校验, 别的项目 (或全局「我的分类」) 的 id 一律拒绝。
+        """
 
         ordered = tuple(dict.fromkeys(identifiers))
         if not ordered:
             return (), ()
+        unique_collections = tuple(dict.fromkeys(collection_ids))
         placeholders = ",".join("?" for _ in ordered)
         with connect(self.database) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = {
                 str(row[0])
                 for row in connection.execute(
@@ -1600,11 +1656,32 @@ class LiteratureRepository:
                     ordered,
                 )
             }
+            if unique_collections:
+                scope = _collection_scope(project_id)
+                collection_placeholders = ",".join("?" for _ in unique_collections)
+                valid_collections = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT id FROM literature_collections "
+                        f"WHERE id IN ({collection_placeholders}) AND project_id IS ?",
+                        (*unique_collections, scope),
+                    )
+                }
+                if valid_collections != set(unique_collections):
+                    raise LiteratureError(LIBRARY_INVALID)
             succeeded = tuple(identifier for identifier in ordered if identifier in existing)
             linked_at = time.time()
             connection.executemany(
                 "INSERT OR IGNORE INTO literature_projects VALUES(?,?,?)",
                 ((project_id, identifier, linked_at) for identifier in succeeded),
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO literature_collection_items VALUES(?,?)",
+                (
+                    (collection_id, identifier)
+                    for identifier in succeeded
+                    for collection_id in unique_collections
+                ),
             )
         failed = tuple(identifier for identifier in ordered if identifier not in existing)
         return succeeded, failed

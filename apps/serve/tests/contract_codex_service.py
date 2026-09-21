@@ -113,6 +113,7 @@ from service.chat.persistence.events import ProductEventStore
 from service.chat.provenance import MODEL_RUN_FIELD, ModelRun
 from service.chat.runtime.composition import LiveSessionService
 from service.chat.runtime.evidence import SessionTrace
+from service.chat.runtime.ledger import SessionLedger
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import (
     ARTIFACT_PUBLISH_FILE_NOT_FOUND,
@@ -124,7 +125,7 @@ from service.chat.runtime.projection import (
 from service.chat.service.artifacts import ArtifactService
 from service.chat.service.completions import CompletionBridge
 from service.chat.service.events import EventService
-from service.chat.service.models import CODEX_AUTO_REVIEW_MODEL_ID, ModelService
+from service.chat.service.models import ModelService
 from service.chat.service.publication import (
     PublicationCommand,
     PublicationService,
@@ -520,6 +521,199 @@ class FakeRuntimeSession:
 
 
 class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
+    async def test_ledger_terminal_failure_can_retry_after_reconstruction(self):
+        for index, service_side in enumerate((False, True)):
+            turn_id = f"ledger-retry-{index}"
+            self.live.ledger.activate_turn(turn_id)
+            await self.live.publish(
+                PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                {
+                    "activity_id": "wait",
+                    "activity_type": "agent_collaboration",
+                    "category": "collaboration",
+                    "status": "running",
+                    "details": {},
+                },
+                turn_id=turn_id,
+                item_id="wait",
+            )
+            original = self.events.append
+
+            def fail_terminal(**values):
+                if values["kind"] in ("turn_failed", "turn_interrupted"):
+                    raise OSError("commit unavailable")
+                return original(**values)
+
+            async def finish():
+                if service_side:
+                    await self.live.ledger.record_turn_failure(
+                        turn_id, code="failed", message="failed"
+                    )
+                else:
+                    await self.emit(
+                        RuntimeEventKind.TURN_INTERRUPTED,
+                        sequence=index + 1,
+                        payload={"status": "interrupted"},
+                        turn_id=turn_id,
+                    )
+
+            with patch.object(self.events, "append", side_effect=fail_terminal):
+                with self.assertRaises(OSError):
+                    await finish()
+            self.assertEqual(self.catalog.get(PRODUCT_SESSION_ID).last_turn_status, "running")
+            self.live.ledger = SessionLedger(
+                self.live.id,
+                self.catalog,
+                self.live.publish,
+                self.live._trace,
+                self.live._logger,
+                self.live._projection_lock,
+            )
+            await finish()
+            rows = self.events.turn_records(
+                PRODUCT_SESSION_ID,
+                turn_id,
+                turn_id,
+                kinds=(PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,),
+            )
+            self.assertEqual(len(rows), 1)
+
+    async def test_turn_terminal_persists_collaboration_closures_and_ignores_late_activity(self):
+        for index, terminal in enumerate(
+            (
+                "turn_completed",
+                "turn_failed",
+                "turn_interrupted",
+                "turn_unknown",
+            )
+        ):
+            turn_id = f"collaboration-{index}"
+            activity = {
+                "activity_id": "wait",
+                "activity_type": "agent_collaboration",
+                "category": "collaboration",
+                "status": "inProgress",
+                "details": {"operation": "wait", "receiver_thread_ids": ["child"]},
+            }
+            await self.live.publish(
+                PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                activity,
+                turn_id=turn_id,
+                item_id="wait",
+            )
+            await self.live.publish(
+                PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                activity,
+                turn_id="other-turn",
+                item_id=f"other-{index}",
+            )
+            await self.live.publish(
+                terminal, {}, turn_id=turn_id, idempotency_key=f"terminal-{index}"
+            )
+            records = self.events.turn_records(
+                PRODUCT_SESSION_ID,
+                turn_id,
+                turn_id,
+                kinds=(
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+                    terminal,
+                ),
+            )
+            self.assertEqual(
+                [event.kind for event in records],
+                [
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+                    terminal,
+                ],
+            )
+            closure = records[1]
+            self.assertFalse(closure.payload["success"])
+            self.assertEqual(closure.payload["details"]["closure_reason"], terminal)
+            for kind in (
+                PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+            ):
+                late = await self.live.publish(
+                    kind, {**activity, "success": True}, turn_id=turn_id, item_id="wait"
+                )
+                self.assertEqual(late.event_id, closure.event_id)
+            await self.live.publish(
+                terminal, {}, turn_id=turn_id, idempotency_key=f"terminal-{index}"
+            )
+            snapshot = EventService({}, self.events, Mock()).activity_snapshot(PRODUCT_SESSION_ID)
+            restored = [
+                row
+                for row in snapshot
+                if row["turn_id"] == turn_id
+                and row["type"]
+                in (
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+                    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+                )
+            ]
+            self.assertEqual(len(restored), 2)
+        other = self.events.turn_records(
+            PRODUCT_SESSION_ID,
+            "other-turn",
+            "other-turn",
+            kinds=(PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,),
+        )
+        self.assertEqual(other, ())
+
+    async def test_late_collaboration_start_is_closed_after_terminal(self):
+        await self.live.publish("turn_interrupted", {}, turn_id="late-turn")
+        await self.live.publish(
+            PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+            {
+                "activity_id": "late",
+                "activity_type": "agent_collaboration",
+                "category": "collaboration",
+                "status": "running",
+                "details": {},
+            },
+            turn_id="late-turn",
+            item_id="late",
+        )
+        records = self.events.replay(PRODUCT_SESSION_ID)
+        self.assertEqual(records[-1].kind, PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED)
+        self.assertEqual(records[-1].payload["details"]["closure_reason"], "turn_interrupted")
+
+    async def test_collaboration_terminal_transaction_rolls_back_before_broadcast(self):
+        await self.live.publish(
+            PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
+            {
+                "activity_id": "wait",
+                "activity_type": "agent_collaboration",
+                "category": "collaboration",
+                "status": "running",
+                "details": {},
+            },
+            turn_id="atomic-turn",
+            item_id="wait",
+        )
+        original = self.events.append
+
+        def fail_terminal(**values):
+            if values["kind"] == "turn_interrupted":
+                raise OSError("commit unavailable")
+            return original(**values)
+
+        with (
+            patch.object(self.events, "append", side_effect=fail_terminal),
+            patch.object(
+                self.live,
+                "_broadcast_product_event",
+            ) as broadcast,
+        ):
+            with self.assertRaises(OSError):
+                await self.live.publish("turn_interrupted", {}, turn_id="atomic-turn")
+            broadcast.assert_not_called()
+        self.assertEqual(len(self.events.replay(PRODUCT_SESSION_ID)), 1)
+        await self.live.publish("turn_interrupted", {}, turn_id="atomic-turn")
+        self.assertEqual(len(self.events.replay(PRODUCT_SESSION_ID)), 3)
+
     def test_product_prompt_uses_the_exact_scholarseed_identity(self) -> None:
         prompt = " ".join(base_instructions().split())
         self.assertIn("| Chinese | 书深 | 阿里巴巴达摩院决策智能实验室 |", prompt)
@@ -528,6 +722,13 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             prompt,
         )
         self.assertIn("never translate, abbreviate, or mix them", prompt)
+
+    def test_response_language_is_a_base_instruction(self) -> None:
+        response_language_rule = (
+            "Use the language in which the user addresses you in the current turn"
+        )
+        self.assertIn(response_language_rule, base_instructions())
+        self.assertNotIn(response_language_rule, developer_instructions())
 
     def test_nonresearch_prompt_does_not_require_capability_promotion(self) -> None:
         prompt = developer_instructions()
@@ -703,6 +904,18 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             credentials=skill_credentials_from_env({}),
             logger=self.logger,
         )
+
+    async def test_next_turn_waits_for_retained_product_turn_scope(self) -> None:
+        runtime, _provider = self.runtime_service()
+        service = self.session_service(runtime)
+        self.live.active_product_turn_id = "previous-client-turn"
+        with (
+            patch.object(runtime, "wait_until_suspended", new=AsyncMock()) as wait,
+            patch.object(runtime, "ensure_active", new=AsyncMock()) as ensure,
+        ):
+            await service.prepare_turn(self.live, request_id="next-client-turn")
+        wait.assert_awaited_once_with(self.live, deadline=None)
+        ensure.assert_awaited_once()
 
     async def test_credential_alignment_failure_never_restores_old_authorization(self) -> None:
         runtime, provider = self.runtime_service()
@@ -1319,6 +1532,7 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         records = self.events.replay(PRODUCT_SESSION_ID)
         answers = [record for record in records if record.kind == PRODUCT_EVENT_MESSAGE_DELTA]
         self.assertEqual(len(answers), 3)
+
         self.assertEqual(answers[0].payload[MODEL_RUN_FIELD], selected.payload())
         self.assertEqual(answers[-1].vendor_item_id, "final")
         self.assertEqual(
@@ -1362,6 +1576,34 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored[1][MODEL_RUN_FIELD]["actual_model_id"], "actual-a-version")
         self.assertEqual(restored[1][MODEL_RUN_FIELD]["provider_preset_id"], "dashscope")
         self.assertNotIn(MODEL_RUN_FIELD, restored[2])
+
+    async def test_product_turn_source_waits_for_descendant_quiescence(self) -> None:
+        self.live.active_product_turn_id = "client-a"
+        active = RuntimeActivitySnapshot(
+            "fixture-generation",
+            1,
+            1,
+            True,
+            ("native_turn_active",),
+        )
+        idle = RuntimeActivitySnapshot("fixture-generation", 2, 2, True)
+        session = self.live.runtime_session
+        self.assertIsNotNone(session)
+        assert session is not None
+        with patch.object(session, "activity", new=AsyncMock(side_effect=(active, idle))):
+            self.assertFalse(await self.live.release_product_turn("client-a"))
+            self.assertEqual(self.live.active_product_turn_id, "client-a")
+            self.assertTrue(await self.live.release_product_turn("client-a"))
+        self.assertEqual(self.live.active_product_turn_id, "")
+
+    async def test_product_turn_source_is_retained_when_inspection_fails(self) -> None:
+        self.live.active_product_turn_id = "client-a"
+        session = self.live.runtime_session
+        self.assertIsNotNone(session)
+        assert session is not None
+        with patch.object(session, "activity", new=AsyncMock(side_effect=RuntimeError("private"))):
+            self.assertFalse(await self.live.release_product_turn("client-a"))
+        self.assertEqual(self.live.active_product_turn_id, "client-a")
 
     async def test_project_cwd_watcher_does_not_claim_new_session_files(self) -> None:
         project = self.content.adopt_project(str(self.workdir))
@@ -2884,10 +3126,8 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(intent.transport.endpoint.endswith("/v1"))
         self.assertIsNone(credential_port)
         upstream = next(iter(completion_bridge._upstreams.values()))
-        self.assertEqual(
-            upstream.route_model(CODEX_AUTO_REVIEW_MODEL_ID),
-            "deepseek-v4-pro",
-        )
+        self.assertEqual(upstream.route_model("codex-auto-review"), "codex-auto-review")
+        self.assertEqual(intent.capabilities.tool_protocol.value, "json_schema")
 
     async def test_thinking_admission_follows_the_declared_form(self) -> None:
         """形态准入读真注册表：没声明过的形态不能存，区间未确认的预算同样不能存。"""

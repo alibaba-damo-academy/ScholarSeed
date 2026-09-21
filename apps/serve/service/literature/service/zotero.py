@@ -15,8 +15,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, url2pathname, urlopen
 
-import pymupdf
-
 from service.literature.persistence.files import LiteratureFileBatch, managed_object
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.schema import (
@@ -27,6 +25,7 @@ from service.literature.schema import (
 )
 from service.literature.service.metadata import ParsedRecord, to_item
 from service.paths import SERVICE_LITERATURE_FILES_DIR
+from service.platform.pdf import PdfDocumentError, pdf_document_info
 from service.platform.storage import NOFOLLOW, NONBLOCK, open_parent
 
 ZOTERO_ORIGIN = "http://127.0.0.1:23119"
@@ -377,10 +376,9 @@ def _filename(data: dict[str, Any], item: LiteratureItem) -> str:
 def _download_pdf(key: str) -> bytes:
     payload, _ = _read(_request(f"items/{key}/file"), ZOTERO_MAX_PDF_BYTES)
     try:
-        with pymupdf.open(stream=payload, filetype=PDF_FILETYPE) as document:
-            if not document.is_pdf or document.page_count < 1 or document.needs_pass:
-                raise ZoteroImportError("ZOTERO_INVALID_PDF")
-    except (RuntimeError, ValueError) as error:
+        if pdf_document_info(payload).page_count < 1:
+            raise ZoteroImportError("ZOTERO_INVALID_PDF")
+    except PdfDocumentError as error:
         raise ZoteroImportError("ZOTERO_INVALID_PDF") from error
     return payload
 

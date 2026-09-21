@@ -52,9 +52,6 @@
   --font-sans: var(--font);
   --font-serif: var(--font);
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  --conversation-reading-min: 34rem;
-  --conversation-reading-width: 82%;
-  --conversation-reading-max: 64rem;
   --conversation-inline-gutter: clamp(10px, 1.6vw, 18px);
   --conversation-split-min-width: 430px;
   /* Keep user-authored turns right-anchored, but leave the tool/evidence
@@ -472,17 +469,6 @@ h6,
   }
 }
 
-/* Use the stream's inline size so generated-file cards become compact rows
-   before their actions force filenames into several wrapped lines. */
-.conversation-stream {
-  container-name: conversation-stream;
-  container-type: inline-size;
-  /* Tool disclosures can make a short transcript overflow. Reserve symmetric
-     scrollbar gutters from the first render so prose retains its exact width
-     and center point; never let Chromium anchor-scroll unrelated messages. */
-  scrollbar-gutter: stable both-edges;
-  overflow-anchor: none;
-}
 /* Sidebar 功能分区与上方 append-only session 列表保持明确的视觉层级。 */
 .sidebar-sessions {
   flex: 1;

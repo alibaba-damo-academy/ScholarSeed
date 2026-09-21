@@ -2,6 +2,7 @@ import { DEFAULT_SELECTION_PROMPTS } from '../src/prompts'
 import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { expect, test } from '@playwright/test'
+import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { apiBase, DesktopSession, enterWorkbenchShell } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 
@@ -152,6 +153,133 @@ test('real Markdown selection opens the shared menu and adds a pending source qu
     await expect(page.getByTestId('assistant-selection-quote')).toContainText(SOURCE_TEXT)
     await expect(page.getByTestId('assistant-selection-quote')).toContainText(SOURCE_NAME)
     await page.screenshot({ path: join(runtime.artifacts, 'selection-pending-quote.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('selection AI actions show optional input and prompt settings guidance', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    const project = await page.evaluate(async ({ base, name }) => {
+      const response = await fetch(`${base}/api/content/projects`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      })
+      if (!response.ok) throw new Error(`project_create_${response.status}`)
+      return response.json() as Promise<{ root: string }>
+    }, { base: await apiBase(page), name: `${PROJECT_NAME}提示词引导` })
+    writeFileSync(join(project.root, SOURCE_PATH), `# Evidence\n\n${SOURCE_TEXT}\n`)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${PROJECT_NAME}提示词引导`).click()
+    await page.getByTestId('activity-resource').click()
+    await page.getByTestId('resource-refresh').click()
+    await page.getByTestId(`tree-${SOURCE_PATH}`).click()
+    const editorMode = page.getByTestId('markdown-open-editor')
+    if (await editorMode.count()) await editorMode.click()
+    const paragraph = page.getByTestId('markdown-visual-editor').getByText(SOURCE_TEXT, { exact: true })
+    const selectSourceText = async (): Promise<void> => {
+      await paragraph.click({ clickCount: 3 })
+      await page.keyboard.press('Home')
+      await page.keyboard.press('Shift+End')
+      expect(await page.evaluate(() => window.getSelection()?.toString())).toContain(SOURCE_TEXT)
+    }
+
+    for (const [action, label, screenshot] of [
+      ['explain', 'AI 解释', 'selection-explain-optional.png'],
+      ['polish', 'AI 润色', 'selection-polish-optional.png']
+    ] as const) {
+      await selectSourceText()
+      await page.getByTestId('selection-action-host').getByRole('button', { name: label, exact: true }).click()
+      const suggestion = page.getByTestId('resource-ai-suggestion')
+      await expect(suggestion.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toHaveValue('')
+      const settingsLink = suggestion.getByRole('button', { name: 'AI 提示词设置', exact: true })
+      await expect(settingsLink).toBeVisible()
+      await expect.poll(async () => (await suggestion.boundingBox())?.width ?? Number.POSITIVE_INFINITY).toBeLessThan(1000)
+      const suggestionBox = await suggestion.boundingBox()
+      if (!suggestionBox) throw new Error('Selection suggestion layout unavailable')
+      for (const toolbarLabel of ['AI 解释', 'AI 润色', 'AI 翻译', '添加到对话', '粗体', '斜体', '删除线', '链接', '行内代码', '行内公式', '关闭']) {
+        const toolbarButton = suggestion.getByRole('button', { name: toolbarLabel, exact: true })
+        await expect(toolbarButton).toBeVisible()
+        const toolbarButtonBox = await toolbarButton.boundingBox()
+        if (!toolbarButtonBox) throw new Error(`Selection toolbar action unavailable: ${toolbarLabel}`)
+        expect(toolbarButtonBox.x + toolbarButtonBox.width).toBeLessThanOrEqual(suggestionBox.x + suggestionBox.width)
+      }
+      await page.screenshot({ path: join(runtime.artifacts, screenshot) })
+      if (action === 'explain') {
+        await settingsLink.click()
+        const settingsDialog = page.getByRole('dialog', { name: '设置', exact: true })
+        await expect(settingsDialog).toBeVisible()
+        await expect(page.getByTestId('selection-prompt-explain')).toBeVisible()
+        await page.screenshot({ path: join(runtime.artifacts, 'selection-prompt-settings-link.png') })
+        await settingsDialog.getByRole('button', { name: '关闭', exact: true }).click()
+      }
+      if (await suggestion.count()) await suggestion.getByRole('button', { name: '关闭', exact: true }).click()
+    }
+
+    await selectSourceText()
+    await page.getByTestId('selection-action-host').getByRole('button', { name: 'AI 翻译', exact: true }).click()
+    const translation = page.getByTestId('resource-ai-suggestion')
+    const translationSettings = translation.getByRole('button', { name: 'AI 提示词设置', exact: true })
+    const translationCopy = translation.getByRole('button', { name: '复制', exact: true })
+    const translationDirection = translation.getByRole('combobox', { name: '翻译方向', exact: true })
+    await expect(translationSettings).toBeVisible()
+    await expect(translation).toContainText('术语与翻译偏好可在')
+    await expect(translation).not.toContainText('中英互译 · 可手动切换方向')
+    await expect(translation.getByRole('button', { name: /固定 AI 翻译|取消固定 AI 翻译/ })).toHaveCount(0)
+    const [translationBox, settingsBox, copyBox, directionBox] = await Promise.all([
+      translation.boundingBox(), translationSettings.boundingBox(), translationCopy.boundingBox(), translationDirection.boundingBox()
+    ])
+    if (!translationBox || !settingsBox || !copyBox || !directionBox) throw new Error('Translation layout unavailable')
+    expect(Math.abs((settingsBox.y + settingsBox.height / 2) - (copyBox.y + copyBox.height / 2))).toBeLessThan(8)
+    expect(directionBox.x).toBeGreaterThan(translationBox.x + translationBox.width / 2)
+    await page.screenshot({ path: join(runtime.artifacts, 'selection-translation-prompt-guide.png') })
+    await translation.getByRole('button', { name: '关闭', exact: true }).click()
+
+    const pdf = await PDFDocument.create()
+    pdf.setTitle('Optional prompt paper')
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    pdf.addPage([612, 792]).drawText(SOURCE_TEXT, { x: 50, y: 650, size: 12, font })
+    const pdfBytes = await pdf.save()
+    const imported = await page.request.post(`${await apiBase(page)}/api/v1/imports/pdf`, {
+      multipart: { file: { name: 'optional-prompt-paper.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdfBytes) } }
+    })
+    expect(imported.ok(), await imported.text()).toBe(true)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('activity-literature').click()
+    const paper = page.locator('.lit-row').filter({ hasText: 'Optional prompt paper' }).first()
+    await expect(paper).toBeVisible()
+    await paper.click()
+    await page.getByRole('button', { name: '打开', exact: true }).click()
+    const pdfText = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: SOURCE_TEXT }).first()
+    await expect(pdfText).toBeVisible()
+    const selectionBounds = await pdfText.boundingBox()
+    if (!selectionBounds) throw new Error('PDF selection text unavailable')
+    await page.mouse.move(selectionBounds.x + 1, selectionBounds.y + selectionBounds.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(selectionBounds.x + selectionBounds.width - 1, selectionBounds.y + selectionBounds.height / 2, { steps: 20 })
+    await page.mouse.up()
+    await page.getByRole('button', { name: '添加高亮', exact: true }).first().click()
+    const savedMark = page.locator('[data-testid^="pdf-mark-"]').first()
+    await expect(savedMark).toBeVisible()
+    await savedMark.focus()
+    await page.keyboard.press('Enter')
+    const inspector = page.locator('[data-testid^="pdf-annotation-inspector-"]')
+    await expect(inspector).toBeVisible()
+    await inspector.getByRole('button', { name: '解释', exact: true }).click()
+    await expect(inspector.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toHaveValue('')
+    await expect(inspector.getByRole('button', { name: 'AI 提示词设置', exact: true })).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-annotation-explain-optional.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

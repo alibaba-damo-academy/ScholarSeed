@@ -37,7 +37,7 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 
-import logoMark from '../../assets/scholarseed-logo-mark.png'
+import logoMark from '../../assets/brand-seed-mark.png'
 import type {
   SystemPermissionId,
   SystemPermissionRecord,
@@ -128,6 +128,8 @@ import {
   AlertDialogPortal,
   AlertDialogTitle,
   AlertDescription,
+  Avatar,
+  Badge,
   Button,
   Card,
   Checkbox,
@@ -163,6 +165,7 @@ import { writeClipboard } from '../primitive/clipboard'
 import { PreferenceControls } from './Preferences'
 import { Skills } from './Skills'
 import { Shortcuts } from './Shortcuts'
+import { SettingsPage } from './Settings'
 import type { ProjectRef } from '../../contracts/content'
 import {
   forgetProject,
@@ -357,15 +360,11 @@ function PromptsPage(): React.JSX.Element {
     }
   }
   return (
-    <Page
-      padding="none"
-      className="py-[var(--vds-layout-page-padding)]"
+    <SettingsPage
       data-testid="account-settings-prompts"
+      title={t('accountPanel.prompts.title')}
+      description={t('accountPanel.prompts.description')}
     >
-      <PageHeader
-        title={t('accountPanel.prompts.title')}
-        description={t('accountPanel.prompts.description')}
-      />
       <PageBody>
         {SELECTION_PROMPT_ACTIONS.map((action) => (
           <PageSection key={action}>
@@ -429,7 +428,7 @@ function PromptsPage(): React.JSX.Element {
           {t('accountPanel.prompts.save')}
         </Button>
       </div>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -807,15 +806,11 @@ function AboutPage(): React.JSX.Element {
   }
 
   return (
-    <Page
-      padding="none"
-      className={`${SETTINGS_CONTENT_CLASS_NAME} py-[var(--vds-layout-page-padding)]`}
+    <SettingsPage
       data-testid="about-settings-page"
+      title={t('accountPanel.about.title')}
+      description={t('accountPanel.about.description')}
     >
-      <PageHeader
-        title={t('accountPanel.about.title')}
-        description={t('accountPanel.about.description')}
-      />
       <PageBody>
         <div className={ABOUT_BRAND_CLASS_NAME}>
           <img alt="" className={ABOUT_MARK_CLASS_NAME} src={logoMark} />
@@ -973,7 +968,7 @@ function AboutPage(): React.JSX.Element {
           {t('accountPanel.about.copyright', { year: copyrightYear })}
         </p>
       </PageBody>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -1164,15 +1159,11 @@ function FileVersionPage(): React.JSX.Element {
   }
 
   return (
-    <Page
-      padding="none"
-      className={`${SETTINGS_CONTENT_CLASS_NAME} py-[var(--vds-layout-page-padding)]`}
+    <SettingsPage
       data-testid="account-settings-files"
+      title={t('fileSettings.title')}
+      description={t('fileSettings.description')}
     >
-      <PageHeader
-        title={t('fileSettings.title')}
-        description={t('fileSettings.description')}
-      />
       <PageBody data-testid="file-version-settings-stack">
         {migrationRequired && (
           <Alert tone="warning">
@@ -1309,7 +1300,7 @@ function FileVersionPage(): React.JSX.Element {
           )}
         </Card>
       </PageBody>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -1540,7 +1531,7 @@ const SHARING_SEGMENT_BUTTON_CLASS_NAME =
 const SHARING_SEGMENT_ACTIVE_CLASS_NAME =
   'bg-[var(--bg-2)] font-[650] text-[var(--c-experience)] shadow-[0_1px_3px_rgb(0_0_0_/_0.1)]'
 const ABOUT_BRAND_CLASS_NAME = 'mb-[18px] grid justify-items-center gap-[6px]'
-const ABOUT_MARK_CLASS_NAME = 'size-[72px] rounded-[16px]'
+const ABOUT_MARK_CLASS_NAME = 'size-[72px] object-contain'
 const ABOUT_BRAND_NAME_CLASS_NAME = 'text-[15px] font-[650] text-[var(--text)]'
 const ABOUT_ROW_CLASS_NAME =
   'flex min-h-[62px] items-center gap-[var(--vds-space-3)] border-b border-[var(--border-soft)] py-[var(--vds-space-2)] last:border-b-0'
@@ -2480,15 +2471,11 @@ function DeveloperPage(): React.JSX.Element {
   }
 
   return (
-    <Page
-      padding="none"
-      className={`${SETTINGS_CONTENT_CLASS_NAME} py-[var(--vds-layout-page-padding)]`}
+    <SettingsPage
       data-testid="account-settings-developer"
+      title={t('accountPanel.developer.title')}
+      description={t('accountPanel.developer.description')}
     >
-      <PageHeader
-        title={t('accountPanel.developer.title')}
-        description={t('accountPanel.developer.description')}
-      />
       <PageBody>
         <PageSection title={t('accountPanel.developer.apiKeys')}>
           <Card padding="none" className="px-[var(--vds-card-padding-md)]">
@@ -2612,7 +2599,7 @@ function DeveloperPage(): React.JSX.Element {
           </div>
         )}
       </PageBody>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -2628,7 +2615,6 @@ const MODEL_NAME_ROW_CLASS_NAME = 'flex items-center gap-[var(--vds-space-2)]'
 
 // 模型页在弹窗内分配剩余高度，订阅连接和端点内容分别滚动，操作栏保持可见。
 const MODEL_PAGE_CLASS_NAME = `${SETTINGS_CONTENT_CLASS_NAME} flex h-full min-h-[480px] flex-col [&>header]:shrink-0`
-const MODEL_CONFIGURATION_PAGE_CLASS_NAME = `${SETTINGS_CONTENT_CLASS_NAME} flex h-full min-h-0 flex-col pb-[var(--vds-space-0)] [&>header]:shrink-0`
 const MODEL_CONFIGURATION_TABS_CLASS_NAME =
   'h-full min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] [--vds-tabs-gap:16px]'
 const MODEL_SERVICE_TAB_CONTENT_CLASS_NAME = 'min-h-0 flex-1 overflow-hidden'
@@ -2658,7 +2644,6 @@ const MODEL_PANE_LIST_CLASS_NAME =
   'flex min-h-0 flex-1 flex-col gap-[3px] overflow-y-auto px-[8px] pb-[8px]'
 const MODEL_FOOT_CLASS_NAME =
   'flex min-h-[54px] flex-none items-center border-t border-[var(--border-soft)] p-[8px]'
-const MODEL_PANE_FOOT_CLASS_NAME = MODEL_FOOT_CLASS_NAME
 const MODEL_CONNECTION_ROW_CLASS_NAME = (selected: boolean): string =>
   [
     'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] px-[8px] py-[6px]',
@@ -2667,7 +2652,8 @@ const MODEL_CONNECTION_ROW_CLASS_NAME = (selected: boolean): string =>
       : 'bg-transparent hover:bg-[var(--bg-3)]'
   ].join(' ')
 const MODEL_CONNECTION_PICK_CLASS_NAME =
-  'flex min-w-0 flex-1 flex-col items-start gap-[1px] text-left'
+  'flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-left'
+const MODEL_CONNECTION_TEXT_CLASS_NAME = 'flex min-w-0 flex-1 flex-col items-start'
 const MODEL_CONNECTION_NAME_CLASS_NAME =
   'w-full overflow-hidden text-ellipsis whitespace-nowrap text-[14px] font-[600] text-[var(--text)]'
 const MODEL_CONNECTION_META_CLASS_NAME =
@@ -2687,11 +2673,43 @@ const MODEL_SELECTION_ROW_CLASS_NAME = (checked: boolean): string =>
       ? 'border-[var(--border)] bg-[var(--accent-soft)]'
       : 'border-transparent hover:bg-[var(--bg-3)]'
   ].join(' ')
-const MODEL_SELECTION_ID_CLASS_NAME =
+const MODEL_SELECTION_NAME_CLASS_NAME =
   'min-w-0 flex-1 break-all font-mono text-[14px] text-[var(--text)]'
 // 不给它 overflow: 右栏已经是滚动容器, 再套一层内滚会变成滚动套滚动 —— 指针停在
 // 列表上时外层滚不动, 看起来像卡住。
 const MODEL_SELECTION_LIST_CLASS_NAME = 'flex flex-col gap-[2px]'
+const MODEL_DETAIL_HEAD_CLASS_NAME =
+  'flex flex-none items-center gap-[var(--vds-space-2)] border-b border-[var(--border-soft)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]'
+const MODEL_DETAIL_HEAD_TEXT_CLASS_NAME = 'flex min-w-0 flex-col'
+const MODEL_STATUS_ROW_CLASS_NAME =
+  'flex flex-none items-center gap-[var(--vds-space-2)]'
+const MODEL_STATUS_DOT_CLASS_NAME = (state: 'idle' | 'ok' | 'fail'): string =>
+  [
+    'size-[var(--vds-space-1)] flex-none rounded-full',
+    state === 'ok'
+      ? 'bg-[var(--c-experience)]'
+      : state === 'fail'
+        ? 'bg-[var(--c-tension)]'
+        : 'bg-[var(--text-3)]'
+  ].join(' ')
+const MODEL_PANE_ADD_CLASS_NAME =
+  'flex w-full flex-none items-center gap-[var(--vds-space-1)] border-t border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--text-2)] hover:bg-[var(--bg-3)] hover:text-[var(--text)]'
+
+// 头像缩写只服务显示: 优先取拉丁词首字母, 纯中文厂商标题退回首两字, 保证任何
+// 新增预设都有稳定缩写而不需要回来改表。
+function providerInitials(label: string): string {
+  const tokens = label.match(/[A-Za-z][A-Za-z0-9]*/g)
+  if (!tokens || tokens.length === 0) return label.slice(0, 2).toUpperCase()
+  if (tokens.length >= 2) return `${tokens[0][0]}${tokens[1][0]}`.toUpperCase()
+  return tokens[0].slice(0, 2).toUpperCase()
+}
+
+// 上下文徽章沿用工程记法: 满百万写 M, 满千写 K, 不随界面语言做本地化数字格式。
+function formatContextBadge(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+  return String(tokens)
+}
 
 const CHATGPT_PROVIDER_ID = 'chatgpt-oauth'
 const CUSTOM_PROVIDER_ID = 'custom'
@@ -2818,6 +2836,7 @@ function ModelServicePage({
   const [form, setForm] = React.useState<ModelEndpointForm | null>(null)
   const [manualModel, setManualModel] = React.useState('')
   const [modelQuery, setModelQuery] = React.useState('')
+  const [manualOpen, setManualOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
   const [error, setError] = React.useState<
@@ -2873,6 +2892,7 @@ function ModelServicePage({
     setError('')
     setManualModel('')
     setModelQuery('')
+    setManualOpen(false)
     setForm(next)
   }
 
@@ -2961,6 +2981,11 @@ function ModelServicePage({
 
   const save = async (): Promise<void> => {
     if (!form) return
+    // 设计稿要求缺 Key 时点主按钮给红字提示, 而不是把按钮钉死在 disabled。
+    if (connectingPreset && !form.id && !form.apiKey.trim()) {
+      setError(t('accountPanel.modelsPage.apiKeyRequired'))
+      return
+    }
     setBusy(true)
     setError('')
     setProbe('')
@@ -3130,17 +3155,118 @@ function ModelServicePage({
     setSelectedId((current) => (current === id ? '' : current))
   }
 
-  const endpoints = profiles
-  const filtered = endpoints.filter((profile) => {
-    const needle = query.trim().toLowerCase()
-    if (!needle) return true
-    return (
-      profile.name.toLowerCase().includes(needle) ||
-      profile.base_url.toLowerCase().includes(needle)
-    )
-  })
-  const enabledCount = endpoints.filter((profile) => profile.enabled).length
+  // 左栏以厂商为目录: 预设各占一行, 已有连接的预设按连接展开成多行, 自定义连接
+  // 单独成行 —— 未添加的预设也看得见, 才能一键进入添加态。
+  const presetIds = new Set(presets.map((preset) => preset.id))
+  const oauthProfiles = profiles.filter(
+    (profile) => profile.authentication === 'oauth'
+  )
+  type VendorRow =
+    | {
+        kind: 'profile'
+        key: string
+        label: string
+        profile: PersonalApiProfile
+      }
+    | { kind: 'empty'; key: string; label: string; providerId: string }
+  const vendorRows: VendorRow[] = [
+    ...presets.flatMap((preset): VendorRow[] => {
+      const mine = profiles.filter(
+        (profile) =>
+          profile.authentication !== 'oauth' && profile.preset_id === preset.id
+      )
+      const label =
+        providerPresetText(preset, accountActions).label || preset.id
+      return mine.length > 0
+        ? mine.map((profile) => ({
+            kind: 'profile' as const,
+            key: profile.id,
+            label,
+            profile
+          }))
+        : [
+            {
+              kind: 'empty' as const,
+              key: `empty-${preset.id}`,
+              label,
+              providerId: preset.id
+            }
+          ]
+    }),
+    ...(oauthProfiles.length > 0
+      ? oauthProfiles.map((profile): VendorRow => ({
+          kind: 'profile',
+          key: profile.id,
+          label: accountActions('models.chatgptSubscription'),
+          profile
+        }))
+      : [
+          {
+            kind: 'empty',
+            key: `empty-${CHATGPT_PROVIDER_ID}`,
+            label: accountActions('models.chatgptSubscription'),
+            providerId: CHATGPT_PROVIDER_ID
+          } as VendorRow
+        ]),
+    ...profiles
+      .filter(
+        (profile) =>
+          profile.authentication !== 'oauth' &&
+          !presetIds.has(profile.preset_id || '')
+      )
+      .map((profile): VendorRow => ({
+        kind: 'profile',
+        key: profile.id,
+        label: profile.name || profile.base_url,
+        profile
+      }))
+  ]
+  const needle = query.trim().toLowerCase()
+  const filteredRows = vendorRows.filter((row) =>
+    !needle
+      ? true
+      : row.label.toLowerCase().includes(needle) ||
+        (row.kind === 'profile' &&
+          (row.profile.name.toLowerCase().includes(needle) ||
+            row.profile.base_url.toLowerCase().includes(needle)))
+  )
+  const enabledCount = profiles.filter((profile) => profile.enabled).length
   const checkedIds = new Set(form?.selectedModels.map((model) => model.id))
+
+  const detailLabel = form
+    ? form.providerId === CUSTOM_PROVIDER_ID
+      ? form.previewName.trim() || t('accountPanel.modelsPage.customAdd')
+      : providerPresetText(activePreset, accountActions).label ||
+        form.previewName.trim() ||
+        form.baseUrl
+    : selectedSubscription
+      ? accountActions('models.chatgptSubscription')
+      : ''
+
+  // 上下文徽章只给已声明过窗口的模型; 候选列表只有 ID, 不猜数值。
+  const contextBadgeOf = (modelId: string): string => {
+    const known = form?.selectedModels.find((model) => model.id === modelId)
+    return known?.context_window
+      ? formatContextBadge(known.context_window)
+      : ''
+  }
+
+  const cancelDraft = (): void => {
+    setError('')
+    setProbe('')
+    if (form?.id) {
+      const current = profiles.find((profile) => profile.id === form.id)
+      if (current) {
+        openForm(formOf(current))
+        return
+      }
+    }
+    if (profiles.length > 0) pickConnection(profiles[0])
+    else {
+      setForm(null)
+      setSelectedId('')
+    }
+  }
 
   return (
     <div
@@ -3159,13 +3285,13 @@ function ModelServicePage({
         <aside className={MODEL_PANE_CLASS_NAME}>
           <div className={MODEL_PANE_TITLE_CLASS_NAME}>
             <span className={MODEL_PANE_TITLE_TEXT_CLASS_NAME}>
-              {t('accountPanel.modelsPage.connections')}
+              {t('accountPanel.modelsPage.vendors')}
             </span>
             <span className={MODEL_PANE_COUNT_CLASS_NAME}>
-              {endpoints.length > 0
+              {vendorRows.length > 0
                 ? accountActions('models.enabledCount', {
                     enabled: enabledCount,
-                    total: endpoints.length
+                    total: vendorRows.length
                   })
                 : t('accountPanel.modelsPage.none')}
             </span>
@@ -3173,7 +3299,7 @@ function ModelServicePage({
           <div className={MODEL_PANE_SEARCH_CLASS_NAME}>
             <Input
               value={query}
-              placeholder={t('accountPanel.modelsPage.search')}
+              placeholder={t('accountPanel.modelsPage.searchVendors')}
               data-testid="model-connection-search"
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -3184,85 +3310,122 @@ function ModelServicePage({
                 {t('accountPanel.modelsPage.loading')}
               </div>
             )}
-            {loadState === 'ready' && endpoints.length === 0 && (
+            {loadState === 'ready' && filteredRows.length === 0 && (
               <div className={MODEL_PANE_EMPTY_CLASS_NAME}>
-                {accountActions('models.empty')}
+                {needle
+                  ? t('accountPanel.modelsPage.noMatch')
+                  : accountActions('models.empty')}
               </div>
             )}
             {loadState === 'ready' &&
-              endpoints.length > 0 &&
-              filtered.length === 0 && (
-                <div className={MODEL_PANE_EMPTY_CLASS_NAME}>
-                  {t('accountPanel.modelsPage.noMatch')}
-                </div>
-              )}
-            {filtered.map((profile) => (
-              <div
-                key={profile.id}
-                className={MODEL_CONNECTION_ROW_CLASS_NAME(
-                  selectedId === profile.id
-                )}
-                data-testid={`model-connection-row-${profile.id}`}
-              >
-                <Button
-                  type="button"
-                  size="content"
-                  unstyled
-                  className={MODEL_CONNECTION_PICK_CLASS_NAME}
-                  data-testid={`model-connection-pick-${profile.id}`}
-                  onClick={() => pickConnection(profile)}
-                >
-                  <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>
-                    {providerPresetText(
-                      presets.find((item) => item.id === profile.preset_id),
-                      accountActions
-                    ).label ||
-                      profile.name ||
-                      profile.base_url}
-                  </span>
-                  <span className={MODEL_CONNECTION_META_CLASS_NAME}>
-                    {profile.enabled
-                      ? t('accountPanel.modelsPage.enabled')
-                      : t('accountPanel.modelsPage.disabled')}
-                    {` · ${t('accountPanel.modelsPage.selected', { count: profile.selected_models.length })}`}
-                    {profile.authentication === 'oauth'
-                      ? profile.oauth?.state === 'connected'
-                        ? accountActions('models.chatgptConnected')
-                        : accountActions('models.chatgptLoginRequired')
-                      : profile.has_api_key
-                        ? ''
-                        : accountActions('models.noKey')}
-                  </span>
-                </Button>
-                <Switch
-                  checked={profile.enabled}
-                  disabled={busy}
-                  aria-label={accountActions('models.enableNamed', {
-                    name: profile.name
-                  })}
-                  data-testid={`model-connection-enabled-${profile.id}`}
-                  onCheckedChange={() => void toggleEnabled(profile)}
-                />
-              </div>
-            ))}
+              filteredRows.map((row) => {
+                const selected =
+                  row.kind === 'profile'
+                    ? selectedId === row.profile.id
+                    : selectedId === '' &&
+                      form !== null &&
+                      !form.id &&
+                      form.providerId === row.providerId
+                return (
+                  <div
+                    key={row.key}
+                    className={MODEL_CONNECTION_ROW_CLASS_NAME(selected)}
+                    data-testid={`model-connection-row-${row.key}`}
+                  >
+                    <Button
+                      type="button"
+                      size="content"
+                      unstyled
+                      className={MODEL_CONNECTION_PICK_CLASS_NAME}
+                      data-testid={
+                        row.kind === 'profile'
+                          ? `model-connection-pick-${row.profile.id}`
+                          : `model-vendor-empty-${row.providerId}`
+                      }
+                      onClick={() =>
+                        row.kind === 'profile'
+                          ? pickConnection(row.profile)
+                          : startNewConnection(row.providerId)
+                      }
+                    >
+                      <Avatar
+                        size="sm"
+                        fallback={providerInitials(row.label)}
+                        aria-hidden={true}
+                      />
+                      <span className={MODEL_CONNECTION_TEXT_CLASS_NAME}>
+                        <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>
+                          {row.label}
+                        </span>
+                        <span className={MODEL_CONNECTION_META_CLASS_NAME}>
+                          {row.kind === 'empty'
+                            ? t('accountPanel.modelsPage.notAdded')
+                            : row.profile.enabled
+                              ? t('accountPanel.modelsPage.enabled')
+                              : t('accountPanel.modelsPage.disabled')}
+                          {row.kind === 'profile'
+                            ? ` · ${t('accountPanel.modelsPage.selected', { count: row.profile.selected_models.length })}`
+                            : ''}
+                          {row.kind === 'profile' &&
+                          row.profile.authentication === 'oauth'
+                            ? row.profile.oauth?.state === 'connected'
+                              ? accountActions('models.chatgptConnected')
+                              : accountActions('models.chatgptLoginRequired')
+                            : row.kind === 'profile' && !row.profile.has_api_key
+                              ? accountActions('models.noKey')
+                              : ''}
+                        </span>
+                      </span>
+                    </Button>
+                    <Switch
+                      checked={row.kind === 'profile' && row.profile.enabled}
+                      disabled={busy || row.kind === 'empty'}
+                      aria-label={accountActions('models.enableNamed', {
+                        name: row.label
+                      })}
+                      data-testid={`model-connection-enabled-${row.key}`}
+                      onCheckedChange={() => {
+                        if (row.kind === 'profile') void toggleEnabled(row.profile)
+                      }}
+                    />
+                  </div>
+                )
+              })}
           </div>
-          <div className={MODEL_PANE_FOOT_CLASS_NAME}>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              disabled={busy || loadState !== 'ready'}
-              data-testid="model-connection-add"
-              onClick={() =>
-                startNewConnection(presets[0]?.id || CUSTOM_PROVIDER_ID)
-              }
-            >
-              {accountActions('models.add')}
-            </Button>
-          </div>
+          <Button
+            type="button"
+            size="content"
+            unstyled
+            className={MODEL_PANE_ADD_CLASS_NAME}
+            disabled={busy || loadState !== 'ready'}
+            data-testid="model-connection-add"
+            onClick={() =>
+              startNewConnection(presets[0]?.id || CUSTOM_PROVIDER_ID)
+            }
+          >
+            <Icon name="plus" size={13} sw={1.8} />
+            {t('accountPanel.modelsPage.customAdd')}
+          </Button>
         </aside>
 
         <section className={MODEL_DETAIL_CLASS_NAME}>
+          {(form || selectedSubscription) && (
+            <div className={MODEL_DETAIL_HEAD_CLASS_NAME}>
+              <Avatar
+                size="md"
+                fallback={providerInitials(detailLabel)}
+                aria-hidden={true}
+              />
+              <span className={MODEL_DETAIL_HEAD_TEXT_CLASS_NAME}>
+                <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>
+                  {detailLabel}
+                </span>
+                <span className={MODEL_FIELD_HINT_CLASS_NAME}>
+                  {t('accountPanel.modelsPage.configureHint')}
+                </span>
+              </span>
+            </div>
+          )}
           {selectedSubscription && !form && (
             <div className={MODEL_DETAIL_SCROLL_CLASS_NAME}>
               <SubscriptionConnections
@@ -3285,39 +3448,41 @@ function ModelServicePage({
                 data-testid="model-endpoint-form"
               >
                 <div className={MODEL_FORM_GRID_CLASS_NAME}>
-                  <ModelEndpointField
-                    label={t('accountPanel.modelsPage.provider')}
-                    hint={
-                      providerPresetText(activePreset, accountActions).note ||
-                      t('accountPanel.modelsPage.providerHint')
-                    }
-                  >
-                    <Select
-                      value={form.providerId}
-                      disabled={busy || Boolean(form.id)}
-                      onValueChange={pickProvider}
+                  {!form.id && (
+                    <ModelEndpointField
+                      label={t('accountPanel.modelsPage.provider')}
+                      hint={
+                        providerPresetText(activePreset, accountActions).note ||
+                        t('accountPanel.modelsPage.providerHint')
+                      }
                     >
-                      <SelectTrigger
-                        data-testid="model-endpoint-provider"
-                        aria-label={t('accountPanel.modelsPage.provider')}
+                      <Select
+                        value={form.providerId}
+                        disabled={busy}
+                        onValueChange={pickProvider}
                       >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={CHATGPT_PROVIDER_ID}>
-                          {accountActions('models.chatgptSubscription')}
-                        </SelectItem>
-                        {presets.map((preset) => (
-                          <SelectItem key={preset.id} value={preset.id}>
-                            {providerPresetText(preset, accountActions).label}
+                        <SelectTrigger
+                          data-testid="model-endpoint-provider"
+                          aria-label={t('accountPanel.modelsPage.provider')}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={CHATGPT_PROVIDER_ID}>
+                            {accountActions('models.chatgptSubscription')}
                           </SelectItem>
-                        ))}
-                        <SelectItem value={CUSTOM_PROVIDER_ID}>
-                          {accountActions('models.customProvider')}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </ModelEndpointField>
+                          {presets.map((preset) => (
+                            <SelectItem key={preset.id} value={preset.id}>
+                              {providerPresetText(preset, accountActions).label}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value={CUSTOM_PROVIDER_ID}>
+                            {accountActions('models.customProvider')}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </ModelEndpointField>
+                  )}
 
                   {!newSubscription && (
                     <>
@@ -3375,25 +3540,29 @@ function ModelServicePage({
                               </SelectContent>
                             </Select>
                           </ModelEndpointField>
-
-                          <ModelEndpointField
-                            label={t('accountPanel.modelsPage.base')}
-                            hint={t('accountPanel.modelsPage.base')}
-                          >
-                            <Input
-                              value={form.baseUrl}
-                              placeholder="http://127.0.0.1:8000/v1"
-                              data-testid="model-endpoint-base-url"
-                              onChange={(event) =>
-                                setForm({
-                                  ...form,
-                                  baseUrl: event.target.value
-                                })
-                              }
-                            />
-                          </ModelEndpointField>
                         </>
                       )}
+                      <ModelEndpointField
+                        label={t('accountPanel.modelsPage.baseUrlLabel')}
+                        hint={
+                          customConnection
+                            ? t('accountPanel.modelsPage.base')
+                            : activePreset?.note ||
+                              t('accountPanel.modelsPage.baseUrlPresetHint')
+                        }
+                      >
+                        <Input
+                          value={form.baseUrl}
+                          placeholder="http://127.0.0.1:8000/v1"
+                          data-testid="model-endpoint-base-url"
+                          onChange={(event) =>
+                            setForm({
+                              ...form,
+                              baseUrl: event.target.value
+                            })
+                          }
+                        />
+                      </ModelEndpointField>
                       <ModelEndpointField
                         label={t('accountPanel.modelsPage.api')}
                         hint={
@@ -3418,6 +3587,30 @@ function ModelServicePage({
                           }
                         />
                       </ModelEndpointField>
+
+                      <div className={MODEL_STATUS_ROW_CLASS_NAME}>
+                        <span
+                          className={MODEL_STATUS_DOT_CLASS_NAME(
+                            probe ? (probeOk ? 'ok' : 'fail') : 'idle'
+                          )}
+                          aria-hidden={true}
+                        />
+                        <span className={MODEL_FIELD_HINT_CLASS_NAME}>
+                          {probe || t('accountPanel.modelsPage.unverified')}
+                        </span>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={busy}
+                          data-testid="model-endpoint-probe"
+                          onClick={() => void test()}
+                        >
+                          {busy
+                            ? t('accountPanel.modelsPage.busy')
+                            : t('accountPanel.modelsPage.test')}
+                        </Button>
+                      </div>
 
                       {customConnection && (
                         <ModelEndpointField
@@ -3473,10 +3666,21 @@ function ModelServicePage({
                             >
                               {t('accountPanel.modelsPage.refresh')}
                             </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              disabled={busy}
+                              data-testid="model-endpoint-manual-toggle"
+                              onClick={() => setManualOpen((open) => !open)}
+                            >
+                              <Icon name="plus" size={12} sw={1.8} />
+                              {t('accountPanel.modelsPage.addModel')}
+                            </Button>
                           </div>
                         </div>
 
-                        {customConnection && (
+                        {(customConnection || manualOpen) && (
                           <div className={MODEL_NAME_ROW_CLASS_NAME}>
                             <Input
                               value={manualModel}
@@ -3529,10 +3733,9 @@ function ModelServicePage({
                               onCheckedChange={() => toggleAllModels()}
                             />
                             <span className={MODEL_FIELD_HINT_CLASS_NAME}>
-                              {t('accountPanel.modelsPage.selectionCount', {
+                              {t('accountPanel.modelsPage.selectionSimple', {
                                 selected: form.selectedModels.length,
-                                total: form.candidates.length,
-                                visible: visibleCandidates.length
+                                total: form.candidates.length
                               })}
                             </span>
                           </div>
@@ -3558,14 +3761,19 @@ function ModelServicePage({
                                 data-testid={`model-endpoint-model-${modelId}`}
                                 onCheckedChange={() => toggleModel(modelId)}
                               />
-                              <span className={MODEL_SELECTION_ID_CLASS_NAME}>
+                              <span className={MODEL_SELECTION_NAME_CLASS_NAME}>
                                 {modelId}
                               </span>
+                              {contextBadgeOf(modelId) && (
+                                <Badge size="sm" tone="neutral">
+                                  {contextBadgeOf(modelId)}
+                                </Badge>
+                              )}
                             </div>
                           ))}
                         </div>
                         <div className={MODEL_FIELD_HINT_CLASS_NAME}>
-                          {t('accountPanel.modelsPage.selectionHint')}
+                          {t('accountPanel.modelsPage.selectionHintChat')}
                         </div>
                         {form.selectedModels.map((model) => (
                           <React.Fragment key={`${form.id}:${model.id}`}>
@@ -3690,6 +3898,19 @@ function ModelServicePage({
                         {probe}
                       </div>
                     )}
+                    {error && (
+                      <div
+                        role="alert"
+                        className={FORM_ERROR_CLASS_NAME}
+                        data-testid="model-endpoint-error"
+                      >
+                        {typeof error === 'string'
+                          ? error
+                          : 'messageKey' in error
+                            ? accountActions(error.messageKey)
+                            : profileFailureText(error, subscriptionText)}
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -3711,37 +3932,28 @@ function ModelServicePage({
                     )}
                   </div>
                   <div className={MODEL_ROW_ACTIONS_CLASS_NAME}>
-                    {customConnection && (
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        disabled={busy}
-                        data-testid="model-endpoint-probe"
-                        onClick={() => void test()}
-                      >
-                        {busy
-                          ? t('accountPanel.modelsPage.busy')
-                          : t('accountPanel.modelsPage.test')}
-                      </Button>
-                    )}
                     <Button
                       type="button"
                       size="sm"
-                      disabled={
-                        busy ||
-                        Boolean(
-                          connectingPreset && !form.apiKey.trim() && !form.id
-                        )
-                      }
+                      variant="secondary"
+                      disabled={busy}
+                      data-testid="model-endpoint-cancel"
+                      onClick={cancelDraft}
+                    >
+                      {t('accountPanel.common.cancel')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={busy}
                       data-testid="model-endpoint-save"
                       onClick={() => void save()}
                     >
                       {busy
                         ? t('accountPanel.modelsPage.connecting')
-                        : connectingPreset
-                          ? t('accountPanel.modelsPage.connect')
-                          : t('accountPanel.modelsPage.save')}
+                        : form.id
+                          ? t('accountPanel.modelsPage.save')
+                          : t('accountPanel.modelsPage.addVendor')}
                     </Button>
                   </div>
                 </div>
@@ -3751,7 +3963,7 @@ function ModelServicePage({
         </section>
       </div>
 
-      {error && (
+      {error && !form && (
         <div role="alert" className={PAGE_ERROR_CLASS_NAME}>
           <span>
             {typeof error === 'string'
@@ -4112,15 +4324,12 @@ function ModelConfigurationPage(): React.JSX.Element {
   const { t } = useTranslation('components')
 
   return (
-    <Page
-      padding="none"
-      className={`${MODEL_CONFIGURATION_PAGE_CLASS_NAME} py-[var(--vds-layout-page-padding)]`}
+    <SettingsPage
       data-testid="account-settings-model-configuration"
+      title={t('accountPanel.modelsPage.title')}
+      description={t('accountPanel.modelsPage.description')}
+      scroll="none"
     >
-      <PageHeader
-        title={t('accountPanel.modelsPage.title')}
-        description={t('accountPanel.modelsPage.description')}
-      />
       <PageBody className="min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
         <Tabs
           className={MODEL_CONFIGURATION_TABS_CLASS_NAME}
@@ -4151,7 +4360,7 @@ function ModelConfigurationPage(): React.JSX.Element {
           </TabsContent>
         </Tabs>
       </PageBody>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -4173,15 +4382,11 @@ function NotificationsPage(): React.JSX.Element {
     }))
   }
   return (
-    <Page
-      padding="none"
-      className="py-[var(--vds-layout-page-padding)]"
+    <SettingsPage
       data-testid="account-settings-notifications"
+      title={t('accountPanel.notificationsPage.title')}
+      description={t('accountPanel.notificationsPage.description')}
     >
-      <PageHeader
-        title={t('accountPanel.notificationsPage.title')}
-        description={t('accountPanel.notificationsPage.description')}
-      />
       <div className={NOTIFICATION_CARD_CLASS_NAME}>
         <SettingsRow
           title={t('accountPanel.notificationsPage.desktop')}
@@ -4225,7 +4430,7 @@ function NotificationsPage(): React.JSX.Element {
           />
         </SettingsRow>
       </div>
-    </Page>
+    </SettingsPage>
   )
 }
 
@@ -4299,14 +4504,11 @@ function ArchivedProjectsPage(): React.JSX.Element {
   }
 
   return (
-    <div
-      className={SETTINGS_CONTENT_CLASS_NAME}
+    <SettingsPage
       data-testid="account-settings-archives"
+      title={t('accountPanel.archives.title')}
+      description={t('accountPanel.archives.description')}
     >
-      <SettingsPageHeader
-        title={t('accountPanel.archives.title')}
-        description={t('accountPanel.archives.description')}
-      />
       {projects.length === 0 ? (
         <div
           className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]"
@@ -4394,7 +4596,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
           </AlertDialogContent>
         </AlertDialogPortal>
       </AlertDialog>
-    </div>
+    </SettingsPage>
   )
 }
 
@@ -4679,7 +4881,7 @@ export function AccountPanel({
       <main
         className={cx(
           SETTINGS_MAIN_CLASS_NAME,
-          activePage === 'skills' && '!overflow-hidden !pb-12'
+          activePage === 'skills' ? '!overflow-hidden !pb-12' : 'min-h-0 !overflow-hidden !pb-0'
         )}
       >
         {activePage === 'prompts' && <PromptsPage />}

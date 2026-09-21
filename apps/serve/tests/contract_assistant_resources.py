@@ -52,9 +52,11 @@ from service.content.persistence.catalog import ContentCatalog
 from service.content.service.assets import rename_node
 from service.content.service.native import (
     WINDOWS,
+    copy_descriptor_exclusive,
     exchange_entries,
     publish_descriptor,
     rename_exclusive,
+    set_creation_marker,
     sync_published_descriptor,
 )
 from service.content.service.port import ContentService, ProjectRegistry
@@ -1611,6 +1613,44 @@ class AssistantResourceContract(unittest.TestCase):
             self.assertEqual(target.stat().st_ino, inode)
             self.assertEqual(target.read_bytes(), b"complete")
 
+    def test_prepared_import_recovers_its_partial_copy(self) -> None:
+        prepared = self.content.prepare_bytes(
+            self.project.id, "resources", "recovered-copy.md", b"complete"
+        )
+        target = Path(self.project.root) / prepared.path
+        descriptor = os.open(target, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            set_creation_marker(descriptor, prepared.marker)
+            os.write(descriptor, b"partial")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+        created = self.content.publish_prepared(prepared)
+
+        self.assertEqual(created.path, prepared.path)
+        self.assertEqual(target.read_bytes(), b"complete")
+
+    def test_prepared_import_copies_without_platform_publication(self) -> None:
+        prepared = self.content.prepare_bytes(
+            self.project.id, "resources", "copied.md", b"independent"
+        )
+        stage = Path(self.project.root) / prepared.staging_path
+
+        with patch(
+            "service.content.service.assets.publish_descriptor",
+            side_effect=AssertionError("prepared import must copy independent bytes"),
+        ):
+            created = self.content.publish_prepared(prepared)
+
+        target = Path(self.project.root) / created.path
+        self.assertTrue(stage.is_file())
+        self.assertEqual(stage.read_bytes(), b"independent")
+        self.assertEqual(target.read_bytes(), b"independent")
+        self.assertNotEqual(
+            (stage.stat().st_dev, stage.stat().st_ino), (target.stat().st_dev, target.stat().st_ino)
+        )
+
     def test_import_returns_durable_content_identity(self) -> None:
         first = ResourceWriter(self.content).import_once(
             self.project.id, "identity-operation", "publication", "identity.md", b"complete"
@@ -2452,18 +2492,19 @@ class AssistantResourceContract(unittest.TestCase):
         replacement = stage.with_name("replacement.bin")
         replacement.write_bytes(b"unverified")
 
-        def swap_then_publish(source, directory, name):
+        def swap_then_copy(source, directory, name, mode, *, marker=""):
             replacement.replace(stage)
-            return publish_descriptor(source, directory, name)
+            return copy_descriptor_exclusive(source, directory, name, mode, marker=marker)
 
         with patch(
-            "service.content.service.assets.publish_descriptor", side_effect=swap_then_publish
-        ) as publish:
+            "service.content.service.assets.copy_descriptor_exclusive",
+            side_effect=swap_then_copy,
+        ) as copy:
             try:
                 self.content.publish_prepared(prepared)
             except ContentError:
                 pass
-        publish.assert_called_once()
+        copy.assert_called_once()
         self.assertEqual(stage.read_bytes(), b"unverified")
         if target.exists():
             self.assertEqual(target.read_bytes(), b"trusted")
@@ -2471,7 +2512,7 @@ class AssistantResourceContract(unittest.TestCase):
     def test_unsupported_descriptor_publication_never_falls_back_to_path_link(self) -> None:
         prepared = self.content.prepare_bytes(self.project.id, "resources", "report.md", b"trusted")
         with patch(
-            "service.content.service.assets.publish_descriptor",
+            "service.content.service.assets.copy_descriptor_exclusive",
             side_effect=OSError(errno.ENOTSUP, "unsupported"),
         ):
             with self.assertRaises(ContentError):
@@ -2568,16 +2609,17 @@ class AssistantResourceContract(unittest.TestCase):
         target = Path(self.project.root) / prepared.path
         outside = Path(self.temporary.name) / "outside-result.md"
 
-        def redirect_then_publish(source, directory, name):
+        def redirect_then_copy(source, directory, name, mode, *, marker=""):
             target.symlink_to(outside)
-            return publish_descriptor(source, directory, name)
+            return copy_descriptor_exclusive(source, directory, name, mode, marker=marker)
 
         with patch(
-            "service.content.service.assets.publish_descriptor", side_effect=redirect_then_publish
-        ) as publish:
+            "service.content.service.assets.copy_descriptor_exclusive",
+            side_effect=redirect_then_copy,
+        ) as copy:
             with self.assertRaises(ContentError):
                 self.content.publish_prepared(prepared)
-        publish.assert_called_once()
+        copy.assert_called_once()
         self.assertTrue(target.is_symlink())
         self.assertFalse(outside.exists())
 

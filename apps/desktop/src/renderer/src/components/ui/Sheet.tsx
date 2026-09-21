@@ -30,6 +30,18 @@ interface SheetContextValue {
 
 const SheetContext = createContext<SheetContextValue | null>(null)
 
+function childOverlayHandlesEscape(content: HTMLElement, target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  const activeModal = target.closest('[aria-modal="true"]')
+  if (activeModal && activeModal !== content && !activeModal.contains(content)) return true
+  if (!content.contains(target) && inFocusScope(content, target)) return true
+  const trigger = target.closest('[aria-haspopup][aria-expanded="true"][aria-controls]')
+  return (trigger?.getAttribute('aria-controls') ?? '').split(/\s+/).some(id => {
+    const popup = content.ownerDocument.getElementById(id)
+    return visibleContent(popup) && popup !== content && !popup.contains(content)
+  })
+}
+
 function useSheetContext(component: string): SheetContextValue {
   const context = useContext(SheetContext)
   if (!context) {
@@ -98,7 +110,9 @@ export function Sheet({ children, onOpenChange, open }: SheetProps): JSX.Element
   useEffect(() => {
     if (!currentOpen) return undefined
     const handleDocumentKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.defaultPrevented || event.key !== 'Escape' || !visibleContent(contentRef.current) || (document.activeElement?.closest('[aria-modal="true"]') && !inFocusScope(contentRef.current, document.activeElement))) return
+      const content = contentRef.current
+      if (event.defaultPrevented || event.key !== 'Escape' || !visibleContent(content)) return
+      if (childOverlayHandlesEscape(content, document.activeElement)) return
       event.preventDefault()
       setOpen(false)
     }
@@ -197,6 +211,8 @@ export const SheetContent = forwardRef<HTMLDivElement, SheetContentProps>(
     const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
       onKeyDown?.(event)
       if (event.defaultPrevented || event.key !== 'Escape') return
+      if (event.target instanceof Node && !event.currentTarget.contains(event.target)) return
+      if (childOverlayHandlesEscape(event.currentTarget, event.target)) return
       event.preventDefault()
       context.close()
     }

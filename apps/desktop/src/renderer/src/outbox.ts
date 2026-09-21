@@ -1,5 +1,5 @@
 import type { QueuedMessage } from './model'
-import { QUEUED_MESSAGE_SAFE_ERRORS } from './queue'
+import { QUEUED_MESSAGE_SAFE_ERRORS } from './queue.ts'
 
 const QUEUE_OUTBOX_STORAGE_KEY = 'scholarseed.queue-outbox.v1'
 const OUTBOX_VERSION = 1

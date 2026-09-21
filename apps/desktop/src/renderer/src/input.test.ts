@@ -59,6 +59,7 @@ test('admits running submissions into the queue while preserving launch and inte
   const idle = {
     runtimeReady: true,
     creditsAvailable: true,
+    modelAvailable: true,
     launching: false,
     running: false,
     interrupting: false,
@@ -70,6 +71,7 @@ test('admits running submissions into the queue while preserving launch and inte
   assert.equal(canSubmitComposer({ ...idle, launching: true }), false)
   assert.equal(canSubmitComposer({ ...idle, runtimeReady: false }), false)
   assert.equal(canSubmitComposer({ ...idle, creditsAvailable: false }), false)
+  assert.equal(canSubmitComposer({ ...idle, modelAvailable: false }), false)
   assert.equal(canSubmitComposer({ ...idle, hasContent: false }), false)
 })
 
@@ -196,6 +198,25 @@ test('projects a desktop-selected local file through its session-scoped referenc
       sha256: undefined
     }
   ])
+})
+
+test('projects a selected directory as one typed reference without expanding its contents', () => {
+  assert.deepEqual(buildTurnInput('整理资料', [{
+    type: 'directory',
+    id: 'folder-reference',
+    referenceId: 'folder-reference',
+    title: 'papers',
+    path: '/Users/research/papers'
+  }]), [
+    { type: 'text', text: '整理资料' },
+    { type: 'directory', reference_id: 'folder-reference', name: 'papers' }
+  ])
+  assert.throws(() => buildTurnInput('', [{
+    type: 'directory',
+    id: 'unregistered-folder',
+    title: 'papers',
+    path: '/Users/research/papers'
+  }]), /canonical absolute path/)
 })
 
 test('fails closed instead of treating a skill name or relative file as a path', () => {

@@ -218,10 +218,10 @@ class WorkflowTest(unittest.TestCase):
 
     def test_render_failure_is_still_an_inspection_boundary(self):
         self.responses['verify_postcheck'] = (0, {'status': 'SUCCESS', 'visual_review_required': True,
-            'pages_to_read': [], 'render_error': "Failed to open file 'survey.pdf' as type pdf."})
+            'pages_to_read': [], 'render_error': 'PDF rendering unavailable'})
         result = self.run_phase('publish')
         self.assertEqual(result['boundary'], 'pdf_inspection')
-        self.assertIn('as type pdf', result['result']['render_error'])
+        self.assertIn('unavailable', result['result']['render_error'])
 
     def test_markdown_has_no_pdf_boundary(self):
         self.responses['verify_postcheck'] = (0, {'status': 'SUCCESS', 'visual_review_required': False})

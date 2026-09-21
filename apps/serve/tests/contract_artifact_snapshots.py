@@ -11,9 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from service.content.domain.model import ContentError
+from service.content.persistence import snapshots
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service import snapshot
-from service.content.service.native import publish_descriptor
+from service.content.service.native import copy_descriptor_exclusive, set_creation_marker
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.snapshot import (
     INTEGRITY_MISMATCH,
@@ -71,6 +72,28 @@ class ArtifactSnapshotContract(unittest.TestCase):
             self.content.capture_artifact(self.scope, "report.md", sha256(b"old").hexdigest())
         self.assertEqual(list((self.workspace / PROJECT_ARTIFACT_OBJECTS_RELATIVE).iterdir()), [])
 
+    def test_snapshot_keeps_stage_and_object_as_independent_files(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"trusted")
+        objects = self.workspace / PROJECT_ARTIFACT_OBJECTS_RELATIVE
+        handle = self.content.capture_artifact(self.scope, source.name)
+
+        self.assertEqual(self.content.read_artifact(handle), b"trusted")
+        self.assertEqual(list(objects.iterdir()), [objects / handle.sha256])
+
+    def test_snapshot_copies_without_platform_publication(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"trusted")
+
+        with patch(
+            "service.content.service.native.publish_descriptor",
+            side_effect=AssertionError("snapshot must copy independent bytes"),
+        ):
+            handle = self.content.capture_artifact(self.scope, source.name)
+
+        self.assertEqual(source.read_bytes(), b"trusted")
+        self.assertEqual(self.content.read_artifact(handle), b"trusted")
+
     def test_corrupt_object_is_not_repaired_from_working_file(self):
         (self.workspace / "report.md").write_bytes(b"report")
         handle = self.content.capture_artifact(self.scope, "report.md")
@@ -83,6 +106,27 @@ class ArtifactSnapshotContract(unittest.TestCase):
             self.content.capture_artifact(self.scope, "report.md")
         self.assertEqual(obj.read_bytes(), b"broken")
         self.assertEqual(list(obj.parent.iterdir()), [obj])
+
+    def test_prepared_snapshot_claim_recovers_its_partial_copy(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"trusted")
+        digest = sha256(b"trusted").hexdigest()
+        location = self.content.artifact_storage(self.scope)
+        claim = snapshots.prepare(location.database, self.scope, digest, len(b"trusted"))
+        obj = self.workspace / PROJECT_ARTIFACT_OBJECTS_RELATIVE / digest
+        obj.parent.mkdir(parents=True)
+        descriptor = os.open(obj, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            set_creation_marker(descriptor, claim.marker)
+            os.write(descriptor, b"partial")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+        handle = self.content.capture_artifact(self.scope, source.name)
+
+        self.assertEqual(handle.sha256, digest)
+        self.assertEqual(self.content.read_artifact(handle), b"trusted")
 
     def test_escape_source_and_object_symlinks_rejected(self):
         outside = self.base / "secret.md"
@@ -144,18 +188,19 @@ class ArtifactSnapshotContract(unittest.TestCase):
         objects = self.workspace / PROJECT_ARTIFACT_OBJECTS_RELATIVE
         changed = []
 
-        def swap_then_publish(descriptor, directory, name):
+        def swap_then_copy(descriptor, directory, name, mode, *, marker=""):
             stage = next(objects.glob(".capture-*"))
             changed.append(stage)
             replacement.replace(stage)
-            return publish_descriptor(descriptor, directory, name)
+            return copy_descriptor_exclusive(descriptor, directory, name, mode, marker=marker)
 
         with patch(
-            "service.content.service.snapshot.publish_descriptor", side_effect=swap_then_publish
-        ) as publish:
+            "service.content.service.snapshot.copy_descriptor_exclusive",
+            side_effect=swap_then_copy,
+        ) as copy:
             with self.assertRaises(ContentError):
                 self.content.capture_artifact(self.scope, source.name)
-        publish.assert_called_once()
+        copy.assert_called_once()
         self.assertEqual(changed[0].read_bytes(), b"unverified")
         target = objects / sha256(b"trusted").hexdigest()
         if target.exists():

@@ -1,9 +1,8 @@
-import { FileText, Plus, Trash } from 'lucide-react'
-import React, { useEffect, useState } from 'react'
+import { ArrowLeft, FileText, NotepadText, Plus, Trash } from 'lucide-react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
-  Alert,
   AlertDialog,
   AlertDialogCancel,
   AlertDialogContent,
@@ -12,28 +11,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   Button,
+  EllipsisText,
   EmptyState,
   IconButton,
-  Input,
-  ScrollArea,
-  Textarea
+  ScrollArea
 } from '../../components/ui'
 import type { LiteratureNote } from '../../contracts/literature'
+import { NoteEditor } from './NoteEditor'
+import { catalogue } from './catalog'
 import {
-  LiteratureApiError,
-  addLiteratureNote,
-  deleteLiteratureNote,
-  updateLiteratureNote
-} from './api'
-
-const NOTE_VERSION_CONFLICT = 'literature_note_version_conflict'
-const NEW_NOTE = '__new__'
-
-interface NoteDraft {
-  title: string
-  text: string
-  version: number
-}
+  LITERATURE_NOTES_CHANGED,
+  exportNoteAsMarkdown,
+  literatureNoteTitle
+} from './note'
+import { useNoteAutoSave } from './autosave'
 
 interface LiteratureNotesProps {
   itemId: string
@@ -41,245 +32,226 @@ interface LiteratureNotesProps {
   onReload: () => Promise<void>
 }
 
-function draftOf(note: LiteratureNote): NoteDraft {
-  return { title: note.title, text: note.text, version: note.version }
+export function LiteratureNotes(
+  props: LiteratureNotesProps
+): React.JSX.Element {
+  return <LiteratureNotesContent key={props.itemId} {...props} />
 }
 
-export function LiteratureNotes({
+function LiteratureNotesContent({
   itemId,
   notes,
   onReload
 }: LiteratureNotesProps): React.JSX.Element {
   const { t } = useTranslation('literature')
-  const [selectedId, setSelectedId] = useState<string | null>(notes[0]?.id ?? null)
-  const [draft, setDraft] = useState<NoteDraft | null>(notes[0] ? draftOf(notes[0]) : null)
-  const [isNew, setIsNew] = useState(false)
-  const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [pendingSelection, setPendingSelection] = useState<string | null>(null)
-  const [deleteOpen, setDeleteOpen] = useState(false)
-
-  const selected = notes.find((note) => note.id === selectedId) ?? null
+  const [pendingDelete, setPendingDelete] = useState<LiteratureNote | null>(
+    null
+  )
+  const [exportError, setExportError] = useState('')
+  const reloadRef = useRef(onReload)
+  reloadRef.current = onReload
 
   useEffect(() => {
-    if (isNew || dirty) return
-    const current = notes.find((note) => note.id === selectedId) ?? notes[0] ?? null
-    setSelectedId(current?.id ?? null)
-    setDraft(current ? draftOf(current) : null)
-  }, [dirty, isNew, notes, selectedId])
-
-  const select = (identity: string): void => {
-    if (identity === NEW_NOTE) {
-      setSelectedId(null)
-      setDraft({ title: '', text: '', version: 1 })
-      setIsNew(true)
-    } else {
-      const note = notes.find((candidate) => candidate.id === identity)
-      if (!note) return
-      setSelectedId(note.id)
-      setDraft(draftOf(note))
-      setIsNew(false)
+    const changed = (event: Event): void => {
+      if ((event as CustomEvent<string>).detail !== itemId) return
+      void reloadRef
+        .current()
+        .catch((reason) =>
+          console.error('[literature-notes] refresh failed', reason)
+        )
+      catalogue.reload()
     }
-    setDirty(false)
-    setError('')
-  }
+    window.addEventListener(LITERATURE_NOTES_CHANGED, changed)
+    return () => window.removeEventListener(LITERATURE_NOTES_CHANGED, changed)
+  }, [itemId])
 
-  const requestSelection = (identity: string): void => {
-    if (dirty) {
-      setPendingSelection(identity)
+  const {
+    draft,
+    selectedId,
+    isNew,
+    status,
+    error,
+    requestOpen,
+    requestNew,
+    close,
+    setTitle,
+    setText,
+    flush,
+    remove
+  } = useNoteAutoSave({
+    itemId,
+    notes,
+    reload: async () => {
+      await onReload()
+      catalogue.reload()
+    }
+  })
+
+  const sortedNotes = [...notes].sort((a, b) => b.updated_at - a.updated_at)
+  const selectedIndex = sortedNotes.findIndex((note) => note.id === selectedId)
+  const selected = selectedIndex >= 0 ? sortedNotes[selectedIndex] : null
+  const displayPosition =
+    selectedIndex >= 0 ? selectedIndex + 1 : sortedNotes.length + 1
+
+  const noteTitle = (note: LiteratureNote, index: number): string =>
+    literatureNoteTitle(note, index, (position) =>
+      t('readerNotes.defaultTitle', { position })
+    )
+
+  const requestClose = (): void => {
+    if (status === 'saved') {
+      close()
       return
     }
-    select(identity)
+    void flush().then((saved) => {
+      if (saved) close()
+    })
   }
 
-  const cancel = (): void => {
-    if (isNew) {
-      select(notes[0]?.id ?? '')
-      if (!notes.length) {
-        setSelectedId(null)
-        setDraft(null)
-      }
-      return
-    }
-    if (selected) setDraft(draftOf(selected))
-    setDirty(false)
-    setError('')
-  }
-
-  const save = async (): Promise<void> => {
+  const exportSelected = (): void => {
     if (!draft) return
-    if (!draft.text.trim()) {
-      setError(t('notes.bodyRequired'))
-      return
-    }
-    setSaving(true)
-    setError('')
-    try {
-      const note = isNew
-        ? await addLiteratureNote(itemId, draft.text, draft.title)
-        : await updateLiteratureNote(itemId, selectedId ?? '', draft)
-      setSelectedId(note.id)
-      setDraft(draftOf(note))
-      setIsNew(false)
-      setDirty(false)
-      await onReload()
-    } catch (reason) {
-      if (
-        reason instanceof LiteratureApiError &&
-        reason.failure.code === NOTE_VERSION_CONFLICT
-      ) {
-        setError(t('notes.versionConflict'))
-      } else {
-        setError(reason instanceof Error ? reason.message : t('notes.saveFailed'))
-      }
-    } finally {
-      setSaving(false)
-    }
+    setExportError('')
+    void exportNoteAsMarkdown(
+      { title: draft.title, text: draft.text },
+      displayPosition,
+      (value) => t('readerNotes.defaultTitle', { position: value })
+    ).catch((reason) => {
+      console.error('[literature-notes] export failed', reason)
+      setExportError(t('notes.exportFailed'))
+    })
   }
 
-  const remove = async (): Promise<void> => {
-    if (!selectedId) return
-    setSaving(true)
-    setError('')
-    try {
-      await deleteLiteratureNote(itemId, selectedId)
-      setSelectedId(null)
-      setDraft(null)
-      setDirty(false)
-      await onReload()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t('notes.deleteFailed'))
-    } finally {
-      setSaving(false)
-      setDeleteOpen(false)
-    }
+  const confirmRemove = async (): Promise<void> => {
+    if (!pendingDelete) return
+    const deleted = await remove(pendingDelete.id)
+    const removedOpenNote = pendingDelete.id === selectedId
+    setPendingDelete(null)
+    if (deleted && removedOpenNote) close()
+  }
+
+  const deleteDialog = (
+    <AlertDialog
+      open={pendingDelete !== null}
+      onOpenChange={(open) => {
+        if (!open) setPendingDelete(null)
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('notes.deleteTitle')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t('notes.deleteDescription')}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t('notes.cancel')}</AlertDialogCancel>
+          <Button variant="danger" onClick={() => void confirmRemove()}>
+            {t('notes.delete')}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+
+  if (draft) {
+    return (
+      <div className="flex h-full min-h-0 flex-col gap-[var(--vds-space-2)] p-[var(--vds-space-3)]">
+        <div className="flex min-w-0 items-center gap-[var(--vds-space-1)]">
+          <Button
+            variant="ghost"
+            icon={<ArrowLeft size={14} />}
+            onClick={requestClose}
+          >
+            {t('notes.back')}
+          </Button>
+        </div>
+        <NoteEditor
+          actions={
+            !isNew && selected ? (
+              <IconButton
+                className="hover:!text-[var(--vds-error-text-primary)]"
+                icon={<Trash size={14} />}
+                label={t('notes.deleteNamed', {
+                  title: noteTitle(selected, selectedIndex)
+                })}
+                size="sm"
+                variant="ghostIcon"
+                onClick={() => setPendingDelete(selected)}
+              />
+            ) : undefined
+          }
+          draft={draft}
+          error={error || exportError || undefined}
+          status={status}
+          titlePlaceholder={t('notes.defaultTitleHint')}
+          onExport={exportSelected}
+          onTextChange={setText}
+          onTitleChange={setTitle}
+        />
+        {deleteDialog}
+      </div>
+    )
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-[var(--vds-space-3)] p-[var(--vds-space-3)]">
       <Button
-        className="self-start"
+        className="self-end"
         icon={<Plus size={16} />}
         variant="secondary"
-        onClick={() => requestSelection(NEW_NOTE)}
+        onClick={requestNew}
       >
         {t('relations.addNote')}
       </Button>
 
-      {notes.length ? (
-        <ScrollArea className="max-h-32 shrink-0">
-          <div className="grid gap-[var(--vds-space-1)] pr-[var(--vds-space-2)]">
-            {notes.map((note) => (
-              <Button
+      {sortedNotes.length ? (
+        <ScrollArea className="min-h-0 flex-1" viewportClassName="h-full">
+          <div className="flex flex-col gap-[var(--vds-space-1)] pr-[var(--vds-space-2)]">
+            {sortedNotes.map((note, index) => (
+              <div
                 key={note.id}
-                aria-pressed={!isNew && note.id === selectedId}
-                className="w-full justify-start truncate"
-                size="sm"
-                variant={!isNew && note.id === selectedId ? 'secondary' : 'ghost'}
-                onClick={() => requestSelection(note.id)}
+                className="group/note-row flex min-w-0 items-center rounded-[var(--vds-radius-3)] hover:bg-[var(--vds-surface-hover)] focus-within:bg-[var(--vds-surface-hover)]"
               >
-                {note.title}
-              </Button>
+                <Button
+                  className="h-auto min-w-0 flex-1 justify-start gap-[var(--vds-space-2)] !bg-transparent !px-[var(--vds-space-2)] !py-[var(--vds-space-3)] !text-[length:var(--vds-font-body-lv2)] hover:!bg-transparent"
+                  variant="ghost"
+                  onClick={() => requestOpen(note)}
+                >
+                  <NotepadText
+                    aria-hidden="true"
+                    className="shrink-0 text-[var(--vds-text-secondary)]"
+                    size={16}
+                  />
+                  <EllipsisText
+                    tooltipPortalled
+                    wrapperClassName="flex-1 text-left"
+                  >
+                    {noteTitle(note, index)}
+                  </EllipsisText>
+                </Button>
+                <IconButton
+                  className="pointer-events-none mr-[var(--vds-space-2)] shrink-0 opacity-0 group-hover/note-row:pointer-events-auto group-hover/note-row:opacity-100 group-focus-within/note-row:pointer-events-auto group-focus-within/note-row:opacity-100 hover:!text-[var(--vds-error-text-primary)]"
+                  icon={<Trash size={14} />}
+                  label={t('notes.deleteNamed', {
+                    title: noteTitle(note, index)
+                  })}
+                  size="sm"
+                  variant="ghostIcon"
+                  onClick={() => setPendingDelete(note)}
+                />
+              </div>
             ))}
           </div>
         </ScrollArea>
-      ) : !isNew ? (
+      ) : (
         <EmptyState
-          action={(
-            <Button variant="secondary" onClick={() => select(NEW_NOTE)}>
-              {t('relations.addNote')}
-            </Button>
-          )}
           description={t('notes.emptyDescription')}
           icon={<FileText size={18} />}
           title={t('notes.emptyTitle')}
         />
-      ) : null}
+      )}
 
-      {draft ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-3)]">
-          <Input
-            label={t('notes.title')}
-            placeholder={isNew ? t('notes.defaultTitleHint') : undefined}
-            value={draft.title}
-            onChange={(event) => {
-              setDraft({ ...draft, title: event.target.value })
-              setDirty(true)
-            }}
-          />
-          <Textarea
-            className="min-h-40 flex-1 resize-none"
-            error={error || undefined}
-            label={t('relations.noteContent')}
-            placeholder={t('notes.bodyPlaceholder')}
-            value={draft.text}
-            onChange={(event) => {
-              setDraft({ ...draft, text: event.target.value })
-              setDirty(true)
-              if (error) setError('')
-            }}
-          />
-          <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
-            {!isNew && selected ? (
-              <IconButton
-                icon={<Trash size={14} />}
-                label={t('notes.deleteNamed', { title: selected.title })}
-                size="sm"
-                variant="ghostIcon"
-                onClick={() => setDeleteOpen(true)}
-              />
-            ) : <span />}
-            <div className="flex gap-[var(--vds-space-2)]">
-              {(isNew || dirty) ? (
-                <Button disabled={saving} variant="outline" onClick={cancel}>
-                  {t('notes.cancel')}
-                </Button>
-              ) : null}
-              <Button disabled={!dirty && !isNew} loading={saving} onClick={() => void save()}>
-                {t('notes.save')}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <AlertDialog open={pendingSelection !== null} onOpenChange={(open) => {
-        if (!open) setPendingSelection(null)
-      }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('notes.discardTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('notes.discardDescription')}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('notes.keepEditing')}</AlertDialogCancel>
-            <Button variant="danger" onClick={() => {
-              const next = pendingSelection
-              setPendingSelection(null)
-              if (next) select(next)
-            }}>
-              {t('notes.discard')}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('notes.deleteTitle')}</AlertDialogTitle>
-            <AlertDialogDescription>{t('notes.deleteDescription')}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t('notes.cancel')}</AlertDialogCancel>
-            <Button loading={saving} variant="danger" onClick={() => void remove()}>
-              {t('notes.delete')}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      {error && !draft ? <Alert tone="error" title={t('notes.operationFailed')} description={error} /> : null}
+      {deleteDialog}
     </div>
   )
 }

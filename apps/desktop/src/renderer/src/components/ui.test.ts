@@ -199,7 +199,7 @@ test('button class contract includes variant, size and caller class', () => {
   assert.equal(buttonClassName({ variant: 'outline' }), 'vds-button vds-button--outline vds-button--md')
   assert.equal(buttonClassName({ size: 'icon', variant: 'ghostIcon' }), 'vds-button vds-button--ghostIcon vds-button--icon')
   assert.equal(buttonClassName({ variant: 'warning' }), 'vds-button vds-button--warning vds-button--md')
-  assert.match(buttonStyleClassName({}), /\[font-weight:400\]/)
+  assert.match(buttonStyleClassName({}), /\bfont-normal\b/)
   assert.match(buttonStyleClassName({ variant: 'dropzone' }), /\[border-style:dashed\]/)
   assert.match(buttonStyleClassName({ variant: 'dropzone' }), /data-\[drop-active=true\]/)
   assert.match(buttonStyleClassName({ size: 'md' }), /text-\[length:var\(--vds-font-body-lv2\)\]/)

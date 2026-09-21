@@ -186,17 +186,16 @@ class ArtifactService:
 
     def _editable(self, record: SessionArtifactRecord, content: bytes) -> bool:
         projection = self._formats.project(record.original_path, content)
+        artifact_editable = projection.can_edit and projection.can_save
+        if record.source_kind in {ArtifactSource.FILE_CHANGE, ArtifactSource.ARTIFACT_PUBLISH}:
+            artifact_editable = artifact_editable or projection.can_edit_artifact
         return (
-            (
-                record.source_kind is ArtifactSource.FILE_CHANGE
-                or (
-                    record.source_kind is ArtifactSource.ARTIFACT_PUBLISH
-                    and record.status is ArtifactStatus.PUBLISHED
-                )
+            record.source_kind is ArtifactSource.FILE_CHANGE
+            or (
+                record.source_kind is ArtifactSource.ARTIFACT_PUBLISH
+                and record.status is ArtifactStatus.PUBLISHED
             )
-            and projection.can_edit
-            and projection.can_save
-        )
+        ) and artifact_editable
 
     def editable(self, session_id: str, artifact_id: str) -> bool:
         _content, _media_type, editable, _revision = self.read_document(session_id, artifact_id)

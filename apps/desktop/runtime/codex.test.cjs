@@ -5,7 +5,51 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
-const { artifact, bundledCodex, resolveVendoredCodex, verifyArchive } = require('./codex.cjs')
+const { artifact, bundledCodex, publishRuntime, resolveVendoredCodex, verifyArchive } = require('./codex.cjs')
+
+test('Windows publication retries transient locks with a bounded budget', async () => {
+  const delays = []
+  let attempts = 0
+  await publishRuntime('source', 'destination', {
+    platform: 'win32',
+    rename: () => {
+      attempts += 1
+      if (attempts < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY' })
+    },
+    delay: async milliseconds => delays.push(milliseconds)
+  })
+  assert.equal(attempts, 3)
+  assert.deepEqual(delays, [250, 500])
+  attempts = 0
+  await assert.rejects(publishRuntime('source', 'destination', {
+    platform: 'win32',
+    rename: () => {
+      attempts += 1
+      throw Object.assign(new Error('locked'), { code: 'EPERM' })
+    },
+    delay: async () => {}
+  }), /locked/)
+  assert.equal(attempts, 7)
+})
+
+test('publication preserves permanent errors and macOS immediate failure', async () => {
+  for (const [platform, code] of [['darwin', 'EBUSY'], ['win32', 'ENOENT']]) {
+    await assert.rejects(publishRuntime('source', 'destination', {
+      platform,
+      rename: () => { throw Object.assign(new Error('denied'), { code }) },
+      delay: async () => assert.fail('must not retry')
+    }), /denied/)
+  }
+})
+
+test('runtime publication and integrity checks precede executable probing', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'codex.cjs'), 'utf8')
+  const publication = source.indexOf('await publishRuntime(runtime, directory, { platform })')
+  const verification = source.indexOf('await digest(cached,')
+  const probe = source.indexOf('const probe = spawnSync(executable,')
+  assert.ok(publication > 0 && publication < verification && verification < probe)
+  assert.ok(source.includes('const executable = path.join(directory, packageManifest.entrypoint)'))
+})
 
 test('vendored manifest selects only reviewed platforms', () => {
   const desktop = path.resolve(__dirname, '..')

@@ -48,7 +48,7 @@ def register_literature_search_routes(app: FastAPI) -> None:
 
     @app.post(LITERATURE_SEARCH_STATUS_ROUTE)
     async def search_result_status(command: ResultStatusRequest) -> dict:
-        result = await asyncio.to_thread(statuses.resolve, command.papers)
+        result = await asyncio.to_thread(statuses.resolve, command.papers, command.project_id)
         return {"items": result}
 
     @app.post(LITERATURE_SEARCH_ROUTE_PREFIX, status_code=202)

@@ -57,11 +57,10 @@ import {
   type IconButtonProps
 } from '../../components/ui'
 import { Icon } from '../../icons'
-import { viewRequiresProject } from '../../app/composition'
 import { feedback } from '../../contracts/feedback'
 import { SESSION_TITLE_MAX_LENGTH } from '../../model'
 import { SKILL_SURFACE_CONVERSATION } from '../../../../skills'
-import { activeThread, assistantProject, hasProjectScope, useApp } from '../../store'
+import { activeThread, assistantProject, useApp } from '../../store'
 import { serveSessionNode } from '../../tree'
 import { AssistantContextQuote } from './Quote'
 import { AnnotationSummary, annotationDisplay } from './Notes'
@@ -86,12 +85,12 @@ const FLOATING_PANEL_MARGIN_PX = 12
  */
 const SESSION_FLYOUT_CLASS_NAME =
   'w-[var(--vds-popover-width-md)] gap-[var(--vds-space-1)] ![padding:var(--vds-space-2)]'
-const SESSION_FLYOUT_HEAD_CLASS_NAME =
-  'px-[var(--vds-space-2)] pt-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]'
+/* 行 hover/选中背景与左侧菜单（lit-nav-row 等）对齐：同取 --vds-bg-gray-hover，
+   不用品牌浅绿底，避免浮层内颜色突兀。 */
 const SESSION_ROW_CLASS_NAME =
-  'group flex min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] hover:[background:var(--vds-bg-gray-hover-transparent)]'
+  'group flex min-w-0 items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)] hover:[background:var(--vds-bg-gray-hover)]'
 const SESSION_ROW_ACTIVE_CLASS_NAME =
-  '![background:var(--vds-brand-light-bg-default)] hover:![background:var(--vds-brand-light-bg-default)]'
+  '![background:var(--vds-bg-gray-hover)] hover:![background:var(--vds-bg-gray-hover)]'
 const SESSION_ITEM_CLASS_NAME =
   'min-w-0 flex-1 !bg-transparent ![min-height:var(--vds-control-height-standard)]'
 const SESSION_TITLE_CLASS_NAME =
@@ -314,8 +313,6 @@ export function AiPanel(): React.JSX.Element {
           serveSessionNode(row, state.sessionActivitySeen, state.activeSession)
         )
         .sort((left, right) => {
-          if (left.id === state.activeSession) return -1
-          if (right.id === state.activeSession) return 1
           return (
             (right.activityAt ?? 0) - (left.activityAt ?? 0) ||
             right.id.localeCompare(left.id)
@@ -564,15 +561,9 @@ export function AiPanel(): React.JSX.Element {
     </div>
   )
 
-  // cover 全屏时主列（含 TopBar）被隐藏；若左侧面板也不可见，面板顶到窗口
-  // 左缘，头部会压在 macOS 红绿灯上，需要额外让位（见 workbench.css）。
-  const coverAtWindowEdge =
-    ai.cover
-    && !(state.modulePanelOpen && !(viewRequiresProject(state.mainView) && !hasProjectScope(state)))
-
   return (
     <aside
-      className={`vds-ai-panel${ai.docked ? ' is-docked' : ' is-floating'}${ai.cover ? ' is-cover' : ''}${coverAtWindowEdge ? ' is-cover-window' : ''}`}
+      className={`vds-ai-panel${ai.docked ? ' is-docked' : ' is-floating'}${ai.cover ? ' is-cover' : ''}`}
       data-testid="ai-panel"
       style={!ai.docked && floatingPosition ? floatingPosition : undefined}
     >
@@ -584,7 +575,7 @@ export function AiPanel(): React.JSX.Element {
         onPointerCancel={stopFloatingDrag}
       >
         <div className="vds-ai-session" data-testid="ai-session-title">
-          <span>{sessionTitle}</span>
+          <span className="text-[var(--vds-text-primary)]">{sessionTitle}</span>
           {window.scholarseed.developerToolsEnabled && thread.sessionId && (
             <IconButton
               className="flex-none opacity-40 hover:opacity-100"
@@ -623,11 +614,6 @@ export function AiPanel(): React.JSX.Element {
               data-testid="ai-session-flyout"
               side="bottom"
             >
-              <div className={SESSION_FLYOUT_HEAD_CLASS_NAME}>
-                {projectPath
-                  ? t('panel.projectSessions')
-                  : t('panel.unassignedSessions')}
-              </div>
               <SearchBox
                 aria-label={t('panel.searchLabel')}
                 data-testid="ai-session-search"
@@ -873,9 +859,9 @@ export function AiPanel(): React.JSX.Element {
       <Translation />
 
       {/* 真实会话流：0.1 的 Stream，含活动、工具、HIL 权限卡、产物。 */}
-      <div className="vds-ai-stream flex flex-col" data-testid="ai-stream">
+      <div className="vds-ai-stream flex min-h-0 flex-1 flex-col overflow-hidden pt-[var(--vds-space-1)] pb-[var(--vds-space-2)] [&>.conversation-stream]:!pt-0 [&>.conversation-stream]:!pb-0" data-testid="ai-stream">
         {state.activeSession === null && !state.turnLaunch ? (
-          <div className="vds-ai-stream-empty flex min-h-full flex-col justify-center px-0 pt-[26px] pb-[34px]">
+          <div className="vds-ai-stream-empty mx-auto w-[calc(100%-2*(var(--vds-conversation-inline-gutter)+var(--vds-conversation-scrollbar-width)))] max-w-[var(--vds-conversation-content-width)] flex min-h-full flex-col justify-center px-0 pt-[26px] pb-[34px]">
             <h3>{t('panel.startTitle')}</h3>
             <p>{t('panel.startDescription')}</p>
             <div className="vds-ai-task-starters">
@@ -902,8 +888,8 @@ export function AiPanel(): React.JSX.Element {
 
       {/* 真实输入框：0.1 的 Composer，含技能、附件、模型切换、中断。 */}
       <ConversationControls>
-        <div className="box-border px-[13px]">
-          <div className="mx-auto box-border w-full min-w-0">
+        <div className="box-border px-[var(--vds-conversation-inline-gutter)]">
+          <div className="mx-auto box-border w-full min-w-0 max-w-[var(--vds-conversation-content-width)]">
             <TodoPanel compact currentTurnOnly />
           </div>
         </div>

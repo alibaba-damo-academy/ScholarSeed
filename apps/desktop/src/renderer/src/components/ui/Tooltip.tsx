@@ -117,6 +117,7 @@ export interface TooltipProps extends Omit<HTMLAttributes<HTMLSpanElement>, 'con
   anchorRef?: { current: HTMLElement | null }
   children: ReactNode
   content?: ReactNode
+  contentClassName?: string
   defaultOpen?: boolean
   disabled?: boolean
   offset?: number
@@ -152,6 +153,7 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
       children,
       className,
       content,
+      contentClassName,
       defaultOpen = false,
       disabled = false,
       offset = TOOLTIP_PORTAL_OFFSET,
@@ -238,7 +240,7 @@ export const Tooltip = forwardRef<HTMLSpanElement, TooltipProps>(
     const contentSource = import.meta.env.DEV ? props['data-i18n-content'] : undefined
     const shortcutContent = content === undefined
       ? null
-      : <TooltipContent {...(contentSource ? { 'data-i18n-text': contentSource } : {})}>{content}</TooltipContent>
+      : <TooltipContent className={contentClassName} {...(contentSource ? { 'data-i18n-text': contentSource } : {})}>{content}</TooltipContent>
     const setRootRef = (node: HTMLSpanElement | null): void => {
       rootRef.current = node
       if (typeof ref === 'function') {

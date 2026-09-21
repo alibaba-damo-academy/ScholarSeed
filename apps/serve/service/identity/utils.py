@@ -54,6 +54,18 @@ def resolve_ownership_axis(explicit: str | None, environment_value: str) -> str:
     return OWNERSHIP_AXIS_DEFAULT
 
 
+def owner_id_for(user_id: str, axis: str) -> str:
+    """把一个真实账号身份投影成本地数据的归属身份 —— 归属轴的唯一投影点。
+
+    HTTP 侧的 ``request_owner_id`` 与执行面（会话已经热在内存里、手上只有计量身份）共用
+    这一条规则，因此「哪一腿喂归属谓词」不取决于调用点有没有 request。
+    """
+
+    if str(axis or "") == OWNERSHIP_AXIS_MACHINE:
+        return LOCAL_USER_ID
+    return str(user_id or "")
+
+
 def bearer_or_cookie(request: Request) -> str:
     """Return a bearer credential from the standard HTTP locations."""
 
@@ -87,6 +99,7 @@ def request_owner_id(request: Request) -> str:
     """
 
     axis = str(getattr(request.app.state, OWNERSHIP_AXIS_STATE, "") or OWNERSHIP_AXIS_DEFAULT)
-    if axis == OWNERSHIP_AXIS_MACHINE:
-        return LOCAL_USER_ID
-    return request_user_id(request)
+    # machine 轴不去解析账号身份: 归属与登录态无关, 且强制鉴权下无凭据时 request_user_id
+    # 会直接 401, 那样"本机数据归谁"就又被登录态决定了。
+    account = "" if axis == OWNERSHIP_AXIS_MACHINE else request_user_id(request)
+    return owner_id_for(account, axis)

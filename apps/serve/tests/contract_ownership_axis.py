@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -29,7 +32,14 @@ from service.identity.utils import (
     OWNERSHIP_AXIS_DEFAULT,
     OWNERSHIP_AXIS_MACHINE,
     OWNERSHIP_AXIS_PRINCIPAL,
+    owner_id_for,
     resolve_ownership_axis,
+)
+from service.settings.connections import CONNECTION_OWNER_KEY, ModelProfileStore
+from service.settings.credentials import (
+    CredentialState,
+    ModelCredentialStore,
+    OAuthTokens,
 )
 
 CREATOR = SessionPrincipal("acct-5692")
@@ -37,6 +47,11 @@ OTHER = SessionPrincipal("acct-2678")
 MACHINE = SessionPrincipal(LOCAL_USER_ID)
 RUNTIME_ID = "codex"
 SESSION_ID = "session-axis"
+OAUTH_CONNECTION_VALUES = {
+    "authentication": "oauth",
+    "oauth_provider": "chatgpt",
+    "selected_models": [],
+}
 
 
 def register_session(
@@ -187,6 +202,192 @@ class OwnershipAxisStoreContract(unittest.TestCase):
         self.assertIsNotNone(catalog.get(SESSION_ID))
         catalog.release(SESSION_ID, CREATOR)
         self.assertIsNone(catalog.get(SESSION_ID))
+
+
+class OwnerProjectionContract(unittest.TestCase):
+    """归属身份投影只有一条规则, HTTP 侧与执行面（只有计量身份）共用它。"""
+
+    def test_machine_axis_projects_every_account_onto_the_machine_principal(self) -> None:
+        self.assertEqual(owner_id_for(CREATOR.user_id, OWNERSHIP_AXIS_MACHINE), LOCAL_USER_ID)
+        self.assertEqual(owner_id_for("", OWNERSHIP_AXIS_MACHINE), LOCAL_USER_ID)
+
+    def test_principal_axis_keeps_the_real_account(self) -> None:
+        self.assertEqual(owner_id_for(CREATOR.user_id, OWNERSHIP_AXIS_PRINCIPAL), CREATOR.user_id)
+
+    def test_unknown_axis_fails_closed_to_isolation(self) -> None:
+        self.assertEqual(owner_id_for(CREATOR.user_id, "shared"), CREATOR.user_id)
+
+
+class ConnectionOwnershipAxisContract(unittest.TestCase):
+    """个人模型连接层（可见性 + OAuth 凭据）与会话目录共用同一条归属轴范式。"""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="connection-axis-")
+        self.addCleanup(self._temporary.cleanup)
+        root = Path(self._temporary.name)
+        self.profiles_path = root / "profiles.json"
+        self.credentials_path = root / "credentials.sqlite3"
+        self.locks = root / "locks"
+
+    def profiles(self, *, shared: bool) -> ModelProfileStore:
+        return ModelProfileStore(self.profiles_path, shared_ownership=shared)
+
+    def credentials(self, *, shared: bool) -> ModelCredentialStore:
+        return ModelCredentialStore(self.credentials_path, self.locks, shared_ownership=shared)
+
+    def connect(self, *, shared: bool, owner: str, user: str = "") -> str:
+        """建一条 OAuth 连接并授权成功。``owner`` 是归属身份, ``user`` 是真实账号。"""
+
+        account = user or owner
+        profile = self.profiles(shared=shared).upsert(
+            OAUTH_CONNECTION_VALUES, owner_id=owner, user_id=account
+        )
+        # 凭据行的 owner 戳由授权回调决定（真实账号）, 读取才按归属身份 —— 见
+        # authorization.py 的 replace 调用点。
+        self.credentials(shared=shared).replace(
+            account,
+            profile["id"],
+            OAuthTokens("access", "refresh", time.time() + 3600, "chatgpt-account"),
+            expected_generation=0,
+        )
+        return str(profile["id"])
+
+    def rows(self, connection_id: str) -> list[tuple[str, str]]:
+        database = sqlite3.connect(self.credentials_path)
+        try:
+            return [
+                (str(row[0]), str(row[1]))
+                for row in database.execute(
+                    "SELECT owner_id, state FROM model_credentials WHERE connection_id = ?",
+                    (connection_id,),
+                )
+            ]
+        finally:
+            database.close()
+
+    @staticmethod
+    async def _hold_lock(store: ModelCredentialStore, owner: str, connection_id: str) -> None:
+        async with store.refresh_lock(owner, connection_id):
+            pass
+
+    def lock_names(self) -> list[str]:
+        return sorted(path.name for path in self.locks.iterdir())
+
+    def test_isolated_connection_is_invisible_to_another_account(self) -> None:
+        connection = self.connect(shared=False, owner=CREATOR.user_id)
+        store = self.profiles(shared=False)
+
+        self.assertIsNotNone(store.profile(connection, owner_id=CREATOR.user_id))
+        self.assertIsNone(store.profile(connection, owner_id=OTHER.user_id))
+        self.assertEqual(
+            self.credentials(shared=False).read(OTHER.user_id, connection).state,
+            CredentialState.DISCONNECTED,
+        )
+
+    def test_shared_connection_survives_logout_and_account_switch(self) -> None:
+        """用户报的缺陷本体: 登录态配置的订阅连接, 登出（归属身份回落机器级）后必须仍可见可用。"""
+
+        connection = self.connect(shared=True, owner=CREATOR.user_id, user=CREATOR.user_id)
+        store = self.profiles(shared=True)
+        credentials = self.credentials(shared=True)
+
+        self.assertIsNotNone(store.profile(connection, owner_id=LOCAL_USER_ID))
+        self.assertEqual(
+            [item["id"] for item in store.list(owner_id=LOCAL_USER_ID)["profiles"]], [connection]
+        )
+        record = credentials.read(LOCAL_USER_ID, connection)
+        self.assertEqual(record.state, CredentialState.CONNECTED)
+        assert record.tokens is not None
+        self.assertEqual(record.tokens.account_id, "chatgpt-account")
+
+    def test_shared_connection_still_records_the_real_creator(self) -> None:
+        """共享归属不是"把归属抹成 local": 两个 owner 列都仍是历史事实。"""
+
+        connection = self.connect(shared=True, owner=LOCAL_USER_ID, user=CREATOR.user_id)
+
+        stored = self.profiles(shared=True).profile(connection, owner_id=LOCAL_USER_ID)
+        assert stored is not None
+        self.assertEqual(stored[CONNECTION_OWNER_KEY], CREATOR.user_id)
+        self.assertEqual(self.rows(connection), [(CREATOR.user_id, "connected")])
+
+    def test_shared_edit_does_not_transfer_the_original_owner_stamp(self) -> None:
+        """同机另一个账号改一次连接, 不该把所有权转走 —— 否则 flip-back 后原主认不回。"""
+
+        connection = self.connect(shared=True, owner=LOCAL_USER_ID, user=CREATOR.user_id)
+        self.profiles(shared=True).upsert(
+            {**OAUTH_CONNECTION_VALUES, "preview_name": "改过的名字"},
+            connection,
+            owner_id=LOCAL_USER_ID,
+            user_id=OTHER.user_id,
+        )
+
+        stored = self.profiles(shared=True).profile(connection, owner_id=LOCAL_USER_ID)
+        assert stored is not None
+        self.assertEqual(stored[CONNECTION_OWNER_KEY], CREATOR.user_id)
+
+    def test_axis_flip_back_restores_connection_isolation_without_migration(self) -> None:
+        """可逆性: 同一份存储先共享、再改回隔离, 原主必须还认得回自己的连接与凭据。"""
+
+        connection = self.connect(shared=True, owner=CREATOR.user_id, user=CREATOR.user_id)
+        self.assertIsNotNone(self.profiles(shared=True).profile(connection, owner_id=OTHER.user_id))
+
+        isolated = self.profiles(shared=False)
+        self.assertIsNotNone(isolated.profile(connection, owner_id=CREATOR.user_id))
+        self.assertIsNone(isolated.profile(connection, owner_id=OTHER.user_id))
+        self.assertIsNone(isolated.profile(connection, owner_id=LOCAL_USER_ID))
+        credentials = self.credentials(shared=False)
+        self.assertEqual(
+            credentials.read(CREATOR.user_id, connection).state, CredentialState.CONNECTED
+        )
+        self.assertEqual(
+            credentials.read(OTHER.user_id, connection).state, CredentialState.DISCONNECTED
+        )
+
+    def test_shared_revocation_hits_the_real_row(self) -> None:
+        """断开连接必须命中真实存储行, 不能另写一行 tombstone 把活凭据留在原地。"""
+
+        connection = self.connect(shared=True, owner=CREATOR.user_id, user=CREATOR.user_id)
+        self.credentials(shared=True).revoke(LOCAL_USER_ID, connection)
+
+        self.assertEqual(self.rows(connection), [(CREATOR.user_id, "disconnected")])
+        self.assertEqual(
+            self.credentials(shared=False).read(CREATOR.user_id, connection).state,
+            CredentialState.DISCONNECTED,
+        )
+
+    def test_shared_scope_resolution_prefers_the_live_row(self) -> None:
+        """同一 connection_id 出现多行时按确定序择一（活凭据优先）, 不靠 owner 字典序碰运气。"""
+
+        connection = self.connect(shared=False, owner="aaa-stale")
+        self.credentials(shared=False).revoke("aaa-stale", connection)
+        self.credentials(shared=False).replace(
+            "zzz-live",
+            connection,
+            OAuthTokens("access", "refresh", time.time() + 3600, "chatgpt-account"),
+            expected_generation=0,
+        )
+        self.assertEqual(
+            sorted(owner for owner, _ in self.rows(connection)), ["aaa-stale", "zzz-live"]
+        )
+
+        record = self.credentials(shared=True).read(LOCAL_USER_ID, connection)
+        self.assertEqual(record.state, CredentialState.CONNECTED)
+
+    def test_shared_refresh_lock_is_connection_scoped(self) -> None:
+        """一条连接只能有一把刷新锁, 否则两个账号能并发刷新同一份 refresh_token。"""
+
+        connection = self.connect(shared=True, owner=LOCAL_USER_ID, user=CREATOR.user_id)
+        store = self.credentials(shared=True)
+        for owner in (LOCAL_USER_ID, CREATOR.user_id, OTHER.user_id):
+            asyncio.run(self._hold_lock(store, owner, connection))
+        self.assertEqual(len(self.lock_names()), 1, str(self.lock_names()))
+
+    def test_isolated_refresh_lock_stays_owner_scoped(self) -> None:
+        connection = self.connect(shared=False, owner=CREATOR.user_id)
+        store = self.credentials(shared=False)
+        for owner in (CREATOR.user_id, OTHER.user_id):
+            asyncio.run(self._hold_lock(store, owner, connection))
+        self.assertEqual(len(self.lock_names()), 2, str(self.lock_names()))
 
 
 if __name__ == "__main__":

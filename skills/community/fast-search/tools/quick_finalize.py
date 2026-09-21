@@ -173,9 +173,89 @@ def _tier(index, budget):
     return 3
 
 
+def _compact_text(value):
+    """Normalize a title/query for conservative full-phrase containment."""
+    return "".join(character for character in str(value).casefold() if character.isalnum())
+
+
+def _direct_query_match(paper, query):
+    """Return a strong match class for identifiers or a title named by the user."""
+    query_text = str(query or "")
+    arxiv_pattern = r"(?<!\d)(\d{4}\.\d{4,5})(?:v\d+)?(?!\d)"
+    query_arxiv_ids = {
+        match.group(1).lower()
+        for match in re.finditer(arxiv_pattern, query_text, re.I)
+    }
+    paper_arxiv_ids = {
+        match.group(1).lower()
+        for match in re.finditer(
+            arxiv_pattern,
+            "%s %s %s" % (
+                paper.get("arxiv_id") or "",
+                paper.get("doi") or "",
+                paper.get("url") or "",
+            ),
+            re.I,
+        )
+    }
+    if query_arxiv_ids & paper_arxiv_ids:
+        return 2
+
+    doi_match = re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", query_text, re.I)
+    if doi_match and doi_match.group(0).rstrip(".,)").casefold() == str(
+        paper.get("doi") or ""
+    ).strip().casefold():
+        return 2
+
+    normalized_query = _compact_text(query_text)
+    normalized_title = _compact_text(paper.get("title") or "")
+    if len(normalized_title) >= 8 and normalized_title in normalized_query:
+        return 1
+    return 0
+
+
+def _best_title_match(paper, best_title):
+    """Return a match only for the agent-declared canonical full title."""
+    if not str(best_title or "").strip():
+        return 0
+    if ranking.title_key(best_title) == ranking.title_key(paper.get("title")):
+        return 2
+    return 0
+
+
+def _declared_target_match(paper, query, best_title):
+    direct = _direct_query_match(paper, query)
+    query_text = str(query or "")
+    has_direct_identifier = bool(
+        re.search(r"(?<!\d)\d{4}\.\d{4,5}(?:v\d+)?(?!\d)", query_text, re.I)
+        or re.search(r"10\.\d{4,9}/[-._;()/:a-z0-9]+", query_text, re.I)
+    )
+    if has_direct_identifier:
+        return 2 if direct == 2 else 0
+    return max(2 if direct == 2 else 0, _best_title_match(paper, best_title))
+
+
+def _promote_tier1_best(selected, tier1_count, query="", best_title=""):
+    """Put the best query-aligned Tier 1 paper first without changing membership."""
+    boundary = min(max(int(tier1_count), 0), len(selected))
+    if boundary < 2:
+        return selected
+    best_index = max(
+        range(boundary),
+        key=lambda index: (
+            _direct_query_match(selected[index], query),
+            _best_title_match(selected[index], best_title),
+            float(selected[index].get("_quick_score", 0) or 0),
+        ),
+    )
+    if best_index:
+        selected.insert(0, selected.pop(best_index))
+    return selected
+
+
 def finalize_quick(
     session_dir, output_dir, concepts_text=None, count=None,
-    diversity_weight=0.2,
+    diversity_weight=0.2, best_title="", require_best_target=False,
 ):
     """Finalize one Veryfast session and return a compact result summary."""
     state = search_state.read_state(session_dir)
@@ -206,12 +286,38 @@ def finalize_quick(
         if not papers:
             raise ValueError("all search results violate the publication cutoff")
     concepts = _concepts(state.get("query", ""), concepts_text)
+    query = state.get("query", "")
+    best_title = str(best_title or "").strip()
+    target_pool_matches = [
+        paper for paper in papers
+        if _declared_target_match(paper, query, best_title)
+    ] if best_title else []
+    if require_best_target and not target_pool_matches:
+        raise ValueError(
+            "required direct target is absent from the PaperHub candidate pool: %s"
+            % best_title
+        )
     selected = _select(papers, concepts, count, diversity_weight)
     configured_budget = list(policy["tier_budget"])
     if count != sum(configured_budget):
         tier1 = min(4, max(1, round(count * 0.2)))
         tier2 = min(count - tier1, max(1, round(count * 0.45)))
         configured_budget = [tier1, tier2, count - tier1 - tier2]
+    target_selected_indices = [
+        index for index, paper in enumerate(selected)
+        if _declared_target_match(paper, query, best_title)
+    ] if best_title else []
+    if require_best_target and (
+        not target_selected_indices
+        or min(target_selected_indices) >= configured_budget[0]
+    ):
+        raise ValueError(
+            "required direct target was retrieved but did not enter Tier 1: %s"
+            % best_title
+        )
+    _promote_tier1_best(
+        selected, configured_budget[0], query, best_title=best_title,
+    )
     output_papers = [
         _public_paper(paper, _tier(index, configured_budget), concepts)
         for index, paper in enumerate(selected)
@@ -226,6 +332,13 @@ def finalize_quick(
             "selected_count": len(output_papers),
             "tier_budget": configured_budget,
             "selection_strategy": policy["selection_strategy"],
+            "tier1_top1_strategy": (
+                "explicit_query_alignment_then_agent_best_target_then_relevance_within_tier1"
+            ),
+            "tier1_top1_paper_id": output_papers[0].get("paper_id", ""),
+            "agent_best_target_title": best_title,
+            "agent_best_target_required": bool(require_best_target),
+            "agent_best_target_pool_match_count": len(target_pool_matches),
             "concepts": concepts,
             "exclusive_cutoff_year": cutoff,
             "cutoff_filtered_count": cutoff_filtered,
@@ -251,6 +364,8 @@ def main():
     parser.add_argument("--concepts", help="comma-separated English relevance concepts")
     parser.add_argument("--count", type=int)
     parser.add_argument("--diversity-weight", type=float, default=0.2)
+    parser.add_argument("--best-title")
+    parser.add_argument("--require-best-target", action="store_true")
     parser.add_argument(
         "--include-abstract", action="store_true", help=argparse.SUPPRESS,
     )
@@ -263,6 +378,8 @@ def main():
             concepts_text=args.concepts,
             count=args.count,
             diversity_weight=args.diversity_weight,
+            best_title=args.best_title,
+            require_best_target=args.require_best_target,
         )
     except ValueError as exc:
         parser.error(str(exc))

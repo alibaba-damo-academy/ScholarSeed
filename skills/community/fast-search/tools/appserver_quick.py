@@ -21,17 +21,19 @@ import threading
 import time
 from typing import Any, Callable, Iterable
 
+import quick_finalize
+
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SKILL_PATH = SKILL_DIR / "SKILL.md"
 DEFAULT_RUNNER_PATH = SKILL_DIR / "tools" / "quick_search.py"
+WEB_SEARCH_SKILL_PATH_ENV = "WEB_SEARCH_SKILL_PATH"
 DEFAULT_CONFIG_PATH = SKILL_DIR / "config" / "agentic-search-veryfast.json"
 CONFIG_PATH_ENV = "AGENTIC_SEARCH_VERYFAST_CONFIG"
 SECRET_SHAPE = re.compile(r"(?:ssk|sk|pplx)-[A-Za-z0-9_-]+")
 CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 PROGRESS_STAGE_BY_EVENT = {
     ("item/started", "webSearch"): "entity_resolution",
-    ("item/started", "commandExecution"): "paper_retrieval",
 }
 PROGRESS_MESSAGES = {
     "zh": {
@@ -60,6 +62,7 @@ PROGRESS_MESSAGES = {
 
 BUILTIN_CONFIG: dict[str, Any] = {
     "model": "gpt-5.6-luna",
+    "model_provider": "",
     "effort": "low",
     "service_tier": "priority",
     "timeout_seconds": 15 * 60,
@@ -104,6 +107,12 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(config.get(key), str) or not config[key].strip():
             raise AppServerError("Veryfast config %s must be a non-empty string" % key)
         config[key] = config[key].strip()
+    model_provider = config.get("model_provider", "")
+    if model_provider is None:
+        model_provider = ""
+    if not isinstance(model_provider, str):
+        raise AppServerError("Veryfast config model_provider must be a string")
+    config["model_provider"] = model_provider.strip()
     if config.get("service_tier") not in {"default", "priority"}:
         raise AppServerError("Veryfast service_tier must be default or priority")
     try:
@@ -165,6 +174,49 @@ def _scrub(value: str) -> str:
     return SECRET_SHAPE.sub("[REDACTED]", value)
 
 
+def _as_skill_file(path: Path) -> Path:
+    return path / "SKILL.md" if path.is_dir() else path
+
+
+def resolve_web_search_skill_path(
+    explicit: Path | None = None,
+    *,
+    environment: dict[str, str] | None = None,
+) -> Path:
+    """Resolve the separately installed web-search skill without downloading it."""
+    source = os.environ if environment is None else environment
+    if explicit is not None:
+        candidate = _as_skill_file(explicit.expanduser()).resolve()
+        if candidate.is_file():
+            return candidate
+        raise AppServerError("web-search skill does not exist: %s" % candidate)
+
+    configured = source.get(WEB_SEARCH_SKILL_PATH_ENV, "").strip()
+    if configured:
+        candidate = _as_skill_file(Path(configured).expanduser()).resolve()
+        if candidate.is_file():
+            return candidate
+        raise AppServerError(
+            "%s does not point to an installed web-search skill: %s"
+            % (WEB_SEARCH_SKILL_PATH_ENV, candidate)
+        )
+
+    candidates = [
+        SKILL_DIR.parent / "web-search" / "SKILL.md",
+        Path.home() / ".agents" / "skills" / "web-search" / "SKILL.md",
+        Path.home() / ".codex" / "skills" / "web-search" / "SKILL.md",
+    ]
+    for root in (SKILL_DIR, *SKILL_DIR.parents):
+        candidates.append(root / ".agents" / "skills" / "web-search" / "SKILL.md")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise AppServerError(
+        "web-search skill is not installed; install it under .agents/skills/web-search "
+        "or set %s" % WEB_SEARCH_SKILL_PATH_ENV
+    )
+
+
 def _environment_language() -> str:
     locale = " ".join(
         os.environ.get(name, "") for name in ("LC_ALL", "LC_MESSAGES", "LANG")
@@ -200,6 +252,16 @@ def _semantic_progress(
     stage = PROGRESS_STAGE_BY_EVENT.get(
         (str(message.get("method") or ""), item.get("type"))
     )
+    if (
+        stage is None
+        and message.get("method") == "item/started"
+        and item.get("type") == "commandExecution"
+    ):
+        rendered = json.dumps(item, ensure_ascii=False)
+        if "quick_search.py" in rendered:
+            stage = "paper_retrieval"
+        elif "web-search" in rendered or "scripts/invoke.py" in rendered:
+            stage = "entity_resolution"
     if stage is None:
         return None
     return stage, _progress_message(language, stage)
@@ -227,6 +289,7 @@ class CodexAppServer:
         self.reader_threads: list[threading.Thread] = []
         self.stderr_tail: deque[str] = deque(maxlen=100)
         self.command_tail: deque[str] = deque(maxlen=4)
+        self.search_activity: deque[str] = deque(maxlen=32)
 
     def start(self) -> float:
         command = [
@@ -378,9 +441,19 @@ class CodexAppServer:
                 message.get("method") == "item/completed"
                 and item.get("type") == "commandExecution"
             ):
-                self.command_tail.append(_scrub(json.dumps(
+                rendered_item = _scrub(json.dumps(
                     item, ensure_ascii=False, separators=(",", ":"),
-                ))[-4000:])
+                ))
+                self.command_tail.append(rendered_item[-4000:])
+                if "web-search" in rendered_item or "scripts/invoke.py" in rendered_item:
+                    self.search_activity.append("web_search_skill_provider")
+                if "quick_search.py" in rendered_item:
+                    self.search_activity.append("paperhub_runner")
+            if (
+                message.get("method") == "item/completed"
+                and item.get("type") == "webSearch"
+            ):
+                self.search_activity.append("native_web_search")
             if "method" in message and "id" in message:
                 self._respond_to_server_request(message)
                 continue
@@ -396,23 +469,48 @@ class CodexAppServer:
 
 def quick_prompt(query: str, output_dir: Path, runner_path: Path) -> str:
     return f"""$fast-search
+$web-search
 
 Use the Veryfast workflow for this academic-paper search and write paper-only metadata.json
-under {output_dir}. The full installed skill is already injected as a structured
-turn input: do not locate, inspect, or reread SKILL.md and do not inspect tool
-source or help. Follow the Veryfast workflow exactly: make exactly one batched
-native web-search call, then exactly one quick_search.py shell call, do not open
-web pages, do not generate a report, and stop immediately after the runner
-succeeds. Use 3-4 --keyword flags and no more than 8 --title flags; keyword plus
-title must not exceed 12. The runner call must also include `--query` with the
-full user query, `--concepts` with a comma-separated list of 3-6 distinct short
-English concepts, and `--output-dir` with the exact directory above.
+under {output_dir}. Both full installed skills are already injected as structured
+turn inputs: do not locate, inspect, or reread either SKILL.md and do not inspect
+tool source or help. Follow the Veryfast workflow exactly: make one logical
+three-query public-web batch starting through the injected web-search skill and
+its official → native → browser provider route, then make exactly one
+quick_search.py runner call. Do not choose direct runtime Web Search in place of
+an available skill route. A successfully completed runtime Web Search that
+occurs despite this priority is an acceptable compatibility result; do not
+repeat that query through another provider. Do not open result pages, generate
+a report, or continue after the runner succeeds. Use 3-4 --keyword flags and no
+more than 8 --title flags;
+keyword plus title must not exceed 12. The runner call must also include `--query`
+with the full user query, `--concepts` with a comma-separated list of 3-6 distinct
+short English concepts, and `--output-dir` with the exact directory above.
 
-If the shell call yields a running session id, poll that same session until the
+If the user is directly looking up one paper by arXiv URL/ID, DOI, or an
+explicit full title, resolve its canonical title from the matching web
+candidate before the runner call. Add that title as an exact `--title` query
+and pass `--best-title "CANONICAL_TITLE" --require-best-target`. Never replace
+the canonical-title probe with raw identifier or generic related-paper queries.
+
+When invoking the web-search skill, execute its official provider first. Only a
+structured unavailable/failed result permits its native provider, and only a
+native failure permits its browser provider. Do not skip the official attempt
+within that skill route.
+If the runtime Web Search tool is accidentally called directly and that call is
+unavailable or fails, recover within this same turn by returning immediately to
+the injected web-search skill's official provider route; do not terminate the
+request or start a second logical web batch.
+
+For any native-profile fallback, request exactly the marker-delimited
+`shushen.web_search.v1` object specified by the injected agentic-search skill;
+do not accept an unmarked or differently shaped model response.
+
+If the runner shell call yields a running session id, poll that same session until the
 runner exits before reporting completion. Polling is continuation of the one
 runner invocation, not permission to launch another command.
 
-For the shell call invoke exactly `python3 "{runner_path}"` before its arguments.
+For the runner shell call invoke exactly `python3 "{runner_path}"` before its arguments.
 Omit the workdir field. The host already set the correct working directory.
 
 User query:
@@ -431,14 +529,17 @@ def run_quick_query(
     query: str,
     output_dir: Path,
     skill_path: Path = DEFAULT_SKILL_PATH,
+    web_search_skill_path: Path | None = None,
     runner_path: Path = DEFAULT_RUNNER_PATH,
     timeout_seconds: float = 15 * 60,
     model: str = "gpt-5.6-luna",
+    model_provider: str | None = None,
     effort: str = "low",
     service_tier: str | None = "priority",
 ) -> dict[str, Any]:
     output_dir = output_dir.resolve()
     skill_path = skill_path.resolve()
+    web_search_skill_path = resolve_web_search_skill_path(web_search_skill_path)
     runner_path = runner_path.resolve()
     if output_dir.exists():
         raise AppServerError("refusing to overwrite output directory: %s" % output_dir)
@@ -446,13 +547,17 @@ def run_quick_query(
     started_at = time.time()
     started = time.monotonic()
     prompt = quick_prompt(query, output_dir, runner_path)
+    server.search_activity.clear()
     thread_params: dict[str, Any] = {
         "model": model,
         "cwd": str(output_dir.parent),
         "developerInstructions": (
-            "For every exec tool call omit workdir. Use the Veryfast runner "
-            "only at %s. Its required flags are --query, --concepts, and "
-            "--output-dir. Use at most 12 PaperHub query flags total."
+            "For every exec tool call omit workdir. Shell commands are allowed "
+            "only for the injected web-search skill's selected provider and the "
+            "Veryfast runner at %s. Invoke that runner exactly once. Its required "
+            "flags are --query, --concepts, and --output-dir. Use at most 12 "
+            "PaperHub query flags total. Direct paper lookups also require a "
+            "resolved --best-title and --require-best-target."
             % runner_path
         ),
         "approvalPolicy": "never",
@@ -461,10 +566,12 @@ def run_quick_query(
         "ephemeral": True,
         "experimentalRawEvents": True,
         "serviceName": "agentic_search_quick",
-        "runtimeWorkspaceRoots": [str(SKILL_DIR)],
+        "runtimeWorkspaceRoots": [str(SKILL_DIR), str(web_search_skill_path.parent)],
     }
     if service_tier:
         thread_params["serviceTier"] = service_tier
+    if model_provider:
+        thread_params["modelProvider"] = model_provider
     thread_response = server.request(
         "thread/start",
         thread_params,
@@ -484,6 +591,11 @@ def run_quick_query(
                 "name": "agentic-search",
                 "path": str(skill_path),
             },
+            {
+                "type": "skill",
+                "name": "web-search",
+                "path": str(web_search_skill_path),
+            },
         ],
         "model": model,
         "effort": effort,
@@ -497,7 +609,7 @@ def run_quick_query(
             "excludeSlashTmp": False,
             "excludeTmpdirEnvVar": False,
         },
-        "runtimeWorkspaceRoots": [str(SKILL_DIR)],
+        "runtimeWorkspaceRoots": [str(SKILL_DIR), str(web_search_skill_path.parent)],
     }
     if service_tier:
         turn_params["serviceTier"] = service_tier
@@ -534,9 +646,12 @@ def run_quick_query(
     if not metadata_path.is_file():
         tail = "\n".join(server.stderr_tail)[-2000:]
         commands = "\n".join(server.command_tail)[-4000:]
+        turn_details = _scrub(json.dumps(
+            turn, ensure_ascii=False, separators=(",", ":"),
+        ))[-4000:]
         raise AppServerError(
-            "turn ended without metadata.json; status=%r commands=%s stderr=%s"
-            % (turn.get("status"), commands, tail)
+            "turn ended without metadata.json; turn=%s commands=%s stderr=%s"
+            % (turn_details, commands, tail)
         )
     metadata_ready_seconds = round(
         max(0.0, metadata_path.stat().st_mtime - started_at), 3
@@ -547,6 +662,24 @@ def run_quick_query(
         raise AppServerError("Veryfast output must contain 5-20 papers")
     if any(not isinstance(paper.get("abstract"), str) for paper in papers):
         raise AppServerError("each Veryfast paper must contain an abstract field")
+    tier1 = [paper for paper in papers if paper.get("tier") == 1]
+    if not tier1 or papers[0] is not tier1[0]:
+        raise AppServerError("Veryfast output must place a Tier 1 paper first")
+    summary = document.get("search_summary") or {}
+    query_text = summary.get("query", query)
+    best_title = summary.get("agent_best_target_title", "")
+    expected = max(
+        tier1,
+        key=lambda paper: (
+            quick_finalize._direct_query_match(paper, query_text),
+            quick_finalize._best_title_match(paper, best_title),
+            float(paper.get("relevance_score", 0) or 0),
+        ),
+    )
+    if papers[0] is not expected:
+        raise AppServerError("Veryfast Tier 1 top-1 is not the best query-aligned paper")
+    activity = list(server.search_activity)
+    _validate_search_activity(activity)
     return {
         "thread_id": thread_id,
         "turn_id": turn_id,
@@ -557,8 +690,23 @@ def run_quick_query(
         "output_dir": str(output_dir),
         "metadata_path": str(metadata_path),
         "paper_count": len(papers),
+        "web_search_route": activity,
         "usage": turn.get("usage"),
     }
+
+
+def _validate_search_activity(activity: list[str]) -> None:
+    if activity.count("paperhub_runner") != 1:
+        raise AppServerError("Veryfast turn must execute exactly one PaperHub runner")
+    web_positions = [
+        index
+        for index, event in enumerate(activity)
+        if event in {"web_search_skill_provider", "native_web_search"}
+    ]
+    if not web_positions:
+        raise AppServerError("Veryfast turn must complete a public-web search batch")
+    if min(web_positions) > activity.index("paperhub_runner"):
+        raise AppServerError("public-web search must complete before the PaperHub runner")
 
 
 def _requests_from_file(path: Path) -> Iterable[dict[str, Any]]:
@@ -609,6 +757,14 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--id", default="query")
     parser.add_argument("--skill-path", type=Path, default=DEFAULT_SKILL_PATH)
+    parser.add_argument(
+        "--web-search-skill-path",
+        type=Path,
+        help=(
+            "installed web-search directory or SKILL.md; otherwise discover a "
+            "sibling/user skill or use %s" % WEB_SEARCH_SKILL_PATH_ENV
+        ),
+    )
     parser.add_argument("--runner-path", type=Path, default=DEFAULT_RUNNER_PATH)
     parser.add_argument(
         "--cache-mode",
@@ -619,6 +775,13 @@ def main() -> int:
         "--cache-replay-timing", choices=("instant", "account", "sleep")
     )
     parser.add_argument("--model")
+    parser.add_argument(
+        "--model-provider",
+        help=(
+            "optional Codex App Server provider id, for example qwen38; "
+            "omitted for the default OpenAI provider"
+        ),
+    )
     parser.add_argument("--effort")
     parser.add_argument(
         "--service-tier", choices=("priority", "default")
@@ -638,7 +801,7 @@ def main() -> int:
     try:
         config, config_sources = load_worker_config(args.config)
         for key in (
-            "model", "effort", "service_tier", "timeout_seconds",
+            "model", "model_provider", "effort", "service_tier", "timeout_seconds",
             "enable_apps", "cache_mode", "cache_dir", "cache_replay_timing",
             "paperhub_proxy_mode", "progress_language",
         ):
@@ -677,6 +840,12 @@ def main() -> int:
         parser.error("--output-dir is valid only with --query")
     if not args.skill_path.is_file() or not args.runner_path.is_file():
         parser.error("skill or Veryfast runner path does not exist")
+    try:
+        web_search_skill_path = resolve_web_search_skill_path(
+            args.web_search_skill_path
+        )
+    except AppServerError as exc:
+        parser.error(str(exc))
     if not os.environ.get("SCHOLARSEED_API_KEY"):
         parser.error("SCHOLARSEED_API_KEY is missing")
 
@@ -787,9 +956,11 @@ def main() -> int:
                     query=query,
                     output_dir=output_dir,
                     skill_path=args.skill_path,
+                    web_search_skill_path=web_search_skill_path,
                     runner_path=args.runner_path,
                     timeout_seconds=config["timeout_seconds"],
                     model=config["model"],
+                    model_provider=config["model_provider"] or None,
                     effort=config["effort"],
                     service_tier=(
                         None

@@ -3,6 +3,19 @@ import type { ConversationSearchPaper, LiteratureSearchPaper } from '../../contr
 export type ResultSort = 'relevance' | 'title' | 'year' | 'citations'
 export type AccessFilter = 'all' | 'open' | 'closed'
 export type DecisionFilter = 'all' | 'included' | 'excluded'
+export type ReviewEvidence = 'fulltext' | 'abstract' | 'metadata' | 'unknown'
+
+export function presentedSearchArtifacts(result: {
+  origin?: string
+  metadata?: { artifact_id?: string }
+  selection?: { artifact_id?: string }
+  fulltext?: { artifact_id?: string }
+  report?: { artifact_id?: string }
+}): readonly string[] {
+  return [result.metadata?.artifact_id, result.selection?.artifact_id, result.fulltext?.artifact_id,
+    ...(result.origin === 'literature-review' ? [result.report?.artifact_id] : [])]
+    .filter((id): id is string => Boolean(id))
+}
 
 export function visibleSearchPapers(
   papers: LiteratureSearchPaper[],
@@ -25,6 +38,17 @@ export function visibleSearchPapers(
     if (sort === 'citations') return (right.citation_count ?? -1) - (left.citation_count ?? -1)
     return (left.tier ?? Number.MAX_SAFE_INTEGER) - (right.tier ?? Number.MAX_SAFE_INTEGER)
   })
+}
+
+/**
+ * Reading depth a review row rests on. The review artifacts only separate
+ * "text acquired" from "no text", so an abstract-level paper is metadata-only
+ * evidence whenever no abstract survived into the projection.
+ */
+export function reviewEvidence(paper: LiteratureSearchPaper): ReviewEvidence {
+  if (paper.fulltext === 'fulltext') return 'fulltext'
+  if (paper.fulltext !== 'abstract') return 'unknown'
+  return (paper.abstract || '').trim() ? 'abstract' : 'metadata'
 }
 
 function bibValue(value: string): string {

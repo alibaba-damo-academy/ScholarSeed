@@ -9,6 +9,8 @@ import tempfile
 import unittest
 import zipfile
 
+import pdf_fixture
+
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 from paper_source_parser import ParseError,parse_source
 sys.path.insert(0,str(Path(__file__).resolve().parent/'processing'))
@@ -56,9 +58,8 @@ class PaperSourceTest(unittest.TestCase):
                 self.assertEqual(parse_source(source)['sentences'],text)
 
     def test_pdf_keeps_caption_and_removes_table_cells_and_image_region(self):
-        import pymupdf
         with tempfile.TemporaryDirectory() as tmp:
-            pdf=pymupdf.open();page=pdf.new_page(width=600,height=800)
+            pdf=pdf_fixture.open();page=pdf.new_page(width=600,height=800)
             page.insert_text((50,55),'The experiment has two conditions. Values are compared below.')
             page.insert_text((50,95),'Table 1. Comparison under fixed conditions.')
             for y in [120,150,180,210]:page.draw_line((50,y),(450,y))
@@ -67,7 +68,7 @@ class PaperSourceTest(unittest.TestCase):
             page.insert_text((50,250),'The paragraph after the table remains available.')
             from PIL import Image
             raw=io.BytesIO();Image.new('RGB',(100,100),'blue').save(raw,format='PNG')
-            page.insert_image(pymupdf.Rect(50,300,200,450),stream=raw.getvalue())
+            page.insert_image(pdf_fixture.Rect(50,300,200,450),stream=raw.getvalue())
             page.insert_text((60,350),'PlotTickNoise778899')
             page.insert_text((50,480),'Figure 1. Image of the experimental setting.')
             source=Path(tmp)/'paper.pdf';pdf.save(source);pdf.close()
@@ -86,9 +87,8 @@ class PaperSourceTest(unittest.TestCase):
             with self.assertRaisesRegex(ParseError,'unsupported'):parse_source(source)
 
     def test_pdf_columns_are_not_interleaved_by_vertical_position(self):
-        import pymupdf
         with tempfile.TemporaryDirectory() as tmp:
-            doc=pymupdf.open();page=doc.new_page(width=600,height=800)
+            doc=pdf_fixture.open();page=doc.new_page(width=600,height=800)
             page.insert_text((50,100),'Left first sentence.')
             page.insert_text((330,100),'Right first sentence.')
             page.insert_text((50,140),'Left second sentence.')
@@ -98,9 +98,8 @@ class PaperSourceTest(unittest.TestCase):
             self.assertLess(text.index('Left second'),text.index('Right first'))
 
     def test_pdf_unknown_table_layout_is_reported_not_claimed_clean(self):
-        import pymupdf
         with tempfile.TemporaryDirectory() as tmp:
-            doc=pymupdf.open();page=doc.new_page()
+            doc=pdf_fixture.open();page=doc.new_page()
             page.insert_text((50,100),'Table 1. A borderless layout that is not identified.')
             page.insert_text((50,150),'MethodA 77.9 1000 0.1')
             source=Path(tmp)/'uncertain.pdf';doc.save(source);doc.close()

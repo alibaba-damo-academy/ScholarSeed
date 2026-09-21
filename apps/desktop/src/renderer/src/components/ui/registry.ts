@@ -224,7 +224,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   CopyButton: {
     exports: ['CopyButton'],
     intents: ['复制', '拷贝到剪贴板', 'copy', 'clipboard', '复制成功反馈'],
-    use: '一键复制文本并给出已复制反馈；默认使用 `navigator.clipboard`，桌面失焦场景通过 `writeText` 注入主进程剪贴板能力',
+    use: '一键复制文本并给出已复制反馈；iconOnly 配合 icon 复用方形 IconButton；默认使用 `navigator.clipboard`，桌面失焦场景通过 `writeText` 注入主进程剪贴板能力',
     replaces: ['button'],
     avoid: '不要自己写 button + clipboard + 定时器重置这一套'
   },
@@ -517,7 +517,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Spinner: {
     exports: ['Skeleton', 'Spinner'],
     intents: ['加载中', '转圈', '骨架屏', '占位', 'spinner', 'loading', 'skeleton'],
-    use: '`Spinner` 行内不确定加载; `Skeleton` 内容骨架占位(同一模块导出)',
+    use: '`Spinner` 行内不确定加载，可用 imageSrc 指定动画图片，未指定时保留默认转圈; `Skeleton` 内容骨架占位(同一模块导出)',
     replaces: ['div', 'span'],
     avoid: '需要遮住整块并禁交互用 LoadingOverlay; 有确定百分比用 ProgressBar'
   },

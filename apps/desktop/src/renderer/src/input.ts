@@ -50,6 +50,7 @@ export function composerObscured(
 export type ComposerSubmissionState = {
   runtimeReady: boolean
   creditsAvailable: boolean
+  modelAvailable: boolean
   launching: boolean
   running: boolean
   interrupting: boolean
@@ -59,10 +60,13 @@ export type ComposerSubmissionState = {
 /**
  * A running session accepts the draft into the durable product queue. Interrupt
  * remains a short admission barrier because the active turn identity is changing.
+ * A catalogue with nothing selectable admits nothing either: with no usable model
+ * the draft can only fail at the execution gate, so the send stays disabled.
  */
 export function canSubmitComposer(state: ComposerSubmissionState): boolean {
   return state.runtimeReady
     && state.creditsAvailable
+    && state.modelAvailable
     && !state.launching
     && !state.interrupting
     && state.hasContent
@@ -211,7 +215,11 @@ export function queuedReferenceSummary(
   const typedLabels = input.flatMap((item) => {
     if (item.type === 'text') return []
     if (item.type === 'skill') return [item.name || t('queue.skill')]
-    return [item.name || (item.type === 'local_image' ? t('queue.image') : t('queue.kinds.file'))]
+    return [item.name || (item.type === 'local_image'
+      ? t('queue.image')
+      : item.type === 'directory'
+        ? t('queue.kinds.dir')
+        : t('queue.kinds.file'))]
   })
   const assistantLabels = assistantReferences.map((reference) => queuedReferenceTitle(reference, t))
   return [...typedLabels, ...assistantLabels].join(t('queue.separator'))
@@ -220,9 +228,14 @@ export function queuedReferenceSummary(
 /** Build the one typed turn-input contract used by visible sends and desktop harness sends. */
 export function buildTurnInput(message: string, references: ComposerReference[]): TurnInputItem[] {
   const skills = references.filter((reference) => reference.type === 'skill')
-  const files = references.filter((reference) => reference.type === 'file')
+  const files = references.filter(
+    (reference): reference is Extract<ComposerReference, { type: 'file' | 'directory' }> =>
+      reference.type === 'file' || reference.type === 'directory'
+  )
   const invalid = references.find((reference) => (
-    reference.type === 'file' && reference.referenceId
+    reference.type === 'directory' && !reference.referenceId
+      ? true
+      : (reference.type === 'file' || reference.type === 'directory') && reference.referenceId
       ? false
       : !isAbsoluteInputPath(reference.path)
   ))
@@ -239,14 +252,20 @@ export function buildTurnInput(message: string, references: ComposerReference[])
       path: reference.path,
       version: reference.version
     })),
-    ...files.map((reference): TurnInputItem => ({
-      type: reference.mediaType?.startsWith('image/') ? 'local_image' : 'file',
-      ...(reference.referenceId
-        ? { reference_id: reference.referenceId }
-        : { path: reference.path }),
-      name: reference.title,
-      media_type: reference.mediaType,
-      sha256: reference.sha256
-    }))
+    ...files.map((reference): TurnInputItem => reference.type === 'directory'
+      ? {
+        type: 'directory',
+        reference_id: reference.referenceId || '',
+        name: reference.title
+      }
+      : {
+        type: reference.mediaType?.startsWith('image/') ? 'local_image' : 'file',
+        ...(reference.referenceId
+          ? { reference_id: reference.referenceId }
+          : { path: reference.path }),
+        name: reference.title,
+        media_type: reference.mediaType,
+        sha256: reference.sha256
+      })
   ]
 }

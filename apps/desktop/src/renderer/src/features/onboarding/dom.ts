@@ -76,6 +76,8 @@ export async function selectSentence(signal: AbortSignal): Promise<void> {
     end = item; offset = Math.min(remaining, item.length); remaining -= offset
     if (!remaining) break
   }
+  end.parentElement?.scrollIntoView({ block: 'center', inline: 'end', behavior: 'instant' })
+  await settle(signal)
   const range = document.createRange()
   range.setStart(body[0], 0); range.setEnd(end, offset)
   const selection = window.getSelection()

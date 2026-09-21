@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-import pymupdf
+from service.platform.pdf import PdfRect, pdf_document_info, pdf_metadata, pdf_page_layout
 
 LOGGER = logging.getLogger(__name__)
 BODY_MIN_LENGTH = 20
@@ -14,7 +14,7 @@ HORIZONTAL_TOLERANCE = 0.01
 VERTICAL_THRESHOLD = 0.5
 BOX_TOLERANCE = 2
 MIN_BODY_LINES = 3
-FIRST_PAGE = 0
+FIRST_PAGE = 1
 MIN_MONTH = 1
 MAX_MONTH = 12
 LINK_SCHEMES = ("http://", "https://")
@@ -65,7 +65,7 @@ def _matches(text: str, *, stitch: bool = False) -> list[_Identifier]:
     return found
 
 
-def _outside(box: pymupdf.Rect, body: list[pymupdf.Rect], direction: tuple | None = None) -> bool:
+def _outside(box: PdfRect, body: list[PdfRect], direction: tuple | None = None) -> bool:
     if direction is not None and abs(direction[1]) > VERTICAL_THRESHOLD:
         return True
     others = [
@@ -74,8 +74,8 @@ def _outside(box: pymupdf.Rect, body: list[pymupdf.Rect], direction: tuple | Non
         if not (
             rect.x0 >= box.x0 - BOX_TOLERANCE
             and rect.x1 <= box.x1 + BOX_TOLERANCE
-            and rect.y0 >= box.y0 - BOX_TOLERANCE
-            and rect.y1 <= box.y1 + BOX_TOLERANCE
+            and rect.top >= box.top - BOX_TOLERANCE
+            and rect.bottom <= box.bottom + BOX_TOLERANCE
         )
     ]
     if len(others) < MIN_BODY_LINES:
@@ -83,39 +83,34 @@ def _outside(box: pymupdf.Rect, body: list[pymupdf.Rect], direction: tuple | Non
     return (
         box.x1 <= min(rect.x0 for rect in others) + BOX_TOLERANCE
         or box.x0 >= max(rect.x1 for rect in others) - BOX_TOLERANCE
-        or box.y1 <= min(rect.y0 for rect in others) + BOX_TOLERANCE
-        or box.y0 >= max(rect.y1 for rect in others) - BOX_TOLERANCE
+        or box.bottom <= min(rect.top for rect in others) + BOX_TOLERANCE
+        or box.top >= max(rect.bottom for rect in others) - BOX_TOLERANCE
     )
 
 
-def extract_identifiers(document: pymupdf.Document) -> tuple[str, str]:
+def extract_identifiers(payload: bytes) -> tuple[str, str]:
     lines_found: list[_Identifier] = []
     blocks_found: list[_Identifier] = []
     links_found: list[_Identifier] = []
-    if document.page_count:
-        page = document[FIRST_PAGE]
-        blocks = [block for block in page.get_text("dict")["blocks"] if block["type"] == 0]
+    if pdf_document_info(payload).page_count:
+        page = pdf_page_layout(payload, FIRST_PAGE)
         body = [
-            pymupdf.Rect(line["bbox"])
-            for block in blocks
-            for line in block["lines"]
-            if len("".join(span["text"] for span in line["spans"]).strip()) >= BODY_MIN_LENGTH
-            and abs(line["dir"][1]) < HORIZONTAL_TOLERANCE
+            line.bounds
+            for line in page.lines
+            if len(line.text) >= BODY_MIN_LENGTH and not line.vertical
         ]
-        for block in blocks:
-            texts = []
-            for line in block["lines"]:
-                text = "".join(span["text"] for span in line["spans"])
-                texts.append(text)
-                if _outside(pymupdf.Rect(line["bbox"]), body, tuple(line["dir"])):
-                    lines_found.extend(_matches(text))
-            if len(texts) > 1 and _outside(pymupdf.Rect(block["bbox"]), body):
-                blocks_found.extend(_matches("\n".join(texts), stitch=True))
-        for link in page.get_links():
-            uri = link.get("uri") or ""
+        for line in page.lines:
+            direction = (0, 1) if line.vertical else (1, 0)
+            if _outside(line.bounds, body, direction):
+                lines_found.extend(_matches(line.text))
+        for block in page.blocks:
+            if "\n" in block.text and _outside(block.bounds, body):
+                blocks_found.extend(_matches(block.text, stitch=True))
+        for link in page.links:
+            uri = link.uri
             if not uri.lower().startswith(LINK_SCHEMES):
                 continue
-            if not _outside(pymupdf.Rect(link["from"]), body):
+            if not _outside(link.bounds, body):
                 continue
             for match in ARXIV_PATTERNS[-1].finditer(uri):
                 links_found.append(
@@ -124,11 +119,7 @@ def extract_identifiers(document: pymupdf.Document) -> tuple[str, str]:
             for match in DOI_URL_PATTERN.finditer(uri):
                 links_found.append(_Identifier(DOI, _clean_doi(match.group("id"))))
     candidates = lines_found + blocks_found + links_found
-    try:
-        xmp = document.get_xml_metadata() or ""
-    except RuntimeError:
-        LOGGER.warning("PDF XMP metadata could not be read; retaining page identifiers")
-        xmp = ""
+    xmp = pdf_metadata(payload).xmp
     candidates.extend(
         _Identifier(DOI, _clean_doi(match.group("id"))) for match in DOI_PATTERN.finditer(xmp)
     )

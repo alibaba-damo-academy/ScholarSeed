@@ -23,7 +23,7 @@ const STEP_COPY = {
 const DIALOG_CLASS = 'ob-dialog !z-[var(--vds-z-modal)] !w-max !max-w-[var(--vds-onboarding-card-width)] max-h-[var(--vds-onboarding-card-height)] overflow-y-auto'
 const OVERLAY_CLASS = 'ob-overlay !z-[var(--vds-z-overlay)]'
 
-function Spotlight({ step, children, onSkip }: { step: GuideStep; children: React.ReactNode; onSkip: () => void }): React.JSX.Element {
+function Spotlight({ step, ready, children, onSkip }: { step: GuideStep; ready: boolean; children: React.ReactNode; onSkip: () => void }): React.JSX.Element {
   const [areas, setAreas] = useState<Array<Rectangle & { extra: boolean }>>([])
   const [position, setPosition] = useState<{ left: number; top: number }>({ left: OB_GEOMETRY.margin, top: OB_GEOMETRY.margin })
   const maskId = React.useId()
@@ -45,7 +45,7 @@ function Spotlight({ step, children, onSkip }: { step: GuideStep; children: Reac
     window.addEventListener('scroll', schedule, true)
     schedule()
     return () => { cancelAnimationFrame(frame); resize.disconnect(); window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule, true) }
-  }, [step])
+  }, [step, ready])
   // Geometry comes exclusively from live anchor and card rectangles.
   const style = { '--ob-left': `${position.left}px`, '--ob-top': `${position.top}px` } as CSSProperties
   return <>
@@ -204,7 +204,7 @@ export function OnboardingHost({ blocked }: { blocked: boolean }): React.JSX.Ele
         <div className="ob-footer flex justify-end"><Button variant="ghost" className="ob-dismiss !text-[var(--vds-text-tertiary)]" onClick={() => engine.finish()}>{t(OB_COPY.home.browse)}</Button></div>
       </DialogContent>
     </Dialog>}
-    {spotlightVisible && step && stepCopy && <Spotlight step={step} onSkip={() => engine.finish()}>
+    {spotlightVisible && step && stepCopy && <Spotlight step={step} ready={snapshot.ready} onSkip={() => engine.finish()}>
       <DialogTitle>{t(stepCopy.title)}</DialogTitle>
       <p className="ob-body m-0 text-[var(--vds-text-secondary)]">{t(stepCopy.body)}</p>
       <div className="ob-footer flex items-center justify-between gap-[var(--vds-space-4)]">

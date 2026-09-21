@@ -14,7 +14,6 @@ from hashlib import sha256
 from urllib.parse import quote
 
 import httpx
-import pymupdf
 
 from service.content.domain.model import ContentError
 from service.literature.domain.anchors import SentenceAnchors
@@ -41,6 +40,7 @@ from service.platform.citations import (
     PdfIndexPort,
 )
 from service.platform.context import ContextAuthority
+from service.platform.pdf import PdfDocumentError, pdf_document_info, pdf_page_layout
 from service.platform.records import (
     PdfRecordTargetPort,
     RecordOwner,
@@ -338,11 +338,10 @@ class LiteratureEvidenceService:
         header_ids = set()
         first_page = ""
         try:
-            with pymupdf.open(stream=document.payload, filetype="pdf") as pdf:
-                if pdf.page_count and not pdf.needs_pass:
-                    first_page = pdf[0].get_text()
-                    header_ids = set(ARXIV_HEADER.findall(first_page))
-        except (RuntimeError, ValueError):
+            if pdf_document_info(document.payload).page_count:
+                first_page = pdf_page_layout(document.payload, 1).text
+                header_ids = set(ARXIV_HEADER.findall(first_page))
+        except PdfDocumentError:
             pass
         identity_matches = []
         offset = 0

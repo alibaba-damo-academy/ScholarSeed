@@ -141,8 +141,10 @@ class CompactOutlineTest(unittest.TestCase):
         self.assertEqual(self.check(outline),[])
         outline['outline_tree'][0]['language']='russian'
         self.assertIn('language must be', ' '.join(self.check(outline)))
-        outline=self.outline();outline['outline_tree'][0]['subsections'][0]['language']='english'
-        self.assertIn('must inherit', ' '.join(self.check(outline)))
+        for language in ('english', 'default', None):
+            outline=self.outline();outline['outline_tree'][0]['language']='english'
+            outline['outline_tree'][0]['subsections'][0]['language']=language
+            self.assertIn('must inherit', ' '.join(self.check(outline)))
 
     def test_cli_defaults_and_requirements_derived_count(self):
         with tempfile.TemporaryDirectory() as d:

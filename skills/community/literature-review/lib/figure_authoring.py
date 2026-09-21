@@ -5,6 +5,8 @@ The current pipeline uses a fresh figure author alongside whole-manuscript writi
 section intent replaces the not-yet-written section body. Evidence is lossless.
 """
 
+from figure_caption import CAPTION_CONTENT_GUIDANCE
+
 PROMPT_GUIDANCE = '''Write _prompt for the image model, not for a manuscript reader.
 Design the visual and its caption together from one supported figure concept.
 Implement the confirmed purpose, content_plan and qualifications without changing
@@ -28,27 +30,30 @@ bibliography entries, filesystem paths or LaTeX commands. The publisher adds the
 figure caption, numbering and ScholarSeed watermark outside model generation.
 Use enough detail to specify this drawing; do not pad to a word-count target.'''
 
-CAPTION_GUIDANCE = '''Write _caption for a reader looking at the finished figure.
-It is distinct from the drawing instructions in _prompt. Use the outline's
-caption_draft as a reader-facing starting point, refining it to match the planned visual. Use purpose and content_plan
-for meaning; visual_guidance is for the drawing, never caption prose. Use third person and present tense
-in English; use direct descriptive prose in Chinese. Follow the requested caption
-language independently of any local exception for in-image labels.
-For a simple conceptual diagram, normally use one concise sentence naming the
-central object and organizing axis or relationship. Add sentences only when the
-reader needs a panel/legend explanation or a supported qualification. A detailed
-caption refers to the specific visible elements designed in _prompt/_latex_body;
-it does not retell the section, summarize the whole survey, or add a finding the
-image does not establish. Do not report layout/style instructions, colors chosen
-only for aesthetics, image-model behavior, crop/watermark steps or task metadata.
-No "Figure N:", "Fig.", "图 N：" or other numbering prefix: the publisher adds it.
-Use plain Unicode prose, not LaTeX commands, citation keys or bibliography records.
-Write literal percentages/special characters normally (12%, AT&T, model_v2); the
-publisher escapes them for LaTeX and preserves them in Markdown. JSON string
-escaping still applies. Do not place this caption inside _prompt or the image.
-No fixed sentence/word quota overrides a user's explicit requirement or a
-necessary explanation of the visual. Generate the prompt and caption once as
-paired fields, without a post-image caption rewrite or semantic review call.'''
+CAPTION_GUIDANCE = '''FIGURE CAPTION ROLE
+Write _caption for the reader of the finished figure, paired with _prompt from
+one supported concept. Use purpose/content_plan for meaning and caption_draft
+as a starting point, refining it to match the planned visual. visual_guidance
+belongs to the drawing, not caption prose.
+
+For a simple conceptual diagram, normally describe the central object and its
+organizing relationship in one concise sentence. Add panel/legend explanations
+or supported qualifications when needed. Describe the specific visible elements
+in _prompt/_latex_body; do not retell the section or survey or assert a finding
+the image does not establish. Aesthetic choices, image-model behavior,
+crop/watermark steps and pipeline metadata are not publication content.
+Follow the requested caption language independently of in-image label exceptions.
+Use third-person present tense in English and direct descriptive prose in Chinese.
+''' + '\n' + CAPTION_CONTENT_GUIDANCE + '''
+FIGURE CAPTION OUTPUT
+Use plain Unicode prose, without LaTeX commands, citation keys or bibliography
+records. Write literal special characters normally (12%, AT&T, model_v2); the
+publisher escapes LaTeX and preserves Markdown. Apply JSON string escaping.
+Keep _caption separate from _prompt and from the image itself. Explicit user
+requirements and necessary explanation take precedence over sentence/word habits.
+Generate prompt and caption once as paired fields, with no post-image caption
+rewrite or semantic review call.
+'''
 
 
 def authoring_packet(item, task, evidence_path, preparation_id):

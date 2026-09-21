@@ -5,9 +5,16 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
 
-import pymupdf
+import pdfplumber
+import pypdfium2
+import pypdfium2.raw as pdfium
+from PIL import Image
+from pypdf import PasswordType, PdfReader
+from pypdf.errors import PdfReadError
 
 from service.platform.records import EMPTY_RECORDS, decode_records
 
@@ -19,22 +26,12 @@ REVISION_PREFIX = "sha256:"
 UTF8_ENCODING = "utf-8"
 NORMALIZED_COORDINATE_MINIMUM = 0.0
 NORMALIZED_COORDINATE_MAXIMUM = 1.0
-PDF_WORD_X0 = 0
-PDF_WORD_Y0 = 1
-PDF_WORD_X1 = 2
-PDF_WORD_Y1 = 3
-PDF_WORD_TEXT = 4
-PDF_WORD_BLOCK = 5
-PDF_WORD_LINE = 6
 PDF_VISUAL_LINE_MINIMUM_OVERLAP_RATIO = 0.5
-PDF_TEXT_WORDS = "words"
-PDF_TEXT_RAW_DICTIONARY = "rawdict"
-PDF_RAW_BLOCKS = "blocks"
-PDF_RAW_LINES = "lines"
-PDF_RAW_SPANS = "spans"
-PDF_RAW_CHARACTERS = "chars"
-PDF_RAW_CHARACTER_TEXT = "c"
-PDF_RAW_BOUNDS = "bbox"
+PDF_LAYOUT_PARAMETERS = {"boxes_flow": 0.5, "detect_vertical": True}
+PDF_TEXT_BOX_OBJECT = "textboxhorizontal"
+PDF_VERTICAL_TEXT_BOX_OBJECT = "textboxvertical"
+PDF_TEXT_LINE_OBJECT = "textlinehorizontal"
+PDF_VERTICAL_TEXT_LINE_OBJECT = "textlinevertical"
 MAXIMUM_SELECTION_CHARS = 36_000
 TEXT_SHAPE_HASH_KEY = "text_shape_hash"
 HASH_PREFIX_LENGTH = len(REVISION_PREFIX)
@@ -53,6 +50,291 @@ CJK_CODE_POINT_RANGES = (
 _log = logging.getLogger(__name__)
 
 
+class PdfDocumentError(ValueError):
+    """PDF bytes cannot be consumed through the shared product boundary."""
+
+
+class PdfPasswordError(PdfDocumentError):
+    """PDF bytes require a non-empty password."""
+
+
+@dataclass(frozen=True)
+class PdfDocumentInfo:
+    page_count: int
+    encrypted: bool
+
+
+@dataclass(frozen=True)
+class PdfMetadata:
+    title: str
+    author: str
+    subject: str
+    keywords: str
+    xmp: str
+
+
+@dataclass(frozen=True)
+class PdfRect:
+    x0: float
+    top: float
+    x1: float
+    bottom: float
+
+    @property
+    def width(self) -> float:
+        return self.x1 - self.x0
+
+    @property
+    def height(self) -> float:
+        return self.bottom - self.top
+
+    def intersects(self, other: PdfRect) -> bool:
+        return min(self.x1, other.x1) > max(self.x0, other.x0) and min(
+            self.bottom, other.bottom
+        ) > max(self.top, other.top)
+
+    def union(self, other: PdfRect) -> PdfRect:
+        return PdfRect(
+            min(self.x0, other.x0),
+            min(self.top, other.top),
+            max(self.x1, other.x1),
+            max(self.bottom, other.bottom),
+        )
+
+
+@dataclass(frozen=True)
+class PdfWord:
+    text: str
+    bounds: PdfRect
+    block: int
+    line: int
+
+
+@dataclass(frozen=True)
+class PdfCharacter:
+    text: str
+    bounds: PdfRect
+
+
+@dataclass(frozen=True)
+class PdfTextBlock:
+    text: str
+    bounds: PdfRect
+    vertical: bool = False
+
+
+@dataclass(frozen=True)
+class PdfTextLine:
+    text: str
+    bounds: PdfRect
+    vertical: bool = False
+
+
+@dataclass(frozen=True)
+class PdfLink:
+    uri: str
+    bounds: PdfRect
+
+
+@dataclass(frozen=True)
+class PdfPageLayout:
+    page: int
+    width: float
+    height: float
+    rotation: int
+    text: str
+    words: tuple[PdfWord, ...]
+    characters: tuple[PdfCharacter, ...]
+    blocks: tuple[PdfTextBlock, ...]
+    lines: tuple[PdfTextLine, ...]
+    links: tuple[PdfLink, ...]
+
+
+def _reader(payload: bytes) -> tuple[PdfReader, bool]:
+    try:
+        reader = PdfReader(BytesIO(payload), strict=False)
+        encrypted = reader.is_encrypted
+        if encrypted and reader.decrypt("") is PasswordType.NOT_DECRYPTED:
+            raise PdfPasswordError("pdf_password_required")
+        return reader, encrypted
+    except PdfPasswordError:
+        raise
+    except (PdfReadError, OSError, TypeError, ValueError) as error:
+        raise PdfDocumentError("pdf_document_invalid") from error
+
+
+def pdf_document_info(payload: bytes) -> PdfDocumentInfo:
+    reader, encrypted = _reader(payload)
+    try:
+        with pypdfium2.PdfDocument(payload, password="") as document:
+            page_count = len(document)
+    except Exception as error:
+        raise PdfDocumentError("pdf_document_invalid") from error
+    return PdfDocumentInfo(page_count=page_count, encrypted=encrypted)
+
+
+def _metadata_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def pdf_metadata(payload: bytes) -> PdfMetadata:
+    reader, _encrypted = _reader(payload)
+    metadata = reader.metadata or {}
+    try:
+        xmp = reader.xmp_metadata
+        xmp_text = xmp.stream.get_data().decode(UTF8_ENCODING, errors="replace") if xmp else ""
+    except (PdfReadError, OSError, TypeError, ValueError) as error:
+        _log.warning("Ignoring malformed PDF XMP metadata: %s", error)
+        xmp_text = ""
+    return PdfMetadata(
+        title=_metadata_text(metadata.get("/Title")),
+        author=_metadata_text(metadata.get("/Author")),
+        subject=_metadata_text(metadata.get("/Subject")),
+        keywords=_metadata_text(metadata.get("/Keywords")),
+        xmp=xmp_text,
+    )
+
+
+def _rect(item: Mapping[str, Any]) -> PdfRect:
+    return PdfRect(
+        float(item.get("x0", 0.0)),
+        float(item.get("top", 0.0)),
+        float(item.get("x1", 0.0)),
+        float(item.get("bottom", 0.0)),
+    )
+
+
+def pdf_page_layout(payload: bytes, page_number: int) -> PdfPageLayout:
+    if page_number < 1:
+        raise PdfDocumentError("pdf_page_invalid")
+    try:
+        with pdfplumber.open(BytesIO(payload), laparams=PDF_LAYOUT_PARAMETERS) as document:
+            if page_number > len(document.pages):
+                raise PdfDocumentError("pdf_page_invalid")
+            page = document.pages[page_number - 1]
+            raw_words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+            words = tuple(
+                PdfWord(
+                    text=str(word.get("text") or ""),
+                    bounds=_rect(word),
+                    block=int(word.get("blockno", 0)),
+                    line=int(word.get("line_no", index)),
+                )
+                for index, word in enumerate(raw_words)
+                if word.get("text")
+            )
+            characters = tuple(
+                PdfCharacter(str(character.get("text") or ""), _rect(character))
+                for character in page.chars
+                if character.get("text")
+            )
+            text_boxes = page.objects.get(PDF_TEXT_BOX_OBJECT, ())
+            vertical_text_boxes = page.objects.get(PDF_VERTICAL_TEXT_BOX_OBJECT, ())
+            fallback_lines = page.extract_text_lines(layout=False, return_chars=False)
+            blocks = tuple(
+                PdfTextBlock(str(line.get("text") or "").strip(), _rect(line), vertical)
+                for items, vertical in (
+                    (text_boxes or fallback_lines, False),
+                    (vertical_text_boxes, True),
+                )
+                for line in items
+                if str(line.get("text") or "").strip()
+            )
+            lines = tuple(
+                PdfTextLine(str(line.get("text") or "").strip(), _rect(line), vertical)
+                for key, vertical in (
+                    (PDF_TEXT_LINE_OBJECT, False),
+                    (PDF_VERTICAL_TEXT_LINE_OBJECT, True),
+                )
+                for line in page.objects.get(key, ())
+                if str(line.get("text") or "").strip()
+            )
+            links = tuple(
+                PdfLink(str(link.get("uri") or ""), _rect(link))
+                for link in page.hyperlinks
+                if link.get("uri")
+            )
+            return PdfPageLayout(
+                page=page_number,
+                width=float(page.width),
+                height=float(page.height),
+                rotation=int(page.rotation or 0),
+                text=page.extract_text(layout=False) or "",
+                words=words,
+                characters=characters,
+                blocks=blocks,
+                lines=lines,
+                links=links,
+            )
+    except PdfDocumentError:
+        raise
+    except Exception as error:
+        raise PdfDocumentError("pdf_document_invalid") from error
+
+
+def pdf_document_text(payload: bytes) -> tuple[str, ...]:
+    info = pdf_document_info(payload)
+    try:
+        with pypdfium2.PdfDocument(payload, password="") as document:
+            return tuple(
+                document[index].get_textpage().get_text_bounded().replace("\r\n", "\n")
+                for index in range(info.page_count)
+            )
+    except Exception as error:
+        raise PdfDocumentError("pdf_text_unavailable") from error
+
+
+def pdf_image_bounds(payload: bytes) -> tuple[tuple[PdfRect, ...], ...]:
+    try:
+        with pypdfium2.PdfDocument(payload, password="") as document:
+            pages = []
+            for page in document:
+                page.set_rotation(0)
+                _width, height = page.get_size()
+                pages.append(
+                    tuple(
+                        PdfRect(x0, height - y1, x1, height - y0)
+                        for image in page.get_objects(filter=(pdfium.FPDF_PAGEOBJ_IMAGE,))
+                        for x0, y0, x1, y1 in (image.get_bounds(),)
+                    )
+                )
+            return tuple(pages)
+    except Exception as error:
+        raise PdfDocumentError("pdf_objects_unavailable") from error
+
+
+def render_pdf_page(
+    payload: bytes,
+    page_number: int,
+    *,
+    scale: float,
+    crop: PdfRect | None = None,
+) -> Image.Image:
+    if page_number < 1 or scale <= 0:
+        raise PdfDocumentError("pdf_render_invalid")
+    try:
+        with pypdfium2.PdfDocument(payload, password="") as document:
+            if page_number > len(document):
+                raise PdfDocumentError("pdf_page_invalid")
+            page = document[page_number - 1]
+            bitmap = page.render(scale=scale)
+            image = bitmap.to_pil().convert("RGB")
+        if crop is not None:
+            image = image.crop(
+                (
+                    round(crop.x0 * scale),
+                    round(crop.top * scale),
+                    round(crop.x1 * scale),
+                    round(crop.bottom * scale),
+                )
+            )
+        return image
+    except PdfDocumentError:
+        raise
+    except Exception as error:
+        raise PdfDocumentError("pdf_render_failed") from error
+
+
 class PdfAnnotationError(ValueError):
     """Embedded ScholarSeed records exist but cannot be restored safely."""
 
@@ -66,36 +348,36 @@ def embedded_pdf_records(payload: bytes) -> dict[str, Any]:
     This boundary does not migrate or partially recover unsupported payloads.
     """
     try:
-        document = pymupdf.open(stream=payload, filetype=PDF_LOCATOR)
-    except (pymupdf.FileDataError, pymupdf.EmptyFileError):
+        reader, _encrypted = _reader(payload)
+    except PdfDocumentError:
         return decode_records(EMPTY_RECORDS)
-    with document:
-        try:
-            if document.needs_pass:
-                raise PdfAnnotationError("pdf_password_required")
-            names = document.embfile_names()
-            matches = [name for name in names if name == PDF_ANNOTATIONS_ATTACHMENT]
-            if not matches:
-                return decode_records(EMPTY_RECORDS)
-            if len(matches) != 1:
-                raise PdfAnnotationError("duplicate PDF annotation attachments")
-            info = document.embfile_info(PDF_ANNOTATIONS_ATTACHMENT)
-            if info["size"] > MAX_PDF_ANNOTATIONS_BYTES:
-                raise PdfAnnotationError("PDF annotation attachment too large")
-            attached = document.embfile_get(PDF_ANNOTATIONS_ATTACHMENT)
-            if len(attached) > MAX_PDF_ANNOTATIONS_BYTES:
-                raise PdfAnnotationError("PDF annotation attachment too large")
-            records = decode_records(attached)
-            if any(mark["page"] > document.page_count for mark in records["marks"]):
-                raise PdfAnnotationError("PDF annotation page out of range")
-            return records
-        except (RuntimeError, TypeError, ValueError, KeyError) as error:
-            _log.warning(
-                "Ignoring invalid embedded ScholarSeed PDF annotations (%s): %s",
-                type(error).__name__,
-                error,
-            )
+    try:
+        matches = [
+            attachment
+            for attachment in reader.attachment_list
+            if attachment.name == PDF_ANNOTATIONS_ATTACHMENT
+        ]
+        if not matches:
             return decode_records(EMPTY_RECORDS)
+        if len(matches) != 1:
+            raise PdfAnnotationError("duplicate PDF annotation attachments")
+        attachment = matches[0]
+        if attachment.size is not None and attachment.size > MAX_PDF_ANNOTATIONS_BYTES:
+            raise PdfAnnotationError("PDF annotation attachment too large")
+        attached = attachment.content
+        if len(attached) > MAX_PDF_ANNOTATIONS_BYTES:
+            raise PdfAnnotationError("PDF annotation attachment too large")
+        records = decode_records(attached)
+        if any(mark["page"] > len(reader.pages) for mark in records["marks"]):
+            raise PdfAnnotationError("PDF annotation page out of range")
+        return records
+    except (PdfAnnotationError, RuntimeError, TypeError, ValueError, KeyError) as error:
+        _log.warning(
+            "Ignoring invalid embedded ScholarSeed PDF annotations (%s): %s",
+            type(error).__name__,
+            error,
+        )
+        return decode_records(EMPTY_RECORDS)
 
 
 class PdfSelectionError(ValueError):
@@ -153,7 +435,7 @@ def _integer(locator: Mapping[str, Any], key: str) -> int:
     return value
 
 
-def _quad_rect(quad: object, page: pymupdf.Page) -> pymupdf.Rect:
+def _quad_rect(quad: object, page: PdfPageLayout) -> PdfRect:
     if not isinstance(quad, Sequence) or isinstance(quad, (str, bytes)) or len(quad) != 4:
         raise PdfSelectionError("pdf_quad")
     coordinates: list[float] = []
@@ -167,17 +449,16 @@ def _quad_rect(quad: object, page: pymupdf.Page) -> pymupdf.Rect:
     left, top, right, bottom = coordinates
     if right <= left or bottom <= top:
         raise PdfSelectionError("pdf_quad")
-    return pymupdf.Rect(
-        page.rect.x0 + left * page.rect.width,
-        page.rect.y0 + top * page.rect.height,
-        page.rect.x0 + right * page.rect.width,
-        page.rect.y0 + bottom * page.rect.height,
+    return PdfRect(
+        left * page.width,
+        top * page.height,
+        right * page.width,
+        bottom * page.height,
     )
 
 
-def _intersects(left: pymupdf.Rect, right: pymupdf.Rect) -> bool:
-    overlap = left & right
-    return not overlap.is_empty and overlap.width > 0 and overlap.height > 0
+def _intersects(left: PdfRect, right: PdfRect) -> bool:
+    return left.intersects(right)
 
 
 def _same_vertical_band(top: float, bottom: float, other_top: float, other_bottom: float) -> bool:
@@ -190,23 +471,23 @@ def _same_vertical_band(top: float, bottom: float, other_top: float, other_botto
     )
 
 
-def _same_pdf_visual_line(word: Sequence[Any], top: float, bottom: float) -> bool:
+def _same_pdf_visual_line(word: PdfWord, top: float, bottom: float) -> bool:
     return _same_vertical_band(
         top,
         bottom,
-        float(word[PDF_WORD_Y0]),
-        float(word[PDF_WORD_Y1]),
+        word.bounds.top,
+        word.bounds.bottom,
     )
 
 
-def _pdf_visual_lines(words: Sequence[Sequence[Any]]) -> str:
+def _pdf_visual_lines(words: Sequence[PdfWord]) -> str:
     lines: list[str] = []
     current: list[str] = []
     line_top = 0.0
     line_bottom = 0.0
     for word in words:
-        word_top = float(word[PDF_WORD_Y0])
-        word_bottom = float(word[PDF_WORD_Y1])
+        word_top = word.bounds.top
+        word_bottom = word.bounds.bottom
         if current and not _same_pdf_visual_line(word, line_top, line_bottom):
             lines.append(" ".join(current))
             current = []
@@ -216,56 +497,48 @@ def _pdf_visual_lines(words: Sequence[Sequence[Any]]) -> str:
         else:
             line_top = min(line_top, word_top)
             line_bottom = max(line_bottom, word_bottom)
-        current.append(str(word[PDF_WORD_TEXT]))
+        current.append(word.text)
     if current:
         lines.append(" ".join(current))
     return "\n".join(lines)
 
 
-def _pdf_character_selected(bounds: Sequence[Any], rects: Sequence[pymupdf.Rect]) -> bool:
-    if len(bounds) != 4:
-        return False
-    left, top, right, bottom = (float(value) for value in bounds)
-    center = (left + right) / 2
+def _pdf_character_selected(bounds: PdfRect, rects: Sequence[PdfRect]) -> bool:
+    center = (bounds.x0 + bounds.x1) / 2
     return any(
-        rect.x0 <= center <= rect.x1 and _same_vertical_band(top, bottom, rect.y0, rect.y1)
+        rect.x0 <= center <= rect.x1
+        and _same_vertical_band(bounds.top, bounds.bottom, rect.top, rect.bottom)
         for rect in rects
     )
 
 
-def _pdf_character_text(page: pymupdf.Page, rects: Sequence[pymupdf.Rect]) -> str:
+def _pdf_character_text(page: PdfPageLayout, rects: Sequence[PdfRect]) -> str:
     fragments: list[tuple[float, float, float, str]] = []
-    raw = page.get_text(PDF_TEXT_RAW_DICTIONARY, sort=True)
-    for block in raw.get(PDF_RAW_BLOCKS, ()):
-        for line in block.get(PDF_RAW_LINES, ()):
-            characters: list[tuple[Sequence[Any], str]] = []
-            for span in line.get(PDF_RAW_SPANS, ()):
-                for character in span.get(PDF_RAW_CHARACTERS, ()):
-                    bounds = character.get(PDF_RAW_BOUNDS, ())
-                    text = character.get(PDF_RAW_CHARACTER_TEXT, "")
-                    if text and len(bounds) == 4:
-                        characters.append((bounds, str(text)))
-            selected = [
-                index
-                for index, (bounds, _) in enumerate(characters)
-                if _pdf_character_selected(bounds, rects)
-            ]
-            text = (
-                "".join(value for _, value in characters[selected[0] : selected[-1] + 1]).strip()
-                if selected
-                else ""
-            )
-            bounds = line.get(PDF_RAW_BOUNDS, ())
-            if text and len(bounds) == 4:
-                first_bounds = characters[selected[0]][0]
-                fragments.append(
-                    (
-                        float(bounds[PDF_WORD_Y0]),
-                        float(bounds[PDF_WORD_Y1]),
-                        float(first_bounds[PDF_WORD_X0]),
-                        text,
-                    )
+    rows: list[list[PdfCharacter]] = []
+    for character in sorted(page.characters, key=lambda item: (item.bounds.top, item.bounds.x0)):
+        if not _pdf_character_selected(character.bounds, rects):
+            continue
+        if rows and _same_vertical_band(
+            rows[-1][0].bounds.top,
+            rows[-1][0].bounds.bottom,
+            character.bounds.top,
+            character.bounds.bottom,
+        ):
+            rows[-1].append(character)
+        else:
+            rows.append([character])
+    for row in rows:
+        ordered = sorted(row, key=lambda item: item.bounds.x0)
+        text = "".join(character.text for character in ordered).strip()
+        if text:
+            fragments.append(
+                (
+                    min(character.bounds.top for character in ordered),
+                    max(character.bounds.bottom for character in ordered),
+                    ordered[0].bounds.x0,
+                    text,
                 )
+            )
 
     rows: list[str] = []
     current: list[tuple[float, str]] = []
@@ -287,19 +560,19 @@ def _pdf_character_text(page: pymupdf.Page, rects: Sequence[pymupdf.Rect]) -> st
     return "\n".join(rows)
 
 
-def _pdf_candidates(words: Sequence[Sequence[Any]]) -> tuple[str, ...]:
-    word_text = [str(word[PDF_WORD_TEXT]) for word in words]
+def _pdf_candidates(words: Sequence[PdfWord]) -> tuple[str, ...]:
+    word_text = [word.text for word in words]
     spaced = " ".join(word_text)
     compact = "".join(word_text)
     lines: list[str] = []
     current: list[str] = []
     prior_line: tuple[object, object] | None = None
     for word in words:
-        line = (word[PDF_WORD_BLOCK], word[PDF_WORD_LINE])
+        line = (word.block, word.line)
         if prior_line is not None and line != prior_line:
             lines.append(" ".join(current))
             current = []
-        current.append(str(word[PDF_WORD_TEXT]))
+        current.append(word.text)
         prior_line = line
     if current:
         lines.append(" ".join(current))
@@ -321,37 +594,18 @@ def resolve_pdf_selection(
     if page_number < 1 or not isinstance(quads, Sequence) or isinstance(quads, (str, bytes)):
         raise PdfSelectionError("pdf_location")
     try:
-        document = pymupdf.open(stream=payload, filetype=PDF_LOCATOR)
-        if page_number > document.page_count:
-            raise PdfSelectionError("pdf_page")
-        page = document.load_page(page_number - 1)
+        page = pdf_page_layout(payload, page_number)
         rects = tuple(_quad_rect(quad, page) for quad in quads)
         if not rects:
             raise PdfSelectionError("pdf_quads")
         character_text = _pdf_character_text(page, rects)
         words = tuple(
-            word
-            for word in page.get_text(PDF_TEXT_WORDS, sort=True)
-            if any(
-                _intersects(
-                    pymupdf.Rect(
-                        word[PDF_WORD_X0],
-                        word[PDF_WORD_Y0],
-                        word[PDF_WORD_X1],
-                        word[PDF_WORD_Y1],
-                    ),
-                    rect,
-                )
-                for rect in rects
-            )
+            word for word in page.words if any(_intersects(word.bounds, rect) for rect in rects)
         )
     except PdfSelectionError:
         raise
-    except (RuntimeError, ValueError) as exc:
+    except (PdfDocumentError, RuntimeError, ValueError) as exc:
         raise PdfSelectionError("pdf_document") from exc
-    finally:
-        if "document" in locals():
-            document.close()
     if not words:
         raise PdfSelectionError("pdf_words")
     candidates = tuple(dict.fromkeys((character_text, *_pdf_candidates(words))))
@@ -378,10 +632,27 @@ def resolve_pdf_selection(
 
 __all__ = [
     "PDF_LOCATOR",
+    "PdfCharacter",
+    "PdfDocumentError",
+    "PdfDocumentInfo",
+    "PdfLink",
+    "PdfMetadata",
+    "PdfPageLayout",
+    "PdfPasswordError",
+    "PdfRect",
+    "PdfTextBlock",
+    "PdfTextLine",
+    "PdfWord",
     "PdfAnnotationError",
     "embedded_pdf_records",
+    "pdf_document_info",
+    "pdf_document_text",
+    "pdf_image_bounds",
+    "pdf_metadata",
+    "pdf_page_layout",
     "PdfSelectionError",
     "pdf_selection_matches",
     "pdf_selection_shape",
+    "render_pdf_page",
     "resolve_pdf_selection",
 ]

@@ -35,9 +35,9 @@ export function assistantFeature(): FeatureModule {
         kinds: ['file', 'dir'],
         requiresProject: true,
         search: async ({ projectId, query, filter }) => ({
-          items: query.trim() || filter !== 'all'
-            ? await fetchResourceCandidates(projectId, query)
-            : await fetchResourceFolderCandidates(projectId, query)
+          items: query.includes('/') || (!query.trim() && filter === 'all')
+            ? await fetchResourceFolderCandidates(projectId, query)
+            : await fetchResourceCandidates(projectId, query)
         })
       },
       {
@@ -77,7 +77,7 @@ export function assistantFeature(): FeatureModule {
                 ...(row.title_fallback === 'new_session' ? { labelFallback: 'newSession' as const } : !row.title ? { labelFallback: 'untitledSession' as const } : {}),
                 hintKey: 'wholeSession' as const,
                 created_at: row.created_at,
-                retention: 'session' as const,
+                retention: 'next_turn' as const,
                 origin: 'explicit' as const
               }))
           }

@@ -8,7 +8,7 @@ import os
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import FastAPI
 
@@ -124,7 +124,11 @@ def create_chat_app(
 
     axis = resolve_ownership_axis(ownership_axis, os.environ.get(OWNERSHIP_AXIS_ENV, ""))
     setattr(app.state, OWNERSHIP_AXIS_STATE, axis)
-    access_store = SessionCatalogStore(shared_ownership=axis == OWNERSHIP_AXIS_MACHINE)
+    # 归属轴有两个必须同时设的开关: 请求侧的身份投影读 app.state 上的轴, 存储侧的谓词退化
+    # 读各 store 的 shared_ownership。只设一半就会得到"归属身份是机器级常量、谓词仍按账号
+    # 过滤"的空集, 所以这里算一次, 会话目录与个人连接层共用同一个值。
+    shared_ownership = axis == OWNERSHIP_AXIS_MACHINE
+    access_store = SessionCatalogStore(shared_ownership=shared_ownership)
     event_store = ProductEventStore(access_store.database)
     artifact_store = SessionArtifactStore(access_store.database)
     artifact_service = ArtifactService(access_store, artifact_store, event_store, formats)
@@ -140,6 +144,11 @@ def create_chat_app(
         if live is not None:
             live.observe_model(client_turn_id, actual_model)
 
+    def observe_completion(session_id: str, fields: Mapping[str, Any]) -> None:
+        live = sessions.get(session_id)
+        if live is not None:
+            live.trace_completion(fields)
+
     def source_text(session_id: str, client_turn_id: str) -> str | None:
         live = sessions.get(session_id)
         return live.source_text(client_turn_id) if live is not None else None
@@ -147,16 +156,23 @@ def create_chat_app(
     completion_bridge = CompletionBridge(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
+        on_diagnostic=observe_completion,
         turn_ids=session_turn_id,
         source_text=source_text,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),
+        shared_ownership=shared_ownership,
     )
     # 当前登录用户的 access token 持有者（纯内存）。由鉴权 middleware 写入、bridge 出站时
     # 读取 —— 让网关能把用量归属到人。挂上 app.state 供 bootstrap 将它传给 register_auth。
     account_tokens = AccountTokenHolder()
     app.state.account_tokens = account_tokens
-    profiles = ModelProfileStore()
-    subscriptions = SubscriptionService(profiles, ModelCredentialStore(), completion_bridge)
+    profiles = ModelProfileStore(shared_ownership=shared_ownership)
+    subscriptions = SubscriptionService(
+        profiles,
+        ModelCredentialStore(shared_ownership=shared_ownership),
+        completion_bridge,
+        shared_ownership=shared_ownership,
+    )
     app.state.subscriptions = subscriptions
 
     model_service = ModelService(
@@ -166,6 +182,7 @@ def create_chat_app(
         profiles,
         subscriptions,
         turn_ids=session_turn_id,
+        ownership_axis=axis,
     )
     app.state.model_service = model_service
     skill_catalog = SkillCatalog(

@@ -1,25 +1,42 @@
 """Apply one model-authored delta to the complete native v1 source."""
 from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
 from generation_diagnostics import GenerationError
+from figure_caption import CAPTION_CONTENT_GUIDANCE
 
 REFINE_GUIDANCE = TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + r'''
-Refine the complete assembled document once. It already includes the actual
-template, chapter bodies, completed figure wrappers and captions.
-Use the confirmed outline, user instructions and full evidence. Repair content,
-mathematics, repetition, transitions, duplicated headings/abstracts, malformed
-LaTeX, citations and caption wording without inventing evidence.
-Preserve resolved_section_languages exactly; do not translate a chapter or
-standardize chapters with explicit language overrides into one language.
-Chapters include their script-supplied openings. Each top-level section uses
-\section and direct subheadings use \subsection. If removing a repeated parent
-heading, also correct its descendants' levels; do not leave a \section followed
-directly by \subsubsection. Preserve planned titles and section labels.
-Unlike chapter authors, you see the assembled publication source: preserve its
-real image paths, figure environments and labels; never substitute a placeholder.
-You may edit the preamble, headings and actual figure captions.
-Preserve their scientific meaning and planned figure identity. No image model or
-second review is requested. Main will handle unresolved issues in v2.
+Refine the complete assembled document once, returning a source delta.
 
+DOCUMENT REPAIR
+The sources already include the actual template, chapters and figure wrappers.
+Use the confirmed outline, user instructions and full evidence to repair content,
+mathematics, repetition, transitions, LaTeX, citations and caption wording.
+Abstract, synthesis/summary and conclusion chapters were drafted concurrently
+with the body from the plan and supplied evidence, not from the completed body.
+Check their claims individually against what the body actually establishes and
+revise unsupported or overstated claims; rewrite the abstract's findings to state
+only what the body establishes, replacing its entire text when needed through
+one exact-match delta edit.
+Preserve resolved_section_languages, planned titles and section labels. Top-level
+chapters use \section and direct children \subsection; when removing a repeated
+parent heading, correct its descendants rather than leaving a skipped level.
+
+ASSET RECONCILIATION
+The confirmed outline owns the asset inventory, identities and section placement.
+Retain one instance of each planned table and completed figure at its owner, with
+its actual image path, label, supported meaning, citations and qualifications.
+Chapters may have invented extra tables or figure shells: reconcile reported
+asset_contract_warnings against sources and the plan. Keep the genuine completed
+figure wrapper, remove a duplicate/placeholder shell, and repair its references.
+Convert necessary supported content in an unplanned table into its owning prose,
+with citations, rather than discarding evidence or treating it as a new asset.
+Repair missing planned tables only from supplied evidence; report unresolved
+content or ambiguous identities in issues instead of guessing. Captions preserve
+scientific meaning, not erroneous self-numbering. Surrounding callouts use labels.
+Preamble, headings and actual captions are editable. No image model, chapter
+regeneration or second refinement follows; main handles unresolved issues in v2.
+
+''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
+DELTA OUTPUT
 Return one JSON object:
 {"edits":[{"target":"main","before":"exact original text","after":"replacement",
            "reason":"why"}],"issues":[]}

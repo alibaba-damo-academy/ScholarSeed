@@ -40,17 +40,20 @@ test('model disabled reason follows explicit provenance and language without cha
   for (const source of [menu, panel]) assert.doesNotMatch(source, /user_disabled/)
 })
 
-test('composer reasoning and model selectors follow content width up to their caps', () => {
+test('composer has one combined model control at the right of the spacer', () => {
   const composer = readFileSync(new URL('./Composer.tsx', import.meta.url), 'utf8')
   const effort = readFileSync(new URL('./Effort.tsx', import.meta.url), 'utf8')
   const menu = readFileSync(new URL('./ModelMenu.tsx', import.meta.url), 'utf8')
   assert.match(composer, /home \? '[^']*flex-nowrap[^']*' : 'flex-nowrap'/)
   assert.doesNotMatch(composer, /home \? '[^']*flex-wrap[^n][^']*' : 'flex-wrap'/)
-  assert.match(effort, /min-w-0 flex-\[0_1_auto\] max-w-\[160px\]/)
-  assert.match(effort, /className="[^"]*w-full[^"]*"/)
-  assert.match(effort, /className="[^"]*flex-1 truncate whitespace-nowrap text-left[^"]*"/)
+  assert.doesNotMatch(composer, /<Effort/)
+  assert.match(composer, /<span className="flex-1" \/>[\s\S]*<ModelMenu/)
+  assert.match(effort, /<Slider/)
+  assert.match(menu, /useEffort\(\)/)
+  assert.doesNotMatch(menu, /reasoning-reset/)
+  assert.match(menu, /setShowModels\(false\)\s+if \(model.key === selectedModelKey\)/)
   assert.match(menu, /min-w-0 flex-\[0_1_auto\]/)
-  assert.match(menu, /compact \? 'max-w-\[160px\]' : 'max-w-\[180px\]'/)
+  assert.doesNotMatch(menu, /compact \? 'max-w-\[160px\]' : 'max-w-\[180px\]'/)
   assert.doesNotMatch(menu, /max-w-\[120px\]|max-w-\[220px\]/)
   assert.match(menu, /className=\{`\$\{MODEL_CHIP_CLASS\} w-full overflow-hidden/)
   assert.match(menu, /className="[^"]*flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left[^"]*"/)
@@ -61,8 +64,10 @@ test('conversation context picker keeps a stable request and popover identity', 
   assert.match(composer, /const atContextSourceId = atContextSource\?\.id/)
   assert.match(
     composer,
-    /act\.openAiContextPicker\(atContextSourceId, atTerm\)[\s\S]*\[act, atActive, atContextSourceId, atTerm\]/
+    /act\.openAiContextPicker\(atContextSourceId, atTerm\)[\s\S]*\[atActive, atContextSourceId, atTerm\]/
   )
+  assert.match(composer, /`act` intentionally excluded from deps/)
+  assert.doesNotMatch(composer, /\[act, atActive, atContextSourceId, atTerm\]/)
   assert.doesNotMatch(composer, /\[act, atActive, atContextSource, atTerm\]/)
   assert.doesNotMatch(
     composer,

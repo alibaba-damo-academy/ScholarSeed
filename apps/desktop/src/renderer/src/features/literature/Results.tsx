@@ -6,7 +6,7 @@ import type { TFunction } from 'i18next'
 import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchView } from './Search'
 import { loadConversationSearch } from './api'
-import { conversationSearchPapers } from './result'
+import { conversationSearchPapers, presentedSearchArtifacts } from './result'
 import type { ConversationSearchResult } from '../../contracts/literature'
 
 import { useApp } from '../../store'
@@ -61,6 +61,12 @@ export function LiteratureResults({ content, cardId }: { content: Record<string,
 }
 
 export function LiteratureResultTab({ tabId }: { tabId: string }): React.JSX.Element {
+  const { state } = useApp()
+  const projectId = state.homeSelectedProjectId ?? undefined
+  return <ScopedLiteratureResultTab key={JSON.stringify([tabId, projectId])} tabId={tabId} projectId={projectId} />
+}
+
+function ScopedLiteratureResultTab({ tabId, projectId }: { tabId: string; projectId?: string }): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const [content, setContent] = useState<Record<string, unknown> | null>(null)
@@ -72,7 +78,7 @@ export function LiteratureResultTab({ tabId }: { tabId: string }): React.JSX.Ele
     const controller = new AbortController()
     setContent(null); setError(false); setStatusWarning(false); setSaved([])
     const [session, card] = tabId.slice(LITERATURE_RESULT_PREFIX.length).split('/')
-    void loadConversationSearch(decodeURIComponent(session), decodeURIComponent(card), controller.signal)
+    void loadConversationSearch(decodeURIComponent(session), decodeURIComponent(card), controller.signal, projectId)
       .then(({ result, saved, warning }) => {
         if (!controller.signal.aborted) {
           setSaved(saved); setStatusWarning(warning)
@@ -82,7 +88,7 @@ export function LiteratureResultTab({ tabId }: { tabId: string }): React.JSX.Ele
       })
       .catch(() => { if (!controller.signal.aborted) setError(true) })
     return () => controller.abort()
-  }, [tabId, attempt])
+  }, [tabId, attempt, projectId])
   if (error) return <Alert tone="warning"><AlertDescription>{t('result.retryDescription')}</AlertDescription><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>{ui('retry')}</Button></Alert>
   const result = content ? parseResult(content) : null
   if (!result) return <p>{t('result.opening')}</p>
@@ -104,6 +110,5 @@ export function LiteratureResultTab({ tabId }: { tabId: string }): React.JSX.Ele
 
 export function literatureResultArtifacts(content: Record<string, unknown>): readonly string[] {
   const result = parseResult(content)
-  return result ? [result.metadata?.artifact_id, result.selection?.artifact_id, result.fulltext?.artifact_id]
-    .filter((id): id is string => Boolean(id)) : []
+  return result ? presentedSearchArtifacts(result) : []
 }

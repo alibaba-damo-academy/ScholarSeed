@@ -17,7 +17,7 @@ import { DocumentDock } from '../features/workbench/Dock'
 import { useDocumentWorkspace } from '../features/workbench/workspace'
 import { Icon } from '../icons'
 import { DeliveryCardMember } from '../model'
-import { blocksRuntimePreflight } from '../runtime'
+import { blocksRuntimePreflight, effectiveReadiness } from '../runtime'
 import { activeThread, useApp } from '../store'
 
 const RUNTIME_ACTION_KEYS = {
@@ -74,10 +74,9 @@ export function Conversation(): React.JSX.Element {
   const thread = activeThread(state)
   const home = state.activeSession === null
   const resuming = !home && thread.resumeState === 'pending'
-  const blockedReadiness = state.runtimeReadiness
-    && blocksRuntimePreflight(state.runtimeReadiness)
-    ? state.runtimeReadiness
-    : null
+  // 阻断卡与发送门禁必须同源: 会话自己的 readiness 优先于运行时全局预检。
+  const surfaceReadiness = effectiveReadiness(thread, state.runtimeReadiness)
+  const blockedReadiness = blocksRuntimePreflight(surfaceReadiness) ? surfaceReadiness : null
   const [taskMonitorOpen, setTaskMonitorOpen] = React.useState(true)
   const threadProject = thread.projectPath
     ? state.projects.find((project) => project.path === thread.projectPath)?.name

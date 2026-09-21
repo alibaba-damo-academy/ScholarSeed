@@ -333,8 +333,12 @@ class UnknownProfileError(ValueError):
 class ModelProfileStore:
     """Atomic, redaction-aware persistence for personal model connections."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    def __init__(self, path: Path | None = None, *, shared_ownership: bool = False) -> None:
         self.path = path or profile_store_path()
+        # 归属轴 machine 时为真: 连接的**可见性**不再按账号过滤 (本机数据归这台机器)。
+        # 只退化谓词, ``owner_id`` 列继续如实记录真实建者, 所以轴改回隔离时原主还在,
+        # 全程零不可逆迁移 —— 与会话目录 SessionCatalogStore 同一条范式。
+        self._shared_ownership = bool(shared_ownership)
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -504,11 +508,12 @@ class ModelProfileStore:
             "pdf_input": values.get("pdf_input") is True,
         }
 
-    @staticmethod
-    def _visible(profile: Mapping[str, Any], owner_id: str) -> bool:
-        return not is_oauth_connection(profile) or bool(
-            owner_id and profile.get(CONNECTION_OWNER_KEY) == owner_id
-        )
+    def _visible(self, profile: Mapping[str, Any], owner_id: str) -> bool:
+        # API key 连接的密钥就在 profile 里、本来就不按账号归属; OAuth 连接才带 owner 戳。
+        # 共享归属（machine 轴）下 OAuth 连接同样属于这台机器, 登录/登出/切号都持续可见。
+        if self._shared_ownership or not is_oauth_connection(profile):
+            return True
+        return bool(owner_id and profile.get(CONNECTION_OWNER_KEY) == owner_id)
 
     def list(self, *, owner_id: str = "") -> dict[str, Any]:
         document = self._read()
@@ -533,8 +538,27 @@ class ModelProfileStore:
             else None
         )
 
+    def _owner_stamp(self, existing: Any, owner_id: str, user_id: str) -> str:
+        """决定落盘的 owner 戳：真实建者优先，共享归属下不改写既有戳。
+
+        戳记的是**真实账号**而不是归属身份：machine 轴下归属身份恒为机器级常量，把它落盘
+        会让轴改回隔离后这些连接再也认不回原主（与会话目录 ``principal_id`` 同一条不变量）。
+        共享归属下既有戳一律保留，否则同机另一个账号编辑一次就把连接所有权转走了。
+        """
+
+        if isinstance(existing, dict):
+            recorded = str(existing.get(CONNECTION_OWNER_KEY) or "").strip()
+            if recorded and (self._shared_ownership or recorded == owner_id):
+                return recorded
+        return str(user_id or "").strip() or str(owner_id or "").strip()
+
     def upsert(
-        self, values: Mapping[str, Any], profile_id: str = "", *, owner_id: str = ""
+        self,
+        values: Mapping[str, Any],
+        profile_id: str = "",
+        *,
+        owner_id: str = "",
+        user_id: str = "",
     ) -> dict[str, Any]:
         document = self._read()
         profiles = document[PROFILES_KEY]
@@ -550,13 +574,14 @@ class ModelProfileStore:
         ):
             raise ValueError("connection authentication method cannot be changed")
         if is_oauth_connection(normalized):
-            if not owner_id:
+            stamp = self._owner_stamp(existing, owner_id, user_id)
+            if not stamp:
                 raise ValueError("OAuth connection requires a product owner")
             if existing is not None and existing.get(OAUTH_PROVIDER_KEY) != normalized.get(
                 OAUTH_PROVIDER_KEY
             ):
                 raise ValueError("OAuth provider cannot be changed on an existing connection")
-            normalized[CONNECTION_OWNER_KEY] = owner_id
+            normalized[CONNECTION_OWNER_KEY] = stamp
         prefix = OAUTH_PROFILE_ID_PREFIX if is_oauth_connection(normalized) else PROFILE_ID_PREFIX
         final_id = requested_id or f"{prefix}{uuid.uuid4().hex}"
         # A connection the user just finished configuring is meant to be used; an update
@@ -688,6 +713,11 @@ def apply_profile(
     active = (store or ModelProfileStore()).profile(profile_id)
     if active is None:
         raise UnknownProfileError(f"personal API profile {profile_id!r} does not exist")
+    if is_oauth_connection(active):
+        # 这道门只叠 API key 连接: 订阅连接的凭据不在 profile 里, 由订阅服务经补全桥兑换。
+        # 共享归属下 OAuth profile 对本机所有账号都可见了, 不在这里挡住就会叠出一条指向
+        # 订阅端点、却没有任何凭据的路由 —— 表现为"配好了但每次调用都 401"。
+        raise UnknownProfileError(f"personal API profile {profile_id!r} is not an API connection")
     offered = selected_model_ids(active)
     requested_model_id = str(model_id or "").strip()
     if requested_model_id not in offered:

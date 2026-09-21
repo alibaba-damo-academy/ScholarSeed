@@ -15,10 +15,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import scholarseed_codex.pool as pool_module
-from scholarseed_codex.capacity import CapacityPolicy, HostRole
+from scholarseed_codex.capacity import CapacityPolicy, HostRole, HostState
 from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.environment import CODEX_HOME_ENV
-from scholarseed_codex.pool import CodexHostPool, PoolReservation
+from scholarseed_codex.pool import (
+    POOL_READINESS_LOG,
+    READINESS_LOGGER,
+    CodexHostPool,
+    PoolReservation,
+)
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.protocol.control import CodexControlRequest
 from scholarseed_codex.protocol.session import (
@@ -90,6 +95,7 @@ class ControlledHost:
         self.readiness = SimpleNamespace(
             process_generation=1,
             ready=True,
+            process_state=CodexProcessState.READY.value,
             executable=str(arguments.get("executable", TEST_EXECUTABLE)),
             version=TEST_VERSION,
         )
@@ -239,6 +245,171 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
 
     def capacity(self, pool: CodexHostPool, role: HostRole = HostRole.EXECUTION):
         return next(row for row in pool.snapshot() if row.role == role.value)
+
+    def resolve_executable(self) -> None:
+        """`shutil.which` cannot see a synthetic fixture path; pooled lookup needs it resolved."""
+
+        patcher = patch.object(
+            pool_module, "discover_codex_executable", Mock(return_value=TEST_EXECUTABLE)
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def slot(self, pool: CodexHostPool, host: ControlledHost):
+        return next(value for value in pool._hosts.values() if value.host is host)
+
+    def rank_host(self, generation: int):
+        """Stamp the next host's generation so the newest READY one stays identifiable."""
+
+        def hook(host: ControlledHost) -> None:
+            host.readiness.process_generation = generation
+
+        return hook
+
+    async def starting_host(
+        self,
+        pool: CodexHostPool,
+        request_id: str,
+        host_key: str,
+        *,
+        role: HostRole = HostRole.EXECUTION,
+    ) -> ControlledHost:
+        """A host held inside startup: registered in the pool, and not ready for anyone yet."""
+
+        previous = self.host_hook
+
+        def gate(host: ControlledHost) -> None:
+            host.start_gate.clear()
+            host.readiness.ready = False
+            host.readiness.process_state = CodexProcessState.STARTING.value
+
+        self.host_hook = gate
+        try:
+            await self.reserve(pool, request_id, host_key, role=role)
+        finally:
+            self.host_hook = previous
+        host = self.hosts[-1]
+        await asyncio.wait_for(host.start_entered.wait(), TEST_TIMEOUT_SECONDS)
+        self.assertIs(self.slot(pool, host).state, HostState.STARTING)
+        return host
+
+    async def test_pooled_readiness_accepts_only_a_ready_host_as_evidence(self) -> None:
+        self.resolve_executable()
+        pool = self.pool(execution_hosts=2)
+        self.host_hook = self.rank_host(3)
+        lease = await pool.consume(await self.reserve(pool, "pooled-ready", "ready"))
+        self.host_hook = lambda _host: None
+        starting = await self.starting_host(pool, "pooled-starting", "starting")
+        probe = pool_module._probe_codex_cli_readiness
+        probe.reset_mock()
+        readiness = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        # 一台正在启动的 Host 是会话级瞬态, 不能代表 executable 不可用。
+        self.assertFalse(starting.readiness.ready)
+        self.assertIs(readiness, lease.host.readiness)
+        self.assertTrue(readiness.ready)
+        self.assertEqual(probe.await_count, 0)
+
+    async def test_pooled_readiness_reports_the_newest_ready_generation(self) -> None:
+        self.resolve_executable()
+        pool = self.pool(execution_hosts=2)
+        self.host_hook = self.rank_host(2)
+        older = await pool.consume(await self.reserve(pool, "older", "older"))
+        self.host_hook = self.rank_host(5)
+        newer = await pool.consume(await self.reserve(pool, "newer", "newer"))
+        self.host_hook = lambda _host: None
+        readiness = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        self.assertIs(readiness, newer.host.readiness)
+        self.assertEqual(readiness.process_generation, 5)
+        self.assertEqual(older.host.readiness.process_generation, 2)
+
+    async def test_pooled_readiness_survives_a_starting_host_of_another_role(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        lease = await pool.consume(await self.reserve(pool, "execution-ready"))
+        control = await self.starting_host(
+            pool, "control-starting", "control", role=HostRole.CONTROL
+        )
+        probe = pool_module._probe_codex_cli_readiness
+        probe.reset_mock()
+        readiness = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        self.assertIs(self.slot(pool, control).role, HostRole.CONTROL)
+        self.assertIs(readiness, lease.host.readiness)
+        self.assertEqual(probe.await_count, 0)
+
+    async def test_pooled_readiness_survives_a_control_host_being_replaced(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        execution = await pool.consume(await self.reserve(pool, "execution-ready"))
+        control = await pool.consume(await self.reserve(pool, "control", role=HostRole.CONTROL))
+        await control.close()
+        control.host.close_gate.clear()
+        control.host.readiness.ready = False
+        control.host.readiness.process_state = CodexProcessState.CLOSING.value
+        # Control capacity is 1, so a second CODEX_HOME evicts the resident host on demand.
+        waiting = await self.reserve(pool, "control-other", "other", role=HostRole.CONTROL)
+        await asyncio.wait_for(control.host.close_entered.wait(), TEST_TIMEOUT_SECONDS)
+        self.assertIs(waiting.state, ResourceState.WAITING)
+        self.assertIs(self.slot(pool, control.host).state, HostState.STOPPING)
+        probe = pool_module._probe_codex_cli_readiness
+        probe.reset_mock()
+        readiness = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        self.assertIs(readiness, execution.host.readiness)
+        self.assertEqual(probe.await_count, 0)
+        control.host.close_gate.set()
+
+    async def test_pooled_readiness_without_a_ready_host_probes_the_cli_and_logs_once(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        starting = await self.starting_host(pool, "only-starting", TEST_SECRET_VALUE)
+        probe = pool_module._probe_codex_cli_readiness
+        probe.reset_mock()
+        # Admission already warmed the TTL cache; drop it so the fallback probe is observable.
+        pool._readiness_cache.clear()
+        with self.assertLogs(READINESS_LOGGER, level="INFO") as captured:
+            first = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+            repeated = await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        # 没有 READY 证据时回落真实 CLI 预检, 而不是把瞬态当成"运行时不可用"。
+        self.assertTrue(first.ready)
+        self.assertIs(repeated, first)
+        self.assertEqual(probe.await_count, 1)
+        self.assertEqual(len(captured.records), 1)
+        message = captured.records[0].getMessage()
+        self.assertTrue(message.startswith(POOL_READINESS_LOG))
+        self.assertEqual(
+            json.loads(message[len(POOL_READINESS_LOG) :]),
+            {
+                "slots": [
+                    {
+                        "host_id": self.slot(pool, starting).host_id,
+                        "process_generation": 1,
+                        "process_state": CodexProcessState.STARTING.value,
+                        "role": HostRole.EXECUTION.value,
+                        "slot_state": HostState.STARTING.value,
+                    }
+                ]
+            },
+        )
+        self.assertNotIn(TEST_SECRET_VALUE, message)
+        self.assertFalse(hasattr(captured.records[0], "resource_evidence"))
+        with self.assertLogs(READINESS_LOGGER, level="INFO") as changed:
+            starting.readiness.process_state = CodexProcessState.RECOVERING.value
+            await pool.probe_readiness(TEST_EXECUTABLE, prefer_pooled=True)
+        self.assertEqual(len(changed.records), 1)
+        self.assertIn(CodexProcessState.RECOVERING.value, changed.records[0].getMessage())
+
+    async def test_pooled_readiness_ignores_hosts_of_another_executable(self) -> None:
+        self.resolve_executable()
+        pool = self.pool()
+        lease = await pool.consume(await self.reserve(pool, "other-executable"))
+        lease.host.readiness.ready = True
+        probe = pool_module._probe_codex_cli_readiness
+        probe.reset_mock()
+        with patch.object(
+            pool_module, "discover_codex_executable", Mock(return_value="/other/codex")
+        ):
+            readiness = await pool.probe_readiness("/other/codex", prefer_pooled=True)
+        self.assertIsNot(readiness, lease.host.readiness)
+        self.assertEqual(probe.await_count, 1)
 
     async def test_idle_control_replacement_waits_for_os_exit_and_shutdown_closes_warm_host(
         self,

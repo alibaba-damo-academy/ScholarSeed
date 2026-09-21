@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
+import sys
 import tempfile
 from dataclasses import replace
 from pathlib import Path
@@ -13,11 +15,15 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from packaging.specifiers import SpecifierSet
 
+import scholarseed_codex.catalog as catalog_module
 import scholarseed_codex.environment as codex_environment
 import scholarseed_codex.executable as codex_host
 import scholarseed_codex.pool as pool_module
+from scholarseed_codex.activity import subagent_lifecycle_payload
 from scholarseed_codex.capacity import CapacityPolicy, HostRole
+from scholarseed_codex.catalog import bind_native_model, standard_model
 from scholarseed_codex.events import translate_event
+from scholarseed_codex.failure import PROVIDER_AUTH_MESSAGE, provider_failure
 from scholarseed_codex.pool import CodexHostPool
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.profile import CODEX_ALLOW_DEVELOPMENT_VERSION_ENV, CODEX_MAX_TESTED_VERSION
@@ -38,6 +44,7 @@ from scholarseed_codex.provider import (
     _resolve_launch_secrets,
     provider,
 )
+from scholarseed_codex.router import AgentRoute, ThreadRouter
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_runtime.contract import (
@@ -50,9 +57,11 @@ from scholarseed_runtime.contract import (
     InventoryRequest,
     LaunchSecret,
     LaunchSecretIntent,
+    ModelCapabilities,
     ModelConnectionMode,
     ModelCredential,
     ModelIntent,
+    ModelToolProtocol,
     ModelTransport,
     ModelWireProtocol,
     OpenSessionRequest,
@@ -131,7 +140,12 @@ def test_event_translation() -> None:
         )
 
 
-def test_plan_projection() -> None:
+@patch(
+    "scholarseed_codex.session.model_catalog_argument",
+    new_callable=AsyncMock,
+    return_value=CodexRuntimeLaunchArgument(option="-c", value='model_catalog_json="fixture"'),
+)
+def test_plan_projection(_catalog: AsyncMock) -> None:
     print("== Codex plan configuration and events ==")
 
     async def native_config() -> dict:
@@ -548,6 +562,7 @@ def test_remote_authentication_independence() -> None:
                     cwd=root,
                     model=ModelIntent(
                         model_ref="model",
+                        capabilities=ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA),
                         transport=ModelTransport(
                             mode=ModelConnectionMode.REMOTE,
                             endpoint="http://127.0.0.1:8770/v1",
@@ -684,9 +699,10 @@ def test_vendor_neutral_model_projection() -> None:
                 headers={"X-Research-Tenant": "secret-tenant"},
             )
 
-    async def scenario() -> tuple[object, str]:
+    async def scenario() -> tuple[object, str, str]:
         intent = ModelIntent(
             model_ref="research-model",
+            capabilities=ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA),
             revision="model:research-model",
             transport=ModelTransport(
                 mode=ModelConnectionMode.REMOTE,
@@ -698,19 +714,29 @@ def test_vendor_neutral_model_projection() -> None:
             reasoning_effort="low",
             service_tier="fast",
         )
-        session = CodexRuntimeSession(
-            OpenSessionRequest(
-                product_session_id="product-session",
-                cwd=ROOT,
-                model=intent,
-                credential_port=Credentials(),
-                required_capabilities=(RuntimeCapabilityName.WEB_SEARCH,),
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(codex_environment.os.environ, {"SCHOLARSEED_CODEX_HOME": directory}),
+        ):
+            session = CodexRuntimeSession(
+                OpenSessionRequest(
+                    product_session_id="product-session",
+                    cwd=ROOT,
+                    model=intent,
+                    credential_port=Credentials(),
+                    required_capabilities=(RuntimeCapabilityName.WEB_SEARCH,),
+                )
             )
-        )
-        await session._apply_model_connection()
-        return session._native.request, repr(ModelCredential(api_key="secret-api-key"))
+            await session._apply_model_connection()
+            request = session._native.request
+            catalog_path = json.loads(request.launch_arguments[-1].value.split("=", 1)[1])
+            return (
+                request,
+                repr(ModelCredential(api_key="secret-api-key")),
+                Path(catalog_path).read_text(),
+            )
 
-    request, credential_repr = asyncio.run(scenario())
+    request, credential_repr, catalog_text = asyncio.run(scenario())
     config = dict(request.thread_config)
     providers = dict(config.get("model_providers") or {})
     projected = dict(providers.get("scholarseed") or {})
@@ -736,9 +762,174 @@ def test_vendor_neutral_model_projection() -> None:
         "secret-api-key" in environment.values() and "secret-tenant" in environment.values(),
     )
     check("credential repr never exposes secret values", "secret-api-key" not in credential_repr)
+    catalog = json.loads(catalog_text)
+    bound = catalog["models"][0]
+    check(
+        "reviewer is the exact session model",
+        bound["auto_review_model_override"] == "research-model",
+    )
+    check(
+        "catalog selects standard tools before dispatch",
+        bound["tool_mode"] == "direct"
+        and bound["use_responses_lite"] is False
+        and bound["apply_patch_tool_type"] is None,
+    )
+    check("catalog contains no credentials", "secret-api-key" not in catalog_text)
 
 
-def test_session_scoped_web_search_projection() -> None:
+def test_approval_catalog_binding() -> None:
+    native = {
+        "models": [
+            {
+                "slug": "native",
+                "tool_mode": "code_mode",
+                "use_responses_lite": True,
+                "model_messages": {"instructions_template": "native instructions"},
+                "input_modalities": ["text", "image"],
+                "custom_future_field": {"preserve": True},
+            }
+        ]
+    }
+    bound = bind_native_model(native, "vendor/native-dated")
+    selected = bound["models"][-1]
+    check(
+        "native reviewer keeps the exact dated id",
+        selected["auto_review_model_override"] == "vendor/native-dated",
+    )
+    check(
+        "native capabilities are preserved losslessly",
+        selected["tool_mode"] == "code_mode"
+        and selected["use_responses_lite"]
+        and selected["custom_future_field"] == {"preserve": True},
+    )
+    check(
+        "native source catalog is not mutated",
+        len(native["models"]) == 1 and "auto_review_model_override" not in native["models"][0],
+    )
+    defaults = bind_native_model(native, "")
+    check(
+        "implicit native defaults retain Codex selection with self-bound reviewers",
+        defaults["models"][0]["auto_review_model_override"] == "native",
+    )
+    try:
+        bind_native_model(native, "missing-model")
+    except ValueError:
+        check("unknown native model fails instead of guessing capabilities", True)
+    else:
+        check("unknown native model fails instead of guessing capabilities", False)
+    intent = ModelIntent(
+        model_ref="native",
+        capabilities=ModelCapabilities(
+            tool_protocol=ModelToolProtocol.JSON_SCHEMA,
+            input_modalities=("text",),
+            reasoning_efforts=("low", "high"),
+        ),
+    )
+    standard = standard_model(intent, "product instructions")
+    check(
+        "same-name remote model does not inherit native tools",
+        standard["tool_mode"] == "direct"
+        and not standard["use_responses_lite"]
+        and standard["apply_patch_tool_type"] is None,
+    )
+    check(
+        "selected declarations decide modalities and effort levels",
+        standard["input_modalities"] == ["text"]
+        and [row["effort"] for row in standard["supported_reasoning_levels"]] == ["low", "high"],
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        home = Path(directory)
+        payload = json.dumps(standard).encode()
+        first = codex_environment.store_model_catalog(home, payload)
+        repeated = codex_environment.store_model_catalog(home, payload)
+        changed = codex_environment.store_model_catalog(
+            home,
+            json.dumps(
+                standard_model(replace(intent, model_ref="other"), "product instructions")
+            ).encode(),
+        )
+        check(
+            "catalog identity is stable and changes with the bound model",
+            first == repeated and first != changed,
+        )
+        check(
+            "catalog publication is complete and leaves no temporary files",
+            first.read_bytes() == payload and len(list(first.parent.iterdir())) == 2,
+        )
+
+    async def reconfigure() -> None:
+        session = CodexRuntimeSession(
+            OpenSessionRequest(product_session_id="capability-change", cwd=ROOT, model=intent)
+        )
+        unchanged = await session.reconfigure(
+            RuntimeConfigurationIntent(revision="unchanged", model=intent)
+        )
+        changed = await session.reconfigure(
+            RuntimeConfigurationIntent(
+                revision="changed",
+                model=replace(
+                    intent,
+                    capabilities=replace(intent.capabilities, input_modalities=("text", "image")),
+                ),
+            )
+        )
+        check("unchanged binding can remain in place", unchanged.state is CommandState.APPLIED)
+        check(
+            "same-model capability changes require restart",
+            changed.state is CommandState.RESTART_REQUIRED,
+        )
+
+    asyncio.run(reconfigure())
+
+
+def test_catalog_process_cleanup() -> None:
+    async def scenario(cancelled: bool) -> None:
+        create_process = asyncio.create_subprocess_exec
+        processes = []
+        started = asyncio.Event()
+
+        async def spawn(*arguments, **options):
+            process = await create_process(
+                sys.executable,
+                "-c",
+                "import sys,time; sys.stdout.buffer.write(b'x' * 1048576); sys.stdout.flush(); time.sleep(60)",
+                **options,
+            )
+            processes.append(process)
+            started.set()
+            return process
+
+        request = CodexSessionOpenRequest(
+            request_id="catalog-cleanup", runtime_id="codex", cwd=ROOT
+        )
+        with (
+            patch.object(catalog_module, "discover_codex_executable", return_value=sys.executable),
+            patch.object(catalog_module.asyncio, "create_subprocess_exec", side_effect=spawn),
+            patch.object(catalog_module, "CATALOG_TIMEOUT_SECONDS", 0.1),
+        ):
+            task = asyncio.create_task(catalog_module.native_catalog(request))
+            await started.wait()
+            if cancelled:
+                task.cancel()
+            try:
+                await asyncio.wait_for(task, TEST_WAIT_SECONDS)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+        check(
+            f"catalog {'cancellation' if cancelled else 'timeout'} drains and reaps the subprocess",
+            bool(processes) and processes[0].returncode is not None,
+        )
+
+    asyncio.run(scenario(False))
+    asyncio.run(scenario(True))
+
+
+@patch(
+    "scholarseed_codex.session.model_catalog_argument",
+    new_callable=AsyncMock,
+    return_value=CodexRuntimeLaunchArgument(option="-c", value='model_catalog_json="fixture"'),
+)
+def test_session_scoped_web_search_projection(_catalog: AsyncMock) -> None:
     print("== session-scoped Web Search ==")
 
     async def scenario() -> tuple[object, object]:
@@ -1047,7 +1238,12 @@ def test_control_hosts_stay_resident() -> None:
     asyncio.run(scenario())
 
 
-def test_session_skill_root_projection() -> None:
+@patch(
+    "scholarseed_codex.session.model_catalog_argument",
+    new_callable=AsyncMock,
+    return_value=CodexRuntimeLaunchArgument(option="-c", value='model_catalog_json="fixture"'),
+)
+def test_session_skill_root_projection(_catalog: AsyncMock) -> None:
     print("== skill roots survive session admission and resume ==")
     roots = (ROOT / "bundled-skills", ROOT / "user-skills")
     request = OpenSessionRequest(product_session_id="skill-roots", cwd=ROOT, skill_roots=roots)
@@ -1323,8 +1519,8 @@ def test_model_reconfiguration() -> None:
 
     compatible, incompatible, thread_preference_change, submitted = asyncio.run(scenario())
     check(
-        "same connection model change is applied by the adapter",
-        compatible.state is CommandState.APPLIED,
+        "model changes require a fresh capability-bound process",
+        compatible.state is CommandState.RESTART_REQUIRED,
     )
     check(
         "connection change is not misrepresented as a model-only update",
@@ -1334,7 +1530,7 @@ def test_model_reconfiguration() -> None:
         "thread preference change requires a fresh native thread",
         thread_preference_change.state is CommandState.RESTART_REQUIRED,
     )
-    check("applied model is forwarded on the next native turn", submitted[0] == "model-b")
+    check("unapplied model never leaks to the next native turn", submitted[0] == "model-a")
     check(
         "requested collaboration mode is forwarded on the next native turn",
         submitted[1] is CollaborationMode.PLAN,
@@ -1676,6 +1872,91 @@ def test_subagent_lifecycle_survives_out_of_order_observation() -> None:
     )
 
 
+def test_child_thread_terminal_truth_and_authentication_classification() -> None:
+    print("== child terminal truth and authentication classification ==")
+    router = ThreadRouter()
+    router.register_agents(
+        "parent-thread",
+        "parent-turn",
+        {
+            "id": "spawn-call",
+            "type": "collabAgentToolCall",
+            "receiverThreadIds": ["child-thread"],
+        },
+        (),
+    )
+    route = router.agent("child-thread")
+    check(
+        "child route retains its owning product turn and call",
+        route is not None
+        and route.owner_thread_id == "parent-thread"
+        and route.owner_turn_id == "parent-turn"
+        and route.owner_item_id == "spawn-call",
+    )
+    check(
+        "duplicate native child status is idempotent",
+        router.update_agent_status("child-thread", "failed")
+        and not router.update_agent_status("child-thread", "failed"),
+    )
+    terminal = translate_event(
+        CodexSessionEvent(
+            runtime_id="codex",
+            session_id="parent-thread",
+            kind=CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED,
+            turn_id="parent-turn",
+            item_id="child-thread",
+            payload=subagent_lifecycle_payload(
+                agent_thread_id="child-thread",
+                agent_path="",
+                status="failed",
+                completed=True,
+            ),
+        ),
+        product_session_id="product-session",
+        process_generation=1,
+    )
+    check(
+        "native child failure projects as subagent failure",
+        terminal.kind is RuntimeEventKind.SUBAGENT_FAILED,
+    )
+    authentication = provider_failure({"error": {"code": "model_bridge_credential_required"}})
+    check(
+        "missing bridge credentials are terminal authentication failures",
+        authentication.message == PROVIDER_AUTH_MESSAGE
+        and authentication.retryability is RuntimeRetryability.TERMINAL,
+    )
+
+    async def child_notification() -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+        host = CodexProcessHost(executable="codex")
+        state = SimpleNamespace(thread_id="parent-thread", listener=events.append)
+        child_route = AgentRoute(
+            owner_thread_id="parent-thread",
+            owner_turn_id="parent-turn",
+            owner_item_id="spawn-call",
+        )
+        params = {
+            "threadId": "child-thread",
+            "turn": {"id": "child-turn", "status": "failed"},
+        }
+        await host._handle_agent_notification(
+            state, child_route, "child-thread", "turn/completed", params
+        )
+        await host._handle_agent_notification(
+            state, child_route, "child-thread", "turn/completed", params
+        )
+        return events
+
+    child_events = asyncio.run(child_notification())
+    check(
+        "child terminal notification emits one typed terminal event on the owner turn",
+        len(child_events) == 1
+        and child_events[0].turn_id == "parent-turn"
+        and child_events[0].item_id == "child-thread"
+        and child_events[0].payload.get("status") == "failed",
+    )
+
+
 def test_unsupported_dynamic_tool_fails_fast() -> None:
     print("== unsupported dynamic tool boundary ==")
 
@@ -1920,6 +2201,9 @@ def test_durable_thread_unsubscribes() -> None:
 
 
 def main() -> int:
+    test_catalog_process_cleanup()
+    test_approval_catalog_binding()
+    test_child_thread_terminal_truth_and_authentication_classification()
     test_durable_thread_unsubscribes()
     test_event_translation()
     test_plan_projection()

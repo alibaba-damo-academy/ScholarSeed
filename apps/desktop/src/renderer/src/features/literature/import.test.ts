@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { importLiteratureAttachment, previewAttachmentImport } from './api.ts'
+import { claimSubmission } from './submission.ts'
 
 const importSource = readFileSync(new URL('./Import.tsx', import.meta.url), 'utf8')
 
@@ -9,11 +10,19 @@ test('generic attachments import without exposing PDF record controls', () => {
   assert.match(importSource, /const supportsRecords = attachment\.media_type === PDF_MEDIA_TYPE/)
   assert.match(importSource, /copy_records: supportsRecords && copyRecords/)
   assert.match(importSource, /recordControls = supportsRecords \? <div><Checkbox data-testid="literature-copy-records"/)
-  assert.match(importSource, /fileSuffix\(node\.name\) === sourceSuffix/)
-  assert.match(importSource, /t\('import\.attachmentType'/)
+  assert.match(importSource, /fileSuffix\(node\.name\) === sourceSuffix\s*&&/)
+  assert.match(importSource, /const AttachmentIcon = fileIconForName\(attachment\.name\)/)
+  assert.match(importSource, /<AttachmentIcon[\s\S]*?\{attachment\.name\}/)
   assert.doesNotMatch(importSource, /t\('import\.pdf'\)/)
   // 附件导入只有拷贝这一种取向: 链接会让项目资源指着文献库里的路径, 文献一删就悬空。
   assert.doesNotMatch(importSource, /MODE\.link|link_records|linkRecords/)
+})
+
+test('attachment submission gate accepts one request and rejects concurrent retries', () => {
+  const gate = { current: false }
+  assert.equal(claimSubmission(gate), true)
+  assert.equal(claimSubmission(gate), false)
+  assert.equal(gate.current, true)
 })
 
 test('attachment execution freezes destination, revisions and retry identity from preflight', async () => {

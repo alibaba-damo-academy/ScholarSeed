@@ -6,7 +6,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
-const { execFileSync, spawnSync } = require('node:child_process')
+const { execFileSync, spawn } = require('node:child_process')
 const { nativeTar } = require('../../../scripts/python.cjs')
 
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'texlive')
@@ -92,18 +92,30 @@ function binDirectory(treeRoot, selected, platform = process.platform) {
   return directory
 }
 
-function probe(binDir, executables, texlive, platform = process.platform) {
-  const reported = {}
-  for (const name of executables) {
-    const result = spawnSync(path.join(binDir, executableName(name, platform)), ['--version'], {
-      encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, windowsHide: true,
+function probeEngine(binDir, name, platform) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(path.join(binDir, executableName(name, platform)), ['--version'], {
+      windowsHide: true,
+      timeout: PROBE_TIMEOUT_MS,
       env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}` }
     })
-    if (result.error || result.status !== 0) {
-      throw new Error(`TeX Live probe failed: ${name} (${result.error?.message || result.status})`)
-    }
-    reported[name] = (result.stdout || result.stderr).split(/\r?\n/)[0].trim()
-  }
+    let out = ''
+    let err = ''
+    child.stdout.on('data', chunk => { out += chunk })
+    child.stderr.on('data', chunk => { err += chunk })
+    child.once('error', error => reject(new Error(`TeX Live probe failed: ${name} (${error.message})`)))
+    child.once('close', (code, signal) => (code === 0
+      ? resolve((out || err).split(/\r?\n/)[0].trim())
+      : reject(new Error(`TeX Live probe failed: ${name} (${signal || code})`))))
+  })
+}
+
+// Engines are probed in parallel: each probe is exec + page-in latency, so a
+// sequential loop would multiply that latency by the engine count.
+async function probe(binDir, executables, texlive, platform = process.platform) {
+  const lines = await Promise.all(executables.map(name => probeEngine(binDir, name, platform)))
+  const reported = {}
+  executables.forEach((name, index) => { reported[name] = lines[index] })
   const expected = `TeX Live ${texlive}`
   if (!Object.values(reported).some(line => line.includes(expected))) {
     throw new Error(`TeX Live version mismatch: expected ${expected}, got ${JSON.stringify(reported)}`)
@@ -116,11 +128,7 @@ function probe(binDir, executables, texlive, platform = process.platform) {
 async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
   arch = process.arch, log = () => {}) {
   const selected = artifact(desktopRoot, platform, arch)
-  if (await digest(selected.archive) !== selected.sha256) {
-    throw new Error('TeX Live archive SHA-256 mismatch')
-  }
   const cache = path.join(desktopRoot, CACHE_DIRECTORY)
-  fs.mkdirSync(cache, { recursive: true })
   // `bin_relative` is relative to the extraction root and already starts with
   // the tree directory, so the cache entry itself is what binDirectory resolves
   // against.
@@ -131,11 +139,17 @@ async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
       throw new Error(`TeX Live cache is incomplete or does not match its archive. Stop Desktop, move ${directory} aside, then relaunch.`)
     }
     const binDir = binDirectory(directory, selected, platform)
-    const reported = probe(binDir, selected.executables, selected.texlive, platform)
+    const reported = await probe(binDir, selected.executables, selected.texlive, platform)
     log(`Vendored TeX Live ${selected.texlive} (cached): ${binDir}`)
     return { binDirectory: binDir, root: directory, reported, sha256: selected.sha256,
       texlive: selected.texlive }
   }
+  // The cache key and the receipt already bind a cached tree to the reviewed
+  // archive checksum, so the full archive digest is only paid on a cache miss.
+  if (await digest(selected.archive) !== selected.sha256) {
+    throw new Error('TeX Live archive SHA-256 mismatch')
+  }
+  fs.mkdirSync(cache, { recursive: true })
   const stage = fs.mkdtempSync(path.join(cache, 'resolve-'))
   try {
     execFileSync(nativeTar(platform), ['-xzf', selected.archive, '-C', stage], { stdio: 'pipe' })
@@ -146,7 +160,7 @@ async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
     throw error
   }
   const binDir = binDirectory(directory, selected, platform)
-  const reported = probe(binDir, selected.executables, selected.texlive, platform)
+  const reported = await probe(binDir, selected.executables, selected.texlive, platform)
   log(`Vendored TeX Live ${selected.texlive}: ${binDir}`)
   return { binDirectory: binDir, root: directory, reported, sha256: selected.sha256,
     texlive: selected.texlive }
@@ -170,7 +184,7 @@ async function stageVerifiedTexlive(backendDirectory, desktopRoot, platform = pr
     throw new Error('TeX Live archive SHA-256 mismatch')
   }
   const binDir = stageTexlive(backendDirectory, selected)
-  const reported = probe(binDir, selected.executables, selected.texlive, platform)
+  const reported = await probe(binDir, selected.executables, selected.texlive, platform)
   return { binDirectory: binDir, reported, sha256: selected.sha256, texlive: selected.texlive,
     executables: selected.executables }
 }

@@ -164,10 +164,12 @@ export const uploadLiteratureAttachment = (id: string, file: File, primary = fal
 export const deleteLiteratureAttachment = (itemId: string, attachmentId: string): Promise<void> =>
   request(`/literatures/${encodeURIComponent(itemId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: 'DELETE' })
 /**
- * 调 serve 的单条元数据代理, 原样拿到上游命中项。
+ * 调 serve 的单条元数据代理, 拿到已经归一化好的更新体。
  *
- * api-key 在 serve 那一跳兑换并只进请求头, 渲染层拿不到它; 失败一律抛
- * `LiteratureApiError`, 由 `classifyPaperMetaFailure` 区分配额用尽与其余失败。
+ * 三条腿 (doi.org BibTeX / arXiv BibTeX / OpenAlex 标题检索) 都是匿名公开端点, 不兑换
+ * api-key、也不要求登录; `credentials: 'include'` 只为鉴权强制的独立部署带上会话 cookie,
+ * 桌面端恒以 `--auth-mode off` 拉起 serve, 不依赖它。失败一律抛 `LiteratureApiError`,
+ * 由 `classifyPaperMetaFailure` 区分上游限流、未命中与其余失败。
  */
 export async function fetchPaperMeta(query: PaperMetaQuery): Promise<PaperMetaPayload> {
   const response = await fetch(`${base()}${PAPER_META_ROOT}`, {
@@ -302,10 +304,21 @@ export interface ZoteroImportOptions {
   import_collections: boolean
   preview_revision: string
 }
-export async function createImportTask(source: string, options?: ZoteroImportOptions): Promise<LiteratureTask> {
+/**
+ * 受理一次导入任务。
+ *
+ * `idempotencyKey` 必须由调用方按「一次导入意图」持有并在重试时复用: 每次调用都新
+ * 生成一个的话, 连点两下就是两个 key、两次受理, 而文献库是追加语义 —— 结果是两份
+ * 条目。缺省仍生成新 key, 供一次性调用方使用。
+ */
+export async function createImportTask(
+  source: string,
+  options?: ZoteroImportOptions,
+  idempotencyKey: string = crypto.randomUUID()
+): Promise<LiteratureTask> {
   return request('/imports', {
     method: 'POST',
-    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    headers: { 'Idempotency-Key': idempotencyKey },
     body: JSON.stringify({ source, ...(options ? { options } : {}) })
   })
 }
@@ -441,7 +454,7 @@ const RESULT_STATUS_BATCH = 20
 interface ResultLibraryStatus { library: 'matched' | 'absent' | 'ambiguous' | 'unavailable' }
 
 /** Load the saved result; library lookup failure must never discard retrieved papers. */
-export async function loadConversationSearch(session: string, card: string, signal: AbortSignal): Promise<{
+export async function loadConversationSearch(session: string, card: string, signal: AbortSignal, projectId?: string): Promise<{
   result: ConversationSearchResult; saved: string[]; warning: boolean
 }> {
   const endpoint = `${base()}/api/sessions/${encodeURIComponent(session)}/literature`
@@ -456,7 +469,7 @@ export async function loadConversationSearch(session: string, card: string, sign
     try {
       const response = await fetch(`${endpoint}/result-status`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, signal,
-        body: JSON.stringify({ papers: papers.map(({ id, title, doi, year }) => ({ id, title, doi, year })) })
+        body: JSON.stringify({ project_id: projectId ?? '', papers: papers.map(({ id, title, doi, year }) => ({ id, title, doi, year })) })
       })
       if (!response.ok) throw new Error('literature_status_unavailable')
       const status = await response.json() as { items: Record<string, ResultLibraryStatus> }
@@ -474,14 +487,14 @@ export async function loadConversationSearch(session: string, card: string, sign
 }
 
 /** Resolve which search papers already exist in the literature library; best effort. */
-export async function loadSearchLibraryStatus(papers: readonly LiteratureSearchPaper[]): Promise<string[]> {
+export async function loadSearchLibraryStatus(papers: readonly LiteratureSearchPaper[], projectId?: string): Promise<string[]> {
   const saved: string[] = []
   for (let start = 0; start < papers.length; start += RESULT_STATUS_BATCH) {
     const batch = papers.slice(start, start + RESULT_STATUS_BATCH)
     try {
       const payload = await searchRequest<{ items: Record<string, ResultLibraryStatus> }>('/result-status', {
         method: 'POST',
-        body: JSON.stringify({ papers: batch.map(({ paper_id, title, doi, year }) => ({ id: paper_id, title, doi, year })) })
+        body: JSON.stringify({ project_id: projectId ?? '', papers: batch.map(({ paper_id, title, doi, year }) => ({ id: paper_id, title, doi, year })) })
       })
       for (const paper of batch) {
         if (payload.items?.[paper.paper_id]?.library === 'matched') saved.push(paper.paper_id)

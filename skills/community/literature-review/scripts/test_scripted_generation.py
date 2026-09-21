@@ -134,12 +134,38 @@ class ScriptedTest(unittest.TestCase):
         payload=json.loads(client.calls[0][1]['content'])
         self.assertIn('An optional detail',payload['evidence'])
 
-    def test_outline_protocol_places_language_only_on_top_level_example(self):
-        protocol=g.OUTLINE_PROTOCOL
-        self.assertIn('"description":"Compare mechanisms","language":"default"',protocol)
-        subsection=protocol.split('"section_id":"2.1"',1)[1].split(']}]}]}',1)[0]
-        self.assertNotIn('"language"',subsection)
-        self.assertIn('A subsection must NOT contain a language field',protocol)
+    def test_sent_outline_example_has_valid_distinct_node_shapes(self):
+        value=e.read(self.ws/'04_outline/outline.json')
+        (self.ws/'04_outline/outline.json').unlink()
+        client=FakeModel(value)
+        asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
+        protocol=client.calls[0][0]['content']
+        start=protocol.index('{"survey_title":"Review"')
+        example,_=json.JSONDecoder().raw_decode(protocol[start:])
+        parent=example['outline_tree'][0];child=parent['subsections'][0]
+        self.assertEqual(parent['language'],'default')
+        self.assertNotIn('language',child)
+        from validate_outline import validate
+        from asset_plan import plan_errors
+        from chapter_plan import compile_plan
+        self.assertEqual(validate(example,{'p1'}, {})[0],[])
+        self.assertEqual(plan_errors(example,{'p1'}),[])
+        compile_plan(example,{'p1'})
+
+    def test_numbered_outline_caption_is_rejected_without_recall_or_raw_rewrite(self):
+        from task_fixtures import planned_asset
+        value=e.read(self.ws/'04_outline/outline.json')
+        (self.ws/'04_outline/outline.json').unlink()
+        value['outline_tree'][0]['tables']=[planned_asset({
+            'table_id':'T1','caption':'表1总结了现有方法。'},'tables')]
+        client=FakeModel(value)
+        with self.assertRaises(GenerationError) as caught:
+            asyncio.run(g.generate(self.ws,'outline',cfg=CONFIG,client=client))
+        report=caught.exception.report()
+        self.assertEqual(len(client.calls),1)
+        self.assertIn('caption_draft',report['message'])
+        self.assertEqual(json.loads(Path(report['candidate_path']).read_text()),value)
+        self.assertFalse((self.ws/'04_outline/outline.json').exists())
 
     def test_invalid_outline_candidate_tells_main_to_repair_without_model_rerun(self):
         value=e.read(self.ws/'04_outline/outline.json')

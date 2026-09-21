@@ -40,6 +40,7 @@ from service.chat.runtime.capture import SessionCapture
 from service.chat.runtime.incidents import event_incident
 from service.chat.runtime.utils import integer, optional_integer, text
 from service.chat.service.recording import RecordingService
+from service.chat.service.streams import DIAGNOSTIC_EVENT
 
 #: 产品自有 trace 事件与文件名的命名空间 (品牌单一来源在 service.brand)。
 PRODUCT_TRACE_NAMESPACE = PRODUCT_SLUG
@@ -258,6 +259,13 @@ class SessionTrace:
                 **(asdict(receipt) if receipt is not None else {}),
                 **attributes,
             },
+        )
+
+    def completion(self, fields: Mapping[str, Any]) -> None:
+        self._emit(
+            kind=TraceKind.LLM_STREAM,
+            name=DIAGNOSTIC_EVENT,
+            attributes=dict(fields),
         )
 
     def checkpoint(self, generation: int, watermark: int) -> None:

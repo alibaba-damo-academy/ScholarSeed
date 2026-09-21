@@ -8,11 +8,12 @@ import sqlite3
 import threading
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import PurePath
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from starlette.datastructures import UploadFile
 
 from service.content.domain.model import ContentError
@@ -104,6 +105,8 @@ IMPORT_KIND = "import"
 ZOTERO_SOURCE = "zotero"
 ZOTERO_IMPORT_FAILED = "ZOTERO_IMPORT_FAILED"
 UNSUPPORTED_IMPORT_SOURCE = "UNSUPPORTED_IMPORT_SOURCE"
+#: 受理幂等头, 与 resources 导入任务用的是同一个约定。
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 PDF_KIND = "pdf"
 PDF_SUFFIX = ".pdf"
 AVAILABLE = "available"
@@ -252,6 +255,45 @@ def _zotero_error(status_code: int, code: str) -> HTTPException:
         status_code=status_code,
         detail={"code": code, "message": ZOTERO_ERROR_MESSAGES.get(code, "Zotero 导入失败")},
     )
+
+
+#: 决定一次 Zotero 受理"做什么"的选项字段。同一份字段值就是同一次导入意图,
+#: 因此可以复用还在跑的任务; 少一个字段都会把不同意图误判成重复。
+ZOTERO_IDENTITY_FIELDS = (
+    "collection_id",
+    "import_collections",
+    "include_unfiled",
+    "preview_revision",
+    "project_id",
+    "selected_collection_keys",
+    "selection",
+)
+
+
+def _zotero_import_identity(options: dict[str, Any]) -> str:
+    """Hash the accepted Zotero scope into one idempotency identity.
+
+    文献库是追加语义 (proposal 91): 重复受理不会被落库层吸收, 一次连点就是两份
+    条目。所以幂等只能落在受理口 —— 同一次导入意图在它还跑着的时候必须拿回同一个
+    任务, 而不是再起一个后台线程。
+    """
+
+    canonical: dict[str, Any] = {}
+    for field in ZOTERO_IDENTITY_FIELDS:
+        value = options.get(field)
+        if field == "selection":
+            entries = value if isinstance(value, list) else []
+            value = sorted(
+                (str(entry.get("key", "")), bool(entry.get("selected")))
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("key")
+            )
+        elif field == "selected_collection_keys":
+            keys = value if isinstance(value, list) else []
+            value = sorted(str(key) for key in keys)
+        canonical[field] = value
+    payload = json.dumps(canonical, sort_keys=True, ensure_ascii=False, default=str)
+    return sha256(payload.encode("utf-8")).hexdigest()
 
 
 async def _upload_bytes(upload: UploadFile, total: int) -> tuple[bytes, int]:
@@ -468,6 +510,10 @@ def register_global_routes(app: FastAPI) -> None:
     """Register the catalogue API consumed by the refactored Desktop feature."""
 
     tasks: dict[str, dict[str, Any]] = {}
+    #: Zotero 导入意图 → 还在跑的任务 id。路由是同步的、跑在线程池里, 两个并发
+    #: 点击都能各自通过检查, 所以查改必须在同一把锁下完成。
+    zotero_imports: dict[str, str] = {}
+    zotero_imports_lock = threading.Lock()
 
     @app.post(f"{API_PREFIX}/literatures/{{literature_id}}/papercard")
     async def import_papercard(literature_id: str, request: Request) -> dict:
@@ -544,7 +590,9 @@ def register_global_routes(app: FastAPI) -> None:
         return {
             "all": len(items),
             "recent": sum(is_recent(item) for item in items),
-            "without_collection": repository.filtered_total(project_id=project_id, without_collection=True, without_project=not bool(project_id)),
+            "without_collection": repository.filtered_total(
+                project_id=project_id, without_collection=True, without_project=not bool(project_id)
+            ),
             "unread": len(items),
             "without_fulltext": sum(item.fulltext is FulltextStatus.NONE for item in items),
         }
@@ -682,7 +730,11 @@ def register_global_routes(app: FastAPI) -> None:
         item = repository.get(item_id)
         if item is None:
             raise HTTPException(status_code=404, detail={"code": LITERATURE_NOT_FOUND})
-        if repository.attachments(item_id):
+        # 只有主附件才是全文: 补充材料 (role=supplementary) 不算, 主附件行还在但字节
+        # 已丢 (availability=missing) 时也要允许重新获取。口径与 fulltext 记账一致
+        # (store.add_attachment 仅在 role=PRIMARY 且 PDF 时置 READY)。
+        existing_primary = repository.primary_attachment(item_id)
+        if existing_primary is not None and is_available_attachment(existing_primary.path):
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -895,6 +947,7 @@ def register_global_routes(app: FastAPI) -> None:
             "add_tags_by_id",
         }:
             requested_project = str(parameters.get("project_id") or "")
+            collection_ids = tuple(str(value) for value in parameters.get("collection_ids", ()))
             if operation in {BULK_LINK_PROJECT, BULK_UNLINK_PROJECT} and not requested_project:
                 raise HTTPException(
                     status_code=400,
@@ -902,16 +955,16 @@ def register_global_routes(app: FastAPI) -> None:
                 )
             project_id = _project_scope(request, requested_project) if requested_project else ""
             if operation == BULK_LINK_PROJECT:
-                identifiers, failed = literature.link_project(identifiers, project_id)
+                identifiers, failed = literature.link_project(
+                    identifiers, project_id, collection_ids
+                )
             elif operation == BULK_UNLINK_PROJECT:
                 identifiers = repository.unlink_project(identifiers, project_id)
             else:
                 identifiers = repository.associate(
                     identifiers,
                     project_id=project_id,
-                    collection_ids=tuple(
-                        str(value) for value in parameters.get("collection_ids", ())
-                    ),
+                    collection_ids=collection_ids,
                     tag_ids=tuple(str(value) for value in parameters.get("tag_ids", ())),
                 )
         elif operation != BULK_MARK_READ:
@@ -992,10 +1045,15 @@ def register_global_routes(app: FastAPI) -> None:
         return {"deleted": attachment_id}
 
     @app.post(f"{API_PREFIX}/imports", status_code=202)
-    def create_import(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    def create_import(
+        payload: dict[str, Any],
+        request: Request,
+        idempotency_key: str | None = Header(default=None, alias=IDEMPOTENCY_KEY_HEADER),
+    ) -> dict[str, Any]:
         identifier = str(uuid4())
         source = str(payload.get("source", ""))
         options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
+        identity = ""
         if source == ZOTERO_SOURCE:
             scoped_project = _project_scope(request, str(options.get("project_id") or ""))
             options = {
@@ -1007,6 +1065,9 @@ def register_global_routes(app: FastAPI) -> None:
                     scoped_project, str(options.get("collection_id") or "")
                 ),
             }
+            # 调用方给了幂等键就用它 (一次导入意图一个键, 重试复用); 没给就退回按
+            # 受理参数取指纹, 让不带键的调用方也不会把同一批文献导两遍。
+            identity = (idempotency_key or "").strip() or _zotero_import_identity(options)
         task = {
             "id": identifier,
             "kind": IMPORT_KIND,
@@ -1017,7 +1078,22 @@ def register_global_routes(app: FastAPI) -> None:
             "error": None if source == ZOTERO_SOURCE else f"unsupported_import_source:{source}",
             "error_code": None if source == ZOTERO_SOURCE else UNSUPPORTED_IMPORT_SOURCE,
         }
-        tasks[identifier] = task
+        with zotero_imports_lock:
+            if identity:
+                finished = [
+                    key
+                    for key, task_id in zotero_imports.items()
+                    if tasks.get(task_id, {}).get("status") != RUNNING
+                ]
+                for key in finished:
+                    del zotero_imports[key]
+                running = tasks.get(zotero_imports.get(identity, ""))
+                if running is not None:
+                    # 同一份受理参数的导入还在跑: 交回同一个任务, 不再起第二个后台
+                    # 线程 —— 文献是追加语义, 第二次执行就是第二份条目。
+                    return running
+                zotero_imports[identity] = identifier
+            tasks[identifier] = task
         if source == ZOTERO_SOURCE:
 
             def progress(completed: int, total: int) -> None:

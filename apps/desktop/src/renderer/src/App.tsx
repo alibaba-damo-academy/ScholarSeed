@@ -684,6 +684,9 @@ function AppRoot(): React.JSX.Element {
   const [landingOpen, setLandingOpen] = React.useState(false)
   // 失败驱动开出来的首页是 layer 变体（带 X/Esc）；冷启动那个仍是强制二选一。
   const [landingDismissible, setLandingDismissible] = React.useState(false)
+  useEffect(() => {
+    void window.scholarseed.setLoginWindowVisible(landingOpen || state.loginOpen)
+  }, [landingOpen, state.loginOpen])
 
   // 冷启动首页认领：主进程闸为「本进程内首页未被关闭前每次挂载都可认领」（dev 链路
   // 启动后有一次整页 reload，一次性 claim 会被它吃掉）。登录是可选增强：只要账号服务

@@ -1,15 +1,12 @@
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Maximize2, Minimize2, Pencil, Trash2, X } from 'lucide-react'
+import { Pencil, Trash2 } from 'lucide-react'
 
-import { Button, CopyButton, IconButton, ResizablePanel, Tabs, TabsList, TabsTrigger } from '../../../components/ui'
+import { Button, CopyButton, IconButton, Tabs, TabsList, TabsTrigger } from '../../../components/ui'
 import { writeClipboard } from '../../../components/primitive/clipboard'
 import type { PdfComment, PdfMark } from '../api'
+import { PdfPanel } from './Panel'
 import { filterMarks, PDF_MARK_PALETTE, type PdfMarkCategory } from './records'
-
-const PDF_ANNOTATION_PANEL_DEFAULT_WIDTH_PX = 420
-const PDF_ANNOTATION_PANEL_MIN_WIDTH_PX = 400
-const PDF_ANNOTATION_PANEL_MAX_WIDTH_PERCENT = 60
 
 function groupMarksByPage(marks: readonly PdfMark[]): Array<{ page: number; marks: PdfMark[] }> {
   const groups = new Map<number, PdfMark[]>()
@@ -40,7 +37,6 @@ export function PdfAnnotations({
 }): React.JSX.Element {
   const { t } = useTranslation('pdf')
   const [filter, setFilter] = useState<PdfMarkCategory>('all')
-  const [panelWidth, setPanelWidth] = useState(`${PDF_ANNOTATION_PANEL_DEFAULT_WIDTH_PX}px`)
   const [expandedMarks, setExpandedMarks] = useState<Set<string>>(new Set())
   const [expandedComments, setExpandedComments] = useState<Set<string>>(new Set())
   const visibleMarks = useMemo(() => filterMarks(marks, comments, filter), [comments, filter, marks])
@@ -80,27 +76,34 @@ export function PdfAnnotations({
     })
   }
 
-  const panel = (
-    <aside
-      aria-label={t('pdfAnnotation.pdfRecords')}
-      className={`vds-pdf-annotations flex h-full w-full flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-left)]${expanded ? ' absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] is-expanded' : ''}`}
-    >
-      <header className="flex items-center justify-between gap-2 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3">
-        <strong className="inline-flex items-center gap-2"><Pencil size={16} />{t('pdfAnnotation.records')}</strong>
-        <div className="flex items-center gap-1"><IconButton data-testid="pdf-annotation-panel-toggle-size" label={expanded ? t('reading.shrinkPanel') : t('reading.expandPanel')} icon={expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />} variant="ghost" onClick={onToggleExpanded} /><IconButton label={t('pdfAnnotation.closeRecords')} icon={<X size={14} />} variant="ghost" onClick={onClose} /></div>
-      </header>
-      <div className="border-b border-[var(--vds-divider-default)] p-3">
+  const toolbar = (
+    <div className="overflow-x-auto border-b border-[var(--vds-divider-default)] p-3">
         <Tabs value={filter} onValueChange={(value) => setFilter(value as PdfMarkCategory)}>
-          <TabsList aria-label={t('pdfAnnotation.pdfRecords')} className="w-full [&_.vds-tabs__trigger]:min-w-0 [&_.vds-tabs__trigger]:flex-1 [&_.vds-tabs__trigger]:whitespace-nowrap [&_.vds-tabs__trigger]:px-2">
+          <TabsList aria-label={t('pdfAnnotation.pdfRecords')} className="w-max justify-self-start">
             {categories.map((category) => (
-              <TabsTrigger key={category} value={category}>
+              <TabsTrigger key={category} value={category} className="min-w-0 flex-none whitespace-nowrap px-2">
                 {categoryLabels[category]} {counts[category]}
               </TabsTrigger>
             ))}
           </TabsList>
         </Tabs>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto" data-testid="pdf-annotation-list">
+    </div>
+  )
+
+  return (
+    <PdfPanel
+      ariaLabel={t('pdfAnnotation.pdfRecords')}
+      bodyTestId="pdf-annotation-list"
+      closeLabel={t('pdfAnnotation.closeRecords')}
+      expanded={expanded}
+      icon={<Pencil size={16} />}
+      testId="pdf-annotations"
+      title={t('pdfAnnotation.records')}
+      toolbar={toolbar}
+      onClose={onClose}
+      onToggleExpanded={onToggleExpanded}
+    >
+      <div>
         {!visibleMarks.length ? <p className="p-4 text-sm text-[var(--vds-text-tertiary)]">{marks.length ? t('pdfAnnotation.filterEmpty') : t('pdfAnnotation.empty')}</p> : null}
         {groups.map((group) => (
           <section key={group.page}>
@@ -177,23 +180,6 @@ export function PdfAnnotations({
           </section>
         ))}
       </div>
-    </aside>
-  )
-
-  return expanded ? panel : (
-    <ResizablePanel
-      aria-label={t('pdfAnnotation.pdfRecords')}
-      className="pointer-events-none! absolute inset-y-0 left-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] [&>button]:pointer-events-auto! [&>div:last-child]:pointer-events-auto!"
-      data-testid="pdf-annotations-resizable"
-      defaultRightWidth={`${PDF_ANNOTATION_PANEL_DEFAULT_WIDTH_PX}px`}
-      leftPanel={<span aria-hidden />}
-      maxRightWidth={PDF_ANNOTATION_PANEL_MAX_WIDTH_PERCENT}
-      minLeftWidth={PDF_ANNOTATION_PANEL_MIN_WIDTH_PX}
-      minRightWidth={PDF_ANNOTATION_PANEL_MIN_WIDTH_PX}
-      rightPanel={panel}
-      rightWidth={panelWidth}
-      style={{ width: 'calc(100% - var(--vds-layout-pdf-rail-width))' }}
-      onRightWidthChange={setPanelWidth}
-    />
+    </PdfPanel>
   )
 }

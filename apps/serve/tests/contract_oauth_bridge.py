@@ -11,11 +11,14 @@ import httpx
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelWireProtocol
 from service.chat.service.completions import CompletionBridge, CompletionCredentialError
+from service.identity.service.account_token import AccountTokenHolder
+from service.identity.utils import LOCAL_USER_ID
 
 OWNER = "owner"
 CONNECTION = "connection"
 SESSION = "session"
 ENDPOINT = "https://subscription.example/responses"
+GATEWAY_ENDPOINT = "https://gateway.example/v1/chat/completions"
 
 
 class PausedStream(httpx.AsyncByteStream):
@@ -341,6 +344,70 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(clients[0].is_closed)
         self.assertFalse(self.bridge._upstreams)
         self.assertFalse(self.bridge._calls)
+
+
+class SharedOwnershipBridgeContract(unittest.IsolatedAsyncioTestCase):
+    """machine 轴: 订阅桥归这台机器, 计量桥仍归账号 —— 切号时两腿必须分治。"""
+
+    def setUp(self) -> None:
+        self.bridge = CompletionBridge("http://127.0.0.1:8771", shared_ownership=True)
+        self.addAsyncCleanup(self.bridge.close)
+
+    async def test_account_switch_moves_metering_but_keeps_the_machine_subscription(self) -> None:
+        holder = AccountTokenHolder()
+        holder.remember("u-old", "old.account.token")
+        holder.remember("u-new", "new.account.token")
+
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="secret-access")
+
+        metering = self.bridge.register(
+            endpoint=GATEWAY_ENDPOINT,
+            api_key="dgw_test",
+            token_provider=holder.current,
+            owner_id="u-old",
+            session_id=SESSION,
+        )
+        subscription = self.bridge.register(
+            endpoint=ENDPOINT,
+            responses_endpoint=ENDPOINT,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            api_key="",
+            owner_id=LOCAL_USER_ID,
+            connection_id=CONNECTION,
+            session_id=SESSION,
+            credential_resolver=resolve,
+        )
+
+        moved = self.bridge.rebind_owner(SESSION, "u-new")
+
+        # 计量腿原地改写: 网关用量必须跟着当前真正驱动会话的账号。
+        self.assertEqual(moved, 1)
+        self.assertEqual(self.bridge._upstreams[metering.bridge_id].bearer(), "new.account.token")
+        # 订阅腿不动: 它的凭据按 connection_id 解析、与账号无关, 摘掉它会让正在跑的
+        # Codex 子进程脚下变成 404。
+        self.assertEqual(self.bridge.registration_count(), 2)
+        self.assertEqual(self.bridge._upstreams[subscription.bridge_id].owner_id, LOCAL_USER_ID)
+
+    async def test_machine_subscription_upstream_survives_repeated_account_switches(self) -> None:
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="secret-access")
+
+        registration = self.bridge.register(
+            endpoint=ENDPOINT,
+            responses_endpoint=ENDPOINT,
+            wire_protocol=ModelWireProtocol.RESPONSES,
+            api_key="",
+            owner_id=LOCAL_USER_ID,
+            connection_id=CONNECTION,
+            session_id=SESSION,
+            credential_resolver=resolve,
+        )
+
+        for account in ("u-1", "u-2", LOCAL_USER_ID):
+            self.assertEqual(self.bridge.rebind_owner(SESSION, account), 0, account)
+        self.assertEqual(self.bridge.registration_count(), 1)
+        self.assertIn(registration.bridge_id, self.bridge._upstreams)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ import { useTranslation } from 'react-i18next'
 import { Save, Undo2 } from 'lucide-react'
 
 import { Alert, BadgeDot, Button, Dialog, DialogPortal, DialogContent, DialogFooter, DialogHeader, DialogTitle, IconButton, SearchBox, Tabs, TabsList, TabsTrigger, Tooltip, useToast } from '../../components/ui'
+import { writeClipboard } from '../../components/primitive/clipboard'
 import {
   useSelectionActionContribution,
   type SelectionReplacement
@@ -41,6 +42,7 @@ import {
 import type { CitationResolution } from '../../contracts/citations'
 import { configureCitationLinks, DOCUMENT_FRAGMENT_ATTRIBUTE, savedCitationPlugin } from './citations'
 import { markdownFragmentTarget, normalizeMarkdownTargetText } from './anchors'
+import { preserveMarkdownReadingPosition } from './reading'
 import { useImageFailureText } from './failure'
 import { formatTextOnSave } from './format'
 import { encodeTextForSave } from './text'
@@ -66,6 +68,8 @@ const MARKDOWN_PAPER_CLASS = '!mx-auto !my-[var(--vds-space-6)] flex min-h-[calc
 const SOURCE_MAP_VERSION = 'milkdown-source-map-v3'
 const CODE_EDITOR_SELECTOR = '.cm-editor'
 const CODE_CONTENT_SELECTOR = '.cm-content'
+const CODE_COPY_BUTTON_SELECTOR = '.milkdown-code-block .copy-button'
+const CODE_BLOCK_SELECTOR = '.milkdown-code-block'
 const ATOM_VALUE_ATTRIBUTE = 'value'
 const RENDERED_BLOCK_SEPARATOR = ''
 const SELECTION_TEXT_SEPARATOR = '\n'
@@ -193,6 +197,21 @@ function codeBlockStart(view: EditorView, code: CodeEditorView, position: number
     ) return candidate
   }
   return null
+}
+
+function copyButtonFromTarget(target: EventTarget | null): HTMLElement | null {
+  return target instanceof Element ? target.closest<HTMLElement>(CODE_COPY_BUTTON_SELECTOR) : null
+}
+
+function codeBlockCopyText(copyButton: HTMLElement): string | null {
+  const editorHost = copyButton.closest<HTMLElement>(CODE_BLOCK_SELECTOR)
+    ?.querySelector<HTMLElement>(CODE_EDITOR_SELECTOR)
+  if (!editorHost) return null
+  try {
+    return CodeEditorView.findFromDOM(editorHost)?.state.doc.toString() ?? null
+  } catch {
+    return null
+  }
 }
 
 /** Resolve a DOM point, using an embedded code editor's own coordinates inside code blocks. */
@@ -945,6 +964,7 @@ function MarkdownVisualEditor({
       }
     })
     let disposeMathInteraction: (() => void) | undefined
+    let disposeReadingPosition: (() => void) | undefined
     let paper: HTMLElement | null = null
     let topBar: HTMLElement | null = null
     let topBarParent: HTMLElement | null = null
@@ -974,11 +994,16 @@ function MarkdownVisualEditor({
       projectedMarkdownRef.current = markdown
       userEditPendingRef.current = false
       crepeReadyRef.current = true
+      crepe.editor.action((ctx) => {
+        const scroller = hostRef.current?.querySelector<HTMLElement>(':scope > .milkdown')
+        if (scroller) disposeReadingPosition = preserveMarkdownReadingPosition(scroller, ctx.get(editorViewCtx))
+      })
     })
 
     return () => {
       unregisterSave()
       disposeMathInteraction?.()
+      disposeReadingPosition?.()
       imageResolver.dispose()
       crepeRef.current = null
       crepeReadyRef.current = false
@@ -1232,6 +1257,20 @@ function MarkdownVisualEditor({
         onDropCapture={markUserEdit}
         onPasteCapture={markUserEdit}
         onClickCapture={(event) => {
+          const copyButton = copyButtonFromTarget(event.target)
+          if (copyButton) {
+            event.preventDefault()
+            event.stopPropagation()
+            const code = codeBlockCopyText(copyButton)
+            if (code === null) {
+              toast({ title: t('markdown.codeCopyFailed'), tone: 'error' })
+              return
+            }
+            void writeClipboard(code)
+              .then(() => toast({ title: t('markdown.codeCopied'), tone: 'success' }))
+              .catch(() => toast({ title: t('markdown.codeCopyFailed'), tone: 'error' }))
+            return
+          }
           const link = event.target instanceof Element
             ? event.target.closest<HTMLElement>(`a[${DOCUMENT_FRAGMENT_ATTRIBUTE}]`)
             : null
@@ -1241,6 +1280,7 @@ function MarkdownVisualEditor({
           event.stopPropagation()
         }}
         onPointerDownCapture={(event) => {
+          if (copyButtonFromTarget(event.target)) return
           if (event.target instanceof Element && event.target.closest(EDITOR_ACTION_SELECTOR)) markUserEdit()
         }}
         onMouseDownCapture={(event) => {

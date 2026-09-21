@@ -11,10 +11,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import httpx
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
@@ -134,7 +134,7 @@ class LiteratureImportTests(unittest.TestCase):
             self.assertEqual(item.collections, ())
 
     def test_global_pdf_upload_extracts_only_title_and_author(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         document.new_page()
         document.set_metadata({"title": "Imported research", "author": "Ada Researcher"})
         payload = document.tobytes()
@@ -157,7 +157,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((imported.journal, imported.year, imported.doi), ("", None, ""))
 
     def test_project_pdf_upload_links_current_project(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         document.new_page()
         document.set_metadata({"title": "Project PDF", "author": "Ada Researcher"})
         payload = document.tobytes()
@@ -185,7 +185,7 @@ class LiteratureImportTests(unittest.TestCase):
     ) -> None:
         repository = LiteratureRepository()
         item = repository.save(LiteratureItem(id="attachment-paper", title="Attachment paper"))
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             pdf_payload = document.tobytes()
         files = self.root / "managed-attachments"
@@ -415,7 +415,7 @@ class LiteratureImportTests(unittest.TestCase):
         item = repository.save(
             LiteratureItem(id="arxiv-paper", title="Arxiv paper", arxiv="2401.12345")
         )
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         document.new_page()
         payload = document.tobytes()
         document.close()
@@ -526,7 +526,7 @@ class LiteratureImportTests(unittest.TestCase):
             self.assertEqual(response.json()["detail"]["code"], code)
 
     def test_global_pdf_upload_accepts_missing_author(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         document.new_page()
         document.set_metadata({"title": "Title without author"})
         payload = document.tobytes()
@@ -545,7 +545,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(imported.authors, "")
 
     def test_blank_pdf_upload_uses_filename_without_last_extension(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             payload = document.tobytes()
         app = FastAPI()
@@ -561,7 +561,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((imported.arxiv, imported.doi), ("", ""))
 
     def test_pdf_identifiers_are_persisted_by_both_import_paths(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             page = document.new_page()
             document.set_metadata({"title": "Identifier extraction", "author": "Ada"})
             page.insert_text((30, 500), "arXiv:2609.09925v1", rotate=90)
@@ -583,7 +583,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((imported.arxiv, imported.doi), (metadata.arxiv, metadata.doi))
 
     def test_pdf_body_mentions_and_second_page_identifiers_are_ignored(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             page = document.new_page()
             for position, text in (
                 (100, "First body line with sufficient text for detection."),
@@ -598,7 +598,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((metadata.arxiv, metadata.doi), ("", ""))
 
     def test_pdf_conflicting_identifiers_are_not_selected(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             page = document.new_page()
             page.insert_text((30, 500), "arXiv:2609.09925v1 arXiv:2609.12345v2", rotate=90)
             page.insert_text((60, 780), "10.1234/first 10.1234/second")
@@ -607,12 +607,12 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((metadata.arxiv, metadata.doi), ("", ""))
 
     def test_pdf_identifiers_include_links_and_xmp(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             page = document.new_page()
             page.insert_link(
                 {
-                    "kind": pymupdf.LINK_URI,
-                    "from": pymupdf.Rect(20, 20, 180, 35),
+                    "kind": pdf_fixture.LINK_URI,
+                    "from": pdf_fixture.Rect(20, 20, 180, 35),
                     "uri": "https://arxiv.org/abs/2609.09925v2",
                 }
             )
@@ -624,14 +624,14 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual((metadata.arxiv, metadata.doi), ("2609.09925v2", "10.1234/xmp-paper"))
 
     def test_pdf_legacy_arxiv_and_duplicate_doi_are_normalized(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             page = document.new_page()
             page.insert_text((30, 500), "arXiv:hep-th/9901001v3", rotate=90)
             page.insert_text((60, 780), "doi: 10.1234 / same-paper.")
             page.insert_link(
                 {
-                    "kind": pymupdf.LINK_URI,
-                    "from": pymupdf.Rect(60, 780, 250, 795),
+                    "kind": pdf_fixture.LINK_URI,
+                    "from": pdf_fixture.Rect(60, 780, 250, 795),
                     "uri": "https://doi.org/10.1234/same-paper",
                 }
             )
@@ -650,7 +650,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"]["code"], "PDF_INVALID")
 
     def test_pdf_body_never_supplies_missing_title_or_author(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page(width=612, height=792)
         page.insert_text((72, 100), "The Google File System", fontsize=20)
         page.insert_text(
@@ -678,7 +678,7 @@ class LiteratureImportTests(unittest.TestCase):
             ({"author": "Metadata Author"}, ("", "Metadata Author")),
         ):
             with self.subTest(metadata=embedded):
-                with pymupdf.open() as document:
+                with pdf_fixture.open() as document:
                     page = document.new_page()
                     page.insert_text((72, 100), "Body title must be ignored", fontsize=20)
                     page.insert_text((72, 135), "Body Author", fontsize=12)
@@ -688,7 +688,7 @@ class LiteratureImportTests(unittest.TestCase):
                 self.assertEqual((metadata.title, metadata.author), expected)
 
     def test_pdf_import_uses_shared_unicode_metadata_extraction(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             document.set_metadata(
                 {
@@ -849,7 +849,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(list(files.iterdir()), [unrelated])
 
     def test_zotero_desktop_import_copies_pdf_and_preserves_metadata(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             pdf = document.tobytes()
         items = (
@@ -995,7 +995,7 @@ class LiteratureImportTests(unittest.TestCase):
             self.content.read_bytes(self.project.id, "../selected.bib")
 
     def test_real_pdf_is_published_to_the_project_and_owned_by_literature(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             document.set_metadata({"title": "A readable research document"})
             payload = document.tobytes()
@@ -1020,7 +1020,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(owned.read_bytes(), payload)
 
     def test_project_file_rename_never_moves_the_literature_attachment(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page().insert_text((50, 50), "Original literature PDF")
             payload = document.tobytes()
         source = self.source("identity.pdf", payload)
@@ -1198,7 +1198,7 @@ class LiteratureImportTests(unittest.TestCase):
         self.assertEqual(len(list(self.library.iterdir())), 1)
 
     def test_pdf_renamed_after_materialization_is_recovered_at_current_path(self) -> None:
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             payload = document.tobytes()
         source = self.source("original.pdf", payload)

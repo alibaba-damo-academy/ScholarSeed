@@ -31,6 +31,14 @@ const PDF_ANNOTATION_MAX_WIDTH_RATIO = 0.6
 const PDF_ANNOTATION_DRAG_DISTANCE_PX = 1000
 const PDF_LONG_SEARCH_REPEAT_COUNT = 4
 const PDF_READER_MIN_WIDTH_PX = 320
+const PDF_WHEEL_ZOOM_DELTA_PX = -120
+const PDF_TRACKPAD_ZOOM_DELTA_PX = -4
+const PDF_ZOOM_POINTER_OFFSET_PX = 180
+const PDF_ZOOM_ANCHOR_TOLERANCE_PX = 4
+const PDF_ZOOM_POINTER_X_RATIO = 0.5
+const COMPACT_AI_BUTTON_MAX_WIDTH_PX = 32
+const SPLIT_SCROLL_DISTANCE_PX = 520
+const SPLIT_SCROLL_SECTION_COUNT = 80
 const TREE_EDITOR_LOAD_TIMEOUT_MS = 15_000
 const TREE_UNSAVED_EDIT = '\nUnsaved tree edit'
 const OVERSIZED_TEST_LIMIT_KB = 1024
@@ -632,6 +640,52 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
     await expect.poll(() => readFileSync(join(resources, 'source.json'), 'utf8')).toContain('// saved from unified toolbar')
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
+})
+
+test('Markdown code block copy writes exact code through the desktop clipboard', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const codeCopy = 'console.log("markdown code copy");'
+  let clipboardSaved = false
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    writeFileSync(join(resources, 'acceptance.md'), `${MARKDOWN_SOURCE}\n\`\`\`text\n${codeCopy}\n\`\`\`\n`)
+    await page.getByTestId('resource-refresh').click()
+    await desktop.app!.evaluate(async ({ clipboard }) => {
+      const state = globalThis as typeof globalThis & { editorClipboard?: Electron.ClipboardItem[] }
+      state.editorClipboard = await clipboard.read()
+    })
+    clipboardSaved = true
+
+    await openFile(page, 'acceptance.md')
+    await page.locator('[data-testid="markdown-open-editor"]:visible').click()
+    const markdown = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
+    await expect(markdown).toBeVisible()
+    const codeCopyButton = page.locator('[data-testid="markdown-visual-editor"] .milkdown-code-block .copy-button')
+    await expect(codeCopyButton).toBeVisible()
+    await desktop.app!.evaluate(({ clipboard }) => clipboard.writeText(''))
+    await codeCopyButton.click()
+    await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(codeCopy)
+    await expect(page.getByText('已复制代码', { exact: true })).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-code-copy.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    if (clipboardSaved && desktop.app) await desktop.app.evaluate(async ({ clipboard, ClipboardItem }) => {
+      const state = globalThis as typeof globalThis & { editorClipboard?: Electron.ClipboardItem[] }
+      if (!state.editorClipboard) return
+      const copies = await Promise.all(state.editorClipboard.map(async item => {
+        const entries = await Promise.all(item.types.map(async type => [type, await item.getType(type)] as const))
+        return new ClipboardItem(Object.fromEntries(entries))
+      }))
+      await clipboard.write(copies)
+    })
+    await desktop.attachArtifacts()
+  }
 })
 
 test('Markdown and source editors preserve native copy and paste shortcuts', async ({}, testInfo) => {
@@ -1362,18 +1416,23 @@ test('PDF outline navigation preserves scale and keeps the target page visible',
 
 test('PDF selection survives page virtualization and restores its toolbar when scrolled back', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
     await seedProject(page, runtime)
     await openFile(page, PDF_NAME)
-    const pageInput = page.getByTestId('pdf-page-input')
-    await pageInput.fill('2')
-    await pageInput.press('Enter')
     const selectedPage = page.getByTestId('pdf-page-2')
+    const viewport = page.locator('.vds-pdf-pages')
+    await viewport.evaluate((node) => {
+      const target = node.querySelector<HTMLElement>('[data-testid="pdf-page-2"]')
+      if (target) node.scrollTop = target.offsetTop
+    })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'true')
     await selectPdfText(page, 2)
-    const viewport = page.locator('.vds-pdf-pages')
     const toolbar = page.getByTestId('selection-action-host')
     const initialToolbar = await toolbar.boundingBox()
     expect(initialToolbar).not.toBeNull()
@@ -1397,20 +1456,70 @@ test('PDF selection survives page virtualization and restores its toolbar when s
     await viewport.evaluate((node, distance) => { node.scrollTop += distance },
       selectedBounds!.y + selectedBounds!.height - viewportBounds!.y + SELECTION_ANCHOR_EXIT_MARGIN_PX)
     await expect(toolbar).toBeHidden()
-    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toContain('Needle marker')
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('')
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-toolbar-scrolled-away.png') })
 
     await viewport.evaluate(node => { node.scrollTop = node.scrollHeight })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'false')
     await expect(toolbar).toBeHidden()
-    await pageInput.fill('2')
-    await pageInput.press('Enter')
+    await viewport.evaluate((node) => {
+      const target = node.querySelector<HTMLElement>('[data-testid="pdf-page-2"]')
+      if (target) node.scrollTop = target.offsetTop
+    })
     await expect(selectedPage).toHaveAttribute('data-rendered', 'true')
     await expect(toolbar).toBeVisible()
     await expect(selectedPage.locator('[data-pdf-selection-highlight]')).not.toHaveCount(0)
     await page.getByRole('button', { name: '复制选中文本' }).click()
     await expect(page.getByRole('status')).toContainText('已复制')
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-toolbar-restored.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('PDF selection keeps its anchor page rendered throughout a scrolling drag', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await openFile(page, PDF_NAME)
+    const firstPage = page.getByTestId('pdf-page-1')
+    const thirdPage = page.getByTestId('pdf-page-3')
+    const viewport = page.locator('.vds-pdf-pages')
+    await page.getByTestId('pdf-page-input').fill('1')
+    await page.getByTestId('pdf-page-input').press('Enter')
+    await expect(firstPage).toHaveAttribute('data-rendered', 'true')
+    const anchor = firstPage.locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
+    await expect(anchor).toBeVisible()
+    const anchorBounds = await anchor.boundingBox()
+    expect(anchorBounds).not.toBeNull()
+
+    await page.mouse.move(anchorBounds!.x + 1, anchorBounds!.y + anchorBounds!.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(anchorBounds!.x + Math.min(32, anchorBounds!.width / 2), anchorBounds!.y + anchorBounds!.height / 2, { steps: 4 })
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).not.toBe('')
+    await viewport.evaluate(node => { node.scrollTop = node.scrollHeight })
+    await expect(thirdPage).toHaveAttribute('data-rendered', 'true')
+    await expect(firstPage).toHaveAttribute('data-rendered', 'true')
+    expect(await firstPage.evaluate((element) => element.contains(window.getSelection()?.anchorNode ?? null))).toBe(true)
+
+    const focus = thirdPage.locator('.textLayer span').filter({ hasText: 'Needle marker' }).first()
+    await focus.scrollIntoViewIfNeeded()
+    const focusBounds = await focus.boundingBox()
+    expect(focusBounds).not.toBeNull()
+    await page.mouse.move(focusBounds!.x + focusBounds!.width - 1, focusBounds!.y + focusBounds!.height / 2, { steps: 15 })
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toContain('Needle marker')
+    await page.mouse.up()
+    await expect(page.getByTestId('selection-action-host')).toBeVisible()
+    await viewport.evaluate(node => { node.scrollTop -= 1 })
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? '')).toBe('')
+    await expect(firstPage).toHaveAttribute('data-rendered', 'false')
+    await expect(thirdPage.locator('[data-pdf-selection-highlight]')).not.toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-scroll-anchor-stable.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -1632,6 +1741,59 @@ test('PDF annotations auto-save without document save or file versions', async (
     await page.screenshot({
       path: join(runtime.artifacts, 'pdf-annotation-restored-after-restart.png')
     })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('PDF modifier wheel zoom preserves its pointer anchor', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await openFile(page, PDF_NAME)
+    await page.getByRole('tab', { name: new RegExp(PDF_NAME) }).click()
+    await expect(page.getByTestId('pdf-document')).toBeVisible({ timeout: TREE_EDITOR_LOAD_TIMEOUT_MS })
+    const viewport = page.locator('.vds-pdf-pages')
+    const canvas = page.getByTestId('pdf-page-1').locator('canvas').first()
+    await viewport.click({ position: { x: 24, y: 24 } })
+    await page.keyboard.press(`${SHORTCUT}+0`)
+    const [canvasBounds, viewportBounds] = await Promise.all([canvas.boundingBox(), viewport.boundingBox()])
+    expect(canvasBounds).not.toBeNull()
+    expect(viewportBounds).not.toBeNull()
+    const pointer = {
+      x: canvasBounds!.x + canvasBounds!.width * PDF_ZOOM_POINTER_X_RATIO,
+      y: Math.min(canvasBounds!.y + PDF_ZOOM_POINTER_OFFSET_PX, viewportBounds!.y + viewportBounds!.height - PDF_ZOOM_ANCHOR_TOLERANCE_PX)
+    }
+    const anchor = {
+      x: (pointer.x - canvasBounds!.x) / canvasBounds!.width,
+      y: (pointer.y - canvasBounds!.y) / canvasBounds!.height
+    }
+    const wheelWidth = canvasBounds!.width
+    await page.mouse.move(pointer.x, pointer.y)
+    await page.keyboard.down(SHORTCUT)
+    await page.mouse.wheel(0, PDF_WHEEL_ZOOM_DELTA_PX)
+    await page.keyboard.up(SHORTCUT)
+    await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(wheelWidth)
+    const anchoredBounds = await canvas.boundingBox()
+    expect(anchoredBounds).not.toBeNull()
+    expect(Math.abs(anchoredBounds!.x + anchoredBounds!.width * anchor.x - pointer.x)).toBeLessThanOrEqual(PDF_ZOOM_ANCHOR_TOLERANCE_PX)
+    expect(Math.abs(anchoredBounds!.y + anchoredBounds!.height * anchor.y - pointer.y)).toBeLessThanOrEqual(PDF_ZOOM_ANCHOR_TOLERANCE_PX)
+    const modifiedWidth = anchoredBounds!.width
+    await page.mouse.wheel(0, -PDF_WHEEL_ZOOM_DELTA_PX)
+    expect(await canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeCloseTo(modifiedWidth, 0)
+    if (process.platform === 'darwin') {
+      await page.keyboard.down('Control')
+      await page.mouse.wheel(0, PDF_TRACKPAD_ZOOM_DELTA_PX)
+      await page.mouse.wheel(0, PDF_TRACKPAD_ZOOM_DELTA_PX)
+      await page.keyboard.up('Control')
+      await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(modifiedWidth)
+    }
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-pointer-zoom.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -3125,17 +3287,70 @@ test('development Markdown documents keep table editors alive across tab switchi
   }
 })
 
-test('horizontal split keeps navigation and document dividers aligned', async ({}, testInfo) => {
+test('horizontal split keeps navigation aligned and trailing tab icons clear of actions', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   const dividerTolerancePx = 1
   try {
     const page = await desktop.launch()
-    await seedProject(page, runtime)
+    await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+    await expect(page.getByTestId('topbar-ai')).toBeVisible()
+    const resources = await seedProject(page, runtime)
+    writeFileSync(
+      join(resources, 'acceptance.md'),
+      Array.from(
+        { length: SPLIT_SCROLL_SECTION_COUNT },
+        (_, index) => `## Independent section ${index + 1}\n\nEach pane keeps its own scroll position.\n`
+      ).join('\n')
+    )
+    await page.getByTestId('resource-refresh').click()
     await openFile(page, 'acceptance.md')
+    await expect(page.getByTestId('topbar-ai')).toContainText('书深 AI')
+    await page.locator('[data-testid="markdown-open-editor"]:visible').first().click()
+    const expectTrailingTabIconClear = async (): Promise<void> => {
+      const actions = page.locator('.vds-top-bar-actions')
+      const trailingNavigation = page.locator('.vds-top-bar-navigation-trailing')
+      const activeTabIcon = trailingNavigation.getByRole('tab', { selected: true }).locator('svg').first()
+      await expect(actions).toBeVisible()
+      await expect(activeTabIcon).toBeVisible()
+      await expect.poll(async () => {
+        const [actionBounds, iconBounds] = await Promise.all([
+          actions.boundingBox(),
+          activeTabIcon.boundingBox()
+        ])
+        if (!actionBounds || !iconBounds) return Number.NEGATIVE_INFINITY
+        return actionBounds.x - (iconBounds.x + iconBounds.width)
+      }).toBeGreaterThanOrEqual(0)
+    }
+    await expectTrailingTabIconClear()
     const fileTab = page.locator('[data-testid^="document-tab-"]').filter({ hasText: 'acceptance.md' })
     await fileTab.click({ button: 'right' })
     await page.getByTestId('tab-split-right').click()
+
+    const aiButton = page.getByTestId('topbar-ai')
+    await expect(aiButton).toHaveText('')
+    await expect(aiButton.locator('img')).toBeVisible()
+    await expect.poll(async () => (await aiButton.boundingBox())?.width ?? Number.POSITIVE_INFINITY)
+      .toBeLessThanOrEqual(COMPACT_AI_BUTTON_MAX_WIDTH_PX)
+
+    const paneScrollers = page.locator('.vds-dock-leaf .vds-markdown-crepe > .milkdown')
+    await expect(paneScrollers).toHaveCount(2)
+    expect(await paneScrollers.evaluateAll(nodes => nodes.every(node => node.scrollHeight > node.clientHeight))).toBe(true)
+    await paneScrollers.evaluateAll(nodes => nodes.forEach(node => { node.scrollTop = 0 }))
+    await paneScrollers.nth(0).hover()
+    await page.mouse.wheel(0, SPLIT_SCROLL_DISTANCE_PX)
+    const firstPaneScrollTop = await paneScrollers.nth(0).evaluate(node => node.scrollTop)
+    expect(firstPaneScrollTop).toBeGreaterThan(0)
+    expect(await paneScrollers.nth(1).evaluate(node => node.scrollTop)).toBe(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'split-pane-independent-scroll.png') })
+    await paneScrollers.nth(1).hover()
+    await page.mouse.wheel(0, SPLIT_SCROLL_DISTANCE_PX)
+    await expect.poll(() => paneScrollers.nth(1).evaluate(node => node.scrollTop)).toBeGreaterThan(0)
+    expect(await paneScrollers.nth(0).evaluate(node => node.scrollTop)).toBe(firstPaneScrollTop)
 
     const navigationDivider = page.getByTestId('navigation-split-divider')
     const documentDivider = page.locator('.vds-dock-split.is-horizontal > .vds-dock-divider').first()
@@ -3153,6 +3368,7 @@ test('horizontal split keeps navigation and document dividers aligned', async ({
     }
 
     await expectAligned()
+    await expectTrailingTabIconClear()
     const documentBounds = await documentDivider.boundingBox()
     if (!documentBounds) throw new Error('Document split divider is not visible')
     await page.mouse.move(
@@ -3171,10 +3387,11 @@ test('horizontal split keeps navigation and document dividers aligned', async ({
       await page.getByTestId('ai-panel-layout-toggle').click()
     }
     await expectAligned()
-    await page.screenshot({ path: join(runtime.artifacts, 'split-pane-divider-alignment.png') })
+    await page.screenshot({ path: join(runtime.artifacts, 'split-pane-compact-ai-independent-scroll.png') })
 
     await page.setViewportSize({ width: 900, height: 700 })
     await expectAligned()
+    await expectTrailingTabIconClear()
     await page.screenshot({ path: join(runtime.artifacts, 'split-pane-divider-alignment-narrow.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }

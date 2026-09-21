@@ -339,6 +339,18 @@ class LiteratureResultContract(unittest.TestCase):
             "ambiguous",
         )
 
+    def test_library_status_is_scoped_to_project_membership(self) -> None:
+        repository = LiteratureRepository(self.root / "scoped-library.sqlite3")
+        paper = LiteratureItem(id="scoped", title="Shared paper", doi="10.1/scoped")
+        repository.save_all((paper,), project_id="project-one")
+        service = ResultStatusService(repository)
+        identities = [ResultIdentity(id="hit", title=paper.title, doi=paper.doi)]
+        self.assertEqual(service.resolve(identities)["hit"]["library"], "matched")
+        self.assertEqual(service.resolve(identities, "project-one")["hit"]["library"], "matched")
+        self.assertEqual(service.resolve(identities, "project-two")["hit"]["library"], "absent")
+        repository.save_all((paper,), project_id="project-two")
+        self.assertEqual(service.resolve(identities, "project-two")["hit"]["library"], "matched")
+
     def test_bridge_requires_live_token_and_uses_actual_files(self) -> None:
         publications = []
 

@@ -29,6 +29,7 @@ from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE
 from service.content.service.enumeration import GITIGNORE_FILENAME
 from service.content.service.native import (
     CREATION_MARKER_BYTES,
+    copy_descriptor_exclusive,
     creation_marker,
     publish_descriptor,
     rename_exclusive,
@@ -494,30 +495,55 @@ def _published_asset(
     return node_for(space, parent / target_name)
 
 
+def _remove_owned_prepared_target(
+    directory: DirectoryHandle, prepared: PreparedContent, target_name: str
+) -> None:
+    target = directory.open(target_name, os.O_RDONLY | NOFOLLOW | NONBLOCK)
+    with os.fdopen(target, "rb") as stream:
+        if creation_marker(stream.fileno()) != prepared.marker:
+            raise ContentError(PREPARED_CONFLICT)
+        identity = os.fstat(stream.fileno())
+    current = directory.stat(target_name)
+    if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+        raise ContentError(PREPARED_CONFLICT)
+    directory.unlink(target_name)
+
+
 def publish_prepared(space: ProjectSpace, prepared: PreparedContent) -> FileAssetRef:
     """Publish from the verified fd; replay using creation marker and exact bytes."""
     parent = _prepared_parent(space, prepared)
     descriptor = None
+    invalid_target = None
     try:
         descriptor = space.open_directory(Path(prepared.path).parent.as_posix())
         try:
             return _published_asset(space, prepared, descriptor, parent)
         except FileNotFoundError:
-            # A completed target can outlive its staging name. Only absence
-            # permits creation; a present but invalid target is never repaired.
             pass
+        except ContentError as error:
+            invalid_target = error
         stage_name = Path(prepared.staging_path).name
         target_name = Path(prepared.path).name
-        source = descriptor.open(stage_name, os.O_RDWR | NOFOLLOW | NONBLOCK)
+        try:
+            source = descriptor.open(stage_name, os.O_RDWR | NOFOLLOW | NONBLOCK)
+        except FileNotFoundError:
+            if invalid_target is not None:
+                raise invalid_target
+            raise
         with os.fdopen(source, "rb") as stream:
             _verify_prepared(stream, prepared, staging=True)
+            if invalid_target is not None:
+                _remove_owned_prepared_target(descriptor, prepared, target_name)
             try:
-                publish_descriptor(stream.fileno(), descriptor, target_name)
+                copy_descriptor_exclusive(
+                    stream.fileno(),
+                    descriptor,
+                    target_name,
+                    CREATE_TEMP_MODE,
+                    marker=prepared.marker,
+                )
             except FileExistsError:
                 pass  # Existing targets still need operation identity AND byte verification.
-            else:
-                sync_published_descriptor(stream.fileno(), descriptor, target_name)
-                descriptor.sync()
         return _published_asset(space, prepared, descriptor, parent)
     except OSError as error:
         raise ContentError(PREPARED_UNAVAILABLE) from error

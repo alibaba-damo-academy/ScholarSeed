@@ -25,6 +25,7 @@ from scholarseed_runtime.contract import (
     RuntimeControlRequest,
     RuntimePermissionMode,
 )
+from scholarseed_runtime.contract.input import InputKind
 from scholarseed_runtime.contract.mcp import McpTrustDecision
 from service.chat.constants import (
     ASK_PERMISSION_MODE,
@@ -151,7 +152,7 @@ SESSION_LIST_DEFAULT_LIMIT = 60
 SESSION_LIST_MAX_LIMIT = 500
 SESSION_SEARCH_QUERY_MAX_LENGTH = 200
 SESSION_SEARCH_EXCERPT_CONTEXT_LENGTH = 36
-SESSION_LOCAL_FILE_REFERENCE_LIMIT = 32
+SESSION_LOCAL_PATH_REFERENCE_LIMIT = 32
 MCP_LIST_DEFAULT_LIMIT = 100
 MCP_LIST_MAX_LIMIT = 500
 MCP_OPERATION_SNAPSHOT = "snapshot"
@@ -1433,41 +1434,49 @@ class SessionService:
             "size": len(content),
         }
 
-    def register_local_files(
+    def register_local_paths(
         self,
         session_id: str,
         paths: tuple[str, ...],
     ) -> builtins.list[dict[str, Any]]:
-        """Authorize exact desktop-selected files without copying them into the session."""
+        """Authorize exact desktop-selected files or directories without copying them."""
 
         live = self._sessions.get(session_id)
         if live is None:
             raise ValueError("session_not_live")
-        if not paths or len(paths) > SESSION_LOCAL_FILE_REFERENCE_LIMIT:
+        if not paths or len(paths) > SESSION_LOCAL_PATH_REFERENCE_LIMIT:
             raise ValueError("local_file_reference_count_invalid")
-        canonical_files: list[Path] = []
+        canonical_paths: list[tuple[Path, InputKind]] = []
         seen: set[Path] = set()
         for raw in paths:
             selected = Path(raw).expanduser()
             if not selected.is_absolute():
                 raise ValueError("local_file_path_must_be_absolute")
             canonical = selected.resolve()
-            if not canonical.exists() or not canonical.is_file():
+            if canonical.is_dir() and (selected.is_symlink() or selected.is_junction()):
+                raise ValueError("local_path_link_not_allowed")
+            if not canonical.exists() or not (canonical.is_file() or canonical.is_dir()):
                 raise ValueError("local_file_not_found")
             if canonical in seen:
                 continue
             seen.add(canonical)
-            canonical_files.append(canonical)
-        return [
-            {
-                "reference_id": live.register_local_input_file(path),
+            canonical_paths.append(
+                (canonical, InputKind.DIRECTORY if canonical.is_dir() else InputKind.FILE)
+            )
+        references: list[dict[str, Any]] = []
+        for path, kind in canonical_paths:
+            reference = {
+                "reference_id": live.register_local_input_path(path, kind),
                 "path": str(path),
                 "name": path.name,
-                "media_type": mimetypes.guess_type(path.name)[0] or "",
-                "size": path.stat().st_size,
+                "kind": kind.value,
+                "media_type": "",
             }
-            for path in canonical_files
-        ]
+            if kind == InputKind.FILE:
+                reference["media_type"] = mimetypes.guess_type(path.name)[0] or ""
+                reference["size"] = path.stat().st_size
+            references.append(reference)
+        return references
 
     async def mcp_snapshot(self, session_id: str, *, request_id: str = "") -> dict[str, Any]:
         snapshot, correlation_id = await self._run_mcp_control(
@@ -1980,9 +1989,11 @@ class SessionService:
             )
             raise CredentialAdmissionError(CredentialAdmissionError.code) from exc
         restart = False
+        retained_product_turn = False
         async with live.lifecycle_lock:
             if live.running and live.runtime_session is not None:
                 return
+            retained_product_turn = bool(live.active_product_turn_id)
             record = self._access.get(live.id)
             if record is None:
                 raise SessionAccessError("session not found")
@@ -2019,11 +2030,11 @@ class SessionService:
                             thinking=model_state.selected_thinking,
                             preserve_selection=True,
                         )
-        if restart:
+        if restart or retained_product_turn:
             if request_id:
                 await self._runtime.wait_until_suspended(live, deadline=deadline)
             elif not await live.suspend_runtime():
-                raise RuntimeError("runtime configuration requires a quiescent session")
+                raise RuntimeError("runtime admission requires a quiescent session")
         async with live.lifecycle_lock:
             if live.runtime_session is None:
                 live.retarget_environment(desired)

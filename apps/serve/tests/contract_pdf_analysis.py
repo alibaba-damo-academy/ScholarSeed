@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, create_autospec, patch
 
 import httpx
-import pymupdf
 from fastapi import FastAPI
 
+from apps.serve.tests import pdf as pdf_fixture
 from apps.serve.tests.contract_model_capabilities import outbound_body
 from service.assistant.persistence.invocations import (
     AssistantInvocationRecord,
@@ -59,6 +59,7 @@ from service.platform.inference import (
     ModelInvocationStatus,
     ReasoningPolicy,
 )
+from service.platform.pdf import PdfPageLayout, PdfRect, PdfTextBlock, pdf_page_layout
 from service.settings.capabilities import GATEWAY_CONNECTION
 from service.settings.catalog import DEEPRD_GATEWAY_RESPONSES_URL
 
@@ -148,7 +149,7 @@ class PdfAnalysisContracts(unittest.TestCase):
             read_source(request.model_copy(update={"literature_id": ""}), Mock(), Mock(), content)
 
     def test_document_actions_use_extracted_pages_without_pdf_attachment(self):
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         for text in ("First page", "Second page"):
             page = document.new_page()
             page.insert_text((72, 72), text)
@@ -199,11 +200,11 @@ class PdfAnalysisContracts(unittest.TestCase):
         self.assertEqual(interpretation_input_limit(None), 120_000)
 
     def test_large_interpretation_is_segmented_without_losing_physical_pages(self):
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         for page_number in range(1, 5):
             page = document.new_page()
             page.insert_textbox(
-                pymupdf.Rect(36, 36, 560, 800),
+                pdf_fixture.Rect(36, 36, 560, 800),
                 f"page-{page_number} " + (f"evidence-{page_number} " * 90),
                 fontsize=8,
             )
@@ -273,7 +274,7 @@ class PdfAnalysisContracts(unittest.TestCase):
         )
 
     def test_page_translation_uses_the_low_latency_output_budget(self):
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         page.insert_text((72, 72), "A complete source document sentence.")
         payload = document.tobytes()
@@ -342,23 +343,30 @@ class PdfAnalysisContracts(unittest.TestCase):
         self.assertIn("one ﬁeld", context)
 
     def test_unlocated_browser_text_falls_back_to_the_selected_column(self):
-        page = Mock(rect=pymupdf.Rect(0, 0, 600, 800))
-        blocks = [
-            (72, 72, 270, 180, "Left column context.", 0, 0),
-            (320, 72, 518, 180, "Right column context.", 1, 0),
-        ]
-        page.get_text.side_effect = lambda mode=None, sort=False: (
-            blocks if mode == "blocks" else "Left column context.\nRight column context."
+        page = PdfPageLayout(
+            page=1,
+            width=600,
+            height=800,
+            rotation=0,
+            text="Left column context.\nRight column context.",
+            words=(),
+            characters=(),
+            blocks=(
+                PdfTextBlock("Left column context.", PdfRect(72, 72, 270, 180)),
+                PdfTextBlock("Right column context.", PdfRect(320, 72, 518, 180)),
+            ),
+            lines=(),
+            links=(),
         )
         context = selection_page_context(
             page,
             "Browser text unavailable in the PDF text layer.",
             [
                 (
-                    72 / page.rect.width,
-                    72 / page.rect.height,
-                    270 / page.rect.width,
-                    130 / page.rect.height,
+                    72 / page.width,
+                    72 / page.height,
+                    270 / page.width,
+                    130 / page.height,
                 )
             ],
         )
@@ -367,15 +375,15 @@ class PdfAnalysisContracts(unittest.TestCase):
         self.assertNotIn("Right column context", context)
 
     def test_double_column_selection_uses_the_selected_column_reading_order(self):
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         left = "Left first sentence.\nLeft second sentence.\nLeft third sentence."
         right = "Right first sentence.\nRight second sentence.\nRight third sentence."
-        page.insert_textbox(pymupdf.Rect(72, 72, 270, 180), left, fontsize=10)
-        page.insert_textbox(pymupdf.Rect(320, 72, 518, 180), right, fontsize=10)
-        interleaved = page.get_text(sort=True)
-        self.assertNotIn(normalize(left), normalize(interleaved))
+        page.insert_textbox(pdf_fixture.Rect(72, 72, 270, 180), left, fontsize=10)
+        page.insert_textbox(pdf_fixture.Rect(320, 72, 518, 180), right, fontsize=10)
         payload = document.tobytes()
+        interleaved = pdf_page_layout(payload, 1).text
+        self.assertNotIn(normalize(left), normalize(interleaved))
         width, height = page.rect.width, page.rect.height
         document.close()
         repository = Mock()

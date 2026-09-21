@@ -14,6 +14,7 @@ import { LiteratureSearchTab } from './Search'
 import { literatureRetrievalAuthorization, literatureReviewInteraction } from './interaction'
 import { LiteratureNotesPanel, LiteratureNotesTitle } from './ReaderNotes'
 import { LITERATURE_NOTES_PANEL_ID, literatureIdFromDocument } from './note'
+import { reviewSupersessionKey } from './projection'
 
 const LITERATURE_REFERENCES_CARD = 'literature-references'
 
@@ -37,6 +38,7 @@ export function literatureFeature(): FeatureModule {
     ],
     documentPanels: [{
       id: LITERATURE_NOTES_PANEL_ID,
+      label: (i18n) => i18n.getFixedT(null, 'literature')('readerNotes.title'),
       title: <LiteratureNotesTitle />,
       placement: 'viewer',
       matches: (context) => Boolean(literatureIdFromDocument(context)),
@@ -44,11 +46,7 @@ export function literatureFeature(): FeatureModule {
     }],
     displayCards: [{
       type: 'literature-review',
-      supersessionKey: content => {
-        const workspace = typeof content.workspace === 'string' ? content.workspace : ''
-        const checkpoint = content.checkpoint === 'outline' || content.checkpoint === 'result' ? content.checkpoint : ''
-        return workspace && checkpoint ? `${workspace}:${checkpoint}` : null
-      },
+      supersessionKey: reviewSupersessionKey,
       render: ({ content }) => <LiteratureReviewCard content={content} />
     }, { type: 'literature-search', presentedArtifacts: literatureResultArtifacts, render: ({ content, cardId }) => <LiteratureResults content={content} cardId={cardId} /> }, {
       type: LITERATURE_REFERENCES_CARD,

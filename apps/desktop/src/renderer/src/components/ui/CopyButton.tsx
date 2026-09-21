@@ -3,10 +3,11 @@ import type { ButtonHTMLAttributes, MouseEvent, ReactNode } from 'react'
 import { forwardRef, useEffect, useRef, useState } from 'react'
 
 import { Button, type ButtonSize, type ButtonVariant } from './Button'
+import { IconButton, type IconButtonProps } from './IconButton'
 import { copyButtonClassName, copyButtonStatusClassName, copyButtonStyleClassName } from './classes'
 import { cx } from './utils'
 
-export interface CopyButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'value'> {
+interface CopyButtonBaseProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'value'> {
   value?: string
   getValue?: () => string | Promise<string>
   children?: ReactNode
@@ -14,11 +15,14 @@ export interface CopyButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonEle
   errorLabel?: string
   feedbackDuration?: number
   idleLabel?: string
-  icon?: ReactNode
-  size?: ButtonSize
   variant?: ButtonVariant
   writeText?: (text: string) => Promise<void>
 }
+
+export type CopyButtonProps = CopyButtonBaseProps & (
+  | { iconOnly: true; icon: ReactNode; size?: IconButtonProps['size'] }
+  | { iconOnly?: false; icon?: ReactNode; size?: ButtonSize }
+)
 
 type CopyStatus = 'error' | 'idle' | 'success'
 const DEFAULT_COPY_FEEDBACK_DURATION_MS = 2_000
@@ -33,9 +37,10 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     feedbackDuration = DEFAULT_COPY_FEEDBACK_DURATION_MS,
     getValue,
     icon,
+    iconOnly,
     idleLabel,
     onClick,
-    size = 'sm',
+    size,
     title,
     value,
     variant = 'secondary',
@@ -86,21 +91,30 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     }
   }
 
+  const buttonProps = {
+    'aria-label': label,
+    className: cx(copyButtonClassName({ className, status }), copyButtonStyleClassName({ status })),
+    'data-copy-status': status,
+    disabled,
+    loading: copying,
+    onClick: handleClick,
+    ref,
+    title: title ?? label,
+    variant,
+    ...props
+  }
+  const feedback = <span aria-live="polite" className={copyButtonStatusClassName}>{label}</span>
+
+  if (iconOnly) {
+    return (
+      <IconButton {...buttonProps} icon={icon} label={label} size={size ?? 'sm'}>
+        {feedback}
+      </IconButton>
+    )
+  }
+
   return (
-    <Button
-      aria-label={label}
-      className={cx(copyButtonClassName({ className, status }), copyButtonStyleClassName({ status }))}
-      data-copy-status={status}
-      disabled={disabled}
-      icon={icon}
-      loading={copying}
-      onClick={handleClick}
-      ref={ref}
-      size={size}
-      title={title ?? label}
-      variant={variant}
-      {...props}
-    >
+    <Button {...buttonProps} icon={icon} size={size ?? 'sm'}>
       {children ?? (
         <span className="grid">
           <span className="invisible col-start-1 row-start-1">{idleText}</span>
@@ -109,9 +123,7 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
           <span className="col-start-1 row-start-1">{label}</span>
         </span>
       )}
-      <span aria-live="polite" className={copyButtonStatusClassName}>
-        {label}
-      </span>
+      {feedback}
     </Button>
   )
 })

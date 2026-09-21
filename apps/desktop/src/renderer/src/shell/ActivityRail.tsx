@@ -63,7 +63,7 @@ const activityIconFor = (
 // 之上, 同层级下 DOM 在后的面板会盖住本栏子元素; 但必须留在浮层带 (60 起) 之下,
 // 否则项目切换弹层/全局搜索遮罩会被本栏盖住。见 design/zindex.css 的不变量注释。
 const ACTIVITY_RAIL_CLASS_NAME =
-  'vds-activity-rail relative z-[var(--vds-z-rail)] has-[.vds-tooltip--open]:z-[var(--vds-z-tooltip)] flex flex-[0_0_56px] flex-col items-center gap-2 border-r border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-2 py-6'
+  'vds-activity-rail relative z-[var(--vds-z-rail)] has-[.vds-tooltip--open]:z-[var(--vds-z-tooltip)] box-border flex w-14 flex-none flex-col items-center gap-2 border-r border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-2 py-6'
 const ACTIVITY_RAIL_MAIN_CLASS_NAME =
   'grid content-start justify-items-center gap-2'
 const ACTIVITY_RAIL_FOOTER_CLASS_NAME =
@@ -76,7 +76,7 @@ const ACTIVITY_BUTTON_CLASS_NAME =
 const ACTIVITY_BUTTON_ACTIVE_CLASS_NAME =
   'is-active bg-[var(--vds-bg-gray-active)] !text-[var(--vds-brand-text-primary)]'
 const ACTIVITY_AVATAR_CLASS_NAME =
-  'grid size-[30px] place-items-center rounded-[var(--vds-radius-circle)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] text-[13px] font-[var(--vds-fw-semibold)] leading-none text-[var(--vds-brand-text-primary)] shadow-[0_0_0_2px_var(--vds-bg-gray-default)] transition-[border-color,box-shadow,transform] duration-150 ease-[var(--vds-ease-standard)] hover:border-[var(--vds-brand-bg-default)] hover:shadow-[0_0_0_3px_var(--vds-brand-light-bg-hover)] active:translate-y-px'
+  'grid size-[30px] place-items-center rounded-[var(--vds-radius-circle)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] text-[13px] font-[var(--vds-fw-semibold)] leading-none text-[var(--vds-brand-text-primary)] shadow-[0_0_0_2px_var(--vds-bg-gray-default)] transition-[border-color,box-shadow] duration-150 ease-[var(--vds-ease-standard)] hover:border-[var(--vds-brand-bg-default)] hover:shadow-[0_0_0_3px_var(--vds-brand-light-bg-hover)]'
 
 const avatarText = (name: string): string =>
   Array.from(name)

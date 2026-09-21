@@ -1071,18 +1071,27 @@ class VersionStore:
             return result
 
     def manual_admitted(self, path: str) -> bool:
-        if not self._database.exists():
-            return False
+        return self.manual_admitted_states((path,)).get(path, False)
+
+    def manual_admitted_states(self, paths: tuple[str, ...]) -> dict[str, bool]:
+        selected = tuple(dict.fromkeys(paths))
+        if not selected or not self._database.exists():
+            return {}
         self.ensure()
+        states: dict[str, bool] = {path: False for path in selected}
         with transaction(self._database) as connection:
-            return (
-                connection.execute(
-                    "SELECT 1 FROM resources_admissions JOIN resources_files USING(file_id) "
-                    "WHERE current_path = ? AND state = ? AND source = ?",
-                    (path, FileState.PRESENT.value, ADMISSION_SOURCE_MANUAL),
-                ).fetchone()
-                is not None
-            )
+            for offset in range(0, len(selected), SQLITE_BIND_BATCH_SIZE):
+                batch = selected[offset : offset + SQLITE_BIND_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    "SELECT current_path FROM resources_admissions "
+                    "JOIN resources_files USING(file_id) "
+                    f"WHERE current_path IN ({placeholders}) AND state = ? AND source = ?",
+                    (*batch, FileState.PRESENT.value, ADMISSION_SOURCE_MANUAL),
+                ).fetchall()
+                for row in rows:
+                    states[str(row["current_path"])] = True
+        return states
 
     def admit(
         self,

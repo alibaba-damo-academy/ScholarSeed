@@ -888,7 +888,7 @@ test('resource and literature endpoints become prototype context candidates', as
         source_id: 'resources/计划.md',
         label: '计划.md',
         hint: 'doc',
-        retention: 'session',
+        retention: 'next_turn',
         origin: 'explicit'
       },
       {
@@ -896,7 +896,7 @@ test('resource and literature endpoints become prototype context candidates', as
         source_id: 'resources/数据',
         label: '数据',
         hint: 'folder',
-        retention: 'session',
+        retention: 'next_turn',
         origin: 'explicit'
       }
     ])
@@ -905,7 +905,7 @@ test('resource and literature endpoints become prototype context candidates', as
       source_id: 'paper-1',
       label: 'GPT-4 Technical Report',
       hint: 'OpenAI · 2023',
-      retention: 'session',
+      retention: 'next_turn',
       origin: 'explicit'
     }])
     assert.match(observed[0], /\/api\/resource\/tree\?project=project-1&depth=1$/)
@@ -940,7 +940,7 @@ test('flat resource candidates page through the complete scope and filter by fil
       label: 'report.md',
       hint: 'resources/deep/report.md',
       created_at: 20,
-      retention: 'session',
+      retention: 'next_turn',
       origin: 'explicit'
     }])
   } finally {
@@ -964,6 +964,7 @@ test('folder expansion keeps project-relative paths and follows server paginatio
     const first = await fetchResourceCandidatePage('project-1', 'resources/数据 & 分析')
     assert.equal(first?.nextOffset, 1)
     assert.equal(first?.items[0].source_id, 'resources/数据 & 分析/0.md')
+    assert.equal(first?.items[0].retention, 'next_turn')
     const last = await fetchResourceCandidatePage('project-1', 'resources/数据 & 分析', first!.nextOffset!)
     assert.equal(last?.nextOffset, null)
     assert.equal(last?.items[0].source_id, 'resources/数据 & 分析/1.md')
@@ -989,11 +990,29 @@ test('resource @ picker enters folders and filters only the visible directory le
   })
   try {
     const candidates = await fetchResourceFolderCandidates('project-1', '数据/分析')
-    assert.equal(observed[0].searchParams.get('path'), 'resources/数据')
+    assert.equal(observed[0].searchParams.get('path'), '数据')
     assert.deepEqual(candidates.map((item) => item.label), ['分析报告.md'])
     assert.equal(resourceContextSearchTerm('数据/分析'), '分析')
     assert.equal(resourceContextSearchTerm('数据/'), '')
     assert.equal(resourceContextTriggerPath('resources/数据/子目录'), '数据/子目录')
+  } finally {
+    restore()
+  }
+})
+
+test('resource @ picker follows a linked legacy folder without assuming a managed root', async () => {
+  const observed: URL[] = []
+  const restore = installBrowser(async (input) => {
+    observed.push(new URL(String(input)))
+    return Response.json({
+      nodes: [{ path: 'arxiv_papers/paper.md', name: 'paper.md', kind: 'file' }]
+    })
+  })
+  try {
+    const candidates = await fetchResourceFolderCandidates('project-1', 'arxiv_papers/')
+    assert.equal(observed[0].searchParams.get('path'), 'arxiv_papers')
+    assert.deepEqual(candidates.map((item) => item.source_id), ['arxiv_papers/paper.md'])
+    assert.equal(candidates[0]?.retention, 'next_turn')
   } finally {
     restore()
   }

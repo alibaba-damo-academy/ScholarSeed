@@ -258,6 +258,8 @@ const resourceImportDialogSource = readFileSync(
 )
 const resourceIconsSource = readFileSync(new URL('./features/resources/icons.ts', import.meta.url), 'utf8')
 const tabBarSource = readFileSync(new URL('./shell/TabBar.tsx', import.meta.url), 'utf8')
+const workbenchTabsSource = readFileSync(new URL('./features/workbench/tabs.ts', import.meta.url), 'utf8')
+const workspaceSource = readFileSync(new URL('./features/workbench/workspace.ts', import.meta.url), 'utf8')
 const topBarSource = readFileSync(new URL('./shell/TopBar.tsx', import.meta.url), 'utf8')
 const dockSource = readFileSync(new URL('./features/workbench/Dock.tsx', import.meta.url), 'utf8')
 const workbenchApiSource = readFileSync(new URL('./features/workbench/api.ts', import.meta.url), 'utf8')
@@ -511,11 +513,11 @@ test('annotation save failures use toast feedback instead of an inline alert', (
 })
 
 test('resource file tabs stay in top navigation while split panes expose closable leaf tabs', () => {
-  assert.match(tabBarSource, /function tabVisibleInCurrentView/)
-  assert.match(tabBarSource, /mainView === 'literature'\) return kind === 'literature' \|\| kind === 'literature_search'/)
-  assert.match(tabBarSource, /const documentTabs: NavigationTabItem\[\] = state\.mainView === 'resource'/)
+  assert.match(tabBarSource, /tabVisibleInCurrentView,/)
+  assert.match(workbenchTabsSource, /mainView === 'literature'\) return kind === 'literature' \|\| kind === 'literature_search'/)
+  assert.match(tabBarSource, /const documentTabs: NavigationTabItem\[\] = state\.mainView === 'resource' \|\| state\.mainView === 'literature'/)
   assert.match(tabBarSource, /\? Object\.values\(documents\.tabs\)\.filter/)
-  assert.match(tabBarSource, /source\.kind === 'literature'\) === \(state\.mainView === 'literature'\)/)
+  assert.match(tabBarSource, /documentNavigationView\(tab, session\) === state\.mainView/)
   assert.match(tabBarSource, /resourceFileIcon\(tab\.title\)/)
   assert.match(resourcePanelSource, /resourceFileIcon\(node\.name\)/)
   assert.match(resourceIconsSource, /xlsx:\s*FileSpreadsheet/)
@@ -550,12 +552,13 @@ test('opening a conversation file selects the document view owned by its source'
   const actionSource = storeSource.slice(actionStart, actionEnd)
   assert.match(
     storeSource,
-    /function mainViewForDocumentSource\(source: DocumentSource\): MainView \{[\s\S]*source\.kind === 'literature' \? 'literature' : 'resource'/
+    /function mainViewForDocumentSource\(source: DocumentSource, currentView: MainView\): DocumentNavigationView \{[\s\S]*source\.kind === 'literature'[\s\S]*currentView === 'literature'/
   )
   assert.match(
     actionSource,
-    /workspace\.open\(source, 'preview',[\s\S]*?activeTab: tabId,[\s\S]*?mainView: mainViewForDocumentSource\(source\)/
+    /const navigationView = mainViewForDocumentSource\(source, current\.mainView\)[\s\S]*workspace\.setTabNavigationView\(tabId, navigationView\)[\s\S]*mainView: navigationView/
   )
+  assert.match(workspaceSource, /return tab\.navigationView \?\? 'resource'/)
 })
 
 test('missing document loads notify through a toast and close the tab instead of an inline alert', () => {
@@ -729,12 +732,12 @@ test('generated answer excerpt names obey the shared resource-name invariant', a
   assert.match(resourceSaveDialogSource, /disabled=\{nameError !== null\}/)
 })
 
-test('new Markdown selection stays in the tree until the user explicitly opens it', () => {
-  assert.doesNotMatch(
+test('new Markdown selection is revealed and opened after creation', () => {
+  assert.match(
     storeSource,
-    /draft\.mode === 'create_document' && result\.node\) actRef\.current\.openResourceFile/
+    /draft\.mode === 'create_document' && createdPath\) \{\s*actRef\.current\.openResourceFile\(createdPath, homeSelectedProjectId\)/
   )
-  assert.match(storeSource, /selected: result\.node\?\.path \?\? current\.resource\.selected/)
+  assert.match(storeSource, /selected: createdPath \?\? current\.resource\.selected/)
   assert.match(resourcePanelSource, /scrollIntoView\(\{ block: 'nearest' \}\)/)
   assert.match(appSource, /data-testid="resource-notice-retry"/)
 })
@@ -761,12 +764,12 @@ test('opening a resource is not hidden inside a React state updater', () => {
   )
 })
 
-test('resource tree selects on click and opens only on double click', () => {
+test('resource tree opens files and toggles folders through one click action', () => {
   assert.match(
     resourcePanelSource,
-    /onClick=\{\(\) => act\.selectResourceFile\(node\.path\)\}/
+    /onClick=\{open\}/
   )
-  assert.match(resourcePanelSource, /onDoubleClick=\{open\}/)
+  assert.doesNotMatch(resourcePanelSource, /onDoubleClick=\{open\}/)
   assert.match(
     resourcePanelSource,
     /if \(node\.kind === 'dir'\) \{[\s\S]*?toggleResourceDir\(node\.path\)[\s\S]*?return[\s\S]*?openResourceFile\(node\.path\)/
@@ -799,7 +802,7 @@ test('resource file auto-context requires the AI panel to remain open', () => {
 test('automatic resource context uses one replaceable current-document slot', () => {
   assert.match(
     storeSource,
-    /if \(candidate\.origin === 'current_document'\) \{[\s\S]*?replaceCurrentDocumentRefs\([\s\S]*?current\.aiPanel\.submittedRefIds/
+    /mergeContextCandidates\(\s*current\.aiPanel\.refs,\s*admitted,\s*current\.aiPanel\.submittedRefIds/
   )
   assert.match(
     storeSource,
@@ -807,7 +810,7 @@ test('automatic resource context uses one replaceable current-document slot', ()
   )
   assert.match(
     storeSource,
-    /assistantContextMutationQueue\.current\.then\(\(\) =>[\s\S]*?addContexts\(\[candidate\]\)/
+    /assistantContextMutationQueue\.current\.then\(\(\) =>\s*actRef\.current\.addContexts\(\[candidate\]\)/
   )
 })
 
@@ -862,13 +865,13 @@ test('literature attachment tabs expose file-path actions and attach through the
   )
   assert.match(
     storeSource,
-    /attachActiveFileToAi:[\s\S]*document\.source\.kind === 'literature'[\s\S]*resolveDocumentLocation\(document\.source\)[\s\S]*registerLocalFiles\([\s\S]*\[absolute\][\s\S]*composerRefs/
+    /attachActiveFileToAi:[\s\S]*document\.source\.kind === 'literature'[\s\S]*resolveDocumentLocation\(document\.source\)[\s\S]*registerLocalPaths\([\s\S]*\[absolute\][\s\S]*composerRefs/
   )
   assert.match(storeSource, /registrationRequired: true/)
   assert.match(storeSource, /const title = document\.source\.path\.split/)
   assert.match(
     composerSource,
-    /registrations[\s\S]*registerLocalFiles\([\s\S]*targetSessionId[\s\S]*submittedReferences[\s\S]*buildTurnInput\(v, submittedReferences\)/
+    /registrations[\s\S]*registerLocalPaths\([\s\S]*targetSessionId[\s\S]*submittedReferences[\s\S]*buildTurnInput\(v, submittedReferences\)/
   )
   assert.match(composerSource, /title: reference\.title \|\| registeredReference\.name/)
   assert.doesNotMatch(
@@ -2116,11 +2119,12 @@ test('split pane tabs reuse the same NavigationTabs presentation as the top bar'
 test('top navigation split uses the document width while actions reserve only trailing tab space', () => {
   assert.match(topBarSource, /TOPBAR_ACTIONS_WIDTH_PROPERTY = '--vds-top-bar-actions-width'/)
   assert.match(topBarSource, /new ResizeObserver\(updateActionsWidth\)/)
-  assert.match(tabBarSource, /TOPBAR_TRAILING_NAVIGATION_CLASS_NAME = 'vds-top-bar-navigation-trailing'/)
+  assert.match(topBarSource, /compactAiEntry = \(state\.mainView === 'resource' \|\| state\.mainView === 'literature'\)[\s\S]*?hasHorizontalSplit\(documents\.layout\)/)
+  assert.match(topBarSource, /compactAiEntry \? \([\s\S]*?<IconButton[\s\S]*?data-testid="topbar-ai"[\s\S]*?variant="ghostIcon"/)
+  assert.match(tabBarSource, /TOPBAR_TRAILING_NAVIGATION_CLASS_NAME =[\s\S]*?'vds-top-bar-navigation-trailing box-border pe-\[var\(--vds-top-bar-actions-width,0px\)\]'/)
   assert.match(tabBarSource, /renderSplitTabs\(node\.first, leading, false\)/)
   assert.match(tabBarSource, /renderSplitTabs\(node\.second, false, trailing\)/)
   assert.match(workbenchStyles, /\.vds-top-bar-actions\s*\{[^}]*position:\s*absolute/s)
-  assert.match(workbenchStyles, /\.vds-top-bar-navigation-trailing\s*\{[^}]*padding-inline-end:\s*var\(--vds-top-bar-actions-width, 0px\)/s)
 })
 
 test('document tab menu groups available splits before dynamic move targets', () => {

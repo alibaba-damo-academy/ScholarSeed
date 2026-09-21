@@ -12,7 +12,9 @@ httpx>=0.27
 # cascade. Without it a PDF can be downloaded and not read, and those papers
 # reach card extraction abstract-only -- which reads as poor coverage rather
 # than as a missing package.
-PyMuPDF>=1.24
+pypdfium2>=4.30,<5.12
+pdfplumber>=0.11,<0.12
+pypdf>=5.1,<7
 pysbd>=0.3.4
 
 # data_chart figures. Missing required charts are technical failures.

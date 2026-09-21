@@ -45,6 +45,7 @@ const EXCHANGE_TIMEOUT_MS = 15_000
 export const LOCAL_POLL_INTERVAL_MS = 500
 
 export type DesktopAuthPhase = 'idle' | 'waiting' | 'exchanging' | 'adopted' | 'failed'
+export type DesktopLoginLanguage = 'zh' | 'en'
 
 /** 采纳结果回报（proposal 73 §6.3）。exchange 失败的两类不在此列：那两种情况下客户端
  *  根本没换到 token，拿不出 Bearer 凭据回报。 */
@@ -93,7 +94,7 @@ export class DesktopHandoff {
     return this.snapshot
   }
 
-  async start(): Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }> {
+  async start(language: DesktopLoginLanguage = 'zh'): Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }> {
     const base = await this.deps.accountBaseUrl()
     if (!base) return { ok: false, error: 'account_base_unavailable', applicationFailure: { code: 'account_base_unavailable' } }
     const superseded = this.pendingState
@@ -102,7 +103,7 @@ export class DesktopHandoff {
     this.stopPolling()
     this.pendingState = newHandoffState()
     this.pendingStartedAt = Date.now()
-    const url = `${base}${LOGIN_PAGE_PATH}?desktop=1&state=${encodeURIComponent(this.pendingState)}`
+    const url = `${base}${LOGIN_PAGE_PATH}?desktop=1&state=${encodeURIComponent(this.pendingState)}&lang=${language}`
     this.deps.log(`[shell] opening system browser for account login (desktop handoff): ${url}\n`)
     try {
       await this.deps.openExternal(url)

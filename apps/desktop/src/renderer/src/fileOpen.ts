@@ -3,6 +3,17 @@ import { uniqueApplications } from './applications'
 import { writeClipboard } from './components/primitive/clipboard'
 import { FilePreviewTarget } from './model'
 
+const REVEAL_LABEL_KEYS = {
+  darwin: 'resources:menu.reveal',
+  win32: 'resources:menu.revealInFolder'
+} as const
+const DEFAULT_REVEAL_LABEL_KEY = 'resources:menu.revealInFileManager'
+
+export function revealLabelKey() {
+  const platform = window.scholarseed?.platform
+  return REVEAL_LABEL_KEYS[platform as keyof typeof REVEAL_LABEL_KEYS] ?? DEFAULT_REVEAL_LABEL_KEY
+}
+
 // fileOpen.ts — 产物打开路由 (PRD 2.1.5)。集中判定「平台内预览 / 系统程序打开」,
 // 供文件列表点击与右键菜单共用, 避免两处各写一份判定而分叉。
 

@@ -59,13 +59,19 @@ class AssetPlanTest(unittest.TestCase):
     def accept(self,value):
         source=self.ws/'candidate.json';atomic_json(source,value);return m.accept(self.ws,source)
 
-    def test_outline_prompt_contrasts_invalid_root_assets_with_nested_ownership(self):
+    def test_outline_example_preserves_nested_ownership_and_rejects_root_move(self):
         protocol=generation.OUTLINE_PROTOCOL
-        self.assertIn('Invalid sectioned shape (never return this)',protocol)
-        self.assertIn('root `figures` and root `tables` must both be absent',protocol)
-        self.assertIn('confirm it occurs exactly once',protocol)
-        self.assertIn('owning section or subsection',protocol)
-
+        example,_=json.JSONDecoder().raw_decode(protocol[protocol.index('{"survey_title":"Review"'):])
+        from asset_plan import plan_errors
+        from submission_normalization import outline_assets
+        self.assertEqual(plan_errors(example,{'p1'}),[])
+        self.assertNotIn('figures',example)
+        self.assertNotIn('tables',example)
+        owner=example['outline_tree'][0]
+        self.assertEqual(owner['figures'][0]['figure_id'],'F1')
+        self.assertEqual(owner['subsections'][0]['tables'][0]['table_id'],'T1')
+        example['figures']=owner.pop('figures')
+        with self.assertRaises(GenerationError): outline_assets(example)
 
     def test_table_minimum_is_checked_in_first_outline_response(self):
         configure(self.ws,{'user_instructions':'At least two tables.','constraints':[

@@ -137,6 +137,17 @@ def main() -> int:
         unauthorized.write_text("outside every authorized root\n", encoding="utf-8")
         (resources / "unauthorized.md").symlink_to(unauthorized)
 
+        with patch("service.content.service.enumeration.os.walk") as recursive_scan:
+            selected_entries = content.resource_entries(
+                project.id,
+                ("resources/notes.md", "resources/escaped.md"),
+            )
+        check(
+            "selected resource inspection avoids recursive scans and rejects escaped files",
+            tuple(entry.path for entry in selected_entries) == ("resources/notes.md",)
+            and recursive_scan.call_count == 0,
+        )
+
         settings = ScanSettings()
         retention = ResourceRetentionService(content, settings)
         annotation_store = PdfRecordStore(content)
@@ -154,6 +165,17 @@ def main() -> int:
             versions,
             WorkbenchFormatPolicy(),
             settings,
+        )
+        with (
+            patch.object(content, "scan_resources", side_effect=AssertionError),
+            patch.object(versions, "manual_admitted", side_effect=AssertionError),
+        ):
+            selected_capability = supervisor.capability_states(project.id, ("resources/notes.md",))[
+                "resources/notes.md"
+            ]
+        check(
+            "batch capability lookup avoids a global resource scan",
+            selected_capability.management_state is ManagementState.MANAGED,
         )
         content.bind_resource_changes(supervisor)
         outcome = supervisor.scan_project(project.id)

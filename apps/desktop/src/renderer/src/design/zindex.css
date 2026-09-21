@@ -29,6 +29,7 @@
      保证从抽屉内打开的弹窗/确认框继续覆盖抽屉。 */
   --vds-z-sheet-overlay: 61;
   --vds-z-sheet: 62;
+  --vds-z-sheet-flyout: 63;
   --vds-z-dialog-overlay: 70;
   --vds-z-dialog: 71;
   /* A destructive confirmation opened from an existing Dialog must remain inside
@@ -53,8 +54,14 @@
   --vds-z-modal-nested-overlay: calc(var(--vds-z-modal) + 1);
   --vds-z-modal-nested: calc(var(--vds-z-modal-nested-overlay) + 1);
   --vds-z-notification: 8000;
-  --vds-z-feedback-recorder: calc(var(--vds-z-notification) + 1);
+  /* Loading blocks ordinary product interaction. Feedback recording is a diagnostic
+     surface and must remain reachable above every product-owned global layer. */
+  --vds-z-loading: 9000;
+  --vds-z-feedback-recorder: calc(var(--vds-z-loading) + 1);
+  --vds-z-feedback-recorder-overlay: calc(var(--vds-z-feedback-recorder) + 1);
+  --vds-z-feedback-recorder-dialog: calc(var(--vds-z-feedback-recorder-overlay) + 1);
+  --vds-z-feedback-recorder-nested-overlay: calc(var(--vds-z-feedback-recorder-dialog) + 1);
+  --vds-z-feedback-recorder-nested-dialog: calc(var(--vds-z-feedback-recorder-nested-overlay) + 1);
   /* Toast 是全局反馈，必须盖住 modal（如设置弹窗 6000）；低于 loading。 */
   --vds-z-toast: var(--vds-z-notification);
-  --vds-z-loading: 9000;
 }

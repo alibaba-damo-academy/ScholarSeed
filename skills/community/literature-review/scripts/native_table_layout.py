@@ -63,6 +63,8 @@ def inspect_native_tables(source: str, planned_tables: list[dict]) -> dict:
             issues.append({"table_id": item.get("table_id"), "label": label or None,
                            "source_line": source.count("\n", 0, match.start()) + 1,
                            "column_spec": _column_spec(block), "problems": problems})
+    for match in re.finditer(r'\\begin\{longtable\}.*?\\end\{longtable\}', source, re.S):
+        found.update(value for value in _LABEL_RE.findall(match[0]) if value in planned)
     for label, item in planned.items():
         if label not in found:
             issues.append({"table_id": item.get("table_id"), "label": label,

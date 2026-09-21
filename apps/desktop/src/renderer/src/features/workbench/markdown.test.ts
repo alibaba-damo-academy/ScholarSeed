@@ -110,6 +110,7 @@ test('Monaco source editor uses one global wrapping icon preference', () => {
 const featureSource = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
 const dockSource = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
 const workbenchHarnessSource = readFileSync(new URL('../../../../main/workbench.ts', import.meta.url), 'utf8')
+const workbenchE2ESource = readFileSync(new URL('../../../../../e2e/workbench.spec.ts', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('../../shell/workbench.css', import.meta.url), 'utf8')
 
 test('Markdown switches source and visual modes inside one tab', () => {
@@ -414,4 +415,24 @@ test('localized Crepe chrome uses installed public options and retains the edito
   assert.match(markdownSource, /const \[editorLanguage\] = useState\(requestedLanguage\)/)
   assert.match(markdownSource, /getFixedT\(editorLanguage, 'workbench'\)/)
   assert.match(markdownSource, /requestedLanguage !== editorLanguage/)
+})
+
+test('Markdown code block copy uses the desktop clipboard bridge and reports the outcome', () => {
+  assert.match(markdownSource, /import \{ writeClipboard \} from '\.\.\/\.\.\/components\/primitive\/clipboard'/u)
+  assert.match(markdownSource, /const CODE_COPY_BUTTON_SELECTOR = '\.milkdown-code-block \.copy-button'/u)
+  assert.match(markdownSource, /CodeEditorView\.findFromDOM\(editorHost\)\?\.state\.doc\.toString\(\) \?\? null/u)
+  assert.match(markdownSource, /writeClipboard\(code\)[\s\S]*markdown\.codeCopied[\s\S]*markdown\.codeCopyFailed/u)
+  assert.match(markdownSource, /event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)/u)
+  assert.match(markdownSource, /if \(copyButtonFromTarget\(event\.target\)\) return/u)
+  assert.match(workbenchHarnessSource, /MARKDOWN_CODE_COPY_TEXT/u)
+  assert.match(workbenchHarnessSource, /clipboard\.writeText\(''\)[\s\S]*\.milkdown-code-block \.copy-button[\s\S]*clipboardText\(\)/u)
+  assert.match(workbenchHarnessSource, /Markdown 代码块复制写入真实系统剪贴板/u)
+  assert.match(workbenchE2ESource, /\.milkdown-code-block \.copy-button[\s\S]*clipboard\.readText\(\)[\s\S]*已复制代码/u)
+
+  const labels = ['zh', 'en'].map(language => JSON.parse(readFileSync(
+    new URL(`../../../../localization/locales/${language}/workbench.json`, import.meta.url),
+    'utf8'
+  )).markdown)
+  assert.deepEqual(labels.map(markdown => markdown.codeCopied), ['已复制代码', 'Code copied'])
+  assert.deepEqual(labels.map(markdown => markdown.codeCopyFailed), ['复制失败，请重试', 'Copy failed. Try again.'])
 })

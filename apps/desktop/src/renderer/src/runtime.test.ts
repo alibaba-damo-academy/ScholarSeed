@@ -21,13 +21,17 @@ import {
   type UncertainOperationSnapshot
 } from './api.ts'
 import {
+  applyRuntimeIncident,
   blocksRuntimePreflight,
+  classifyReadiness,
+  effectiveReadiness,
   formatRuntimeStatus,
   formatTurnUnknown,
   permissionModeFailure,
   projectRuntimeIncidentReadiness,
   projectSessionRecovery,
   projectSessionState,
+  readinessAdmission,
   reportOperationState,
   reportRuntimeIncident,
   reportTransportState,
@@ -87,7 +91,7 @@ test('permission failures distinguish connection from runtime failures', () => {
   assert.doesNotMatch(permissionModeFailure({ ok: false }), /运行中/)
 })
 
-test('turn failures map stable provider codes to an actionable retained-context card', async () => {
+test('turn failures map stable provider codes to actionable product guidance', async () => {
   const locale = createInstance()
   await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
   const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
@@ -102,7 +106,7 @@ test('turn failures map stable provider codes to an actionable retained-context 
     retryable: true
   })
   assert.equal(display(quota).title, '回答生成失败')
-  assert.match(display(quota).action, /已保留本轮问题和上下文/)
+  assert.match(display(quota).action, /剩余积分/)
   assert.equal(quota.runtimeAction, undefined)
 
   const allocationQuota = describeTurnFailure({
@@ -283,6 +287,77 @@ test('process incident drives one readiness truth without blocking inspectable r
   )
   assert.equal(failed?.process_state, 'unavailable')
   assert.equal(blocksRuntimePreflight(failed), true)
+})
+
+test('readiness admission separates an unloaded probe from a two-second restart', () => {
+  // 一个 ready 布尔无法区分「还没探测」「正在重启」「真的不可用」, 三者的准入结论不同。
+  assert.equal(classifyReadiness(null), 'unknown')
+  assert.equal(classifyReadiness(undefined), 'unknown')
+  assert.equal(classifyReadiness({ ready: true }), 'ready')
+  assert.equal(classifyReadiness({ ready: false, process_state: 'starting' }), 'transient')
+  assert.equal(classifyReadiness({ ready: false, process_state: 'recovering' }), 'transient')
+  assert.equal(classifyReadiness({ ready: false, process_state: 'unavailable' }), 'blocked')
+  assert.equal(classifyReadiness({ ready: false, process_state: 'crashed' }), 'blocked')
+  assert.equal(classifyReadiness({ ready: false }), 'blocked')
+  // 预检阻断卡只认终态: 未知与瞬态都不该把工作区判死。
+  assert.equal(blocksRuntimePreflight(null), false)
+  assert.equal(blocksRuntimePreflight({ ready: false, process_state: 'starting' }), false)
+  assert.equal(blocksRuntimePreflight({ ready: false, process_state: 'unavailable' }), true)
+})
+
+test('session readiness outranks the runtime-wide probe for that session', () => {
+  const restarting: Thread = {
+    ...thread(),
+    readiness: { ready: false, process_state: 'recovering' }
+  }
+  assert.deepEqual(effectiveReadiness(restarting, { ready: true }), restarting.readiness)
+  assert.equal(readinessAdmission(restarting, { ready: true }), 'transient')
+  assert.deepEqual(effectiveReadiness(thread(), { ready: true }), { ready: true })
+  assert.equal(readinessAdmission(thread(), { ready: true }), 'ready')
+  assert.equal(readinessAdmission(null, { ready: false, process_state: 'unavailable' }), 'blocked')
+  assert.equal(effectiveReadiness(thread(), null), null)
+  assert.equal(readinessAdmission(thread(), null), 'unknown')
+})
+
+test('a process incident reaches only the session that owns it', () => {
+  const state = {
+    threads: {
+      a: { ...thread(), id: 'a', readiness: { ready: true, process_state: 'ready' } },
+      b: { ...thread(), id: 'b', readiness: { ready: true, process_state: 'ready' } }
+    }
+  }
+  const next = applyRuntimeIncident(state, 'a', {
+    data: { ...incident('detected'), scope: 'process' },
+    turn_id: 'turn-1'
+  })
+
+  assert.equal(next.threads.a.readiness?.ready, false)
+  assert.equal(next.threads.a.readiness?.process_state, 'recovering')
+  assert.equal(next.threads.a.conversation.length, 1)
+  // 会话 B 既不换对象也不换 readiness: 别人的进程事件不该动它。
+  assert.equal(next.threads.b, state.threads.b)
+  assert.deepEqual(next.threads.b.readiness, { ready: true, process_state: 'ready' })
+  // 形状上就不可能写回全局 readiness —— 这是修复的结构性保证, 不是纪律要求。
+  assert.deepEqual(Object.keys(next), ['threads'])
+})
+
+test('a runtime incident outside process scope leaves session readiness untouched', () => {
+  const state = {
+    threads: { a: { ...thread(), id: 'a', readiness: { ready: true, process_state: 'ready' } } }
+  }
+  const next = applyRuntimeIncident(state, 'a', {
+    data: { ...incident('detected'), scope: 'turn' },
+    turn_id: 'turn-1'
+  })
+
+  assert.deepEqual(next.threads.a.readiness, { ready: true, process_state: 'ready' })
+  assert.equal(next.threads.a.conversation.length, 1)
+  assert.equal(applyRuntimeIncident(state, null, {
+    data: { ...incident('detected'), scope: 'process' }
+  }), state)
+  assert.equal(applyRuntimeIncident(state, 'missing', {
+    data: { ...incident('detected'), scope: 'process' }
+  }), state)
 })
 
 test('SSE transport recovery is separate from Codex runtime incidents', () => {
@@ -523,7 +598,7 @@ test('typed operation state correlates unknown outcome by HIL request id', () =>
 test('typed HIL rejection disables retry only for durable unknown or stale outcomes', () => {
   assert.equal(classifyHilResponseFailure('hil_response_not_retryable', 'unknown'), 'unknown')
   assert.equal(classifyHilResponseFailure('hil_response_not_retryable', 'stale'), 'stale')
-  assert.equal(classifyHilResponseFailure('hil_request_stale', 'stale'), undefined)
+  assert.equal(classifyHilResponseFailure('hil_request_stale', 'stale'), 'stale')
   assert.equal(classifyHilResponseFailure('hil_response_not_retryable', 'executing'), undefined)
 })
 

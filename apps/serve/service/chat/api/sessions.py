@@ -290,7 +290,7 @@ def mount_session_routes(
         return {"ok": True, **result}
 
     @app.post("/api/serve/sessions/{session_id}/file-references", dependencies=session_guard)
-    async def register_file_references(session_id: str, request: Request) -> Any:
+    async def register_local_references(session_id: str, request: Request) -> Any:
         body = await _json(request)
         raw_paths = body.get("paths")
         if not isinstance(raw_paths, list) or not all(isinstance(path, str) for path in raw_paths):
@@ -299,7 +299,7 @@ def mount_session_routes(
                 status_code=HTTP_BAD_REQUEST,
             )
         try:
-            references = sessions.register_local_files(session_id, tuple(raw_paths))
+            references = sessions.register_local_paths(session_id, tuple(raw_paths))
         except ValueError as exc:
             return JSONResponse(
                 {"ok": False, "error": str(exc)},

@@ -57,6 +57,8 @@ class Authorization:
     pkce: PKCE = field(repr=False)
     generation: int
     expires_at: float
+    #: 凭据行的 owner 戳 = 发起授权时的真实账号; owner_id 只是归属身份(事务键控用)。
+    account_id: str = ""
     state: AuthorizationState = AuthorizationState.AUTHORIZING
     error: str = ""
     expiry: asyncio.TimerHandle | None = field(default=None, repr=False)
@@ -85,7 +87,9 @@ class BrowserAuthorization:
         self._callbacks: set[asyncio.Task] = set()
         self._closed = False
 
-    async def start(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+    async def start(
+        self, owner_id: str, connection_id: str, *, account_id: str = ""
+    ) -> dict[str, Any]:
         async with self._start_lock:
             if self._closed:
                 raise OAuthFailure("oauth_service_closed")
@@ -114,6 +118,7 @@ class BrowserAuthorization:
                 pkce=create_pkce(),
                 generation=record.generation,
                 expires_at=time.time() + AUTHORIZATION_LIFETIME_SECONDS,
+                account_id=account_id,
             )
             self._transactions[transaction.id] = transaction
             self._states[transaction.state_token] = transaction
@@ -268,8 +273,9 @@ class BrowserAuthorization:
                     )
                     if transaction.state != AuthorizationState.EXCHANGING:
                         raise OAuthFailure("oauth_transaction_unavailable")
+                    # 新建行按真实账号落 owner 戳; 已有行由 store 沿用原戳(_stored_scope)。
                     self._store.replace(
-                        transaction.owner_id,
+                        transaction.account_id or transaction.owner_id,
                         transaction.connection_id,
                         tokens,
                         expected_generation=transaction.generation,

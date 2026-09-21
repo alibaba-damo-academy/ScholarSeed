@@ -28,6 +28,7 @@ class ResultIdentity(SearchRecord):
 
 class ResultStatusRequest(SearchRecord):
     papers: list[ResultIdentity] = Field(max_length=SEARCH_STATUS_PAPERS)
+    project_id: str = Field(default="", max_length=SEARCH_SHORT)
 
 
 def doi_key(value: str | None) -> str:
@@ -42,9 +43,9 @@ class ResultStatusService:
     def __init__(self, repository: LiteratureRepository | None = None) -> None:
         self._repository = repository or LiteratureRepository()
 
-    def resolve(self, papers: list[ResultIdentity]) -> dict:
+    def resolve(self, papers: list[ResultIdentity], project_id: str = "") -> dict:
         try:
-            items = self._repository.view().items
+            items = self._repository.view(project_id).items
             result = {}
             for paper in papers:
                 doi = doi_key(paper.doi)

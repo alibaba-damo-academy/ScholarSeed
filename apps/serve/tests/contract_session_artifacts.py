@@ -409,10 +409,23 @@ class SessionArtifactContract(unittest.TestCase):
             ArtifactScopeKind.SESSION, SessionArtifactStorage(self.catalog, self.root).resolve
         )
         publications = PublicationService(content)
-        for filename in ("report.md", "notes.txt", "script.py"):
+
+        def workbook_bytes(value: str) -> bytes:
+            workbook = Workbook()
+            workbook.active["A1"] = value
+            output = BytesIO()
+            workbook.save(output)
+            workbook.close()
+            return output.getvalue()
+
+        cases = (
+            ("report.md", b"original = 1\n", b"edited = 2\n"),
+            ("notes.txt", b"original = 1\n", b"edited = 2\n"),
+            ("script.py", b"original = 1\n", b"edited = 2\n"),
+            ("table.xlsx", workbook_bytes("original"), workbook_bytes("edited")),
+        )
+        for filename, original, changed in cases:
             with self.subTest(filename=filename):
-                original = b"original = 1\n"
-                changed = b"edited = 2\n"
                 (self.root / SESSION_ID / filename).write_bytes(original)
                 publication = publications.publish(
                     PublicationCommand(

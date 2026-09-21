@@ -128,14 +128,12 @@ PREAMBLE_EN = r"""\documentclass{article}
 """
 
 # Chinese preamble: built on `ctexart` (CTeX) which auto-loads xeCJK,
-# configures CJK fonts, and localises \section / \abstract headings. Must
+# configures CJK fonts, and localises \section / \abstract headings. Pin
+# Fandol so output uses the bundled font on macOS and Windows rather than
+# selecting different host fonts. Must
 # be compiled with xelatex — phase07_compile_latex.py auto-promotes the
 # engine when language=chinese is recorded in query_meta.json.
-# `fontset=fandol` is pinned rather than left to CTeX's per-platform
-# autodetection: the bundled TeX Live ships Fandol, so Chinese output uses the
-# same fonts on macOS and Windows instead of tracking each host's system CJK
-# fonts.
-PREAMBLE_ZH = r"""\documentclass[fontset=fandol,UTF8,11pt,a4paper]{ctexart}
+PREAMBLE_ZH = r"""\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
 \usepackage[a4paper,margin=2.4cm]{geometry}
 \usepackage{graphicx}
 \usepackage{booktabs}

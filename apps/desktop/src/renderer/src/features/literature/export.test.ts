@@ -56,5 +56,5 @@ test('列表不再自行拼 Blob 下载, 成功提示只跟落盘结果绑定', 
   assert.doesNotMatch(listSource, /URL\.createObjectURL/)
   assert.doesNotMatch(listSource, /anchor\.download/)
   assert.match(listSource, /const saved = await saveBibtex\(result\.bibtex\)/)
-  assert.match(listSource, /if \(saved\.kind === 'saved'\) \{\n\s+toast\(\{ title: literature\('batch\.exportSucceeded'/)
+  assert.match(listSource, /if \(saved\.kind === 'saved'\) \{\s+toast\(\{\s+title: literature\('batch\.exportSucceeded'/)
 })

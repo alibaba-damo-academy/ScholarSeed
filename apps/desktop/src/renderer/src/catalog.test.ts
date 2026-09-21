@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { block } from '../../test-helpers/source-contract.ts'
 
 import {
+  hasSelectableModel,
   personalModelId,
   pruneMissingCatalogThreads,
   requestModelKey,
@@ -115,4 +118,37 @@ test('a personal composite key yields its model segment even when the id contain
   assert.equal(personalModelId('qwen3.8-max'), '')
   assert.equal(personalModelId(profileId), '')
   assert.equal(personalModelId(''), '')
+})
+
+// 目录重取 effect 活在 live.ts（一个顶层 import React、无法在 node:test 里 import 的大 hook
+// 文件），故按仓库既有做法（credits.test.ts / review.test.ts）用源码契约钉住。登出与登录是
+// 同一份身份投影的两个方向：少订一边，界面就会停在上一次身份抓到的旧目录，内置模型不置灰。
+const liveSource = readFileSync(new URL('./live.ts', import.meta.url), 'utf8')
+const reloadEffect = block(
+  liveSource,
+  'const reloadCatalog = (): void => {',
+  "window.addEventListener('scholarseed:refresh-session-list'"
+)
+
+test('the model catalog reloads on logout as well as login, so built-in models grey out without a manual refresh', () => {
+  // 重取复用冷启动同一个出口：getModels() → applyModelCatalog，不另抄一份置灰逻辑。
+  assert.match(
+    reloadEffect,
+    /void getModels\(\)\.then\(\(catalog\) => act\.applyModelCatalog\(catalog\)\)/
+  )
+  // 登录成功（auth-restored）与登出/凭据失效（auth-required，任意 401）都必须触发重取。
+  assert.match(reloadEffect, /window\.addEventListener\('scholarseed:auth-restored', reloadCatalog\)/)
+  assert.match(reloadEffect, /window\.addEventListener\('scholarseed:auth-required', reloadCatalog\)/)
+  // 加的监听要在 cleanup 里成对移除，否则 effect 重跑会叠加出重复重取。
+  const added = [...reloadEffect.matchAll(/window\.addEventListener\('([^']+)', reloadCatalog\)/g)].map(([, name]) => name)
+  const removed = [...reloadEffect.matchAll(/window\.removeEventListener\('([^']+)', reloadCatalog\)/g)].map(([, name]) => name)
+  assert.deepEqual([...removed].sort(), [...added].sort())
+  assert.deepEqual([...added].sort(), ['scholarseed:auth-required', 'scholarseed:auth-restored'])
+})
+
+test('an empty or fully greyed catalogue counts as no selectable model', () => {
+  assert.equal(hasSelectableModel([]), false)
+  assert.equal(hasSelectableModel([{ disabled: true }, { disabled: true }]), false)
+  assert.equal(hasSelectableModel([{ disabled: true }, {}]), true)
+  assert.equal(hasSelectableModel([{ disabled: undefined }]), true)
 })

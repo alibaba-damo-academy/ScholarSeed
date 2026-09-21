@@ -51,13 +51,16 @@ def main():
         "codex": {
             "version": _codex_version(),
             "hosted_web_search": (
-                "the Veryfast Worker enables hosted web search through Codex App Server; "
-                "it cannot be tested by this Python process"
+                "the Veryfast Worker enables hosted web search primarily for the installed "
+                "web-search skill's native profile; a successful direct call is accepted only "
+                "as a compatibility result; this cannot be tested by this Python process"
             ),
         },
         "paperhub": {
             "config": localconf.config_source(),
-            "url": os.environ.get("PAPERHUB_URL", "https://scholarseed.damo.alibaba.com/paperhub/papersearch/"),
+            "url": os.environ.get(
+                "PAPERHUB_URL", "https://scholarseed.damo.alibaba.com/paperhub"
+            ),
             "proxy_mode": os.environ.get("PAPERHUB_PROXY_MODE", "auto"),
             "api_key_present": bool(os.environ.get("SCHOLARSEED_API_KEY")),
         },

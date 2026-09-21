@@ -74,8 +74,6 @@
     "shrink": "Shrink conversation",
     "expand": "Expand conversation",
     "close": "Close",
-    "projectSessions": "Project conversations",
-    "unassignedSessions": "Unassigned conversations",
     "searchPlaceholder": "Search conversation names and messages",
     "searchLabel": "Search conversation history",
     "loadingSessions": "Loading conversations…",

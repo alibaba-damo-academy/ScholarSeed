@@ -8,11 +8,24 @@ import {
   STATE_TTL_MS
 } from './handoff.ts'
 import type { DeliveryResult, HandoffLocalCoordinator, RenewResult } from './handoff-local.ts'
-import { DESKTOP_AUTH_CALLBACK_PREFIX, newHandoffState, parseCallbackUrl } from './handoff-url.ts'
+import {
+  DESKTOP_AUTH_CALLBACK_PREFIX,
+  findCallbackUrl,
+  newHandoffState,
+  parseCallbackUrl
+} from './handoff-url.ts'
 
 test('callback url parses code and state only for the desktop handoff prefix', () => {
   const parsed = parseCallbackUrl(`${DESKTOP_AUTH_CALLBACK_PREFIX}?code=abc&state=xyz`)
   assert.deepEqual(parsed, { code: 'abc', state: 'xyz' })
+})
+
+test('callback url matching tolerates URL casing and finds the protocol argv', () => {
+  const callbackUrl = 'SCHOLARSEED://AUTH/callback?code=abc&state=xyz'
+  assert.deepEqual(parseCallbackUrl(callbackUrl), { code: 'abc', state: 'xyz' })
+  assert.equal(findCallbackUrl(['--hidden', callbackUrl]), callbackUrl)
+  assert.equal(findCallbackUrl(['--hidden', `"${callbackUrl}"`]), callbackUrl)
+  assert.equal(findCallbackUrl(['--hidden', 'https://example.test/callback']), null)
 })
 
 test('callback url rejects missing credentials, foreign prefixes and malformed input', () => {
@@ -162,6 +175,20 @@ function callback(state: string, code = 'c'): string {
 }
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+test('desktop login URL carries the selected interface language', async () => {
+  const h = harness(async () => tokenResponse())
+  try {
+    await h.handoff.start('en')
+    const opened = new URL(h.openedUrls[0])
+    assert.equal(opened.searchParams.get('desktop'), '1')
+    assert.equal(opened.searchParams.get('lang'), 'en')
+    assert.ok(opened.searchParams.get('state'))
+  } finally {
+    h.handoff.cancel()
+    h.restore()
+  }
+})
 
 test('a second callback during an in-flight exchange is ignored, not failed', async () => {
   let release = (): void => {}

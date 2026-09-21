@@ -3,8 +3,10 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import i18next, { createInstance } from 'i18next'
 
+import type { ConvItem } from '../../model.ts'
+import { latestDisplayCardItems } from '../../transcript.ts'
 import { literatureRetrievalAuthorization, literatureReviewInteraction } from './interaction.ts'
-import { parseReview, reviewStatus, REVIEW_VERDICTS } from './projection.ts'
+import { parseReview, reviewStatus, reviewSupersessionKey, REVIEW_VERDICTS } from './projection.ts'
 
 const engine = createInstance()
 const resources = {
@@ -29,6 +31,24 @@ test('review preserves unknown coverage and original artifact identities', () =>
   assert.equal(parseReview(snapshot)?.fulltext, null)
   assert.equal(parseReview(snapshot)?.artifacts[0].artifact_id, 'outline')
   assert.equal(parseReview({ ...snapshot, schema_version: '2.0' }), null)
+})
+
+test('the settled review replaces its outline while other workspaces remain visible', () => {
+  const cards: ConvItem[] = [
+    { kind: 'display_card', card: { cardId: 'outline-one', type: 'literature-review', content: { workspace: 'one', checkpoint: 'outline' } } },
+    { kind: 'display_card', card: { cardId: 'outline-two', type: 'literature-review', content: { workspace: 'two', checkpoint: 'outline' } } },
+    { kind: 'display_card', card: { cardId: 'failed-one', type: 'literature-review', content: { workspace: 'one', checkpoint: 'result', status: 'failed' } } },
+    { kind: 'display_card', card: { cardId: 'recovered-one', type: 'literature-review', content: { workspace: 'one', checkpoint: 'result', status: 'generated' } } }
+  ]
+
+  const visible = latestDisplayCardItems(cards, card => reviewSupersessionKey(card.content))
+
+  assert.deepEqual(
+    visible.map(item => item.kind === 'display_card' ? item.card.cardId : ''),
+    ['outline-two', 'recovered-one']
+  )
+  assert.equal(cards.length, 4)
+  assert.equal(reviewSupersessionKey({ workspace: 'one', checkpoint: 'unknown' }), null)
 })
 
 test('malformed nested cards do not crash or hide original evidence', () => {

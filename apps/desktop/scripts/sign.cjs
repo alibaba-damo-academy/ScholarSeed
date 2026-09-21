@@ -122,6 +122,7 @@ async function sign(builderContext) {
   // First prove every bundled runtime byte came from the frozen input. Signing
   // legitimately rewrites Mach-O metadata, so later gates compare the code seal.
   await verify(builderContext)
+  if (verify.unsignedPackageCheck(frozen)) return
   const app = applicationPath(builderContext, frozen)
   if (!frozen.signingRequired) {
     const restore = await trackSignProgress(app, shouldIgnore)

@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,6 +18,8 @@ import official
 
 OUTPUT_PATH = "web-search-result.json"
 OUTPUT_ROLE = "final"
+BRIDGE_COMMAND = "scholarseed-bridge"
+BRIDGE_DIRECTORY_ENVIRONMENT = "SCHOLARSEED_BRIDGE_DIR"
 PROVIDER_OFFICIAL = "official-api"
 PROVIDER_BROWSER = "visible-browser"
 PROVIDERS = (PROVIDER_OFFICIAL, PROVIDER_BROWSER)
@@ -56,10 +60,20 @@ def _run(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     return browser.search(browser.parse_args(browser_args))
 
 
+def _bridge_command() -> str:
+    directory = os.environ.get(BRIDGE_DIRECTORY_ENVIRONMENT, "").strip()
+    if directory:
+        resolved = shutil.which(BRIDGE_COMMAND, path=directory)
+        if resolved:
+            return resolved
+    return shutil.which(BRIDGE_COMMAND) or BRIDGE_COMMAND
+
+
 def publish(
     payload: dict[str, Any],
     *,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    bridge_command: str | None = None,
 ) -> int:
     output = Path(OUTPUT_PATH)
     serialized = f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}\n"
@@ -85,9 +99,7 @@ def publish(
     try:
         result = runner(
             [
-                sys.executable,
-                "-m",
-                "service.cli.bridge",
+                bridge_command or _bridge_command(),
                 "artifact",
                 "publish",
                 "--json",

@@ -283,7 +283,7 @@ test('library file settings auto-save without confirmation and follow developer 
   assert.equal((page.match(/size="standard"/g) ?? []).length, 2)
   assert.match(page, /useState\('50'\)[\s\S]*useState\('50'\)/)
   assert.match(page, /setMaxFileSize\(fileVersionSizeMbText\(settings\.max_file_size_kb\)\)/)
-  assert.match(page, /fileVersionSizeKb\(nextMaxFileSize, saved\.max_file_size_kb\)/)
+  assert.match(page, /fileVersionSizeKb\(\s*nextMaxFileSize,\s*saved\.max_file_size_kb\s*\)/)
   assert.doesNotMatch(page, /Number\(nextMaxFileSize\)|Number\(maxFileSize\)/)
   assert.equal((page.match(/disabled=\{busy \|\| !saved\}/g) ?? []).length, 2)
   assert.equal((page.match(/saveAutomatically\(/g) ?? []).length, 2)

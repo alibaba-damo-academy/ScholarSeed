@@ -4,7 +4,7 @@ import { ReviewConflict } from '../../components/business/ReviewConflict'
 
 import {
   Alert, AlertTitle, AlertDescription, Button,
-  AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
+  AlertDialog, AlertDialogPortal, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction
 } from '../../components/ui'
 import {
@@ -181,12 +181,14 @@ export function SnapshotReview({ session, file, onResolved }: {
       <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>{t('snapshot.refresh')}</Button>
     </div>
     <AlertDialog open={confirmReject} onOpenChange={setConfirmReject}>
+      <AlertDialogPortal>
       <AlertDialogContent>
         <AlertDialogHeader><AlertDialogTitle>{t('snapshot.rejectTitle')}</AlertDialogTitle>
           <AlertDialogDescription>{t('snapshot.rejectDescription')}</AlertDialogDescription></AlertDialogHeader>
         <AlertDialogFooter><AlertDialogCancel>{uiText('cancel')}</AlertDialogCancel>
           <AlertDialogAction onClick={() => void decide('reject')}>{t('snapshot.rejectRestore')}</AlertDialogAction></AlertDialogFooter>
       </AlertDialogContent>
+      </AlertDialogPortal>
     </AlertDialog>
   </Alert>
 }

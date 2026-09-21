@@ -233,6 +233,21 @@ export function nodeTabCount(node: DockNode): number {
     : nodeTabCount(node.first) + nodeTabCount(node.second)
 }
 
+function nodeHasHorizontalSplit(node: DockNode): boolean {
+  if (node.kind === 'leaf') return false
+  return node.direction === 'horizontal'
+    || nodeHasHorizontalSplit(node.first)
+    || nodeHasHorizontalSplit(node.second)
+}
+
+export function hasHorizontalSplit(layout: DockLayout): boolean {
+  const primaryVisible = nodeTabCount(layout.areas.primary) > 0
+  const secondaryVisible = nodeTabCount(layout.areas.secondary) > 0
+  if (primaryVisible && secondaryVisible) return true
+  const visibleArea = primaryVisible ? layout.areas.primary : layout.areas.secondary
+  return nodeHasHorizontalSplit(visibleArea)
+}
+
 function mapLeaf(node: DockNode, leafId: string, transform: (leaf: DockLeaf) => DockNode): DockNode {
   if (node.kind === 'leaf') return node.id === leafId ? transform(node) : node
   const first = mapLeaf(node.first, leafId, transform)

@@ -15,7 +15,6 @@ const DESCRIPTION_LINE_BREAK_PATTERN = /\r\n|\r|\n/g
 
 export interface SummaryLabels {
   step: (index: number, kind: string, target: string, note: string) => string
-  failedRequests: (count: number) => string
   screenshots: (count: number) => string
   screenshotNote: (index: number, note: string) => string
   empty: string
@@ -91,14 +90,10 @@ export function prepareDescriptionForSubmission(
 export function generateSummary(session: RecordingSession, labels: SummaryLabels): string {
   const noted = session.steps.filter((step) => session.notes[step.stepId])
   const important = (noted.length ? noted : session.steps).slice(0, SUMMARY_STEP_LIMIT)
-  const failedRequests = session.requests.filter(
-    (request) => request.error || (typeof request.status === 'number' && request.status >= 400)
-  )
   const lines = important.map((step, index) => {
     const note = session.notes[step.stepId]
     return labels.step(index + 1, step.kind, targetDisplayLabel(step.target), note || '')
   })
-  if (failedRequests.length) lines.push(labels.failedRequests(failedRequests.length))
   if (session.screenshots.length) lines.push(labels.screenshots(session.screenshots.length))
   session.screenshots
     .filter((screenshot) => Boolean(screenshot.note))

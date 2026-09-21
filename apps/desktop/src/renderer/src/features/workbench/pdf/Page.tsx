@@ -56,7 +56,7 @@ function searchQuads(host: HTMLElement, query: string): { quad: number[]; ordina
   })
 }
 
-export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], thumbnail = false, onAnnotationOpen, onInternalLink, renderAnnotation }: {
+export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], thumbnail = false, keepRendered = false, onAnnotationOpen, onInternalLink, renderAnnotation }: {
   page: PDFPageProxy
   fonts: PdfFonts
   scale: number
@@ -67,6 +67,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
   citationQuads?: number[][]
   selectionQuads?: number[][]
   thumbnail?: boolean
+  keepRendered?: boolean
   onAnnotationOpen?: (mark: PdfMark) => void
   onInternalLink?: (destination: PdfDestination) => void | Promise<void>
   renderAnnotation?: (mark: PdfMark, close: () => void) => ReactNode
@@ -88,6 +89,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
   const [externalLinks, setExternalLinks] = useState<ExternalPdfLink[]>([])
   const [linkTarget, setLinkTarget] = useState<PdfLinkTarget | null>(null)
   const viewport = page.getViewport({ scale })
+  const renderable = near || keepRendered
   const visibleAnnotations = useMemo(() => projectVisibleMarks(annotations), [annotations])
 
   useEffect(() => {
@@ -102,7 +104,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
     const layer = textHost.current
     setReady(false)
     setError(null)
-    if (!near || !target || (!thumbnail && !layer)) return
+    if (!renderable || !target || (!thumbnail && !layer)) return
     let active = true
     const view = page.getViewport({ scale })
     const ratio = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_RENDER_PIXELS / (view.width * view.height)))
@@ -141,7 +143,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
       target.width = 0
       target.height = 0
     }
-  }, [near, page, fonts, scale, thumbnail])
+  }, [renderable, page, fonts, scale, thumbnail])
 
   useEffect(() => {
     if (thumbnail || !near) return
@@ -236,7 +238,7 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
     <div ref={host} className={thumbnail ? 'vds-pdf-thumbnail-page' : 'vds-pdf-page'}
       data-testid={thumbnail ? undefined : `pdf-page-${page.pageNumber}`} data-page={page.pageNumber}
       data-rendered={ready} style={{ width: viewport.width, height: viewport.height, '--total-scale-factor': scale * page.userUnit } as React.CSSProperties}>
-      {near && <canvas ref={canvas} style={{ width: viewport.width, height: viewport.height }} />}
+      {renderable && <canvas ref={canvas} style={{ width: viewport.width, height: viewport.height }} />}
       {!thumbnail && <div ref={textHost} onClick={event => {
         if (window.getSelection()?.toString()) return
         const bounds = host.current?.getBoundingClientRect()

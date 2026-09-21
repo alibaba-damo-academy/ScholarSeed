@@ -153,6 +153,8 @@
   --vds-input-otp-slot-size: var(--vds-control-height-lg);
   /* 浮层内容宽度档位：业务浮层需要固定宽度时取这里，页面不写死像素值。 */
   --vds-popover-width-md: 320px;
+  --vds-pdf-annotation-max-height: min(640px, calc(100dvh - var(--vds-space-6)));
+  --vds-pdf-annotation-preview-max-height: min(320px, 40dvh);
   --vds-command-gap: var(--vds-space-2);
   --vds-command-radius: var(--vds-radius-4);
   --vds-command-input-padding: 0 var(--vds-space-3);
@@ -223,6 +225,7 @@
   --vds-drawer-radius: var(--vds-radius-5);
   --vds-drawer-side-width: 360px;
   --vds-model-menu-max-width: min(320px, calc(100vw - var(--vds-space-6)));
+  --vds-model-controls-width: min(240px, calc(100vw - var(--vds-space-6)));
   --vds-tooltip-z-index: var(--vds-z-tooltip);
   --vds-tooltip-max-width: 240px;
   --vds-tooltip-max-height: 80vh;

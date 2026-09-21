@@ -297,10 +297,15 @@ test('PDF upload network and malformed-success failures expose stable display co
   } finally { globalThis.window = previousWindow; globalThis.XMLHttpRequest = previousXHR }
 })
 
-test('metadata sync posts only the chosen dimension and keeps the upstream payload', async () => {
+test('metadata sync posts only the chosen dimension and keeps the payload verbatim', async () => {
   const previousWindow = globalThis.window
   const previousFetch = globalThis.fetch
-  const payload = { success: true, data: [{ id: '1', title: 'Attention is All You Need' }] }
+  // 三条腿同形: serve 已经把上游归一化成更新体, 渲染层原样收下不再解析。
+  const payload = {
+    success: true,
+    bib_type: 'article',
+    fields: { title: 'Attention is All You Need', year: 2017, arxiv: '1706.03762' }
+  }
   let observedUrl = ''
   let observedInit: RequestInit | undefined
   Object.assign(globalThis, { window: { location: { href: 'http://desktop.test/' }, scholarseed: { getApiBase: () => 'http://service.test' } } })
@@ -316,7 +321,7 @@ test('metadata sync posts only the chosen dimension and keeps the upstream paylo
     assert.deepEqual(JSON.parse(String(observedInit?.body)), { arxiv: '1706.03762' })
 
     globalThis.fetch = async () => Response.json(
-      { detail: { code: 'PAPER_META_QUOTA_EXHAUSTED', message: 'PaperHub 接口配额已用尽' } },
+      { detail: { code: 'PAPER_META_QUOTA_EXHAUSTED', message: '元数据接口限流，请稍后重试' } },
       { status: 429 }
     )
     await assert.rejects(fetchPaperMeta({ dimension: 'doi', value: '10.1/x' }), (error: unknown) => {
@@ -326,10 +331,12 @@ test('metadata sync posts only the chosen dimension and keeps the upstream paylo
       return true
     })
 
+    // 0 命中是可行动的「没这篇」, 与限流一样单独分类, 不折进笼统的 failed。
     globalThis.fetch = async () => Response.json({ detail: { code: 'PAPER_META_NOT_FOUND' } }, { status: 404 })
     await assert.rejects(fetchPaperMeta({ dimension: 'title', value: 'Nothing like this' }), (error: unknown) => {
       assert.ok(error instanceof LiteratureApiError)
-      assert.equal(classifyPaperMetaFailure(error.failure), 'failed')
+      assert.equal(error.failure.status, 404)
+      assert.equal(classifyPaperMetaFailure(error.failure), 'missing')
       return true
     })
   } finally { globalThis.window = previousWindow; globalThis.fetch = previousFetch }

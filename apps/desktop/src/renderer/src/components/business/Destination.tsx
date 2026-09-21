@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Button, IconButton, Input, ScrollArea } from '../ui'
+import { Button, EllipsisText, IconButton, Input, ScrollArea } from '../ui'
 import { Icon } from '../../icons'
 
 const INDENT_PX = 18
@@ -83,8 +83,8 @@ export function DestinationTree({
             aria-pressed={allowed ? selected === selectionValue(node) : undefined}
             onClick={() => allowed ? onSelect(selectionValue(node), node) : onToggle(node.path)}
           >
-            <span className="truncate">{node.name}</span>
-            {selected === selectionValue(node) ? <span className="ml-auto" aria-label={t('destination.selected')}>✓</span> : null}
+            <EllipsisText wrapperClassName="flex-1" className="text-left" tooltipPortalled>{node.name}</EllipsisText>
+            {selected === selectionValue(node) ? <span className="ml-auto shrink-0" aria-label={t('destination.selected')}>✓</span> : null}
           </Button>
         </div>
         {node.kind === 'dir' && open ? (

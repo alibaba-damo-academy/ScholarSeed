@@ -171,7 +171,7 @@ test('the layout stage and the failure result are orthogonal dimensions', () => 
   assert.equal(updatePanelStageOf(state), 'ready')
   const failure = updateFailureOf(state)
   assert.equal(failure?.origin, 'install')
-  assert.equal(failure?.fallback, false)
+  assert.equal(failure?.fallback, undefined)
   assert.equal(failure?.rolledBack, false)
   // 重试的仍然是安装这一步，不是重新下载。
   assert.equal(updateActionOf(state), 'install')
@@ -207,7 +207,7 @@ test('the install fallback marker keeps its origin so the text is not blamed on 
     errorFallback: 'install_failed',
     errorOrigin: 'install'
   }))
-  assert.equal(failure?.fallback, true)
+  assert.equal(failure?.fallback, 'install_failed')
   assert.equal(failure?.origin, 'install')
   // 占位串不能直接给用户看。
   assert.equal(failure?.message, undefined)
@@ -227,6 +227,9 @@ test('failure wording follows the action that failed', () => {
     [snapshot('failed', { candidate: CANDIDATE, error: 'E', errorOrigin: 'download' }), 'c:update.titleFailed', 'c:update.failedSub:E'],
     [snapshot('failed', { error: 'E', errorOrigin: 'check' }), 'c:update.checkFailed', 'c:update.checkFailedSub:E'],
     [snapshot('ready', { error: 'update failed', errorFallback: 'install_failed', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'a:update.installFailed'],
+    // bug 87042987：结构化分类各给一句可操作的本地化说法，且即便快照里残留 error 原文也不透出（走分类文案）。
+    [snapshot('ready', { errorFallback: 'install_verify_unavailable', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installVerifyUnavailable'],
+    [snapshot('ready', { error: 'STATUS=乱码', errorFallback: 'install_signature_untrusted', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureUntrusted'],
     [snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout', errorOrigin: 'install' }), 'c:update.rolledBack', 'c:update.installFailedSub:health confirmation timeout']
   ]
   for (const [state, title, text] of cases) {

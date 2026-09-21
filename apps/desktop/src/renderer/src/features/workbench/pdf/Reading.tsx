@@ -1,11 +1,12 @@
 import { MAX_SELECTION_REQUIREMENT_CHARS, selectionInstruction, type SelectionPromptAction } from '../../../../../prompts'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Check, Maximize2, Minimize2 } from 'lucide-react'
-import { Button, Card, CardContent, CardHeader, CardTitle, CopyButton, HoverCard, HoverCardContent, HoverCardTrigger, IconButton, Switch, Textarea } from '../../../components/ui'
+import { Check } from 'lucide-react'
+import { Button, Card, CardContent, CardHeader, CardTitle, CopyButton, HoverCard, HoverCardContent, HoverCardTrigger, IconButton, Switch, Textarea, Tooltip } from '../../../components/ui'
 import { FloatingWindow } from '../../../components/primitive/FloatingWindow'
 import { Markdown } from '../../../components/primitive/Markdown'
 import { writeClipboard } from '../../../components/primitive/clipboard'
+import { PromptSettingsGuide } from '../../../components/business/PromptSettingsGuide'
 import { Icon } from '../../../icons'
 import { focusComposer } from '../../../reference'
 import { useApp } from '../../../store'
@@ -18,6 +19,7 @@ import { replaceSubmission } from './submissions'
 import { Language, Translation } from './Translation'
 import { pdfAiCaughtFailure, pdfAiFailure, pdfAiFailureRecovery, pdfAiFailureText, type PdfAiFailure } from './failure'
 import { mergeTranslationResult, nextTranslationPage } from './sequence'
+import { PdfPanel } from './Panel'
 import type { PdfSelection, TranslationDirection, TranslationSentence } from './analysis'
 import { PDF_AI_PREFIX, pdfAiApi, type PdfAction, type PdfAiContent, type PdfAiRequest, type PdfAiResult, type PdfAiTask } from './analysis'
 
@@ -130,7 +132,6 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     if (currentIdentity.current === identity && sequence === loadSequence.current) setResults(data)
   }
   useEffect(() => { setResults({}); jobsRef.current = {}; setJobs({}); requests.current = {}; submissions.current = {}; setCropPreview(''); setFigure(false); setFigureGuideOpen(false); figureQueue.current = []; setFigureQueueSize(0); setFloating(null); setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]); setAnnotatedResult(''); setAutomaticTranslation(false); setTranslationAnchorPage(page); setPanel(null); setPanelExpanded(false); void load().catch(() => {}) }, [identity])
-  useEffect(() => { actions.setPdfSidePanelOpen(!!panel); return () => { actions.setPdfSidePanelOpen(false) } }, [panel])
   useEffect(() => {
     let stopped = false
     let polling = false
@@ -319,8 +320,7 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     setSelectionExplanationOpen(true)
   }
   const submitSelectionExplanation = (): void => {
-    const requirement = selectionExplanationDraft.trim()
-    if (!requirement || !selectionExplanationSnapshot.length) return
+    if (!selectionExplanationSnapshot.length) return
     setSelectionExplanationOpen(false)
     void run(
       'selection_explanation',
@@ -337,7 +337,7 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     id: 'pdf-ai', order: 5, expanded: selectionExplanationOpen, replacesDefaults: Boolean(literatureId),
     dismiss: () => { setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]) },
     actions: literatureId ? <><Button variant="ghost" size="sm" icon={<Icon name="sparkle" size={14} />} onClick={openSelectionExplanation}>{workbenchText('selection.explain')}</Button><Button variant="ghost" size="sm" icon={<Icon name="globe" size={14} />} onClick={() => { setSelectionExplanationOpen(false); void run('selection_translation') }}>{workbenchText('selection.translate')}</Button></> : null,
-    panel: selectionExplanationOpen ? <div className="vds-selection-action-result"><Textarea autoFocus label={t('reading.explanationPrompt')} maxLength={MAX_SELECTION_REQUIREMENT_CHARS} rows={3} value={selectionExplanationDraft} onChange={(event) => setSelectionExplanationDraft(event.target.value)} /><Button className="justify-self-start" size="sm" disabled={!selectionExplanationDraft.trim()} onClick={submitSelectionExplanation}>{t('reading.submitExplanation')}</Button></div> : null
+    panel: selectionExplanationOpen ? <div className="vds-selection-action-result"><Textarea autoFocus label={t('reading.explanationPrompt')} placeholder={t('reading.explanationPlaceholder')} maxLength={MAX_SELECTION_REQUIREMENT_CHARS} rows={2} value={selectionExplanationDraft} onChange={(event) => setSelectionExplanationDraft(event.target.value)} /><PromptSettingsGuide prefix={t('reading.explanationPromptGuide')} linkPrefix={t('reading.promptGuideLinkPrefix')} linkLabel={t('reading.promptSettings')} /><Button className="justify-self-start" size="sm" disabled={!selectionExplanationSnapshot.length} onClick={submitSelectionExplanation}>{t('reading.submitExplanation')}</Button></div> : null
   })
   const translated = translationResult?.pages?.find(item => item.page === page)
   useEffect(() => {
@@ -475,14 +475,24 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
     translateSelection: (target?: PdfSelection) => { void run('selection_translation', 'summary', undefined, undefined, undefined, undefined, target ? [target] : selection) },
     selectFigure,
     toolbar: literatureId || (projectId && path) ? <><HoverCard open={figureGuideOpen} onOpenChange={setFigureGuideOpen}><HoverCardTrigger asChild onClick={() => { if (figure) exitFigureSelection(); else { onExclusiveSurfaceOpen(); setFigure(true); setFigureGuideOpen(false) } selectPanel(null) }}><IconButton data-testid="pdf-figure-explanation" data-ob="pdf-figure" aria-pressed={figure} label={t('reading.figure')} icon={<Icon name="image" size={14} />} variant={figure ? 'primary' : 'outline'} /></HoverCardTrigger><HoverCardContent side="bottom" className="overflow-hidden rounded-[var(--vds-radius-5)] p-0" style={{ boxSizing: 'border-box', maxWidth: 'none', width: `min(${FIGURE_GUIDE_WIDTH_PX}px, calc(100vw - ${FIGURE_GUIDE_VIEWPORT_GUTTER_PX}px))` }}><div className="p-6" style={{ boxSizing: 'border-box', width: `${FIGURE_GUIDE_SOURCE_WIDTH_PX}px`, zoom: FIGURE_GUIDE_SCALE }}><FigureGuide t={t} /></div></HoverCardContent></HoverCard>{Object.entries(jobs).filter(([action, job]) => action !== 'figure_explanation' && action !== 'document_translation' && jobBusy(job)).map(([action]) => <Button key={action} size="sm" variant="ghost" onClick={() => { const kind = action as PdfAction; if (kind === 'interpretation') { exitFigureSelection(); onExclusiveSurfaceOpen(); setPanel(kind) } else setFloating(kind) }}>{t('reading.inProgress', { action: LABELS[action as PdfAction] })}</Button>)}</> : null,
-    railActions: literatureId ? <><IconButton data-testid="pdf-document-translation" aria-pressed={automaticTranslation} label={LABELS.document_translation} icon={<Icon name="globe" size={18} />} variant={automaticTranslation ? 'primary' : panel === 'document_translation' ? 'secondary' : 'ghost'} onClick={toggleDocumentTranslation} /><IconButton data-testid="pdf-interpretation" label={LABELS.interpretation} icon={<Icon name="sparkle" size={18} />} variant={panel === 'interpretation' ? 'secondary' : 'ghost'} onClick={toggleInterpretation} /></> : null,
-    sidePanel: panel ? <aside aria-label={LABELS[panel]} className={`vds-pdf-side-panel absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] flex w-[420px] min-w-[400px] max-w-[45%] flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-left)]${panelExpanded ? ' is-expanded' : ''}`}>
-      <header className="flex items-center justify-between gap-2 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-5 py-4"><div className="flex items-center gap-2">{panel === 'interpretation' && <Icon name="sparkle" size={16} />}<strong>{LABELS[panel]}</strong>{panel === 'document_translation' ? languageControl('document_translation') : summary?.contribution ? <Button variant="outline" size="sm" disabled={isBusy(panel)} onClick={() => void run(panel)}>{t('reading.regenerate')}</Button> : null}</div><div className="flex items-center gap-1"><IconButton data-testid="pdf-reading-panel-toggle-size" label={panelExpanded ? t('reading.shrinkPanel') : t('reading.expandPanel')} icon={panelExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />} variant="ghost" onClick={() => setPanelExpanded(value => !value)} /><IconButton label={t('reading.close')} icon={<Icon name="close" size={14} />} variant="ghost" onClick={() => selectPanel(null)} /></div></header>
-      <div data-testid={panel === 'document_translation' ? 'pdf-translation-panel' : undefined} ref={panel === 'document_translation' ? translationPanelRef : undefined} className="relative min-h-0 flex-1 overflow-auto text-sm leading-7">
-        {panel === 'interpretation' ? <>{feedback(panel)}{summary?.contribution ? <Summary value={summary} onSource={onLocate} /> : !isBusy('interpretation') && <div className="grid gap-5 p-5"><div className="grid gap-2"><h3 className="m-0 text-lg font-semibold">{t('reading.introTitle')}</h3><p className="m-0 text-[var(--vds-text-tertiary)]">{t('reading.introDescription')}</p></div>{interpretationCanGenerate && <Button data-testid="pdf-generate-summary" className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={() => void run('interpretation')}>{t('reading.generateSummary')}</Button>}</div>}</> : <div className="grid gap-3 p-3">{Array.from({ length: pageCount }, (_, index) => translationCard(index + 1))}</div>}
-      </div>
-      {panel === 'interpretation' && <footer className="border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3"><Button className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={openInterpretationChat}>{t('reading.chat')}</Button></footer>}
-    </aside> : null,
+    railActions: literatureId ? <><Tooltip portalled content={LABELS.document_translation} side="left"><IconButton data-testid="pdf-document-translation" aria-pressed={automaticTranslation} label={LABELS.document_translation} title={undefined} icon={<Icon name="globe" size={18} />} variant={automaticTranslation ? 'primary' : panel === 'document_translation' ? 'secondary' : 'ghost'} onClick={toggleDocumentTranslation} /></Tooltip><Tooltip portalled content={LABELS.interpretation} side="left"><IconButton data-testid="pdf-interpretation" label={LABELS.interpretation} title={undefined} icon={<Icon name="sparkle" size={18} />} variant={panel === 'interpretation' ? 'secondary' : 'ghost'} onClick={toggleInterpretation} /></Tooltip></> : null,
+    sidePanel: panel ? <PdfPanel
+      ariaLabel={LABELS[panel]}
+      bodyClassName="relative min-h-0 flex-1 overflow-auto text-sm leading-7"
+      bodyRef={panel === 'document_translation' ? translationPanelRef : undefined}
+      bodyTestId={panel === 'document_translation' ? 'pdf-translation-panel' : undefined}
+      closeLabel={t('reading.close')}
+      expanded={panelExpanded}
+      footer={panel === 'interpretation' ? <footer className="border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3"><Button className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={openInterpretationChat}>{t('reading.chat')}</Button></footer> : undefined}
+      headerAction={panel === 'document_translation' ? languageControl('document_translation') : summary?.contribution ? <Button variant="outline" size="sm" disabled={isBusy(panel)} onClick={() => void run(panel)}>{t('reading.regenerate')}</Button> : undefined}
+      icon={<Icon name={panel === 'document_translation' ? 'globe' : 'sparkle'} size={16} />}
+      testId="pdf-reading-panel"
+      title={LABELS[panel]}
+      onClose={() => selectPanel(null)}
+      onToggleExpanded={() => setPanelExpanded(value => !value)}
+    >
+      {panel === 'interpretation' ? <>{feedback(panel)}{summary?.contribution ? <Summary value={summary} onSource={onLocate} /> : !isBusy('interpretation') && <div className="grid gap-5 p-5"><div className="grid gap-2"><h3 className="m-0 text-lg font-semibold">{t('reading.introTitle')}</h3><p className="m-0 text-[var(--vds-text-tertiary)]">{t('reading.introDescription')}</p></div>{interpretationCanGenerate && <Button data-testid="pdf-generate-summary" className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={() => void run('interpretation')}>{t('reading.generateSummary')}</Button>}</div>}</> : <div className="grid gap-3 p-3">{Array.from({ length: pageCount }, (_, index) => translationCard(index + 1))}</div>}
+    </PdfPanel> : null,
     floating: floating ? <FloatingWindow key={floating} initialSize={floating === 'figure_explanation' ? FIGURE_WINDOW_SIZE : undefined} title={LABELS[floating]} onClose={() => { setFloating(null); if (floating === 'figure_explanation') exitFigureSelection() }} footer={<>{floating === 'figure_explanation' && <div className="mr-auto"><Button variant="outline" icon={<Icon name="image" size={14} />} onClick={() => { setFloating(null); onExclusiveSurfaceOpen(); setFigure(true) }}>{t('reading.continueSelecting')}</Button></div>}{floating !== 'figure_explanation' && canAnnotate ? <Button variant="outline" size="sm" icon={annotationIdentity === annotatedResult ? <Check size={14} /> : <Icon name="annotation" size={14} />} loading={annotating} disabled={!floatingResult || busy || annotating || annotationIdentity === annotatedResult} onClick={() => void addResultComment()}>{t(annotationIdentity === annotatedResult ? 'reading.addedToAnnotation' : 'reading.addToAnnotation')}</Button> : null}<CopyButton key={floatingResult?.text} value={floatingResult?.text ?? ''} writeText={writeClipboard} disabled={!floatingResult} size="sm" variant="ghost" icon={<Icon name="copy" size={14} />} />{floating !== 'figure_explanation' && <Button disabled={!floatingResult} size="sm" variant="primary" icon={<Icon name="talk" size={14} />} onClick={quote}>{t('reading.ask')}</Button>}</>}>
       {floating === 'selection_translation' && <section className="cursor-text select-text border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-5"><div className="mb-2 flex items-center justify-between"><p className="text-sm text-[var(--vds-text-tertiary)]">{t('reading.source')}</p>{languageControl('selection_translation')}</div><p>{translationSource}</p></section>}
       <div className={floating === 'figure_explanation' ? 'flex h-full min-h-0 flex-col' : ''}>
@@ -490,6 +500,7 @@ export function usePdfAnalysis({ literatureId, title, path, assetId, projectId, 
         {floating !== 'figure_explanation' && <div className="min-h-0 flex-1 overflow-auto">{feedback(floating)}<div className="cursor-text select-text p-5 text-sm leading-8">
           <h3 className="mb-3 font-semibold">{floating === 'selection_translation' ? t('reading.translation') : ''}</h3>
           {floating === 'selection_translation' && floatingResult?.blocks ? <Translation sentences={floatingResult.blocks} active={activeSentence} onSelect={sentence => selectSentence(sentence, floatingResult.page)} /> : floatingResult ? output(floatingResult, true) : <p className="text-xs text-[var(--vds-text-tertiary)]">{t('reading.selectionScope')}</p>}
+          {floating === 'selection_translation' ? <PromptSettingsGuide className="mt-3 border-t border-[var(--vds-divider-default)] pt-3" prefix={t('reading.translationPromptGuide')} linkLabel={t('reading.promptSettings')} suffix={t('reading.promptGuideSuffix')} /> : null}
         </div></div>}
       </div>
     </FloatingWindow> : null

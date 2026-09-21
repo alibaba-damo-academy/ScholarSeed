@@ -19,7 +19,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 import jwt
@@ -47,6 +47,7 @@ from service.identity.service.account import (  # noqa: E402
     ACCOUNT_BASE_URL_ENV,
     ACCOUNT_METHODS,
     ACCOUNT_MODE,
+    DECODE_LEEWAY_S,
     JWKS_MIN_REFRESH_S,
     JWKS_PATH,
     REVOCATION_REFRESH_S,
@@ -178,10 +179,14 @@ class AccountStub:
 
 
 class Clock:
-    """可推进的单调时钟（刷新节律靠推时间验证，不 sleep）。"""
+    """可推进的单调时钟（刷新节律靠推时间验证，不 sleep）。
 
-    def __init__(self) -> None:
-        self.value = 1000.0
+    start 用来对齐真实时间：淘汰过期 jti 的判据必须与令牌 exp 同轴，否则「淘汰逻辑认为
+    已过期」与「验签认为仍在 leeway 内」两个条件凑不到一起，leeway 边界根本测不到。
+    """
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.value = start
 
     def __call__(self) -> float:
         return self.value
@@ -208,14 +213,25 @@ class FailingClient:
 
 
 def build_trust(
-    stub: AccountStub, clock: Optional[Clock] = None, *, issuer: str = ""
+    stub: AccountStub,
+    clock: Optional[Clock] = None,
+    *,
+    issuer: str = "",
+    spawn: Optional[Callable[[Callable[[], None]], None]] = None,
 ) -> AccountTrust:
     return AccountTrust(
         ACCOUNT_BASE,
         issuer=issuer,
         client=stub.client(),
         clock=clock or Clock(),
+        spawn=spawn,
     )
+
+
+def inline_spawn(target: Callable[[], None]) -> None:
+    """在当前线程跑完后台刷新体：断言不必 sleep 等真线程，也就不会 flaky。"""
+
+    target()
 
 
 # ---------------------------------------------------------------------------
@@ -367,33 +383,79 @@ def test_revocations() -> None:
     signer = Signer()
     stub = AccountStub(signer)
     clock = Clock()
-    trust = build_trust(stub, clock)
+    trust = build_trust(stub, clock, spawn=inline_spawn)
 
     revoked_token = signer.token(jti="jti-revoked")
     check("吊销前通过", trust.identity(revoked_token) is not None)
-    check("吊销面拉了一次", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
+    check("首拉同步完成", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
 
     stub.revocations.append({"jti": "jti-revoked", "revoked_at": 1_700_000_000.0})
     # 节律内不出网 → 仍放行（60s 窗口是既定取舍）
     check("窗口内仍放行", trust.identity(revoked_token) is not None)
     check("吊销面未重复拉", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
 
+    # 过窗口: 触发刷新的**这一个**请求仍按旧集合判定 —— 这是把刷新挪出请求路径的既定
+    # 代价（延迟从 60s 变成 60s + 一个请求间隔），下一个请求即拒。
     clock.advance(REVOCATION_REFRESH_S + 1)
-    check("过窗口后即拒", trust.identity(revoked_token) is None)
+    check("触发刷新的请求按旧缓存放行", trust.identity(revoked_token) is not None)
+    check("该请求已把刷新跑完", stub.revocation_calls == 2, f"calls={stub.revocation_calls}")
+    check("下一个请求即拒", trust.identity(revoked_token) is None)
     check("其他令牌不受影响", trust.identity(signer.token(jti="jti-fresh")) is not None)
 
     # since 游标必须带重叠窗口: 否则同刻落库的其他行会被 `revoked_at > since` 漏掉
     same_moment = {"jti": "jti-same-moment", "revoked_at": 1_700_000_000.0}
     stub.revocations.append(same_moment)
     clock.advance(REVOCATION_REFRESH_S + 1)
+    trust.identity(signer.token(jti="jti-warm"))  # 触发后台刷新, 把 same_moment 拉进集合
     check("同刻吊销不漏", trust.identity(signer.token(jti="jti-same-moment")) is None)
     check("since 已带游标", any(s is not None for s in stub.since_seen), str(stub.since_seen))
 
     # 吊销面故障 → 沿用已有缓存（不把在线用户全踢下线, 也不放行已吊销的）
     stub.revocations_status = 503
     clock.advance(REVOCATION_REFRESH_S + 1)
+    trust.identity(signer.token(jti="jti-warm2"))  # 触发一次失败的后台刷新
     check("故障时已吊销仍拒", trust.identity(revoked_token) is None)
     check("故障时正常令牌仍通", trust.identity(signer.token(jti="jti-ok")) is not None)
+
+
+def test_revocations_off_request_path() -> None:
+    print("[6b] 刷新不在请求路径: 请求不出网 + 后台单飞 + 冷启动首拉仍同步")
+    signer = Signer()
+    stub = AccountStub(signer)
+    clock = Clock()
+    # 只记录不执行: 请求路径若仍在等刷新, 出网计数与返回顺序会立刻出卖它。
+    deferred: List[Callable[[], None]] = []
+    trust = build_trust(stub, clock, spawn=deferred.append)
+
+    # 冷启动必须同步: 若排到后台, 第一个请求会拿空集合判定 → 放行已吊销令牌。
+    # 这条是 `_revocations_loaded` 守卫的唯一证伪点, 出网计数证明不了它。
+    stub.revocations.append({"jti": "jti-pre", "revoked_at": 1_600_000_000.0})
+    check("冷启动即拒已吊销", trust.identity(signer.token(jti="jti-pre")) is None)
+    check("首拉已出网", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
+    check("首拉不排后台", deferred == [], f"deferred={len(deferred)}")
+
+    # 过窗口后: 请求只读缓存并立即返回, 刷新被排到后台, 出网计数在返回时不动。
+    stub.revocations.append({"jti": "jti-a", "revoked_at": 1_700_000_000.0})
+    clock.advance(REVOCATION_REFRESH_S + 1)
+    token = signer.token(jti="jti-a")
+    check("过窗口的请求立即返回", trust.identity(token) is not None)
+    check("请求路径未出网", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
+    check("刷新已排入后台", len(deferred) == 1, f"deferred={len(deferred)}")
+
+    # 单飞: 后台尚未跑完时, 后续过期请求不得再起第二个刷新。
+    clock.advance(REVOCATION_REFRESH_S + 1)
+    trust.identity(token)
+    check("在途期间不重复起刷新", len(deferred) == 1, f"deferred={len(deferred)}")
+    check("在途期间仍未出网", stub.revocation_calls == 1, f"calls={stub.revocation_calls}")
+
+    deferred[0]()
+    check("后台刷新已出网", stub.revocation_calls == 2, f"calls={stub.revocation_calls}")
+    check("后台刷新后已吊销即拒", trust.identity(token) is None)
+
+    # inflight 必须复位, 否则此后再也不刷新（吊销永久失效）。
+    clock.advance(REVOCATION_REFRESH_S + 1)
+    trust.identity(signer.token(jti="jti-b"))
+    check("inflight 已复位可再刷新", len(deferred) == 2, f"deferred={len(deferred)}")
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +816,46 @@ def test_packaged_account_policy() -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# 测试 6c: 过期 jti 淘汰 —— 内存收敛, 且不得越过 leeway 边界
+# ---------------------------------------------------------------------------
+
+
+def test_revocation_pruning() -> None:
+    print("[6c] 过期 jti 淘汰: leeway 内保留 / 超出则收敛 / 缺 expires_at 不淘汰")
+    signer = Signer()
+    stub = AccountStub(signer)
+    now = time.time()
+    clock = Clock(start=now)
+    trust = build_trust(stub, clock, spawn=inline_spawn)
+
+    inside = now - DECODE_LEEWAY_S + 5  # 仍在 leeway 内: 验签依旧通过
+    outside = now - DECODE_LEEWAY_S - 10  # 超出 leeway: 验签自己就会拒
+    stub.revocations.extend(
+        [
+            {"jti": "jti-lee", "revoked_at": now - 100, "expires_at": inside},
+            {"jti": "jti-gone", "revoked_at": now - 100, "expires_at": outside},
+            # account 未升级时不回 expires_at：必须留着。猜一个 exp 去淘汰它，
+            # 等于在版本偏斜期放行已吊销令牌。
+            {"jti": "jti-skew", "revoked_at": now - 100},
+        ]
+    )
+    trust.identity(signer.token(jti="jti-probe"))  # 首拉即触发一次淘汰
+    # 淘汰只能白盒看：被正确淘汰的 jti，其令牌本就过不了验签，行为上无从区分。
+    check(
+        "leeway 外的 jti 已淘汰",
+        "jti-gone" not in trust._revoked_jtis,
+        str(sorted(trust._revoked_jtis)),
+    )
+    check("leeway 内的 jti 保留", "jti-lee" in trust._revoked_jtis)
+    check("缺 expires_at 的 jti 保留", "jti-skew" in trust._revoked_jtis)
+
+    # 行为面证据：这把令牌已过 exp 但仍在 leeway 内，PyJWT 验签**通过**，所以拦住它的
+    # 只可能是黑名单。淘汰条件若漏掉 leeway 余量，这一条就变成放行已吊销令牌。
+    lee_token = signer.token(jti="jti-lee", ttl=int(inside - time.time()))
+    check("leeway 内已吊销仍被拒", trust.identity(lee_token) is None)
+
+
 def main() -> int:
     test_valid_user_token()
     test_admin_token_rejected()
@@ -762,6 +864,8 @@ def main() -> int:
     test_jwks_unreachable_fail_closed()
     test_transport_failure_logs_cause_chain_without_credentials()
     test_revocations()
+    test_revocations_off_request_path()
+    test_revocation_pruning()
     test_dual_credential_middleware()
     test_logout_drops_the_in_memory_token()
     test_off_mode_projects_account_identity()

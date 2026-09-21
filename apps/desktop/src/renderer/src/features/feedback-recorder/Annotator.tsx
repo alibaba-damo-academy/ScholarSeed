@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogFooter,
   DialogHeader,
+  DialogPortal,
   DialogTitle,
   Input
 } from '../../components/ui'
@@ -283,12 +284,13 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel() }}>
-      <DialogContent
-        hideCloseButton
-        className="!top-0 !left-0 !z-[var(--vds-z-modal)] !flex !h-screen !w-screen !max-w-none !translate-x-0 !translate-y-0 !transform-none flex-col gap-[var(--vds-space-3)] overflow-hidden !rounded-none !border-0 !px-[calc(var(--vds-space-10)+var(--vds-space-3))] !pb-[var(--vds-space-5)] !pt-[var(--vds-space-10)]"
-        overlayClassName="!z-[var(--vds-z-overlay)]"
-        data-feedback-recorder-root="annotator"
-      >
+      <DialogPortal>
+        <DialogContent
+          hideCloseButton
+          className="!top-0 !left-0 !z-[var(--vds-z-feedback-recorder-dialog)] !flex !h-screen !w-screen !max-w-none !translate-x-0 !translate-y-0 !transform-none flex-col gap-[var(--vds-space-3)] overflow-hidden !rounded-none !border-0 !px-[calc(var(--vds-space-10)+var(--vds-space-3))] !pb-[var(--vds-space-5)] !pt-[var(--vds-space-10)]"
+          overlayClassName="!z-[var(--vds-z-feedback-recorder-overlay)]"
+          data-feedback-recorder-root="annotator"
+        >
         <DialogHeader>
           <DialogTitle>{t('feedbackRecorder.annotator.title')}</DialogTitle>
         </DialogHeader>
@@ -317,10 +319,13 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
             {t('feedbackRecorder.annotator.undo')}
           </Button>
         </div>
-        <div ref={surfaceRef} className="relative min-h-0 flex-1 overflow-auto rounded-[var(--vds-radius-3)] bg-[var(--vds-bg-gray-default)] p-[var(--vds-space-2)]">
+        <div
+          ref={surfaceRef}
+          className="relative min-h-0 flex-1 overflow-auto rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-active)] p-[var(--vds-space-2)] [background-image:linear-gradient(45deg,var(--vds-other-overlay-2)_25%,transparent_25%),linear-gradient(-45deg,var(--vds-other-overlay-2)_25%,transparent_25%),linear-gradient(45deg,transparent_75%,var(--vds-other-overlay-2)_75%),linear-gradient(-45deg,transparent_75%,var(--vds-other-overlay-2)_75%)] [background-position:0_0,0_var(--vds-space-2),var(--vds-space-2)_calc(-1*var(--vds-space-2)),calc(-1*var(--vds-space-2))_0] [background-size:var(--vds-space-4)_var(--vds-space-4)]"
+        >
           <canvas
             ref={canvasRef}
-            className="mx-auto block max-h-full max-w-full touch-none cursor-crosshair border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]"
+            className="mx-auto block max-h-full max-w-full touch-none cursor-crosshair border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] shadow-[var(--vds-shadow-lg)]"
             onPointerDown={start}
             onPointerMove={move}
             onPointerUp={finish}
@@ -361,7 +366,8 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
           </Button>
           <Button loading={saving} onClick={() => void save()}>{t('feedbackRecorder.annotator.save')}</Button>
         </DialogFooter>
-      </DialogContent>
+        </DialogContent>
+      </DialogPortal>
     </Dialog>
   )
 }

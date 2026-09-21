@@ -199,13 +199,16 @@ class FulltextGateContract(unittest.TestCase):
             cards.append((kind, content.data))
             return {"card_id": "card"}
 
+        async def wait_terminal(_turn_id: str) -> str:
+            return "interrupted"
+
         live = SimpleNamespace(
             id=SESSION_ID,
             runtime_id="codex",
             runtime_workdir=self.root,
             catalog=self.catalog,
             last_submission_id="client-turn-1",
-            ledger=SimpleNamespace(active_turn_id="native-turn-1"),
+            ledger=SimpleNamespace(active_turn_id="native-turn-1", wait_terminal=wait_terminal),
             active_assistant_snapshot_id="snapshot-1",
             active_task_type=task_type,
             active_assistant_revision=None,
@@ -373,6 +376,48 @@ class FulltextGateContract(unittest.TestCase):
         self.run_gate(gate, live, None)
         self.assertEqual(len(turns.posts), 1)
         self.assertEqual(live.interrupts, [True])
+
+    def test_authorization_is_created_only_after_interrupted_turn_terminal_cleanup(self) -> None:
+        self.review_selection()
+        self.start_fulltext()
+        live = self.live("literature_review")
+        terminal_waiting = asyncio.Event()
+        release_terminal = asyncio.Event()
+
+        async def wait_terminal(_turn_id: str) -> str:
+            terminal_waiting.set()
+            await release_terminal.wait()
+            # This is the old turn's terminal cleanup. A newly-created authorization
+            # would be expired here and reproduce Aone 87043686.
+            self.catalog.expire_pending_hil(SESSION_ID)
+            return "interrupted"
+
+        live.ledger.wait_terminal = wait_terminal
+        turns = RecordingTurns()
+        gate = FulltextGate(self.authorizer, turns, poll_seconds=0)
+
+        async def scenario() -> None:
+            gate.observe(live)
+            await asyncio.wait_for(terminal_waiting.wait(), WAIT_SECONDS)
+            self.assertEqual(self.catalog.pending_hil(SESSION_ID), ())
+            release_terminal.set()
+            deadline = time.monotonic() + WAIT_SECONDS
+            while not self.catalog.pending_hil(SESSION_ID):
+                if time.monotonic() > deadline:
+                    raise AssertionError("authorization question was not asked after terminal")
+                await asyncio.sleep(POLL_SECONDS)
+            pending = self.catalog.pending_hil(SESSION_ID)
+            question = pending[0].payload["questions"][0]
+            decision = await live.interactions.resolve(
+                None,
+                pending[0].product_request_id,
+                {"answers": {question["id"]: AUTHORIZE}},
+            )
+            self.assertIsNotNone(decision)
+            await gate.wait_idle(SESSION_ID)
+
+        asyncio.run(scenario())
+        self.assertEqual(len(turns.posts), 1)
 
     def test_rejected_stopping_task_does_not_resume_and_is_gated_again_next_turn(self) -> None:
         self.review_selection()

@@ -211,12 +211,21 @@ test('resource AI input keeps the selection toolbar visible and marks the active
   assert.match(host, /aria-pressed=\{activeAction === ["']explain["']\}/)
   assert.match(host, /toolbarActions=\{toolbarActions\}/)
   assert.match(host, /anchorWidth=\{position\.width\}/)
-  assert.match(host, /toolbarRef=\{toolbarRef\}/)
+  assert.match(host, /ref=\{toolbarRef\}/)
+  assert.match(host, /getBoundingClientRect\(\)\.width/)
+  assert.doesNotMatch(host, /useLayoutEffect\(\(\) => \{[\s\S]*if \(!toolbarRef\.current\) return;/)
   assert.equal(host.match(/<div \{\.\.\.documentSelectionInteractionProps\} className="contents">/g)?.length, 2)
   assert.match(suggestion, /toolbarActions\?: ReactNode/)
   assert.match(suggestion, /toolbarActions && !submitted/)
   assert.match(suggestion, /actions=\{suggestionActions\}/)
   assert.doesNotMatch(host, /!active \|\| active\.identity !== currentIdentity/)
+})
+
+test('selection AI actions share the same pressed toolbar button treatment', () => {
+  const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+
+  assert.match(host, /aria-pressed=\{activeAction === ["']polish["']\}/)
+  assert.doesNotMatch(host, /<Toggle/)
 })
 
 test('resource AI exposes PDF annotation only through the active viewer contribution', () => {

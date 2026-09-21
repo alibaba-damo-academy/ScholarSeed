@@ -10,7 +10,7 @@ SLR_NEW_ENV="$(mktemp -d "$SLR_SETUP_ROOT/.venv-3.12-XXXXXXXX")"
 "$SLR_NEW_ENV/bin/python" -m pip install --upgrade pip
 "$SLR_NEW_ENV/bin/python" -m pip install -r "$SLR_SETUP_ROOT/requirements.txt"
 "$SLR_NEW_ENV/bin/python" -m pip check
-"$SLR_NEW_ENV/bin/python" -c 'import openai, httpx, fitz, matplotlib, PIL, pysbd'
+"$SLR_NEW_ENV/bin/python" -c 'import openai, httpx, pypdfium2, pdfplumber, pypdf, matplotlib, PIL, pysbd'
 # Verify pipeline imports before replacing the old binding.
 SLR_INSTALL_ROOT="$SLR_SETUP_ROOT" "$SLR_NEW_ENV/bin/python" - <<'PY'
 import os, sys

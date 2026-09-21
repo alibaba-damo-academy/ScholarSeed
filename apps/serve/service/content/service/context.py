@@ -139,7 +139,11 @@ class ContentContextProvider:
         try:
             if ref.kind is ContextRefKind.FILE:
                 text, revision, media_type = self._file(request.project_id, ref.source_id)
-                if ref.source_revision and ref.source_revision != revision:
+                if (
+                    ref.anchor is not None
+                    and ref.source_revision
+                    and ref.source_revision != revision
+                ):
                     return self._failure(ContextResolutionState.STALE, REASON_SOURCE_STALE)
                 excerpt = text[: request.budget.max_chars]
                 truncated = len(excerpt) < len(text)

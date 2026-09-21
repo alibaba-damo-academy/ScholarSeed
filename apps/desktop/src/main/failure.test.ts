@@ -61,7 +61,7 @@ test('health timeout and startup versus recovery fallbacks use distinct localize
 
 
 test('install fallback provenance preserves the canonical error and never marks a matching upstream diagnostic', () => {
-  for (const empty of [undefined, '']) {
+  for (const empty of [{}, { error: undefined }, { error: '' }]) {
     assert.deepEqual(updateInstallFailure(empty), {
       error: 'update failed',
       errorFallback: 'install_failed',
@@ -69,20 +69,43 @@ test('install fallback provenance preserves the canonical error and never marks 
     })
   }
   for (const detail of ['update failed', '原始诊断 <error> & message']) {
-    assert.deepEqual(updateInstallFailure(detail), {
+    assert.deepEqual(updateInstallFailure({ error: detail }), {
       error: detail,
       errorFallback: undefined,
       errorOrigin: 'install'
     })
     const prior = { error: 'update failed', errorFallback: 'install_failed', phase: 'failed' }
-    assert.equal({ ...prior, ...updateInstallFailure(detail) }.errorFallback, undefined)
+    assert.equal({ ...prior, ...updateInstallFailure({ error: detail }) }.errorFallback, undefined)
+  }
+})
+
+test('a structured install classification suppresses the raw diagnostic', () => {
+  // bug 87042987：Windows 校验/安装失败的原始诊断可能是控制台代码页下的中文 stderr，直接进用户文案
+  // 会乱码。带结构化分类时必须丢掉原文（error: undefined），界面只按分类给本地化说法。即便调用方同时
+  // 塞了 error 也一并压掉——这两条断言能证伪「忘了透传分类」与「分类下仍透出原文」两种回归。
+  for (const kind of ['install_verify_unavailable', 'install_signature_untrusted'] as const) {
+    assert.deepEqual(updateInstallFailure({ errorFallback: kind }), {
+      error: undefined,
+      errorFallback: kind,
+      errorOrigin: 'install'
+    })
+    assert.deepEqual(updateInstallFailure({ error: 'STATUS=乱码', errorFallback: kind }), {
+      error: undefined,
+      errorFallback: kind,
+      errorOrigin: 'install'
+    })
   }
 })
 
 test('install failures are always attributed to the install action', () => {
   // 展示侧按 errorOrigin 选「安装失败」还是「下载失败」的文案。安装路径拿不到详情时
   // 会走 fallback，那条分支同样必须带上来源，否则界面会把安装失败报成下载失败。
-  for (const error of [undefined, '', 'installer exited with 1603']) {
-    assert.equal(updateInstallFailure(error).errorOrigin, 'install')
+  for (const result of [
+    {},
+    { error: '' },
+    { error: 'installer exited with 1603' },
+    { errorFallback: 'install_verify_unavailable' as const }
+  ]) {
+    assert.equal(updateInstallFailure(result).errorOrigin, 'install')
   }
 })

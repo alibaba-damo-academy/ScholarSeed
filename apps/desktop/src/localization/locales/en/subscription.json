@@ -18,8 +18,6 @@
   "cancelLogin": "Cancel sign-in",
   "loadModels": "Load models",
   "disconnect": "Disconnect",
-  "disable": "Disable",
-  "enable": "Enable",
   "delete": "Delete",
   "deleteTitle": "Delete subscription connection",
   "deleteDescription": "Delete this subscription connection?",

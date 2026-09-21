@@ -894,6 +894,7 @@ export type TurnInputItem =
   | { type: 'skill'; name: string; path: string; version?: string }
   | { type: 'local_image'; path?: string; reference_id?: string; name?: string; media_type?: string; sha256?: string }
   | { type: 'file'; path?: string; reference_id?: string; name?: string; media_type?: string; sha256?: string }
+  | { type: 'directory'; reference_id: string; name?: string }
 
 export type CollaborationMode = 'default' | 'plan'
 export const RESEARCH_IDEA_TASK_TYPE = 'research_idea' as const
@@ -1391,11 +1392,13 @@ export async function respondHil(
 }
 
 const HIL_RESPONSE_NOT_RETRYABLE = 'hil_response_not_retryable'
+const HIL_REQUEST_STALE = 'hil_request_stale'
 
 export function classifyHilResponseFailure(
   code?: string,
   operationState?: string
 ): 'unknown' | 'stale' | undefined {
+  if (code === HIL_REQUEST_STALE) return 'stale'
   if (code !== HIL_RESPONSE_NOT_RETRYABLE) return undefined
   if (operationState === 'unknown') return 'unknown'
   if (operationState === 'stale') return 'stale'
@@ -2615,19 +2618,20 @@ export async function openPathWith(path: string, appPath: string): Promise<{ ok:
   }
 }
 
-/** Register exact user-selected local files for one session without copying their bytes. */
-export interface RegisteredLocalFile {
+/** Register exact user-selected local paths for one session without copying content. */
+export interface RegisteredLocalPath {
   reference_id: string
   path: string
   name: string
+  kind?: 'file' | 'directory'
   media_type: string
   size?: number
 }
 
-export async function registerLocalFiles(
+export async function registerLocalPaths(
   sessionId: string,
   paths: string[]
-): Promise<RegisteredLocalFile[] | null> {
+): Promise<RegisteredLocalPath[] | null> {
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sessionId)}/file-references`,
@@ -2638,7 +2642,7 @@ export async function registerLocalFiles(
       }
     )
     if (!response.ok) return null
-    const payload = (await response.json()) as { references?: RegisteredLocalFile[] }
+    const payload = (await response.json()) as { references?: RegisteredLocalPath[] }
     return Array.isArray(payload.references) ? payload.references : null
   } catch {
     return null

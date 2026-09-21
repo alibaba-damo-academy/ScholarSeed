@@ -12,6 +12,8 @@ const CACHE_RECEIPT = 'archive.sha256'
 const DEFAULT_VENV = '.venv'
 const WINDOWS_PLATFORM = 'win32'
 const PROBE_TIMEOUT_MS = 15_000
+const FILESYSTEM_RETRY_DELAY_MS = 250
+const FILESYSTEM_RETRY_ATTEMPTS = 20
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
 const ARCH_ALIASES = { x86_64: 'x64' }
@@ -103,6 +105,28 @@ function nativeTar(platform = process.platform, environment = process.env) {
   return path.win32.join(systemRoot, 'System32', 'tar.exe')
 }
 
+function waitForFilesystem() {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, FILESYSTEM_RETRY_DELAY_MS)
+}
+
+function retryFilesystem(operation) {
+  let lastError
+  for (let attempt = 0; attempt < FILESYSTEM_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return operation()
+    } catch (error) {
+      lastError = error
+      if (!PUBLISH_COLLISIONS.has(error.code)) throw error
+      waitForFilesystem()
+    }
+  }
+  throw lastError
+}
+
+function cleanupTemporary(directory) {
+  retryFilesystem(() => fs.rmSync(directory, { recursive: true, force: true }))
+}
+
 async function preparePython(repo) {
   const release = await verifyPythonArchive(pythonRelease(repo))
   const destination = cacheRoot(repo, release)
@@ -114,14 +138,14 @@ async function preparePython(repo) {
     verifyPython(archiveExecutable(temporary, release), release)
     fs.writeFileSync(path.join(temporary, CACHE_RECEIPT), `${release.sha256}\n`, { flag: 'wx' })
     try {
-      fs.renameSync(temporary, destination)
+      retryFilesystem(() => fs.renameSync(temporary, destination))
     } catch (error) {
       if (!PUBLISH_COLLISIONS.has(error.code) || !fs.existsSync(destination)) throw error
       verifyCache(destination, release)
     }
     return verifyCache(destination, release)
   } finally {
-    fs.rmSync(temporary, { recursive: true, force: true })
+    cleanupTemporary(temporary)
   }
 }
 
@@ -159,7 +183,8 @@ async function main(argv) {
 }
 
 module.exports = { pythonRelease, verifyPythonArchive, inspectPython, verifyPython,
-  verifyDevelopmentPython, preparePython, developmentPython, nativeTar, sameRealPath }
+  verifyDevelopmentPython, preparePython, developmentPython, nativeTar, sameRealPath,
+  retryFilesystem, cleanupTemporary }
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch(error => {

@@ -14,7 +14,6 @@ from itertools import groupby
 from statistics import median
 
 import pdfplumber
-import pymupdf
 from pdfplumber.page import Page
 
 from service.platform.citations import (
@@ -25,20 +24,17 @@ from service.platform.citations import (
     PdfOmission,
     PdfSpan,
 )
+from service.platform.pdf import pdf_image_bounds
 from service.workbench.service.fonts import GlyphResourceManager
 from service.workbench.service.layout import classify
 from service.workbench.service.sentences import TRUNCATED, SentenceBlock, assemble, sentence_ends
 
-EXTRACTOR_VERSION = (
-    f"pdfplumber-{pdfplumber.__version__}/mupdf-{pymupdf.VersionBind}/captions-spans-v10"
-)
+EXTRACTOR_VERSION = f"pdfplumber-{pdfplumber.__version__}/pdfium-images/captions-spans-v11"
 MAX_DOCUMENT_FRAGMENTS = 100_000
 QUARTER_TURN = 90
 FULL_TURN = 360
 LAYOUT_WORD_MARGIN = 0.1
 LAYOUT_PARAMETERS = {"boxes_flow": 0.5, "word_margin": LAYOUT_WORD_MARGIN, "all_texts": True}
-IMAGE_BLOCK = 1
-IMAGE_BLOCK_FLAGS = pymupdf.TEXTFLAGS_BLOCKS | pymupdf.TEXT_PRESERVE_IMAGES
 MAX_DOCUMENT_BYTES = 100_000_000
 MAX_DOCUMENT_PAGES = 2_000
 MAX_DOCUMENT_CHARACTERS = 4_000_000
@@ -206,10 +202,8 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
     omissions: list[PdfOmission] = []
     native_regions: list[CitationPage] = []
     characters = 0
-    with (
-        pdfplumber.open(BytesIO(payload), laparams=LAYOUT_PARAMETERS) as pdf,
-        pymupdf.open(stream=payload, filetype="pdf") as rendered,
-    ):
+    image_pages = pdf_image_bounds(payload)
+    with pdfplumber.open(BytesIO(payload), laparams=LAYOUT_PARAMETERS) as pdf:
         pdf.rsrcmgr = GlyphResourceManager()
         if len(pdf.pages) > MAX_DOCUMENT_PAGES:
             raise ValueError("pdf_too_many_pages")
@@ -237,16 +231,14 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
             characters += len(chars)
             if characters > MAX_DOCUMENT_CHARACTERS:
                 raise ValueError("pdf_too_large")
-            rendered_page = rendered[page.page_number - 1]
-            rendered_page.set_rotation(0)
-            # TextPage image blocks honor the drawing clip (unlike image resource
-            # boxes). Their origin is the unrotated CropBox, not the MediaBox.
             images = tuple(
-                (x0 + bounds[0], y0 + bounds[1], x1 + bounds[0], y1 + bounds[1])
-                for x0, y0, x1, y1, _, _, kind in rendered_page.get_text(
-                    "blocks", flags=IMAGE_BLOCK_FLAGS
+                (
+                    image.x0 + bounds[0],
+                    image.top + bounds[1],
+                    image.x1 + bounds[0],
+                    image.bottom + bounds[1],
                 )
-                if kind == IMAGE_BLOCK
+                for image in image_pages[page.page_number - 1]
             )
             layout = classify(page, chars, images=images)
             excluded = {ordinal for ordinal, char in enumerate(chars) if layout.omitted(char)}

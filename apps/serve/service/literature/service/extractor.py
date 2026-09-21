@@ -5,9 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-import pymupdf
-
 from service.literature.service.identifiers import extract_identifiers
+from service.platform.pdf import PdfDocumentError, pdf_document_info, pdf_metadata
 
 MIN_METADATA_TITLE_LENGTH = 5
 UNTITLED_MARKER = "untitled"
@@ -62,21 +61,18 @@ def extract_pdf_metadata(content: bytes) -> ExtractedMetadata:
     """提取标题、作者与论文标识；缺失的字段留空，由导入入口处理标题兜底。"""
 
     try:
-        with pymupdf.open(stream=content, filetype="pdf") as document:
-            if not document.is_pdf or document.needs_pass:
-                raise InvalidPdfError("invalid_pdf")
-            metadata = document.metadata or {}
-            arxiv, doi = extract_identifiers(document)
-            title = _metadata_title(str(metadata.get("title") or ""))
-            author = ", ".join(_authors(str(metadata.get("author") or "")))
-            return ExtractedMetadata(
-                title=title,
-                author=author,
-                source="metadata",
-                arxiv=arxiv,
-                doi=doi,
-            )
-    except (pymupdf.FileDataError, RuntimeError, ValueError) as exc:
+        if pdf_document_info(content).page_count < 1:
+            raise InvalidPdfError("invalid_pdf")
+        metadata = pdf_metadata(content)
+        arxiv, doi = extract_identifiers(content)
+        return ExtractedMetadata(
+            title=_metadata_title(metadata.title),
+            author=", ".join(_authors(metadata.author)),
+            source="metadata",
+            arxiv=arxiv,
+            doi=doi,
+        )
+    except (PdfDocumentError, RuntimeError, ValueError) as exc:
         raise InvalidPdfError("invalid_pdf") from exc
 
 

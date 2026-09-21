@@ -410,7 +410,7 @@ export function reportRuntimeIncident(
   return { conversation }
 }
 
-/** Keep the global preflight gate and the active thread on one process-health truth. */
+/** Project one session's process health onto that session's readiness only. */
 export function projectRuntimeIncidentReadiness(
   previous: RuntimeReadiness | null | undefined,
   data: RuntimeIncidentData
@@ -432,14 +432,76 @@ export function projectRuntimeIncidentReadiness(
   }
 }
 
+/**
+ * Runtime admission has four outcomes, not two.
+ *
+ * A bare `!readiness.ready` cannot tell an unloaded probe from a two-second process
+ * restart, so it rejected drafts the durable queue would have accepted (AOne bug
+ * 86998131). `unknown` must also stay closed: readiness is absent before the first
+ * health response, and treating absence as permission would submit into a runtime
+ * nobody has verified yet.
+ */
+export type ReadinessAdmission = 'ready' | 'transient' | 'blocked' | 'unknown'
+
+const TRANSIENT_PROCESS_STATES = new Set(['starting', 'recovering'])
+
+export function classifyReadiness(
+  readiness: RuntimeReadiness | null | undefined
+): ReadinessAdmission {
+  if (!readiness) return 'unknown'
+  if (readiness.ready) return 'ready'
+  return TRANSIENT_PROCESS_STATES.has(readiness.process_state ?? '') ? 'transient' : 'blocked'
+}
+
+/** The session's own readiness outranks the runtime-wide probe for session decisions. */
+export function effectiveReadiness(
+  thread: Thread | null | undefined,
+  global: RuntimeReadiness | null | undefined
+): RuntimeReadiness | null {
+  return thread?.readiness ?? global ?? null
+}
+
+export function readinessAdmission(
+  thread: Thread | null | undefined,
+  global: RuntimeReadiness | null | undefined
+): ReadinessAdmission {
+  return classifyReadiness(effectiveReadiness(thread, global))
+}
+
 /** Startup/terminal failures block the workspace; bounded recovery remains inspectable. */
 export function blocksRuntimePreflight(readiness: RuntimeReadiness | null | undefined): boolean {
-  return Boolean(
-    readiness
-    && !readiness.ready
-    && readiness.process_state !== 'recovering'
-    && readiness.process_state !== 'starting'
-  )
+  return classifyReadiness(readiness) === 'blocked'
+}
+
+/**
+ * Apply a runtime incident to the thread that owns it, and to nothing else.
+ *
+ * Returning `threads` alone is the point: a process incident belongs to one session, so
+ * there is no shape in which this reducer can reach the runtime-wide readiness that other
+ * sessions read. `reportRuntimeIncident` only ever yields `conversation`, so merging here
+ * matches `patchThread` without needing its session-status synchronisation.
+ */
+export function applyRuntimeIncident(
+  state: { threads: Record<string, Thread> },
+  threadId: string | null,
+  event: { data: RuntimeIncidentData; turn_id?: string; item_id?: string }
+): { threads: Record<string, Thread> } {
+  if (!threadId) return state
+  const thread = state.threads[threadId]
+  if (!thread) return state
+  const readiness = event.data.scope === 'process'
+    ? { readiness: projectRuntimeIncidentReadiness(thread.readiness, event.data) ?? undefined }
+    : {}
+  return {
+    threads: {
+      ...state.threads,
+      [threadId]: {
+        ...thread,
+        ...reportRuntimeIncident(thread, event.data, event.turn_id, event.item_id),
+        ...readiness
+      }
+    }
+  }
 }
 
 export function reportTransportState(thread: Thread, state: SseConnectionState): ThreadUpdate {

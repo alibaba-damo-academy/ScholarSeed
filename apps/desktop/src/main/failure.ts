@@ -1,4 +1,4 @@
-import type { UpdateSnapshot } from '../updates'
+import type { UpdateInstallFallback, UpdateSnapshot } from '../updates'
 import type { TFunction } from 'i18next'
 
 /** Product-owned startup reasons; raw subprocess/runtime diagnostics remain separate. */
@@ -38,11 +38,21 @@ export function backendFailureMessage(
 
 const UPDATE_INSTALL_FAILED = 'update failed'
 
-/** Preserve the install result string while distinguishing a locally generated fallback. */
+/**
+ * 把安装结果投影成快照的失败三元组。
+ *
+ * 带结构化分类（errorFallback）时**不透出原始 error**：Windows 校验/安装失败的诊断可能是控制台
+ * 代码页下的中文 stderr，直接进用户文案会乱码（bug 87042987），原文只落 update.log，界面按分类给
+ * 本地化说法。没有分类、但有 error 文本时（例如下载完整性失败这类我方生成的英文串）保留原文；
+ * 两者都没有则退到笼统 fallback。来源恒为 install，与相位无关。
+ */
 export function updateInstallFailure(
-  error: string | undefined
+  result: { error?: string; errorFallback?: UpdateInstallFallback }
 ): Pick<UpdateSnapshot, 'error' | 'errorFallback' | 'errorOrigin'> {
-  return error
-    ? { error, errorFallback: undefined, errorOrigin: 'install' }
+  if (result.errorFallback) {
+    return { error: undefined, errorFallback: result.errorFallback, errorOrigin: 'install' }
+  }
+  return result.error
+    ? { error: result.error, errorFallback: undefined, errorOrigin: 'install' }
     : { error: UPDATE_INSTALL_FAILED, errorFallback: 'install_failed', errorOrigin: 'install' }
 }

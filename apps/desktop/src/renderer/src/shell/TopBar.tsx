@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import aiAssistantIcon from '../assets/ai_assistant.webp'
 import {
   Button,
+  IconButton,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -11,12 +12,16 @@ import {
 } from '../components/ui'
 import { IconFont } from '../components/primitive'
 import { Icon } from '../icons'
+import { hasHorizontalSplit } from '../features/workbench/layout'
+import { useDocumentWorkspace } from '../features/workbench/workspace'
 import { selectedProject, useApp } from '../store'
 import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from './ProjectMenu'
 import { TabBar } from './TabBar'
 
 const TOPBAR_LEFT_GROUP_CLASS_NAME =
-  'vds-topbar-left-group flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] pl-[77px] pr-4'
+  'vds-topbar-left-group relative flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] pl-[77px] pr-4'
+const TOPBAR_RIGHT_DIVIDER_CLASS_NAME =
+  ' after:pointer-events-none after:absolute after:right-0 after:top-0 after:h-full after:w-px after:bg-[var(--vds-border-default)] after:content-[""]'
 const PROJECT_TRIGGER_CLASS_NAME =
   'flex h-8 w-[154px] min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[14px] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)] hover:bg-[var(--vds-bg-gray-hover-transparent)]'
 const TOPBAR_ICON_BUTTON_CLASS_NAME =
@@ -29,7 +34,7 @@ const TOPBAR_ACTIONS_WIDTH_PROPERTY = '--vds-top-bar-actions-width'
  * 项目切换复用 0.1 既有状态（homeProjectMenuOpen），不另起一套。
  * 账号入口不在这里 —— PRD 把它定在左侧活动栏最下方，见 `ActivityRail`。
  */
-export function TopBarLeft(): React.JSX.Element {
+export function TopBarLeft({ showRightBorder = true }: { showRightBorder?: boolean }): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('shell')
   const projectLabel =
@@ -44,7 +49,7 @@ export function TopBarLeft(): React.JSX.Element {
     state.mainView !== 'literature' || Boolean(state.homeSelectedProjectId)
 
   return (
-    <div className={TOPBAR_LEFT_GROUP_CLASS_NAME}>
+    <div className={`${TOPBAR_LEFT_GROUP_CLASS_NAME}${showRightBorder ? TOPBAR_RIGHT_DIVIDER_CLASS_NAME : ''}`}>
       <Popover
         open={state.homeProjectMenuOpen}
         onOpenChange={(open) => set({ homeProjectMenuOpen: open })}
@@ -122,6 +127,7 @@ export function TopBarLeft(): React.JSX.Element {
 
 export function TopBarRight(): React.JSX.Element {
   const { state, act } = useApp()
+  const documents = useDocumentWorkspace()
   const { t } = useTranslation('shell')
   const rootRef = useRef<HTMLDivElement>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
@@ -137,31 +143,49 @@ export function TopBarRight(): React.JSX.Element {
     observer.observe(actions)
     return () => observer.disconnect()
   }, [])
+  const compactAiEntry = (state.mainView === 'resource' || state.mainView === 'literature')
+    && hasHorizontalSplit(documents.layout)
+  const aiIcon = (
+    <img
+      alt=""
+      className="size-[14px]"
+      draggable={false}
+      height={14}
+      src={aiAssistantIcon}
+      width={14}
+    />
+  )
   return (
     <div ref={rootRef} className="vds-top-bar vds-top-bar-right relative !h-[var(--vds-workbench-header-height)]">
       <TabBar />
       <div ref={actionsRef} className="vds-top-bar-actions no-drag z-[var(--vds-z-elevated)] bg-[var(--vds-bg-gray-default)]">
         {!state.aiPanel.open && (
-          <Button
-            variant="tertiary"
-            size="sm"
-            className="gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] !text-[var(--vds-brand-bg-default)]"
-            aria-label={t('chrome.aiAssistant')}
-            data-testid="topbar-ai" data-ob="ai-entry"
-            onClick={act.toggleAiPanel}
-            icon={
-              <img
-                alt=""
-                className="size-[14px]"
-                draggable={false}
-                height={14}
-                src={aiAssistantIcon}
-                width={14}
+          compactAiEntry ? (
+            <Tooltip content={t('chrome.aiAssistant')} side="bottom" portalled>
+              <IconButton
+                className="!size-[28px] !min-h-[28px] !min-w-[28px] !p-0 [&_.vds-icon-button__content]:!size-[28px]"
+                data-testid="topbar-ai" data-ob="ai-entry"
+                icon={aiIcon}
+                label={t('chrome.aiAssistant')}
+                onClick={act.toggleAiPanel}
+                size="sm"
+                title={undefined}
+                variant="ghostIcon"
               />
-            }
-          >
-            {t('chrome.scholarseedAi')}
-          </Button>
+            </Tooltip>
+          ) : (
+            <Button
+              variant="tertiary"
+              size="sm"
+              className="gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] !text-[var(--vds-brand-bg-default)]"
+              aria-label={t('chrome.aiAssistant')}
+              data-testid="topbar-ai" data-ob="ai-entry"
+              onClick={act.toggleAiPanel}
+              icon={aiIcon}
+            >
+              {t('chrome.scholarseedAi')}
+            </Button>
+          )
         )}
       </div>
     </div>

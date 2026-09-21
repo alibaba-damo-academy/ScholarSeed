@@ -111,6 +111,9 @@ class ResourceVersionService:
     def manual_admitted(self, project_id: str, path: str) -> bool:
         return self._store(project_id).manual_admitted(path)
 
+    def manual_admitted_states(self, project_id: str, paths: tuple[str, ...]) -> dict[str, bool]:
+        return self._store(project_id).manual_admitted_states(paths)
+
     def admit(
         self, project_id: str, path: str, expected_disk_revision: str, idempotency_key: str
     ) -> SealResult | None:

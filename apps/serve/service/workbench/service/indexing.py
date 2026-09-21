@@ -15,8 +15,6 @@ from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryFile
 
-import pymupdf
-
 from service.chat.persistence.catalog import SESSION_CATALOG_TABLE
 from service.paths import PROJECT_DB_RELATIVE, SERVICE_LITERATURE_DATABASE
 from service.persistence.project import connect, transaction
@@ -27,6 +25,7 @@ from service.platform.citations import (
     PdfPageContent,
 )
 from service.platform.content import ContentPort
+from service.platform.pdf import PdfDocumentError, PdfPasswordError, pdf_document_info
 from service.workbench.service.extraction import (
     END_PAGE_OPTION,
     MAX_DOCUMENT_PAGES,
@@ -224,11 +223,10 @@ class PdfIndexService:
         if row is not None:
             return int(row["page_count"])
         try:
-            with pymupdf.open(stream=document.payload, filetype="pdf") as pdf:
-                if pdf.needs_pass:
-                    raise ValueError("pdf_password_required")
-                page_count = pdf.page_count
-        except RuntimeError as error:
+            page_count = pdf_document_info(document.payload).page_count
+        except PdfPasswordError as error:
+            raise ValueError("pdf_password_required") from error
+        except PdfDocumentError as error:
             raise ValueError("pdf_parse_failed") from error
         if page_count < 1:
             raise ValueError("pdf_no_pages")

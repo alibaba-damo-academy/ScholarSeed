@@ -8,8 +8,6 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from uuid import uuid4
 
-import pymupdf
-
 from service.content.domain.model import ContentError
 from service.literature.domain.model import IMPORT_CONFLICT, MAX_IMPORT_BYTES
 from service.literature.persistence.imports import ImportReceipt, LiteratureImports
@@ -27,6 +25,7 @@ from service.literature.service.metadata import (
     to_item,
 )
 from service.platform.content import ContentPort, ImportSourceContent
+from service.platform.pdf import PdfDocumentError, PdfPasswordError, pdf_document_info
 
 #: BibTeX 文件扩展名。
 BIB_SUFFIXES = frozenset({".bib", ".bibtex"})
@@ -101,12 +100,11 @@ def _ris(raw: bytes, name: str) -> tuple[ParsedRecord, ...]:
 
 def _pdf(raw: bytes, name: str) -> tuple[ParsedRecord, ...]:
     try:
-        with pymupdf.open(stream=raw, filetype=PDF_FILETYPE) as document:
-            if not document.is_pdf or document.page_count < 1:
-                raise LiteratureImportError(INVALID_PDF)
-            if document.needs_pass:
-                raise LiteratureImportError(ENCRYPTED_PDF)
-    except (RuntimeError, ValueError) as error:
+        if pdf_document_info(raw).page_count < 1:
+            raise LiteratureImportError(INVALID_PDF)
+    except PdfPasswordError as error:
+        raise LiteratureImportError(ENCRYPTED_PDF) from error
+    except PdfDocumentError as error:
         raise LiteratureImportError(INVALID_PDF) from error
     try:
         metadata = extract_pdf_metadata(raw)

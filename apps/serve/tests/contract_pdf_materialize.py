@@ -8,11 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.api.citations import register_citation_bridge
 from service.cli.bridge import parser
 from service.platform.bridge import (
@@ -28,7 +28,7 @@ from service.workbench.service.materialize import PAGE_SEPARATOR, PdfMaterialize
 
 
 def pdf_bytes(*pages: str) -> bytes:
-    with pymupdf.open() as document:
+    with pdf_fixture.open() as document:
         for text in pages:
             page = document.new_page()
             if text:

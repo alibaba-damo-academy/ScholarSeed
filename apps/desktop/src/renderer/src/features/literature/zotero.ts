@@ -1,6 +1,7 @@
 import {
   ZOTERO_LIBRARY_ROOT_KEY,
   type ZoteroCollectionNode,
+  type ZoteroPreview,
   type ZoteroSelectionDirective
 } from './api.ts'
 
@@ -51,4 +52,20 @@ export function zoteroSelectionDirectives(
   selection: ReadonlyMap<string, boolean>
 ): ZoteroSelectionDirective[] {
   return [...selection].map(([key, selected]) => ({ key, selected }))
+}
+
+/**
+ * 「开始导入」的闭锁条件。
+ *
+ * `busy` 必须包含提交中这一段: 受理请求返回前对话框还开着, 按钮不禁用就能再点一次,
+ * 而文献库是追加语义 (proposal 91) —— 连点两下就是两份条目。
+ */
+export function zoteroImportBlocked(
+  preview: ZoteroPreview | null,
+  unfiled: boolean,
+  selection: ReadonlyMap<string, boolean>,
+  busy: boolean
+): boolean {
+  if (busy || preview === null) return true
+  return zoteroNodeState(preview.library, false, selection) === false && !unfiled
 }

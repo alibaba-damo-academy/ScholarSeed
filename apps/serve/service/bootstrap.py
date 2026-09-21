@@ -353,7 +353,7 @@ def create_app(
     )
     web_sources = ResourceWebSourceCatalog(content)
     web_fetcher = HtmlFetcher()
-    web_importer = WebImporter(writer, web_fetcher, content, web_sources)
+    web_importer = WebImporter(writer, content, web_sources)
     resource_importer = ResourceImportDecisionService(
         content,
         resource_versions,

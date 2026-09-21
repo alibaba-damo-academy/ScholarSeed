@@ -1,10 +1,13 @@
 import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
+import { Copy } from 'lucide-react'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
+import aiThinking from '../assets/ai-thinking.gif'
 
 import '../styles.css'
+import { Effort } from './business/Effort'
 import {
   Accordion,
   AccordionContent,
@@ -116,6 +119,7 @@ import {
   TableHeader,
   TableRow,
   Tabs,
+  Spinner,
   TabsContent,
   TabsList,
   TabsTrigger,
@@ -154,7 +158,44 @@ function ToastQueueDemo(): JSX.Element {
   )
 }
 
+function NavigationTabsScrollDemo(): JSX.Element {
+  const [activeTab, setActiveTab] = useState('tab-1')
+  const [, setRenderVersion] = useState(0)
+
+  return (
+    <section>
+      <NavigationTabs
+        className="max-w-[320px]"
+        data-testid="render-navigation-tabs-scroll"
+        onValueChange={setActiveTab}
+        showOverview={false}
+        tabs={Array.from({ length: 7 }, (_, index) => ({
+          id: `tab-${index + 1}`,
+          label: `Document ${index + 1}.md`
+        }))}
+        value={activeTab}
+      />
+      <Button
+        data-testid="render-navigation-tabs-rerender"
+        onClick={() => setRenderVersion((version) => version + 1)}
+      >
+        重新渲染
+      </Button>
+      <Button
+        data-testid="render-navigation-tabs-activate-last"
+        onClick={() => setActiveTab('tab-7')}
+      >
+        激活末尾页签
+      </Button>
+    </section>
+  )
+}
+
 function Fixture(): JSX.Element {
+  const [effortValue, setEffortValue] = useState('')
+  const [effortChanges, setEffortChanges] = useState(0)
+  const [savedEffort, setSavedEffort] = useState('')
+  const [pendingEffort, setPendingEffort] = useState<string | null>(null)
   const [buttonClicks, setButtonClicks] = useState(0)
   const [accepted, setAccepted] = useState(false)
   const [enabled, setEnabled] = useState(false)
@@ -243,6 +284,31 @@ function Fixture(): JSX.Element {
 
   return (
     <main>
+      <Spinner size="sm" data-testid="render-spinner-default" />
+      <Spinner imageSrc={aiThinking} size="sm" data-testid="render-spinner-image" />
+      <Button loading data-testid="render-button-loading-default" />
+      <Button loading loadingIcon={<Spinner imageSrc={aiThinking} size="sm" />} data-testid="render-button-loading-image" />
+      <div data-testid="render-effort" style={{ width: 280 }}>
+        <Effort value={effortValue} options={[
+          { value: '', label: 'Default' },
+          { value: 'low', label: 'Low' },
+          { value: 'medium', label: 'Medium' },
+          { value: 'high', label: 'High' }
+        ]} disabled={false} onSelect={(value) => {
+          setEffortValue(value)
+          setEffortChanges((count) => count + 1)
+        }} />
+        <output data-testid="render-effort-value">{effortValue}</output>
+        <output data-testid="render-effort-changes">{effortChanges}</output>
+      </div>
+      <div data-testid="render-effort-fixed">
+        <Effort value="" options={[{ value: '', label: 'Default' }]} disabled onSelect={() => setEffortChanges((count) => count + 1)} />
+      </div>
+      <div data-testid="render-effort-pending" style={{ width: 280 }}>
+        <Effort value={savedEffort} options={[{ value: '', label: 'Default' }, { value: 'high', label: 'High' }]}
+          disabled={false} pending={pendingEffort !== null} onSelect={setPendingEffort} />
+        <Button onClick={() => { setSavedEffort(pendingEffort ?? ''); setPendingEffort(null) }}>Complete effort save</Button>
+      </div>
       <Button
         data-testid="render-button"
         loading={buttonClicks > 0}
@@ -292,6 +358,7 @@ function Fixture(): JSX.Element {
         tabs={[{ id: 'long', label: 'Multimodal Fusion and Vision-Language Models for Robot Learning.md' }]}
         value="long"
       />
+      <NavigationTabsScrollDemo />
 
       <Card data-testid="render-card" variant="flat">
         原子卡片
@@ -500,6 +567,7 @@ function Fixture(): JSX.Element {
       <CopyButton data-testid="render-copy-button" feedbackDuration={50} value="copy-value">
         复制
       </CopyButton>
+      <CopyButton data-testid="render-copy-icon" iconOnly icon={<Copy size={14} />} size="xs" className="![--vds-icon-button-glyph:var(--vds-icon-7)]" variant="ghost" value="icon-copy-value" />
       <CopyButton data-testid="render-copy-reject" value="reject-value">
         复制失败
       </CopyButton>
@@ -1224,6 +1292,13 @@ function Fixture(): JSX.Element {
           <SheetContent data-testid="render-sheet-trigger-content" modal>
             <SheetTitle>可恢复面板</SheetTitle>
             <SheetClose>关闭可恢复面板</SheetClose>
+            <Sheet>
+              <SheetTrigger data-testid="nested-sheet-trigger">打开子面板</SheetTrigger>
+              <SheetContent data-testid="nested-sheet-content">
+                <SheetTitle>子面板</SheetTitle>
+                <SheetClose data-testid="nested-sheet-close">关闭子面板</SheetClose>
+              </SheetContent>
+            </Sheet>
           </SheetContent>
         </SheetPortal>
       </Sheet>

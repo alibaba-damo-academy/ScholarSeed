@@ -14,10 +14,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
     PRECISE_SEARCH_FULLTEXT,
@@ -269,7 +269,7 @@ class PaperCardContracts(unittest.TestCase):
         self.assertNotIn("Generated synthesis", committed["fragments"][0]["text"])
 
     def test_card_without_pdf_recovers_positions_without_mutating_receipt(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "First sentence.")
             self.fixture.source.payload = pdf.tobytes()
@@ -298,7 +298,7 @@ class PaperCardContracts(unittest.TestCase):
         self.assertEqual(self.fixture.store.get("session", "snapshot", handle), before)
 
     def test_resolved_literature_citation_names_primary_attachment_record_owner(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "First sentence.")
             payload = pdf.tobytes()
@@ -470,7 +470,7 @@ class PaperCardContracts(unittest.TestCase):
         )
 
     def fallback_query(self, query=None, *, failed=False):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((100, 100), "First sentence. Repeated sentence.")
             self.fixture.source.payload = pdf.tobytes()

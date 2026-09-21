@@ -6,8 +6,6 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 
-import pymupdf
-
 from service.content.domain.model import ContentError
 from service.literature.persistence.files import (
     LiteratureFileBatch,
@@ -27,6 +25,7 @@ from service.literature.schema import (
 from service.paths import SERVICE_LITERATURE_FILES_DIR
 from service.platform.citations import PdfIndexForgetPort
 from service.platform.files import guess_media_type
+from service.platform.pdf import PdfDocumentError, pdf_document_info
 
 ATTACHMENT_MISSING = "literature_attachment_missing"
 ATTACHMENT_INVALID = "literature_attachment_invalid"
@@ -57,9 +56,8 @@ class AttachmentFormat:
     def validates(self, payload: bytes) -> bool:
         if self.media_type == PDF_MEDIA_TYPE:
             try:
-                with pymupdf.open(stream=payload, filetype=PDF_KIND):
-                    return True
-            except (pymupdf.FileDataError, RuntimeError, ValueError):
+                return pdf_document_info(payload).page_count > 0
+            except PdfDocumentError:
                 return False
         if self.media_type == PNG_MEDIA_TYPE:
             return (

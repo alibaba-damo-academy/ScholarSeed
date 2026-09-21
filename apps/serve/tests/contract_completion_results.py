@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import unittest
 from unittest.mock import patch
@@ -12,7 +13,17 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scholarseed_runtime.contract.model import ModelWireProtocol
-from service.chat.service.completions import CompletionBridge, mount_completion_bridge
+from service.chat.service.completions import (
+    CompletionBridge,
+    mount_completion_bridge,
+    normalize_response_input,
+)
+from service.chat.service.streams import (
+    INPUT_SHAPE_LIMIT,
+    SSE_BUFFER_LIMIT,
+    CompletionDiagnostic,
+    StreamObservation,
+)
 
 
 class BrokenBody(httpx.AsyncByteStream):
@@ -30,6 +41,15 @@ class FragmentedBody(httpx.AsyncByteStream):
         self.advance()
         for byte in self.body:
             yield bytes([byte])
+
+
+class InterruptedBody(httpx.AsyncByteStream):
+    def __init__(self, error):
+        self.error = error
+
+    async def __aiter__(self):
+        yield b'data: {"type":"response.created"}\n\n'
+        raise self.error
 
 
 class CompletionBridgeContract(unittest.TestCase):
@@ -67,13 +87,25 @@ class CompletionBridgeContract(unittest.TestCase):
             self.assertEqual(bridge.registration_count(), 0)
             self.assertTrue(client.is_closed)
 
-    def model_response(self, body, *, native=False, streaming=False, session_id="session"):
+    def model_response(
+        self,
+        body,
+        *,
+        native=False,
+        streaming=False,
+        session_id="session",
+        status=200,
+        inputs="hello",
+    ):
         observed = []
+        self.diagnostics = []
+        self.requests = []
         turn = ["original-turn"]
         bridge = CompletionBridge(
             "http://127.0.0.1",
             on_model=lambda *values: observed.append(values),
             turn_ids=lambda session: turn[0],
+            on_diagnostic=lambda session, fields: self.diagnostics.append((session, fields)),
         )
         registration = bridge.register(
             endpoint="https://provider.example/v1/chat/completions",
@@ -83,14 +115,24 @@ class CompletionBridgeContract(unittest.TestCase):
             ),
             api_key="",
             session_id=session_id,
+            model_routes={"codex-auto-review": "selected"},
         )
         app = FastAPI()
         mount_completion_bridge(app, bridge)
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(
-                200, stream=FragmentedBody(body, lambda: turn.__setitem__(0, "later-turn"))
+
+        def respond(request):
+            self.requests.append(json.loads(request.content))
+            return httpx.Response(
+                status,
+                headers={"content-type": "text/event-stream", "x-request-id": "upstream-id"},
+                stream=(
+                    body
+                    if isinstance(body, httpx.AsyncByteStream)
+                    else FragmentedBody(body, lambda: turn.__setitem__(0, "later-turn"))
+                ),
             )
-        )
+
+        transport = httpx.MockTransport(respond)
         client_type = httpx.AsyncClient
         with patch(
             "service.chat.service.completions.httpx.AsyncClient",
@@ -99,10 +141,289 @@ class CompletionBridgeContract(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.post(
                     f"/api/internal/model-bridge/{registration.bridge_id}/v1/responses",
-                    json={"model": "selected", "input": "hello", "stream": streaming},
+                    json={"model": "codex-auto-review", "input": inputs, "stream": streaming},
                 )
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, status)
         return observed, response.content
+
+    def test_diagnostics_distinguish_eof_from_completion_and_preserve_stream(self):
+        for terminal in ("response.completed", "response.failed", "response.incomplete", ""):
+            body = b'data: {"type":"response.created","secret":"do-not-log"}\n\n'
+            if terminal:
+                body += f'data: {{"type":"{terminal}"}}\n\n'.encode()
+            _, returned = self.model_response(body, native=True, streaming=True)
+            self.assertEqual(returned, body)
+            self.assertEqual(len(self.diagnostics), 3)
+            fields = self.diagnostics[-1][1]
+            self.assertEqual(fields["requested_model"], "codex-auto-review")
+            self.assertEqual(fields["routed_model"], "selected")
+            self.assertEqual(fields["client_user_message_id"], "original-turn")
+            self.assertEqual(fields["upstream_request_id"], "upstream-id")
+            self.assertEqual(fields["status_code"], 200)
+            self.assertEqual(fields["content_type"], "text/event-stream")
+            self.assertEqual(fields["end_reason"], "eof")
+            self.assertEqual(fields["upstream_end"], "eof")
+            for boundary in ("upstream", "downstream"):
+                self.assertEqual(fields[boundary]["terminal_event"], terminal)
+            self.assertNotIn("do-not-log", json.dumps(self.diagnostics))
+            self.assertEqual(len({item[1]["request_id"] for item in self.diagnostics}), 1)
+
+    def test_diagnostics_observe_chat_conversion_boundaries(self):
+        body = (
+            b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        self.model_response(body, streaming=True)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["wire_protocol"], "chat_completions")
+        self.assertTrue(fields["upstream"]["done_seen"])
+        self.assertEqual(fields["upstream"]["finish_reason"], "stop")
+        self.assertEqual(fields["downstream"]["terminal_event"], "response.completed")
+
+    def test_diagnostics_record_transport_failure_without_exception_message(self):
+        with self.assertRaises(httpx.ReadTimeout):
+            self.model_response(
+                InterruptedBody(httpx.ReadTimeout("secret-url-and-token")),
+                native=True,
+                streaming=True,
+            )
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["upstream_end"], "transport_error")
+        self.assertEqual(fields["failure_type"], "ReadTimeout")
+        self.assertEqual(fields["upstream"]["last_event"], "response.created")
+        self.assertNotIn("secret-url-and-token", json.dumps(self.diagnostics))
+
+    def test_diagnostics_record_upstream_http_rejection(self):
+        self.model_response(b'{"error":{"code":"rejected"}}', streaming=True, status=429)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["status_code"], 429)
+        self.assertEqual(fields["end_reason"], "http_error")
+
+    def test_sse_observation_is_bounded_and_does_not_invent_terminal_frame(self):
+        observer = StreamObservation()
+        observer.feed(b"data: " + b"x" * (SSE_BUFFER_LIMIT + 1))
+        self.assertLessEqual(len(observer.pending) + observer.size, SSE_BUFFER_LIMIT)
+        observer.feed(b"\n\n")
+        observer.feed(
+            b'event: response.completed\r\ndata: {"type":\r\ndata: "response.completed"}\r\n\r\n'
+        )
+        self.assertEqual(observer.oversized_events, 1)
+        self.assertEqual(observer.terminal, "response.completed")
+        truncated = StreamObservation()
+        truncated.feed(b'data: {"type":"response.completed"}\n')
+        self.assertEqual(truncated.terminal, "")
+        self.assertGreater(truncated.snapshot()["pending_bytes"], 0)
+
+    def test_oversized_named_terminal_remains_observable(self):
+        observer = StreamObservation()
+        observer.feed(b"event: response.completed\r\n")
+        observer.feed(b"data: " + b"x" * (SSE_BUFFER_LIMIT + 1))
+        observer.feed(b"\r\n\r\n")
+        self.assertEqual(observer.terminal, "response.completed")
+        self.assertEqual(observer.oversized_events, 1)
+        self.assertEqual(observer.snapshot()["pending_bytes"], 0)
+
+    def test_flat_sse_error_is_observed_and_credentials_are_redacted(self):
+        diagnostic = CompletionDiagnostic("session", "codex-auto-review")
+        diagnostic.protect({"Authorization": "Bearer opaque-credential-value"})
+        event = {
+            "type": "error",
+            "code": "invalid_request",
+            "param": "text.format",
+            "message": "unsupported schema opaque-credential-value https://host/?key=hidden",
+        }
+        diagnostic.upstream.feed(f"data: {json.dumps(event)}\n\n".encode())
+        fields = diagnostic.upstream.snapshot()
+        self.assertEqual(fields["last_event"], "error")
+        self.assertEqual(fields["error_code"], "invalid_request")
+        self.assertEqual(fields["error_param"], "text.format")
+        self.assertIn("unsupported schema", fields["error_message"])
+        self.assertNotIn("opaque-credential-value", json.dumps(fields))
+        self.assertNotIn("hidden", json.dumps(fields))
+
+    def test_stream_cancellation_is_not_reported_as_transport_failure(self):
+        self.model_response(InterruptedBody(asyncio.CancelledError()), native=True, streaming=True)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["upstream_end"], "cancelled")
+        self.assertEqual(fields["end_reason"], "consumer_closed")
+        self.assertEqual(fields["failure_type"], "")
+
+    def test_invalid_sse_json_cannot_break_observation(self):
+        observer = StreamObservation()
+        observer.feed(b"data: {invalid json}\n\n")
+        observer.feed(b"data: [1,2]\n\n")
+        self.assertEqual(observer.invalid_events, 2)
+        self.assertEqual(observer.terminal, "")
+
+    def test_input_diagnostics_are_bounded_structural_metadata(self):
+        diagnostic = CompletionDiagnostic("session", "model")
+        diagnostic.observe_input(
+            {
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "id": "msg_private",
+                        "content": "private-body",
+                    }
+                ]
+                * (INPUT_SHAPE_LIMIT + 1)
+            }
+        )
+        self.assertEqual(len(diagnostic.input_shapes), INPUT_SHAPE_LIMIT)
+        self.assertEqual(diagnostic.input_shapes[0]["id_prefix"], "msg")
+        self.assertNotIn("private", json.dumps(diagnostic.input_shapes))
+
+    def test_tool_prefix_is_projected_without_mutating_messages_or_tool_schemas(self):
+        tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
+        payload = {
+            "input": [
+                {"type": "additional_tools", "id": "at_local", "role": "developer", "tools": tools},
+                {"type": "message", "id": "at_local", "role": "user", "content": "review"},
+                {"id": "local_id", "role": "assistant", "content": [{"text": "msg_literal"}]},
+                {"type": "message", "id": "msg_server", "role": "assistant", "content": "ok"},
+                {"type": "function_call", "id": "fc_call", "call_id": "at_call"},
+                {"type": "function_call_output", "call_id": "at_call", "output": "at_literal"},
+                {"type": "reasoning", "id": "rs_reasoning", "summary": []},
+                {"type": "item_reference", "id": "msg_server"},
+            ],
+            "instructions": "Preserve policy",
+            "text": {"format": {"type": "json_schema"}},
+        }
+        original = copy.deepcopy(payload)
+        normalized, counts = normalize_response_input(payload)
+        self.assertEqual(payload, original)
+        self.assertEqual(counts, {"additional_tools": 1})
+        self.assertEqual(normalized["input"], original["input"][1:])
+        self.assertEqual(normalized["tools"], tools)
+        self.assertEqual(normalized["instructions"], original["instructions"])
+        self.assertEqual(normalized["text"], original["text"])
+
+    def test_referenced_tool_prefix_is_rejected_not_dangling(self):
+        with self.assertRaisesRegex(ValueError, "model_bridge_invalid_tool_input"):
+            normalize_response_input(
+                {
+                    "input": [
+                        {
+                            "type": "additional_tools",
+                            "id": "at_local",
+                            "role": "developer",
+                            "tools": [],
+                        },
+                        {"type": "item_reference", "id": "at_local"},
+                    ]
+                }
+            )
+
+    def test_standard_input_is_unchanged(self):
+        for inputs in (
+            "hi",
+            [{"type": "item_reference", "id": "at_local"}],
+            [{"type": "message", "id": "at_incomplete"}],
+            [{"type": "custom", "role": "user", "content": "hi", "id": "at_id"}],
+        ):
+            payload = {"input": inputs, "previous_response_id": "resp_original"}
+            normalized, counts = normalize_response_input(payload)
+            self.assertEqual(normalized, payload)
+            self.assertEqual(counts, {})
+
+    def test_native_error_has_explicit_failed_terminal_without_success(self):
+        body = (
+            b'data: {"type":"error","code":"InvalidParameter","message":"invalid message id"}\n\n'
+        )
+        _, returned = self.model_response(body, native=True, streaming=True)
+        events = [
+            json.loads(line[6:]) for line in returned.splitlines() if line.startswith(b"data: ")
+        ]
+        self.assertEqual([event["type"] for event in events], ["error", "response.failed"])
+        self.assertEqual(events[-1]["response"]["error"]["code"], "InvalidParameter")
+        self.assertEqual(events[-1]["response"]["error"]["message"], "invalid message id")
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["upstream"]["last_event"], "error")
+        self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
+        self.assertEqual(fields["end_reason"], "provider_error")
+
+    def test_existing_failed_terminal_is_not_duplicated(self):
+        body = b'data: {"type":"response.failed","response":{"error":{"code":"bad","message":"failed"}}}\n\n'
+        _, returned = self.model_response(body, native=True, streaming=True)
+        self.assertEqual(returned, body)
+
+    def test_bridge_preserves_native_lite_and_only_translates_chat_tools(self):
+        tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
+        items = [
+            {"type": "additional_tools", "role": "developer", "id": "at_local", "tools": tools},
+            {
+                "type": "message",
+                "role": "user",
+                "id": "msg_keep",
+                "content": [{"type": "input_text", "text": "review"}],
+            },
+        ]
+        for native in (True, False):
+            self.model_response(b'{"choices":[]}', native=native, inputs=items)
+            if native:
+                self.assertEqual(self.requests[0]["input"], items)
+                self.assertNotIn("tools", self.requests[0])
+            else:
+                self.assertEqual(
+                    self.requests[0]["messages"], [{"role": "user", "content": "review"}]
+                )
+                self.assertEqual(self.requests[0]["tools"][0]["function"]["name"], "exec")
+            self.assertEqual(
+                self.diagnostics[-1][1]["converted_input_items"],
+                {} if native else {"additional_tools": 1},
+            )
+        self.assertEqual(items[0]["id"], "at_local")
+
+    def test_ambiguous_tool_inputs_fail_closed(self):
+        prefix = {"type": "additional_tools", "role": "developer", "tools": []}
+        for payload in (
+            {"input": [prefix, prefix]},
+            {"input": [{"type": "message"}, prefix]},
+            {"input": [{**prefix, "role": "user"}]},
+            {"input": [{**prefix, "tools": "bad"}]},
+            {"input": [{**prefix, "tools": [None]}]},
+            {"input": [prefix], "tools": [{"type": "function", "name": "other"}]},
+        ):
+            with (
+                self.subTest(payload=payload),
+                self.assertRaisesRegex(ValueError, "model_bridge_invalid_tool_input"),
+            ):
+                normalize_response_input(payload)
+
+    def test_bridge_rejects_ambiguous_tool_input_before_upstream(self):
+        self.model_response(
+            b"",
+            status=400,
+            inputs=[{"type": "additional_tools", "role": "user", "tools": []}],
+        )
+        self.assertEqual(self.requests, [])
+
+    def test_lite_tools_cannot_bypass_chat_native_tool_capability_check(self):
+        self.model_response(
+            b"",
+            status=400,
+            inputs=[
+                {"type": "additional_tools", "role": "developer", "tools": [{"type": "web_search"}]}
+            ],
+        )
+        self.assertEqual(self.requests, [])
+
+    def test_empty_and_repeated_identical_tools_preserve_definitions(self):
+        tools = [
+            {
+                "type": "namespace",
+                "name": "functions",
+                "tools": [{"type": "function", "name": "exec"}],
+            }
+        ]
+        for definitions in ([], tools):
+            payload = {
+                "input": [{"type": "additional_tools", "role": "developer", "tools": definitions}],
+                "tools": definitions,
+            }
+            normalized, _ = normalize_response_input(payload)
+            self.assertEqual(normalized, {"input": [], "tools": definitions})
 
     def test_response_model_is_captured_before_turn_changes(self):
         for native in (False, True):

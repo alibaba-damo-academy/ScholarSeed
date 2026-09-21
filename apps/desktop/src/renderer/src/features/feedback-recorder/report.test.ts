@@ -96,15 +96,14 @@ const summary: SummaryFields = {
   additional: 'additional'
 }
 
-test('deterministic summary uses notes and failed request evidence', () => {
+test('deterministic summary uses user notes without exposing request evidence', () => {
   const value = generateSummary(session, {
     step: (index, kind, target, note) => `${index}:${kind}:${target}:${note}`,
-    failedRequests: (count) => `failed:${count}`,
     screenshots: (count) => `shots:${count}`,
     screenshotNote: (index, note) => `shot-note:${index}:${note}`,
     empty: 'empty'
   })
-  assert.equal(value, '1:click:submit:页面没有响应\nfailed:1')
+  assert.equal(value, '1:click:submit:页面没有响应')
 })
 
 test('recording report keeps immutable evidence and omits deleted notes', () => {

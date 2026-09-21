@@ -1,10 +1,11 @@
-import { ExternalLink, FileLock2, Maximize2, Minimize2, NotepadText, Undo2 } from 'lucide-react'
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { ExternalLink, FileLock2, NotepadText, Undo2 } from 'lucide-react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getDocument, GlobalWorkerOptions, type PDFPageProxy, type PDFDocumentLoadingTask } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
 import { openSystemPath } from '../../api'
+import { useApp } from '../../store'
 import { LiteratureExcerptImport } from '../../components/business/Excerpts'
 import {
   Button,
@@ -24,6 +25,7 @@ import {
   TabsList,
   TabsTrigger,
   Textarea,
+  Tooltip,
   useToast,
   type ToastTone,
 } from '../../components/ui'
@@ -66,6 +68,7 @@ import {
 import { citationRegions, clipQuads, normalizeQuads, selectionRectangles, enclosingRectangle, fittedScale, matchText, MAX_SCALE, MIN_SCALE, mostVisiblePage, PAGE_GUTTER, pageNumber, SCALE_STEP, selectionPageText, THUMBNAIL_WIDTH, type PdfFitMode, type Size } from './pdf/geometry'
 import { outlineTree, resolveDestination, type PdfDestination, type PdfDestinationResolver, type PdfOutlineItem } from './pdf/navigation'
 import { PdfOutline } from './pdf/Outline'
+import { PdfPanel } from './pdf/Panel'
 import {
   DEFAULT_PDF_MARK_COLOR,
   PDF_RECORD_SCHEMA_VERSION,
@@ -81,6 +84,7 @@ import {
 } from './pdf/loading'
 import { usePdfAnalysis } from './pdf/Reading'
 import { PdfScale } from './pdf/Scale'
+import { pdfWheelScale } from './pdf/zoom'
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 const SEARCH_BATCH_SIZE = 8
@@ -107,6 +111,7 @@ function logPdfExportFailure(error: unknown): void {
 const DEFAULT_FIT_MODE: PdfFitMode = 'width'
 interface SearchHit { page: number; text: string; ordinal: number }
 interface PageSelection { page: number; text: string; quads: number[][] }
+interface PdfZoomAnchor { page: number; x: number; y: number; clientX: number; clientY: number }
 
 function searchSnippet(text: string, query: string): React.ReactNode {
   const normalizedQuery = query.trim()
@@ -202,8 +207,8 @@ export function PdfDocument({
   tabId: string
   onResourceImported?: () => void | Promise<void>
 }): React.JSX.Element {
-  const { t } = useTranslation('pdf')
-  const documentPanelTitleId = useId()
+  const { t, i18n } = useTranslation('pdf')
+  const { set } = useApp()
   const controller = useWorkspaceController()
   const workspace = useDocumentWorkspace()
   const session = workspace.sessions[sessionId]
@@ -231,6 +236,7 @@ export function PdfDocument({
     ? reading.sidebarTab
     : 'outline'
   const [pages, setPages] = useState<PDFPageProxy[]>([])
+  const [selectionDragPage, setSelectionDragPage] = useState<number | null>(null)
   const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
   const [cropBox, setCropBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
   const [fonts, setFonts] = useState(() => new PdfFonts())
@@ -307,6 +313,7 @@ export function PdfDocument({
   const viewportRef = useRef<HTMLDivElement>(null)
   const documentRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLTextAreaElement>(null)
+  const zoomAnchorRef = useRef<PdfZoomAnchor>()
   const textCache = useRef(new Map<number, string>())
   const readingRef = useRef(reading)
   readingRef.current = reading
@@ -395,6 +402,8 @@ export function PdfDocument({
   const natural = activePage?.getViewport({ scale: 1 })
   const scale = mode === 'custom' ? storedScale : natural && size.width && size.height
     ? fittedScale(mode, natural, { width: Math.max(1, size.width - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
 
   const navigate = useCallback((target: number): void => {
     setFocus(undefined)
@@ -427,6 +436,19 @@ export function PdfDocument({
 
   // Restore page after tab remount or geometry changes. Scrolling itself does not trigger this effect.
   useLayoutEffect(() => {
+    const zoomAnchor = zoomAnchorRef.current
+    if (zoomAnchor) {
+      zoomAnchorRef.current = undefined
+      const page = viewportRef.current?.querySelector<HTMLElement>(`[data-testid="pdf-page-${zoomAnchor.page}"]`)
+      if (page) {
+        const bounds = page.getBoundingClientRect()
+        viewportRef.current?.scrollBy({
+          left: bounds.left + bounds.width * zoomAnchor.x - zoomAnchor.clientX,
+          top: bounds.top + bounds.height * zoomAnchor.y - zoomAnchor.clientY
+        })
+        return
+      }
+    }
     // Citation geometry owns its scroll; do not jump to the page before it animates.
     if (citationPages?.length) {
       requestFocus(focus?.kind === 'citation' ? focus : { kind: 'citation', page: citationPages[0].page })
@@ -768,7 +790,46 @@ export function PdfDocument({
     navigate(hits[next].page)
     requestFocus({ kind: 'search', page: hits[next].page, ordinal: hits[next].ordinal })
   }
-  const zoom = (value: number): void => update({ mode: 'custom', scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, value)) })
+  const zoom = useCallback((value: number): void => update({ mode: 'custom', scale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, value)) }), [update])
+  useEffect(() => {
+    const host = viewportRef.current
+    if (!host) return
+    const onWheel = (event: WheelEvent): void => {
+      const nextScale = pdfWheelScale({
+        scale: scaleRef.current,
+        minScale: MIN_SCALE,
+        maxScale: MAX_SCALE,
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        viewportHeight: host.clientHeight,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey
+      })
+      if (nextScale === null) return
+      event.preventDefault()
+      if (nextScale === scaleRef.current) return
+      const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.vds-pdf-page') : null
+      const page = target ?? host.querySelector<HTMLElement>(`[data-testid="pdf-page-${currentPage}"]`)
+      if (page) {
+        const bounds = page.getBoundingClientRect()
+        if (bounds.width > 0 && bounds.height > 0) {
+          const clientX = Math.max(bounds.left, Math.min(bounds.right, event.clientX))
+          const clientY = Math.max(bounds.top, Math.min(bounds.bottom, event.clientY))
+          zoomAnchorRef.current = {
+            page: Number(page.dataset.page),
+            x: (clientX - bounds.left) / bounds.width,
+            y: (clientY - bounds.top) / bounds.height,
+            clientX,
+            clientY
+          }
+        }
+      }
+      scaleRef.current = nextScale
+      zoom(nextScale)
+    }
+    host.addEventListener('wheel', onWheel, { passive: false })
+    return () => host.removeEventListener('wheel', onWheel)
+  }, [currentPage, zoom])
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent): void => {
       if (controller.getSnapshot().focusedTabId !== tabId) return
@@ -818,10 +879,11 @@ export function PdfDocument({
     }
     window.addEventListener('keydown', onShortcut)
     return () => window.removeEventListener('keydown', onShortcut)
-  }, [activeMark, controller, currentPage, hitIndex, hits, markColors.highlight, navigate, pages.length, scale, selectedText, selections.length, sidebar, sidebarTab, tabId, update])
+  }, [activeMark, controller, currentPage, hitIndex, hits, markColors.highlight, navigate, pages.length, scale, selectedText, selections.length, sidebar, sidebarTab, tabId, update, zoom])
   const onScroll = (): void => {
     const host = viewportRef.current
     if (!host) return
+    if (selections.length && selectionDragPage === null) window.getSelection()?.removeAllRanges()
     const elements = Array.from(host.querySelectorAll<HTMLElement>('.vds-pdf-page'))
     const page = mostVisiblePage(elements.map(element => {
       const { top, bottom } = element.getBoundingClientRect()
@@ -878,6 +940,15 @@ export function PdfDocument({
     clearFigureSelection()
     analysis.exitFigureSelection()
   }, [analysis.exitFigureSelection, clearFigureSelection])
+  const activeDocumentPanelId = activeDocumentPanel?.id
+  useEffect(() => {
+    const panelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
+    set({
+      pdfSidePanelOpen: panelOpen,
+      ...(panelOpen ? { modulePanelOpen: false } : {})
+    })
+  }, [analysis.panel, recordsOpen, activeDocumentPanelId, set])
+  useEffect(() => () => set({ pdfSidePanelOpen: false }), [set])
   const encrypted = loadError?.kind === PDF_LOAD_FAILURE_KIND.encrypted
   const canOpenEncryptedExternally = Boolean(session && isLocatedDocumentSource(session.source))
   const openEncryptedExternally = async (): Promise<void> => {
@@ -1012,10 +1083,13 @@ export function PdfDocument({
         rightPanel={<span aria-hidden />}
         onWidthChange={width => update({ navigationWidth: Number.parseFloat(width) })}
       />}
-      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) captureSelection(true) }} onKeyUp={() => captureSelection()}
+      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) { captureSelection(true); setSelectionDragPage(null) } }} onKeyUp={() => captureSelection()}
         onPointerDownCapture={event => {
-          if (!analysis.figure) return
           const element = (event.target as HTMLElement).closest<HTMLElement>('.vds-pdf-page')
+          if (!analysis.figure) {
+            setSelectionDragPage(element ? Number(element.dataset.page) : null)
+            return
+          }
           if (!element) return
           event.preventDefault(); event.stopPropagation()
           analysis.setFigureGuideOpen(false)
@@ -1034,13 +1108,14 @@ export function PdfDocument({
           event.preventDefault(); cropStart.current = undefined
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
-        }}>
+        }} onPointerCancel={() => setSelectionDragPage(null)}>
         {!pages.length && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
         {pages.map(page => <PdfPage
           fonts={fonts}
           key={page.pageNumber}
           page={page}
           scale={scale}
+          keepRendered={selectionDragPage === page.pageNumber}
           search={query}
           focus={focus?.page === page.pageNumber ? focus : undefined}
           annotations={anchoredMarks.filter(mark => mark.page === page.pageNumber)}
@@ -1072,44 +1147,41 @@ export function PdfDocument({
       </div>
       {analysis.sidePanel}
       {recordsOpen && !analysis.panel && <PdfAnnotations comments={sidecar?.records.comments ?? []} marks={anchoredMarks} saving={saving} expanded={expandedPanel === PDF_RECORDS_PANEL_ID} onToggleExpanded={() => setExpandedPanel(value => value === PDF_RECORDS_PANEL_ID ? null : PDF_RECORDS_PANEL_ID)} onClose={() => { setExpandedPanel(null); update({ records: false }) }} onDelete={(markId) => { void deleteMark(markId) }} onFocus={(mark) => { navigate(mark.page); requestFocus({ kind: 'annotation', page: mark.page, id: mark.id }) }} />}
-      {activeDocumentPanel && !analysis.panel && !recordsOpen && documentPanels ? (
-        <aside
-          aria-labelledby={documentPanelTitleId}
-          className={`vds-pdf-document-panel absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] flex w-[420px] min-w-[400px] max-w-[45%] flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-left)]${expandedPanel === activeDocumentPanel.id ? ' is-expanded' : ''}`}
-          data-testid={`document-panel-${activeDocumentPanel.id}`}
-        >
-          <header className="flex items-center justify-between gap-2 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3">
-            <strong id={documentPanelTitleId} className="inline-flex items-center gap-2">
-              <NotepadText size={16} />
-              {activeDocumentPanel.title}
-            </strong>
-            <div className="flex items-center gap-1"><IconButton data-testid="pdf-document-panel-toggle-size" label={expandedPanel === activeDocumentPanel.id ? t('reading.shrinkPanel') : t('reading.expandPanel')} icon={expandedPanel === activeDocumentPanel.id ? <Minimize2 size={14} /> : <Maximize2 size={14} />} variant="ghost" onClick={() => setExpandedPanel(value => value === activeDocumentPanel.id ? null : activeDocumentPanel.id)} /><IconButton label={t('reading.close')} icon={<Icon name="close" size={14} />} variant="ghost" onClick={() => { setExpandedPanel(null); documentPanels.toggle(activeDocumentPanel.id) }} /></div>
-          </header>
-          <div className="min-h-0 flex-1 overflow-hidden">
-            {activeDocumentPanel.render(documentPanels.context)}
-          </div>
-        </aside>
-      ) : null}
-      {isLiterature && <nav aria-label={t('pdfToolbar.toolbar')} data-ob="pdf-tools" className="flex w-[var(--vds-layout-pdf-rail-width)] flex-none flex-col items-center gap-2 border-l border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-1 py-3">
+      {activeDocumentPanel && !analysis.panel && !recordsOpen && documentPanels ? <PdfPanel
+        ariaLabel={activeDocumentPanel.label(i18n)}
+        closeLabel={t('reading.close')}
+        expanded={expandedPanel === activeDocumentPanel.id}
+        icon={<NotepadText size={16} />}
+        testId={`document-panel-${activeDocumentPanel.id}`}
+        title={activeDocumentPanel.title}
+        onClose={() => { setExpandedPanel(null); documentPanels.toggle(activeDocumentPanel.id) }}
+        onToggleExpanded={() => setExpandedPanel(value => value === activeDocumentPanel.id ? null : activeDocumentPanel.id)}
+      >
+        {activeDocumentPanel.render(documentPanels.context)}
+      </PdfPanel> : null}
+      {isLiterature && <nav aria-label={t('pdfToolbar.toolbar')} data-ob="pdf-tools" className="flex w-[var(--vds-layout-pdf-rail-width)] flex-none flex-col items-center gap-2 border-l border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-1)] py-3">
         {analysis.railActions}
-        {documentPanels?.panels.map((panel) => (
-          <IconButton
-            key={panel.id}
-            aria-pressed={documentPanels.activePanelId === panel.id}
-            data-testid={`document-panel-toggle-${panel.id}`}
-            label={String(panel.title)}
-            icon={<NotepadText size={18} />}
-            variant={documentPanels.activePanelId === panel.id ? 'secondary' : 'ghost'}
-            onClick={() => {
-              exitFigureSelection()
-              analysis.setPanel(null)
-              update({ records: false })
-              setExpandedPanel(null)
-              documentPanels.toggle(panel.id)
-            }}
-          />
-        ))}
-        <IconButton data-testid="pdf-annotation-toggle" variant={recordsOpen ? 'secondary' : 'ghost'} aria-pressed={recordsOpen} label={t('pdfAnnotation.records')} icon={<Icon name="pen" size={18} />} onClick={() => { exitFigureSelection(); closeDocumentPanel(); analysis.setPanel(null); update({ records: !recordsOpen }) }} />
+        {documentPanels?.panels.map((panel) => {
+          const label = panel.label(i18n)
+          return <Tooltip key={panel.id} portalled content={label} side="left">
+            <IconButton
+              aria-pressed={documentPanels.activePanelId === panel.id}
+              data-testid={`document-panel-toggle-${panel.id}`}
+              label={label}
+              title={undefined}
+              icon={<NotepadText size={18} />}
+              variant={documentPanels.activePanelId === panel.id ? 'secondary' : 'ghost'}
+              onClick={() => {
+                exitFigureSelection()
+                analysis.setPanel(null)
+                update({ records: false })
+                setExpandedPanel(null)
+                documentPanels.toggle(panel.id)
+              }}
+            />
+          </Tooltip>
+        })}
+        <Tooltip portalled content={t('pdfAnnotation.records')} side="left"><IconButton data-testid="pdf-annotation-toggle" variant={recordsOpen ? 'secondary' : 'ghost'} aria-pressed={recordsOpen} label={t('pdfAnnotation.records')} title={undefined} icon={<Icon name="pen" size={18} />} onClick={() => { exitFigureSelection(); closeDocumentPanel(); analysis.setPanel(null); update({ records: !recordsOpen }) }} /></Tooltip>
       </nav>}
     </div>
     </>}

@@ -10,6 +10,7 @@ const { executableDigest } = require('./digest.cjs')
 const { verify: verifyWindowsSignature } = require('./windows-sign.cjs')
 const { verifyBrowser } = require('./browser.cjs')
 const { verifyAsarClosure } = require('./closure.cjs')
+const { verifyNotices } = require('./notices.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
 const { verifyPython } = require('../../../scripts/python.cjs')
 const { probe: probeTexlive, stagedEngines } = require('../runtime/texlive.cjs')
@@ -156,6 +157,7 @@ function verifySignedRuntime(filename, teamId) {
 
 async function verifyContent(application, frozen, signed = false) {
   const current = layout(application, frozen)
+  verifyNotices(current.resources, frozen.notices)
   const closure = verifyAsarClosure(current.resources)
   const { asar_bytes, ...compiledClosure } = closure
   if (JSON.stringify(compiledClosure) !== JSON.stringify(frozen.closure)) {
@@ -188,7 +190,7 @@ async function verifyContent(application, frozen, signed = false) {
   if (!frozen.texlive) throw new Error('frozen build context carries no TeX Live evidence')
   const engines = stagedEngines(current.resources, frozen.platform, frozen.texlive.executables)
   for (const engine of engines) fs.accessSync(engine, fs.constants.X_OK)
-  const reportedEngines = probeTexlive(path.dirname(engines[0]), frozen.texlive.executables,
+  const reportedEngines = await probeTexlive(path.dirname(engines[0]), frozen.texlive.executables,
     frozen.texlive.texlive, frozen.platform)
   if (JSON.stringify(reportedEngines) !== JSON.stringify(frozen.texlive.reported)) {
     throw new Error('packaged TeX Live engines differ from the staged toolchain')
@@ -230,6 +232,10 @@ function macTrust(application, frozen) {
   }
   return { developer_id: developerId, team_id: teamId, notarization: receipt,
     stapled: true, gatekeeper: 'accepted' }
+}
+
+function unsignedPackageCheck(frozen) {
+  return frozen.platform === 'darwin' && frozen.stage === 'dir' && frozen.candidate && !frozen.signingRequired
 }
 
 const TEMP_CLEANUP_RETRY_DELAY_MS = 250
@@ -322,15 +328,16 @@ async function verifyInstalledWindows(installer, frozen) {
 
 async function verifyApplication(application, frozen, runtimeCheck) {
   verifyIdentity(application, frozen)
-  const { current, imports, browser, closure } = await verifyContent(application, frozen, true)
-  const trust = frozen.platform === 'darwin'
+  const signed = !unsignedPackageCheck(frozen)
+  const { current, imports, browser, closure } = await verifyContent(application, frozen, signed)
+  const trust = frozen.platform === 'darwin' && signed
     ? macTrust(application, frozen)
     : frozen.signingRequired
       ? verifyWindowsSignature(current.executable, frozen.product.config.expected_windows_publisher)
       : null
   return { path: application, content: 'passed', imports, browser, closure,
     package_check: runtimeCheck ? runPackageCheck(application, frozen) : null,
-    signature_valid: frozen.platform === 'darwin' || frozen.signingRequired, trust }
+    signature_valid: signed && (frozen.platform === 'darwin' || frozen.signingRequired), trust }
 }
 
 async function verify(builderContext) {
@@ -384,6 +391,7 @@ module.exports.RUNTIME_PROBE_SCRIPT = RUNTIME_PROBE_SCRIPT
 module.exports.sha256 = sha256
 module.exports.sha512 = sha512
 module.exports.verifyApplication = verifyApplication
+module.exports.unsignedPackageCheck = unsignedPackageCheck
 module.exports.runPackageCheck = runPackageCheck
 module.exports.verifyInstalledWindows = verifyInstalledWindows
 module.exports.artifactTemporaryRoot = artifactTemporaryRoot

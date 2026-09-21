@@ -118,7 +118,8 @@ const BACKEND_LOG_FILE = 'backend.log'
 // 后端日志必须落在产品家目录的 logs/ 下, 而不是 Electron 的 app.getPath('logs')
 // (macOS 上是 ~/Library/Logs/<appName>/)。后者在 SCHOLARSEED_HOME 之外, 问题反馈的
 // 日志打包只遍历家目录, 收不到它 —— 而它恰好是唯一一份实时后端日志。
-const LOGS_DIRNAME = 'logs'
+// 导出给主进程其它模块（如 updater 的 update.log）复用同一个 logs/ 目录约定。
+export const LOGS_DIRNAME = 'logs'
 const BACKEND_DIR = 'backend'
 const HOOK_BIN_DIR = 'bin'
 const NODE_SHIM = process.platform === 'win32' ? 'node.cmd' : 'node'
@@ -364,6 +365,21 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       log(`[shell] ERROR python not found: ${python}\n`)
       return false
     }
+    // Vendored runtime resolution ends in subprocess probes and is independent
+    // of the Python identity check, so both resolves start here and are awaited
+    // after the check: the probes overlap each other and the Python subprocess.
+    const vendoredRuntimes = app.isPackaged
+      ? null
+      : Promise.all([
+        resolveVendoredCodex(app.getAppPath(), process.platform, process.arch,
+          line => log(`[shell] ${line}\n`)),
+        resolveVendoredTexlive(app.getAppPath(), process.platform, process.arch,
+          line => log(`[shell] ${line}\n`))
+          .catch((error: Error) => {
+            log(`[shell] WARN bundled TeX Live unavailable: ${error.message}\n`)
+            return null
+          })
+      ])
     let pythonIdentity
     try {
       pythonIdentity = app.isPackaged
@@ -379,33 +395,26 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     configureDesktopEnvironment(log)
     const inheritedExecutablePath = process.env[PATH_ENV] || ''
     const standardPath = app.isPackaged ? standardExecutablePath() : ''
-    const bundledCodexExecutable = app.isPackaged
-      ? bundledCodex(process.resourcesPath)
-      : ''
-    const codexExecutable = app.isPackaged
-      ? bundledCodexExecutable
-      : (await resolveVendoredCodex(app.getAppPath(), process.platform, process.arch,
-        line => log(`[shell] ${line}\n`))).path
-    log(`[shell] Codex source=${app.isPackaged ? 'bundled' : 'vendored'} executable=${codexExecutable}\n`)
-    const codexExecutableDirectory = codexExecutable ? dirname(codexExecutable) : null
-    const pythonExecutableDirectory = pythonIdentity.scripts
     // Bundled TeX Live: the literature-review skill compiles survey PDFs with
     // xelatex/pdflatex/bibtex and finds them through PATH, so the shipped
     // toolchain has to precede any host TeX installation. A packaged app treats
     // a missing tree as a build defect and fails; a development launch only
     // warns, because a cold vendor cache must not block unrelated work.
-    let texliveExecutableDirectory: string | null
-    if (app.isPackaged) {
-      texliveExecutableDirectory = bundledTexlive(process.resourcesPath)
-    } else {
-      try {
-        texliveExecutableDirectory = (await resolveVendoredTexlive(app.getAppPath(),
-          process.platform, process.arch, line => log(`[shell] ${line}\n`))).binDirectory
-      } catch (error) {
-        texliveExecutableDirectory = null
-        log(`[shell] WARN bundled TeX Live unavailable: ${(error as Error).message}\n`)
-      }
+    const bundledCodexExecutable = app.isPackaged
+      ? bundledCodex(process.resourcesPath)
+      : ''
+    let codexExecutable = bundledCodexExecutable
+    let texliveExecutableDirectory: string | null = app.isPackaged
+      ? bundledTexlive(process.resourcesPath)
+      : null
+    if (vendoredRuntimes) {
+      const [codexResolution, texliveResolution] = await vendoredRuntimes
+      codexExecutable = codexResolution.path
+      texliveExecutableDirectory = texliveResolution ? texliveResolution.binDirectory : null
     }
+    log(`[shell] Codex source=${app.isPackaged ? 'bundled' : 'vendored'} executable=${codexExecutable}\n`)
+    const codexExecutableDirectory = codexExecutable ? dirname(codexExecutable) : null
+    const pythonExecutableDirectory = pythonIdentity.scripts
     log(`[shell] TeX Live source=${app.isPackaged ? 'bundled' : 'vendored'} ` +
       `directory=${texliveExecutableDirectory}\n`)
     // hookBin ahead of pythonExecutableDirectory: the packaged env keeps the

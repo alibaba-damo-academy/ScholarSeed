@@ -106,7 +106,9 @@ const MARKDOWN_RENDER_TEST_ID = 'markdown-visual-editor'
 const MARKDOWN_EDIT_TEST_ID = 'markdown-open-editor'
 
 
-/** 写入 Markdown 的正文，含标题/粗体/表格，用于验证渲染与落盘。 */
+const MARKDOWN_CODE_COPY_TEXT = 'console.log("clipboard");'
+
+/** 写入 Markdown 的正文，含标题/粗体/表格/代码块，用于验证渲染与落盘。 */
 const MARKDOWN_BODY = [
   '# UI 驱动验收',
   '',
@@ -114,7 +116,11 @@ const MARKDOWN_BODY = [
   '',
   '| 项 | 值 |',
   '|----|----|',
-  '| 通道 | 真实渲染进程 |'
+  '| 通道 | 真实渲染进程 |',
+  '',
+  '```text',
+  MARKDOWN_CODE_COPY_TEXT,
+  '```'
 ].join('\n')
 
 /** BOTH_CHANGED 验收中两侧故意不同的尾部内容。 */
@@ -1859,6 +1865,24 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
         join(snapshotDir, 'markdown-editor.png'),
         (await win.webContents.capturePage()).toPNG()
       )
+
+      const clipboardBeforeCodeCopy = await clipboardText()
+      await clipboard.writeText('')
+      const codeCopyClicked = await click(win, '.milkdown-code-block .copy-button')
+      await settle(SETTLE_MS)
+      const copiedCode = await clipboardText()
+      record(
+        'Markdown 代码块复制写入真实系统剪贴板',
+        codeCopyClicked && copiedCode === MARKDOWN_CODE_COPY_TEXT,
+        copiedCode
+      )
+      await clipboard.writeText(clipboardBeforeCodeCopy)
+      if (codeCopyClicked) {
+        writeFileSync(
+          join(snapshotDir, 'markdown-code-copy.png'),
+          (await win.webContents.capturePage()).toPNG()
+        )
+      }
 
       const slashTyped = await typeMarkdownSlash(win)
       const slashMenu = slashTyped && await waitFor(win, '.milkdown-slash-menu[data-show="true"]')

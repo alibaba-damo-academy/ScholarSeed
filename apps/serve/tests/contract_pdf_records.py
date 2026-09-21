@@ -10,10 +10,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.cutover import cutover_pdf_records
@@ -306,7 +306,7 @@ def test_explicit_copy_creates_independent_project_owner_and_optional_snapshot()
         ProjectRegistry(str(root / "projects"), content_catalog), content_catalog
     )
     target_project = content.create_project("Copy")
-    with pymupdf.open() as document:
+    with pdf_fixture.open() as document:
         document.new_page()
         document.embfile_add("scholarseed-annotations.json", json.dumps(_records()).encode())
         source_bytes = document.tobytes()
@@ -438,7 +438,7 @@ def test_embedded_records_initialize_both_owners_without_overwriting_edits() -> 
             ],
         }
     ]
-    with pymupdf.open() as document:
+    with pdf_fixture.open() as document:
         document.new_page()
         document.embfile_add("scholarseed-annotations.json", json.dumps(original).encode())
         exported = document.tobytes()
@@ -520,7 +520,7 @@ def test_invalid_embedded_records_initialize_an_empty_snapshot_without_blocking(
         )
     ):
         path = f"invalid-{index}.pdf"
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             document.embfile_add("scholarseed-annotations.json", invalid)
             Path(content.resolve(project.id, path)).write_bytes(document.tobytes())

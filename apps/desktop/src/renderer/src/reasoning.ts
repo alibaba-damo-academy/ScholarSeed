@@ -9,10 +9,10 @@ const REASONING_KEYS = {
   max: 'reasoning.max', ultra: 'reasoning.ultra'
 } as const
 
-export function reasoningLabel(value: string, t: TFunction<'conversation'>): string {
+export function reasoningLabel(value: string, t: TFunction<'conversation'>, compact = false): string {
   if (value === DEFAULT_REASONING_EFFORT) return t('reasoning.default')
   return Object.prototype.hasOwnProperty.call(REASONING_KEYS, value)
-    ? t(REASONING_KEYS[value as keyof typeof REASONING_KEYS])
+    ? t(compact ? `${REASONING_KEYS[value as keyof typeof REASONING_KEYS]}Short` : REASONING_KEYS[value as keyof typeof REASONING_KEYS])
     : value
 }
 

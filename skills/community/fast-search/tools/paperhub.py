@@ -35,7 +35,9 @@ def _papersearch_url(value):
     return base + "/papersearch/"
 
 
-_BASE = os.environ.get("PAPERHUB_URL", "https://scholarseed.damo.alibaba.com/paperhub")
+_BASE = os.environ.get(
+    "PAPERHUB_URL", "https://scholarseed.damo.alibaba.com/paperhub"
+)
 PAPERSEARCH_URL = _papersearch_url(_BASE)
 
 # A shared API key can exhaust the service's short token bucket even when one

@@ -3,13 +3,25 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { loadConversationSearch, createLiteratureSearch, LiteratureApiError, streamLiteratureSearch } from './api.ts'
-import { conversationSearchPapers, searchPapersBibtex, visibleSearchPapers } from './result.ts'
+import { conversationSearchPapers, presentedSearchArtifacts, searchPapersBibtex, visibleSearchPapers } from './result.ts'
 import { literatureSearchTab, openLiteratureSearchTabs } from '../workbench/tabs.ts'
 
 const papers = [
   { paper_id: 'one', title: 'Zeta', authors: ['A', 'B'], year: 2022, venue: 'V', abstract: 'A {test}', citation_count: 4, doi: '10/one', arxiv_id: '', tier: 2, reason: '', subtopics_covered: [], access: 'open', source: 'paperhub' },
   { paper_id: 'two', title: 'Alpha', authors: ['C'], year: 2024, venue: '', abstract: '', citation_count: 20, doi: '', arxiv_id: '2401.1', tier: 1, reason: '', subtopics_covered: [], access: 'closed_or_unknown', source: 'paperhub' }
 ]
+
+test('review retrieval evidence stays inside its card rather than making file cards', () => {
+  const result = {
+    origin: 'literature-review',
+    metadata: { artifact_id: 'metadata' },
+    selection: { artifact_id: 'selection' },
+    report: { artifact_id: 'report' },
+    fulltext: { artifact_id: 'fulltext' }
+  }
+  assert.deepEqual(presentedSearchArtifacts(result), ['metadata', 'selection', 'fulltext', 'report'])
+  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'precise-search' }), ['metadata', 'selection', 'fulltext'])
+})
 
 test('literature search results filter and sort without mutating metadata order', () => {
   assert.deepEqual(visibleSearchPapers(papers, 'all', 'relevance').map((paper) => paper.paper_id), ['two', 'one'])
@@ -37,7 +49,7 @@ test('submitted searches and conversation results share the query summary header
   const resultsSource = readFileSync(new URL('./Results.tsx', import.meta.url), 'utf8')
   assert.match(source, /query=\{task\.query\}/)
   assert.match(source, /query\?: string/)
-  assert.match(source, /i18nKey="search.summary" values=\{\{ query \}\}/)
+  assert.match(source, /i18nKey="search.summary"\s+values=\{\{ query \}\}/)
   assert.match(source, /t\('search.paperCount', \{ count: papers.length \}\)/)
   const header = source.slice(source.indexOf('<header'), source.indexOf('</header>'))
   assert.match(header, /SEARCH_STATUS_KEYS\[status\]/)
@@ -94,8 +106,8 @@ test('literature panel filters return focus to the literature overview tab', () 
 
 test('attachment deletion refreshes the shared literature catalogue after closing detail', () => {
   const source = readFileSync(new URL('./LiteratureDetail.tsx', import.meta.url), 'utf8')
-  assert.ok(source.includes('deleteLiteratureAttachment(item.id, attachment.id)'))
-  assert.ok(source.includes('onClose()\n                        catalogue.reload()'))
+  assert.ok(source.includes('deleteLiteratureAttachment(itemId, target.id)'))
+  assert.match(source, /onClose\(\)\s+catalogue\.reload\(\)/)
 })
 
 test('literature search tabs are stable and restored in supplied timestamp order', () => {
@@ -203,12 +215,14 @@ test('saved results retain all rows across batched library lookup failures', asy
   globalThis.fetch = async (url, init) => {
     calls.push(String(url))
     if (String(url).endsWith('/results/card')) return Response.json(result)
-    const batch = JSON.parse(String(init?.body)).papers
+    const request = JSON.parse(String(init?.body))
+    assert.equal(request.project_id, 'project-two')
+    const batch = request.papers
     if (batch.length === 20) return new Response('', { status: 503 })
     return Response.json({ items: Object.fromEntries(batch.map((paper: { id: string }) => [paper.id, { library: 'matched' }])) })
   }
   try {
-    const loaded = await loadConversationSearch('session', 'card', new AbortController().signal)
+    const loaded = await loadConversationSearch('session', 'card', new AbortController().signal, 'project-two')
     assert.equal(loaded.result.papers.length, 25)
     assert.deepEqual(loaded.saved, ['20', '21', '22', '23', '24'])
     assert.equal(loaded.warning, true)

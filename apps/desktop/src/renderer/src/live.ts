@@ -64,11 +64,10 @@ import {
 } from './transcript'
 import { findSessionNode, serveSessionNode, sessionTone, upsertSessionNode } from './tree'
 import {
-  projectRuntimeIncidentReadiness,
+  applyRuntimeIncident,
   projectSessionRecovery,
   projectSessionState,
   reportOperationState,
-  reportRuntimeIncident,
   reportTransportState,
   reportTurnUnknown,
   reportTurnReconciled,
@@ -846,17 +845,8 @@ function onEvent(
       ))
       return
     case 'runtime_incident':
-      patchThread(threadId, (thread) => ({
-        ...reportRuntimeIncident(thread, event.data, event.turn_id, event.item_id),
-        ...(event.data.scope === 'process'
-          ? { readiness: projectRuntimeIncidentReadiness(thread.readiness, event.data) ?? undefined }
-          : {})
-      }))
-      if (event.data.scope === 'process') {
-        set((state) => ({
-          runtimeReadiness: projectRuntimeIncidentReadiness(state.runtimeReadiness, event.data)
-        }))
-      }
+      // 进程事件只属于它自己的会话；写回全局 readiness 会让别的会话一起被拦。
+      set((state) => applyRuntimeIncident(state, threadId, event))
       if (event.data.state === 'failed') set({ petOverride: 'error' })
       return
     case 'artifact_failed':
@@ -1395,13 +1385,18 @@ export function useLiveSession(): void {
   }, [act, refreshMeta, state.backendReady])
 
   useEffect(() => {
-    // 未登录时抓到的目录里，内置网关模型是被置灰的；登录成功后不重取就会一直停在
-    // 「登录后可使用内置模型」，而打开菜单并不会自己刷新。
+    // 目录按当前身份投影内置网关模型的可选性：未登录置灰、登录恢复可选。两个方向的
+    // 身份变化都必须重取，否则界面会停在上一次身份抓到的旧结果，而打开菜单不会自愈。
+    // auth-restored = 登录成功；auth-required = 登出或凭据失效（任意 401）。
     const reloadCatalog = (): void => {
       void getModels().then((catalog) => act.applyModelCatalog(catalog))
     }
     window.addEventListener('scholarseed:auth-restored', reloadCatalog)
-    return () => window.removeEventListener('scholarseed:auth-restored', reloadCatalog)
+    window.addEventListener('scholarseed:auth-required', reloadCatalog)
+    return () => {
+      window.removeEventListener('scholarseed:auth-restored', reloadCatalog)
+      window.removeEventListener('scholarseed:auth-required', reloadCatalog)
+    }
   }, [act])
 
   useEffect(() => {

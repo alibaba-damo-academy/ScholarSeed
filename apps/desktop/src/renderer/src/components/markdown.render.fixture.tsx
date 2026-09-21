@@ -107,6 +107,10 @@ function Fixture() {
   <div data-testid="localized-markdown"><Markdown text={'- [x] User task\n- [ ] AI task\n\n![](https://example.com/empty.png)'} /></div>
   <div data-testid="tilde-markdown"><Markdown text={tildeSource} /></div>
   <div data-testid="tilde-markdown-math"><Markdown text={tildeSource} math /></div>
+  <div data-testid="session-file-markdown"><Markdown
+    text={'[报告](outputs/report%20one.md) · [越界](../secret.md) · [网页](https://example.com) · [伪协议](file:///tmp/report.md)'}
+    onOpenSessionFile={(path) => { document.body.dataset.openedSessionFile = path }}
+  /></div>
   <Button onClick={() => void localization.changeLanguage('en')}>Switch to English</Button>
   <Button onClick={() => void localization.changeLanguage('zh')}>Switch to Chinese</Button>
   <Button onClick={() => setWindowOpen(true)}>Open floating window</Button>

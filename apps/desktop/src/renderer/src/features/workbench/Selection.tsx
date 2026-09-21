@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next'
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Badge, Button, Divider, FloatingToolbar, Toggle } from "../../components/ui";
+import { MessageCirclePlus } from 'lucide-react'
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Badge, Button, Divider, FloatingToolbar } from "../../components/ui";
 import { Icon } from "../../icons";
 import { focusComposer } from "../../reference";
 import { useAssistantIngress } from "../assistant/ingress";
@@ -245,18 +246,17 @@ function SelectionActions({
   const contributions = useSelectionActions(current?.tab.id ?? "");
   const expanded = contributions.some((item) => item.expanded);
   const [error, setErrorKey] = useState<"" | "selectionActions.contextSaveFailed" | "selectionActions.contextAddFailed">("");
-  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const toolbarObserverRef = useRef<ResizeObserver | null>(null);
   const [width, setWidth] = useState(DEFAULT_SELECTION_TOOLBAR_WIDTH);
-  useLayoutEffect(() => {
-    if (!toolbarRef.current) return;
-    const observer = new ResizeObserver(() =>
-      setWidth(
-        toolbarRef.current?.getBoundingClientRect().width ??
-          DEFAULT_SELECTION_TOOLBAR_WIDTH,
-      ),
-    );
-    observer.observe(toolbarRef.current);
-    return () => observer.disconnect();
+  const toolbarRef = useCallback((node: HTMLDivElement | null): void => {
+    toolbarObserverRef.current?.disconnect();
+    toolbarObserverRef.current = null;
+    if (!node) return;
+    const updateWidth = (): void => setWidth(node.getBoundingClientRect().width);
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(node);
+    toolbarObserverRef.current = observer;
   }, []);
   useEffect(() => {
     if (active && expanded) onCloseSuggestion();
@@ -406,17 +406,17 @@ function SelectionActions({
               {session.capabilities.can_edit && selection.locator.kind !== "pdf" && !(
                 selection.locator.kind === "calc" && selection.locator.content_mode === "reference"
               ) && (
-                <Toggle
+                <Button
                   size="sm"
                   variant="ghost"
-                  pressed={activeAction === "polish"}
+                  icon={<Icon name="doc" size={14} />}
+                  aria-pressed={activeAction === "polish"}
                   onClick={() => {
                     if (activeAction !== "polish") open("polish");
                   }}
                 >
-                  <Icon name="doc" size={14} />
                   {w('selection.polish')}
-                </Toggle>
+                </Button>
               )}
               <Button
                 size="sm"
@@ -442,7 +442,7 @@ function SelectionActions({
               <Button
                 size="sm"
                 variant="ghost"
-                icon={<Icon name="talk" size={14} />}
+                icon={<MessageCirclePlus size={14} />}
                 onClick={() => void add()}
               >
                 {w('selection.add')}
@@ -480,7 +480,6 @@ function SelectionActions({
           pinned={active.pinned}
           toolbarActions={toolbarActions}
           toolbarLabel={w('selection.label')}
-          toolbarRef={toolbarRef}
           onPinnedChange={onPinnedChange}
           onClose={onCloseSuggestion}
           onAnnotate={active.onAnnotate}

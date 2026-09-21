@@ -358,6 +358,17 @@ def test_http_exposes_totals_and_accepts_path_offset() -> None:
         == f"{linked}/s1/s2/s3/第四层.md",
         deep.text[:300],
     )
+    relative_deep = client.get(
+        "/api/resource/tree",
+        params={"project": project_id, "path": "关联目录/s1/s2", "depth": 2},
+    )
+    check(
+        "关联目录可按资料根相对路径续扫",
+        relative_deep.status_code == 200
+        and payload_at(relative_deep.json()["nodes"], "s3", "第四层.md")["path"]
+        == f"{linked}/s1/s2/s3/第四层.md",
+        relative_deep.text[:300],
+    )
     check(
         "越界 path 回 4xx 而不是静默空树",
         client.get(

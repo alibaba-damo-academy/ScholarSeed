@@ -467,3 +467,14 @@ test('Writer formats resolve legacy DOC and OOXML DOCX through distinct profiles
   assert.equal(writerPolicy('doc').FORMAT, 'doc')
   assert.equal(writerPolicy('docx').FORMAT, 'docx')
 })
+
+test('Office selection autoscroll recognizes Writer and Calc formats', () => {
+  const subject = policy()
+
+  assert.equal(subject.autoscrollKind('report.doc'), 'writer')
+  assert.equal(subject.autoscrollKind('REPORT.DOCX'), 'writer')
+  assert.equal(subject.autoscrollKind('data.csv'), 'calc')
+  assert.equal(subject.autoscrollKind('legacy.XLS'), 'calc')
+  assert.equal(subject.autoscrollKind('table.xlsx'), 'calc')
+  assert.equal(subject.autoscrollKind('slides.pptx'), undefined)
+})

@@ -26,10 +26,10 @@ export function resolveDeveloperToolsEnabled(
 }
 
 export function requiresSingleInstanceLock(
-  rendererUrl: string | undefined,
+  _rendererUrl: string | undefined,
   headless: boolean
 ): boolean {
-  return !rendererUrl && !headless
+  return !headless
 }
 
 export function parseLoginShellPath(output: string): string {

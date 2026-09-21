@@ -29,6 +29,7 @@
     "src/skills.ts",
     "src/subscriptions.ts",
     "src/updates.ts",
+    "src/window.ts",
     "src/locale.ts",
     "endpoints.ts",
     "renderer.ts",

@@ -27,7 +27,7 @@ let embedded
 let documentPolicy
 let documentKind
 let writerSelection
-let writerSelectionDragging = false
+let selectionDragging = false
 const OFFICE_IMAGE_FAILED = 'office_image_failed'
 const OFFICE_POLICY_FAILED = 'office_policy_failed'
 const OFFICE_FORMULA_POLICY_FAILED = 'office_formula_policy_failed'
@@ -54,6 +54,8 @@ const CARET_COMMAND = 'caret'
 const CARET_REQUEST_COMMAND = 'caret_request'
 const SELECTION_COMMIT_COMMAND = 'selection_commit'
 const SELECTION_DRAG_COMMAND = 'selection_drag'
+const SELECTION_AUTOSCROLL_COMMAND = 'selection_autoscroll'
+const SELECTION_STEP_COUNT = 1
 const CARET_REPORT_DELAY_MS = 16
 const PRESENTATION_NAVIGATE_COMMAND = 'presentation_navigate'
 const PRESENTATION_FIT_COMMAND = '.uno:ZoomPage'
@@ -171,7 +173,7 @@ function closeDocument() {
   cancelCaretReport()
   documentPolicy = undefined
   documentKind = undefined
-  writerSelectionDragging = false
+  selectionDragging = false
   writerSelection?.invalidate()
   writerSelection = undefined
   pendingImage = undefined
@@ -203,6 +205,15 @@ function dispatchInputCommand(command) {
   releasePolicy.dispatchNative(command, [])
   reportModified()
   scheduleCaretReport()
+}
+
+function autoscrollWriterSelection(horizontal, vertical) {
+  if (!selectionDragging || documentKind !== 'writer' || !xModel) return
+  const cursor = xModel.getCurrentController().getViewCursor()
+  if (horizontal < 0) cursor.goLeft(SELECTION_STEP_COUNT, true)
+  else if (horizontal > 0) cursor.goRight(SELECTION_STEP_COUNT, true)
+  if (vertical < 0) cursor.goUp(SELECTION_STEP_COUNT, true)
+  else if (vertical > 0) cursor.goDown(SELECTION_STEP_COUNT, true)
 }
 
 function reportPresentationState() {
@@ -350,9 +361,10 @@ function reportSelection() {
       const sheet = xModel.getSheets().getByIndex(range.Sheet)
       const cellFlags = css.sheet.CellFlags
       const contentFlags = cellFlags.VALUE | cellFlags.DATETIME | cellFlags.STRING | cellFlags.FORMULA
+      const described = ScholarSeedOfficeSelection.describe(selection, sheet, range, contentFlags)
       post({
         cmd: 'selection',
-        selection: ScholarSeedOfficeSelection.describe(selection, sheet, range, contentFlags)
+        selection: described
       })
       return
     }
@@ -608,7 +620,7 @@ function loadFile(filename, processor, expectedDocumentKind, readOnly, csvOption
         const selectedShape = ScholarSeedOfficeSelection.captureImpress(controller.getSelection())
         if (selectedShape) impressShape = selectedShape
       }
-      if (!writerSelectionDragging) scheduleSelectionReport()
+      if (!selectionDragging) scheduleSelectionReport()
       scheduleCaretReport()
     },
     disposing() {},
@@ -667,9 +679,14 @@ function start() {
       case 'input_text': insertText(event.data.text); break
       case CARET_REQUEST_COMMAND: scheduleCaretReport(); break
       case SELECTION_DRAG_COMMAND:
-        writerSelectionDragging = Boolean(event.data.active)
+        selectionDragging = Boolean(event.data.active)
         cancelSelectionReport()
-        if (writerSelectionDragging) post({ cmd: 'selection', selection: { text: '' } })
+        if (selectionDragging) post({ cmd: 'selection', selection: { text: '' } })
+        else if (documentKind === 'calc') reportSelection()
+        else scheduleSelectionReport()
+        break
+      case SELECTION_AUTOSCROLL_COMMAND:
+        autoscrollWriterSelection(Number(event.data.x), Number(event.data.y))
         break
       case SELECTION_COMMIT_COMMAND: scheduleSelectionReport(); break
       case 'host_saved':

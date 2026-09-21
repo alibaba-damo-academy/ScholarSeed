@@ -60,6 +60,29 @@ export function literatureErrorMessage(
   return { key: fallback, detail: diagnostic }
 }
 
+/**
+ * AI 检索任务终态错误码 → 可直接展示的用户文案 key。
+ *
+ * 这些码来自检索任务状态（service/literature/persistence/search.py 写入 state.error，
+ * 源头是 service/invocation/service/runtime.py 的 record.error_code），不是 HTTP 失败码，
+ * 所以与 LITERATURE_ERROR_KEYS 分开登记；新增一个码就是新增一条数据。
+ */
+const SEARCH_FAILURE_KEYS = {
+  invocation_runtime_failed: 'operationError.invocation_runtime_failed',
+} as const
+
+export type SearchFailureKey =
+  (typeof SEARCH_FAILURE_KEYS)[keyof typeof SEARCH_FAILURE_KEYS]
+
+/** Resolve a known search failure code; unknown codes keep their raw diagnostic. */
+export function searchFailureMessageKey(
+  error: string | null | undefined
+): SearchFailureKey | undefined {
+  if (!error || !Object.prototype.hasOwnProperty.call(SEARCH_FAILURE_KEYS, error))
+    return undefined
+  return SEARCH_FAILURE_KEYS[error as keyof typeof SEARCH_FAILURE_KEYS]
+}
+
 const IMPORT_TASK_STATUS_KEYS = {
   queued: 'importTask.status.queued',
   running: 'importTask.status.running',

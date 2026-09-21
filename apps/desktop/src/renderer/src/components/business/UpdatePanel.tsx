@@ -4,7 +4,6 @@ import { useTranslation } from 'react-i18next'
 import rocketGlyph from '../../assets/update-rocket.png'
 import type { UpdateSnapshot } from '../../../../updates'
 import {
-  formatInstallerSize,
   hasMoreReleaseNotes,
   releaseNoteLines,
   runUpdateAction,
@@ -19,6 +18,7 @@ import {
 import { IconFont } from '../primitive'
 import { Button, Divider, IconButton, ProgressBar, Tag } from '../ui'
 import { cx } from '../ui/utils'
+import { UpdateMetadata } from './UpdateMetadata'
 
 // UpdatePanel.tsx — 版本更新浮窗的内容本体，工作台活动栏的火箭入口与 0.1 侧栏底部的
 // 药丸入口共用这一份。
@@ -184,7 +184,6 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
   const failed = failure !== null
   const notes = releaseNoteLines(candidate?.release_notes)
   const showMore = hasMoreReleaseNotes(notes) && !expanded
-  const installerSize = formatInstallerSize(candidate?.file_size)
   // 失败态优先于展开态：失败信息不该被藏在更宽的说明版式后面。
   const view: PanelView = failed ? 'failed' : expanded ? 'notes' : 'summary'
 
@@ -223,12 +222,6 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
     // 结果表面在结果出来之前丢掉（bug 86968393）。
     runUpdateAction(state)
   }
-
-  const versionLine = candidate
-    ? installerSize
-      ? t('update.versionLine', { version: candidate.version, size: installerSize })
-      : t('update.versionOnly', { version: candidate.version })
-    : null
 
   const noteItems = (
     visibleReleaseNotes(notes, expanded).map((note, index) => (
@@ -283,12 +276,12 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             {title}
           </h2>
           {/* notes 稿把版本行挪进内容区并配「新版本」tag，头部只留标题。 */}
-          {view !== 'notes' && versionLine && (
+          {view !== 'notes' && candidate && (
             <span
               className={failed ? PANEL_VERSION_MUTED_CLASS_NAME : PANEL_VERSION_CLASS_NAME}
               data-testid="update-panel-version"
             >
-              {versionLine}
+              <UpdateMetadata candidate={candidate} />
             </span>
           )}
         </span>
@@ -367,7 +360,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
                 className={PANEL_VERSION_ROW_TEXT_CLASS_NAME}
                 data-testid="update-panel-version"
               >
-                {t('update.notesVersion', { version: candidate.version })}
+                <UpdateMetadata candidate={candidate} />
               </span>
               <Tag className={PANEL_TAG_CLASS_NAME} data-testid="update-panel-tag" tone="brand">
                 {t('update.notesNewTag')}
@@ -375,6 +368,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             </span>
           )}
 
+          <span className={PANEL_STATUS_CLASS_NAME}>{t('update.summaryHint')}</span>
           <div className={PANEL_LIST_NOTES_CLASS_NAME} data-testid="update-panel-list">
             {notes.length > 0 ? (
               noteItems
@@ -415,6 +409,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
       {view === 'summary' && (
         <div className={PANEL_BODY_CLASS_NAME}>
           <div className={PANEL_NOTES_GROUP_CLASS_NAME}>
+            <span className={PANEL_STATUS_CLASS_NAME}>{t('update.summaryHint')}</span>
             <div className={PANEL_LIST_CLASS_NAME} data-testid="update-panel-list">
               {notes.length > 0 ? (
                 noteItems

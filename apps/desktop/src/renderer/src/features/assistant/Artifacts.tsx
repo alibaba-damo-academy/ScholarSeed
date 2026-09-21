@@ -31,19 +31,20 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
+  EllipsisText,
   IconButton,
   Select,
   useToast
 } from '../../components/ui'
 import type { ArtifactResourceLink } from '../../contracts/assistant'
 import type { ResourceLocationRef } from '../../contracts/resources'
-import { openByDefault } from '../../fileOpen'
+import { openByDefault, revealLabelKey } from '../../fileOpen'
 import { Icon } from '../../icons'
 import type { SessionArtifact } from '../../model'
 import { activeThread, useApp } from '../../store'
 import { fetchLiterature } from '../literature/api'
 import { UNFILED_COLLECTION } from '../literature/state'
-import { fetchArtifactSha256, fetchResourceDirectoryTree, importArtifactToLiterature, importArtifactToResources } from './api'
+import { fetchArtifactSha256, fetchResourceDirectoryTree, importArtifactToLiterature, importArtifactToResources, listArtifactResourceLinks } from './api'
 import { assistantFailureDetail } from './failure'
 import { ResourceSaveDialog } from './Save'
 
@@ -66,7 +67,6 @@ function importError(detail: string, fallback: 'artifactEntry.importFailed' | 'a
 
 const MARKDOWN_MEDIA_TYPES = new Set(['text/markdown', 'text/x-markdown'])
 const LITERATURE_SUFFIXES = new Set(['bib', 'bibtex', 'ris', 'pdf'])
-const MACOS_PLATFORM = 'darwin'
 const EXTRA_ARTIFACT_ACTIONS_VISIBLE = false
 const MENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} text-[length:var(--vds-font-body-lv2)]`
 const SUBMENU_CLASS_NAME = `${PRODUCT_MENU_CONTENT_CLASS} max-w-[var(--vds-model-menu-max-width)] overflow-y-auto text-[length:var(--vds-font-body-lv2)]`
@@ -220,11 +220,14 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
   const [literatureCollections, setLiteratureCollections] = useState<string[] | null>(null)
   const [literatureCollection, setLiteratureCollection] = useState('')
   const [downloading, setDownloading] = useState(false)
+  const [opening, setOpening] = useState(false)
   const [downloadError, setDownloadError] = useState<ArtifactError | null>(null)
   const [location, setLocation] = useState<ResourceLocationRef>({ parent: '', name: '' })
   const [resourceTree, setResourceTree] = useState(state.resource.tree)
   const [error, setError] = useState<ArtifactError | null>(null)
   const [targetProjectId, setTargetProjectId] = useState('')
+  const previewScope = React.useRef({ sessionId: thread.sessionId, projectId: state.homeSelectedProjectId })
+  previewScope.current = { sessionId: thread.sessionId, projectId: state.homeSelectedProjectId }
   const primaryName = fileNameParts(primary.name)
   const absolutePath = artifactAbsolutePath(primary, thread.workdir)
   const canUsePath = Boolean(absolutePath && primary.status !== 'deleted')
@@ -273,15 +276,30 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
     }
   }
 
-  const preview = (artifact: SessionArtifact): void => {
-    const resource = links.find((link) => link.state === 'completed' && !link.error
-      && link.node && link.project_id === state.homeSelectedProjectId)
-    if (resource?.node) {
-      act.openResourceFile(resource.node.path, resource.project_id)
-      return
+  const preview = async (artifact: SessionArtifact): Promise<void> => {
+    if (opening) return
+    const sessionId = thread.sessionId || undefined
+    const projectId = state.homeSelectedProjectId
+    if (sessionId && projectId) {
+      setOpening(true)
+      const result = await listArtifactResourceLinks(sessionId)
+      setOpening(false)
+      if (previewScope.current.sessionId !== sessionId || previewScope.current.projectId !== projectId) return
+      if (!result.ok) {
+        toast({ title: a('artifactEntry.linksUnknown'), tone: 'error' })
+        return
+      }
+      const resource = result.links.find((link) => link.artifact_id === artifact.artifact_id
+        && link.project_id === projectId && link.state === 'completed' && !link.error && link.node)
+      if (resource?.node) {
+        act.openResourceFile(resource.node.path, resource.project_id)
+        return
+      }
+      if (links.some((link) => link.project_id === projectId && link.state === 'completed' && link.node)) {
+        void act.reloadArtifactLinks(sessionId)
+      }
     }
     const absolute = artifactAbsolutePath(artifact, thread.workdir)
-    const sessionId = thread.sessionId || undefined
     void openByDefault(
       { relative: artifact.path, absolute, title: artifact.name },
       {
@@ -451,9 +469,7 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
   const linksState = state.aiPanel.sessionId === thread.sessionId
     ? state.aiPanel.artifactLinksState : 'idle'
   const projectName = sessionProject?.name ?? a('artifactEntry.unlinked')
-  const revealLabel = a(window.scholarseed?.platform === MACOS_PLATFORM
-    ? 'artifactEntry.revealInFinder'
-    : 'artifactEntry.revealInFileManager')
+  const revealLabel = a(revealLabelKey())
   const menuProps = {
     apps: openWithApps,
     appsLoading: openWithLoading,
@@ -477,15 +493,25 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
           <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] [--vds-card-radius:var(--vds-radius-6)] border-[var(--vds-border-default)] shadow-none" padding="sm" data-artifact-role={primary.role}>
             <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]" data-testid={`turn-artifact-${primary.artifact_id}`}>
               <span className="grid size-8 shrink-0 place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]"><Icon name="doc" size={20} sw={1.8} /></span>
-              <span className="grid min-w-0 flex-1 gap-0.5" title={`${primary.title || primary.name}\n${primary.path}`}>
-                <span className="truncate text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed text-[var(--vds-text-primary)]">{primary.title || primary.name}</span>
-                <span className="truncate text-xs font-normal text-[var(--vds-text-secondary)]" title={primaryMeta}>{primaryMeta}</span>
+              <span className="grid min-w-0 flex-1 gap-0.5">
+                <EllipsisText
+                  className="text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed text-[var(--vds-text-primary)]"
+                  tooltip={`${primary.title || primary.name}\n${primary.path}`}
+                  tooltipContentClassName="whitespace-pre-wrap"
+                  tooltipPortalled
+                >
+                  {primary.title || primary.name}
+                </EllipsisText>
+                <EllipsisText className="text-xs font-normal text-[var(--vds-text-secondary)]" tooltipPortalled>
+                  {primaryMeta}
+                </EllipsisText>
               </span>
               <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)]">
                 <Button
                   aria-label={a('artifactEntry.openName', { name: primary.name })}
-                  icon={<Icon name="doc" size={15} sw={1.8} />}
-                  onClick={() => preview(primary)}
+                  disabled={opening}
+                  loading={opening}
+                  onClick={() => void preview(primary)}
                   title={a('artifactEntry.openName', { name: primary.name })}
                   size="sm"
                   variant="outline"

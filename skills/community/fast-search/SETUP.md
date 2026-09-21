@@ -4,6 +4,7 @@
 
 ```bash
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
+export WEB_SEARCH_SKILL_PATH="/absolute/path/to/web-search"  # 非标准安装位置才需要
 python3 tools/appserver_quick.py --serve-jsonl
 ```
 
@@ -16,9 +17,13 @@ codex --search -s workspace-write \
   -c sandbox_workspace_write.network_access=true
 ```
 
-Codex 原生 web search 是托管工具，不走 Python/shell 的 `HTTP_PROXY`；PaperHub 是
-本地 Python 命令发出的 HTTP 请求，会继承 Worker 启动时的网络环境。这两条路径需要
-分别判断。
+`web-search` skill 的 native provider 是托管工具，不走 Python/shell 的
+`HTTP_PROXY`；其 official provider 与 PaperHub 是本地 Python 命令发出的 HTTP 请求，
+会继承 Worker 启动时的网络环境。这两类路径需要分别判断。Worker 会从 agentic-search
+同级目录、`.agents/skills/web-search`、用户 skill 目录或 `WEB_SEARCH_SKILL_PATH` 查找
+该独立 skill；找不到时启动即失败，不会绕过它直接调用原生 Web Search。
+这是 Worker 的启动依赖检查；Skill 方式则必须在同一 turn 显式加载
+`$agentic-search` 与 `$web-search`，不能依赖隐式 skill 发现。
 
 ## PaperHub
 
@@ -34,9 +39,9 @@ Codex 原生 web search 是托管工具，不走 Python/shell 的 `HTTP_PROXY`�
 
 ```json
 {
-  "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub/papersearch/",
+  "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub",
   "paperhub_proxy_mode": "auto",
-  "extra_no_proxy": [],
+  "extra_no_proxy": ["scholarseed.damo.alibaba.com"],
   "cache_dir": "",
   "cache_mode": "off",
   "cache_replay_timing": "instant"
@@ -65,11 +70,11 @@ export SCHOLARSEED_API_KEY="你的 PaperHub API key"
 
 | 场景 | `paperhub_url` | `paperhub_proxy_mode` | `extra_no_proxy` |
 |---|---|---|---|
-| 默认连接 | `https://scholarseed.damo.alibaba.com/paperhub/papersearch/` | `auto` | 留空 |
-| 必须走 HTTP 代理 | 同上 | `inherit` | 留空 |
+| 默认直连 | `https://scholarseed.damo.alibaba.com/paperhub` | `auto` 或 `direct` | 包含 `scholarseed.damo.alibaba.com` |
+| 必须走 HTTP 代理 | 同上 | `inherit` 或 `auto` | 移除 `scholarseed.damo.alibaba.com` |
 | SSH 隧道 | `http://localhost:18000` | `direct` | 包含 `localhost`、`127.0.0.1` |
 
-`extra_no_proxy` 会同时写入 `NO_PROXY` 与 `no_proxy`，仅填写确实需要绕过代理的主机；默认不额外添加。不要在仓库配置中提交代理密码。
+`extra_no_proxy` 会同时写入 `NO_PROXY` 与 `no_proxy`。因此仓库默认值会绕过代理直连当前域名；若公司网络要求 PaperHub 必须走代理，必须从用户配置中移除该域名。不要在仓库配置中提交代理密码。
 
 ### SSH 隧道
 
@@ -90,14 +95,14 @@ ssh -N -o ServerAliveInterval=30 \
 }
 ```
 
-注意：Codex Cloud 中的 `localhost` 是云容器，不是你的个人电脑；云任务应使用可从云环境访问的 PaperHub 地址，并允许 `/paperhub/papersearch/` 的 HTTP `POST`。
+注意：Codex Cloud 中的 `localhost` 是云容器，不是你的个人电脑；云任务应使用可从云环境访问的 PaperHub 地址，并允许 `/papersearch/` 的 HTTP `POST`。
 
 Codex Cloud 的 agent internet access 需要在对应 cloud environment 中另外开启，并把
 PaperHub 主机加入 allowlist。仓库代码不能替用户修改云端组织或环境权限。
 
 ### 新接口行为
 
-所有 PaperHub 操作现在都通过同一个 `POST /paperhub/papersearch/` endpoint：
+所有 PaperHub 操作现在都通过同一个 `POST /papersearch/` endpoint：
 
 - `keyword`：发送 `query`，支持 Elasticsearch `query_string` 语法；
 - `title`：发送 `title` 做已知题名匹配；
@@ -122,7 +127,7 @@ PaperHub 主机加入 allowlist。仓库代码不能替用户修改云端组织�
 - `account`：立即返回，但在 PaperHub `elapsed` 指标中补回记录的 wall；
 - `sleep`：实际等待记录的 wall，适合比较端到端 agent 行为。
 
-正式可归因实验推荐 `replay + sleep`；最终真实效果仍要用 `off` 再做一次联网盲测。缓存 key 不包含主机，因此直连和 SSH 隧道可以共用；原生 Codex web search 是托管工具，不经过这个 Python 缓存。
+正式可归因实验推荐 `replay + sleep`；最终真实效果仍要用 `off` 再做一次联网盲测。缓存 key 不包含主机，因此直连和 SSH 隧道可以共用；`$web-search` 不经过这个 PaperHub Python 缓存。
 
 ### 从旧版升级
 
@@ -131,11 +136,14 @@ PaperHub 主机加入 allowlist。仓库代码不能替用户修改云端组织�
 - 安装器不会覆盖已有的 `~/.config/agentic-search/search_config.json`，发现旧默认 URL 时只会提示；运行时兼容迁移不会改写该文件。
 - 产品运行参数统一由 `config/agentic-search-veryfast.json`、部署配置和启动参数管理。
 
-## Codex web search
+## web-search skill
 
-常驻 Worker 启动 App Server 时自动加 `--search`。web search 可用不代表 PaperHub
-可用；前者是 Codex 托管工具，后者受命令网络权限与机器代理控制。交互式 skill 调用
-则必须用 `codex --search`，或者在用户级 Codex 配置中启用 live web search。
+常驻 Worker 启动 App Server 时自动加 `--search`，并把 agentic-search 与已安装的
+web-search 一起作为结构化 skill input 注入。公网 batch 必须先从 web-search skill
+开始；`--search` 为其 native provider 提供能力。偶发但成功的 direct native 调用可
+作为兼容结果，失败时必须在同一 turn 回到 web-search official 路径。official provider
+与 PaperHub 仍受命令网络权限与机器代理控制。交互式调用也必须安装并显式加载
+web-search，并用 `codex --search` 或用户级配置为其 native provider 启用 live Web Search。
 
 ## 常驻 Veryfast / App Server
 
@@ -215,11 +223,12 @@ thread 或 turn 时返回错误。更换模型、effort 或 service tier 会改�
 | 配置 | 默认值 | 工程影响 |
 |---|---|---|
 | `model` | `gpt-5.6-luna` | 速度、能力、quota 和可用 effort；可换成账号可用模型 |
+| `model_provider` | 空 | 非 OpenAI 模型使用的 App Server provider id，例如本地已注册的 `qwen38`；OpenAI 默认留空 |
 | `effort` | `low` | 提高通常增加推理时间和 token，也可能改善复杂实体解析 |
 | `service_tier` | `priority` | `priority` 请求更快的服务档；无权限时使用 `default`，不应视为延迟 SLA |
 | `timeout_seconds` | `900` | 单题 turn 的监督上限；超时后请求中断并退出 Worker，不等同于产品端到端 SLA |
 | `enable_apps` | `false` | Veryfast 不依赖 Apps；开启会扩大工具面并可能增加初始化工作 |
-| `cache_mode` | `off` | 线上默认 live；缓存仅覆盖本地检索请求，不缓存 Codex 原生 web search |
+| `cache_mode` | `off` | 线上默认 live；缓存仅覆盖 PaperHub 请求，不缓存 `$web-search` |
 | `cache_dir` | 空 | `record`、`readwrite`、`readonly`、`refresh`、`replay` 模式必须设置 |
 | `cache_replay_timing` | `instant` | replay 时选择立即返回、只记账或真实等待历史耗时 |
 | `paperhub_proxy_mode` | `direct` | 直连可减少代理路径；不可直连时必须改为 `auto`/`inherit` 或配置隧道 |
@@ -239,7 +248,7 @@ thread 或 turn 时返回错误。更换模型、effort 或 service tier 会改�
 - 保持 `cache_mode=off` 获取实时结果。若产品接受结果时效语义，可在业务层设计独立缓存，
   不要把 benchmark replay 当作线上缓存方案。
 
-App Server 只是承载接口，不会消除每题的模型推理、web search 或 PaperHub 请求。
+App Server 只是承载接口，不会消除每题的模型推理、`$web-search` 或 PaperHub 请求。
 Veryfast 的低延迟依赖“常驻进程、精简工具面、单轮检索图和合适模型配置”的组合。
 
 ### 后端接入
@@ -248,7 +257,7 @@ Veryfast 的低延迟依赖“常驻进程、精简工具面、单轮检索图�
 
 ```text
 浏览器搜索栏 -> 产品后端 -> 常驻 appserver_quick.py -> Codex App Server
-                                            |-> Codex web search
+                                            |-> web-search skill
                                             `-> PaperHub
 ```
 

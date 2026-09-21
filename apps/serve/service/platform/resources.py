@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -630,6 +631,10 @@ class ResourceChangeSink(Protocol):
 
     def record_move(self, project_id: str, source: str, target: str) -> None:
         """Move stable identities for a successful file or directory mutation."""
+        raise NotImplementedError
+
+    def import_scope(self, project_id: str) -> AbstractContextManager[None]:
+        """Reuse one resource eligibility snapshot for a COPY import batch."""
         raise NotImplementedError
 
     def commit_product_bytes(

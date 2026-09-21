@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import type { SubscriptionErrorCode } from '../../../../subscriptions'
 import { cancelSubscriptionLogin, createSubscriptionProfile, disconnectSubscription,
-  saveSubscriptionModels, subscriptionModels, subscriptionStatus, deletePersonalApiProfile, setPersonalApiProfileEnabled,
+  saveSubscriptionModels, subscriptionModels, subscriptionStatus, deletePersonalApiProfile,
   type PersonalApiModel, type PersonalApiProfile } from '../../api'
 import { Button, Checkbox, AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogTitle, AlertDialogDescription, AlertDialogCancel, AlertDialogAction } from '../ui'
 
@@ -87,12 +87,7 @@ function Connection({ profile, available, refresh }: { profile: PersonalApiProfi
     setBusy(false)
     if (result) refresh(); else setNotice({ key: 'deleteFailed' })
   }
-  const toggle = async (): Promise<void> => {
-    setBusy(true)
-    const result = await setPersonalApiProfileEnabled(profile.id, !profile.enabled)
-    setBusy(false)
-    if (result.ok) refresh(); else setNotice(profileMessage(result))
-  }
+  // 启停由设置-模型页左栏厂商行的 Switch 承担, 卡内不再放第二份入口。
   return <div className="grid gap-3 rounded-lg border border-[var(--vds-border-default)] p-4">
     <div className="text-sm text-[var(--vds-text-primary)]">{t('connectionStatus', { name: profile.preview_name || 'ChatGPT', status: profile.oauth?.state === 'connected' ? t('connected') : profile.oauth?.state === 'reauth_required' ? t('reauth') : t('disconnected') })}</div>
     {profile.oauth?.account_label && <div className="text-sm text-[var(--vds-text-secondary)]">{profile.oauth.account_label}</div>}
@@ -100,7 +95,6 @@ function Connection({ profile, available, refresh }: { profile: PersonalApiProfi
       {!connected && !transaction && <Button disabled={busy || !available} onClick={() => { void login() }}>{t('login')}</Button>}
       {transaction && <Button disabled={busy} onClick={() => { setTransaction(''); setNotice({ key: 'loginCancelled' }) }}>{t('cancelLogin')}</Button>}
       {connected && <><Button disabled={busy} onClick={() => { void loadModels() }}>{t('loadModels')}</Button><Button disabled={busy} onClick={() => { void disconnect() }}>{t('disconnect')}</Button></>}
-      <Button variant="secondary" disabled={busy || Boolean(transaction)} onClick={() => { void toggle() }}>{profile.enabled ? t('disable') : t('enable')}</Button>
       <AlertDialog><AlertDialogTrigger asChild><Button disabled={busy || Boolean(transaction)} variant="danger">{t('delete')}</Button></AlertDialogTrigger>
         <AlertDialogContent><AlertDialogTitle>{t('deleteTitle')}</AlertDialogTitle><AlertDialogDescription>{t('deleteDescription')}</AlertDialogDescription>
           <AlertDialogCancel>{t('cancel')}</AlertDialogCancel><AlertDialogAction onClick={() => { void remove() }}>{t('delete')}</AlertDialogAction>

@@ -24,6 +24,7 @@ import stat
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from errno import ENOSPC
 from pathlib import Path
 from typing import Any, AsyncIterator, BinaryIO, Callable
@@ -1500,6 +1501,13 @@ class ContentService:
 
         return enumeration.scan_files(self._resource_space(project_id), observer)
 
+    def resource_entries(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> tuple[ResourceEntry, ...]:
+        """Inspect selected resource files without recursively scanning the roots."""
+
+        return enumeration.entries_for_paths(self._resource_space(project_id), paths)
+
     def root(self, project_id: str, root: RootKind) -> FileAssetRef:
         """按种类取根节点, 并保证该目录存在。
 
@@ -1745,31 +1753,37 @@ class ContentService:
                 )
 
         imported_items: list[FileAssetRef] = []
-        for result in plans:
-            if result.plan is None:  # narrowed above; retained for static type checking
-                continue
-            try:
-                imported = self._execute_copy(
-                    scope,
-                    result.plan,
-                    "import_failed",
-                    progress=report,
-                    cancelled=cancelled,
-                )
-            except ContentError as error:
-                if (
-                    error.code == IMPORT_CANCELLED_ERROR
-                    or failure_policy is ImportFailurePolicy.FAIL_FAST
-                ):
-                    raise
-                if result_observer is not None:
-                    result_observer(
-                        ContentImportSourceResult(result.source_index, None, error.code)
+        import_scope = (
+            self._resource_changes.import_scope(project_id)
+            if self._resource_changes is not None
+            else nullcontext()
+        )
+        with import_scope:
+            for result in plans:
+                if result.plan is None:  # narrowed above; retained for static type checking
+                    continue
+                try:
+                    imported = self._execute_copy(
+                        scope,
+                        result.plan,
+                        "import_failed",
+                        progress=report,
+                        cancelled=cancelled,
                     )
-                continue
-            imported_items.append(imported)
-            if result_observer is not None:
-                result_observer(ContentImportSourceResult(result.source_index, imported, ""))
+                except ContentError as error:
+                    if (
+                        error.code == IMPORT_CANCELLED_ERROR
+                        or failure_policy is ImportFailurePolicy.FAIL_FAST
+                    ):
+                        raise
+                    if result_observer is not None:
+                        result_observer(
+                            ContentImportSourceResult(result.source_index, None, error.code)
+                        )
+                    continue
+                imported_items.append(imported)
+                if result_observer is not None:
+                    result_observer(ContentImportSourceResult(result.source_index, imported, ""))
         imported = tuple(imported_items)
         self._wrote(scope.project.id, *(item.path for item in imported))
         return imported

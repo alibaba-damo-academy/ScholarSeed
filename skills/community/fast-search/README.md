@@ -1,13 +1,18 @@
 # Veryfast Academic Search（Codex）
 
-面向搜索栏场景的低延迟学术论文检索。它通过 Codex 原生 web search 解析潜在论文实体，
+面向搜索栏场景的低延迟学术论文检索。它通过另行安装的 `$web-search` skill 解析潜在论文实体，
 再以 PaperHub 完成一次有界的关键词、题名和参考文献检索，最终返回 5–20 篇论文的
-`metadata.json`。每篇论文都包含 `abstract` 字段；若上游确实没有摘要，则该字段为空字符串。
+`metadata.json`。直接查找 arXiv、DOI 或明确题名时，agent 会先声明规范题名
+`best_target` 并把它作为精确 PaperHub title 查询；目标未进入候选池或 Tier 1 时会明确失败，
+不会用一组泛相关论文伪装成功。Tier 1 中依次优先用户查询的显式标识、agent 声明的
+`best_target` 和既有确定性相关性得分；它不会把 Tier 2/3 论文强行提级。这一步不增加
+模型回合，普通主题检索的候选和分层逻辑不变。每篇论文都包含 `abstract` 字段；若上游
+确实没有摘要，则该字段为空字符串。
 本分支只提供 Veryfast 及其部署入口，不生成长报告。
 
 ## 先选择使用方式
 
-前提：已安装并登录 Codex CLI，本机有 Python 3.8+，并持有 PaperHub API key。
+前提：已安装并登录 Codex CLI、本机有 Python 3.8+、已安装 `web-search` skill，并持有 PaperHub API key。
 以下命令都在仓库根目录执行。
 
 | 方式 | 适合场景 | 优点 | 需要注意 |
@@ -48,10 +53,11 @@ codex --search -s workspace-write \
 ### 3. 调用
 
 ```text
-$agentic-search 检索“检索增强生成中的引用可靠性评估”相关论文
+$agentic-search $web-search 检索“检索增强生成中的引用可靠性评估”相关论文
 ```
 
-交互式调用会在实体解析开始、PaperHub 检索开始和最终完成时给出简短进度；文案自动匹配
+两个 skill 必须显式加载到同一个 turn，不依赖隐式发现。交互式调用会在实体解析开始、
+PaperHub 检索开始和最终完成时给出简短进度；文案自动匹配
 用户指定的语言或 query 的语言。这些信息复用已有动作边界，不增加计时命令、模型调用或
 检索轮次。它会执行相同的 Veryfast 检索图，但不会获得常驻 Worker 的进程复用收益。
 
@@ -83,8 +89,9 @@ codex --search -s workspace-write \
 python3 tools/install_codex.py --scope repo --repo /path/to/target-repo
 ```
 
-它会创建 `/path/to/target-repo/.agents/skills/agentic-search`。产品后端直接运行
-Worker 时不要求安装 skill，因为 Worker 会注入仓库内的 `SKILL.md`。
+它会创建 `/path/to/target-repo/.agents/skills/agentic-search`。`web-search` 仍需另行安装到
+同级 `.agents/skills/web-search`。产品后端直接运行 Worker 时会注入仓库内的
+agentic-search 与已安装的 web-search；不会复制或下载后者。
 
 ## 方式二：常驻 App Server Worker
 
@@ -96,6 +103,8 @@ Worker 时不要求安装 skill，因为 Worker 会注入仓库内的 `SKILL.md`
 
 ```bash
 export SCHOLARSEED_API_KEY="你的 PaperHub API key"
+# 仅当 web-search 不在标准 skill 目录或 agentic-search 的同级目录时需要：
+export WEB_SEARCH_SKILL_PATH="/absolute/path/to/web-search"
 python3 tools/appserver_quick.py --serve-jsonl
 ```
 
@@ -146,11 +155,16 @@ python3 tools/appserver_quick.py --print-effective-config \
 
 完整配置优先级、字段含义、后端拓扑和网络设置见 [SETUP.md](SETUP.md)。Veryfast 是
 软延迟目标，不是硬 30 秒 SLA；产品调用层仍需设置总 deadline、取消和失败降级。
+模型、入口和搜索 provider 的实测开销、解释边界与上线监控要求见
+[Veryfast 运行时性能与检索风险](docs/VERYFAST_RUNTIME_RISKS.md)。
 
 ## 检索源与网络说明
 
-Veryfast 只使用两个检索源：Codex 托管的 web search 和本地 Python 请求的 PaperHub。
-Worker 会显式打开前者及 `workspace-write` 下的命令联网权限。PaperHub 仍要求机器
+Veryfast 只使用两个逻辑检索源：公网 web 检索和 PaperHub。每个公网检索 batch 必须优先
+从独立的 `$web-search` skill 开始，按 official → native → browser 路由执行；偶发但成功的
+runtime native Web Search 可作为兼容结果，失败时必须在同一 turn 回到 `$web-search`。Worker 会把
+两个 skill 显式注入同一 turn，并打开 native provider 与 `workspace-write` 下命令所需
+的联网权限。PaperHub 仍要求机器
 自身能通过直连、代理或 SSH 隧道到达服务，并在 Worker 启动前设置
 `SCHOLARSEED_API_KEY`。详细配置见 [SETUP.md](SETUP.md#paperhub)。
 
@@ -184,7 +198,8 @@ agentic-search/
     └── install_codex.py                  # 可选的交互式 skill 安装器
 ```
 
-所有 Python 工具只使用标准库，要求 Python 3.8+。产品调用方通过每次请求的
+agentic-search 自带的 Python 工具只使用标准库；独立 `web-search` skill 的依赖由其
+自身安装包负责。产品调用方通过每次请求的
 `output_dir` 指定结果目录；交互式调用则写入当前工作区下的新结果目录。
 
 内部文件和输出中的 `quick` 是为兼容已验证实现与 schema 保留的名称；它只承载

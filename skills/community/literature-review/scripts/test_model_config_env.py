@@ -71,13 +71,10 @@ class ModelEnvironmentContractTest(unittest.TestCase):
         self.assertEqual(text["api_key"], "")
 
     def test_empty_image_key_falls_back_to_text_key(self) -> None:
-        image = self._load(
-            "figures_image",
-            {
-                "IMAGE_API_KEY": "  ",
-                "SCHOLARSEED_ACCOUNT_TOKEN": "text-fallback",
-            },
-        )
+        image = self._load("figures_image", {
+            "IMAGE_API_KEY": "  ",
+            "SCHOLARSEED_ACCOUNT_TOKEN": "text-fallback",
+        })
         self.assertEqual(image["api_key"], "text-fallback")
 
     def test_image_key_remains_stable_when_text_key_changes(self) -> None:

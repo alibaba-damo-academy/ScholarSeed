@@ -49,6 +49,7 @@ import { viewerForPath } from './tabs.ts'
 const SPLIT_PROJECTION_SUFFIX = ':split'
 
 export type DocumentViewKind = 'preview' | 'edit'
+export type DocumentNavigationView = 'resource' | 'literature'
 export type DocumentLoadState = 'loading' | 'ready' | 'error'
 export type DocumentSaveState = 'clean' | 'dirty' | 'saving' | 'conflict' | 'error'
 export type CloseChoice = 'save' | 'overwrite' | 'discard' | 'cancel'
@@ -90,9 +91,16 @@ export interface DocumentTab {
   id: string
   sessionId: string
   viewKind: DocumentViewKind
+  navigationView?: DocumentNavigationView
   title: string
   /** Viewer-owned, immutable reading state; independent of the shared document bytes. */
   viewState?: Readonly<Record<string, unknown>>
+}
+
+export function documentNavigationView(tab: DocumentTab, session: DocumentSession): DocumentNavigationView {
+  if (session.source.kind === 'literature') return 'literature'
+  if (session.source.kind === 'project') return 'resource'
+  return tab.navigationView ?? 'resource'
 }
 
 export const DOCUMENT_TEXT_REVEAL_VIEW_STATE_KEY = 'documentTextReveal' as const
@@ -1705,6 +1713,15 @@ export class DocumentWorkspace {
   focusTab(tabId: string): void {
     const location = this.locationForTab(tabId)
     if (location) this.activate(location.leafId, tabId)
+  }
+
+  setTabNavigationView(tabId: string, navigationView: DocumentNavigationView): void {
+    const tab = this.state.tabs[tabId]
+    if (!tab || tab.navigationView === navigationView) return
+    this.publish({
+      ...this.state,
+      tabs: { ...this.state.tabs, [tabId]: { ...tab, navigationView } }
+    })
   }
 
   setTabViewState(tabId: string, viewState: Readonly<Record<string, unknown>>): void {

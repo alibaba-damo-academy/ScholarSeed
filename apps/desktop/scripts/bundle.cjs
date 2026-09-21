@@ -12,7 +12,7 @@ const PROJECTS = [
   ['serve', 'apps/serve']
 ]
 const PYTHON_INDEX = 'https://mirrors.aliyun.com/pypi/simple/'
-const BINARY_PACKAGES = ['cryptography', 'pydantic-core', 'orjson', 'rpds-py', 'pikepdf']
+const BINARY_PACKAGES = ['cryptography', 'pydantic-core', 'orjson', 'rpds-py']
 const REQUIREMENTS_FILENAME = 'python-requirements.txt'
 const INVENTORY_FILENAME = 'python-dependencies.json'
 const VERIFIER_FILENAME = 'dependencies.py'

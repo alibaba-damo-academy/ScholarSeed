@@ -32,7 +32,7 @@ from browser import (
     parse_args,
     search,
 )
-from invoke import OUTPUT_PATH, publish
+from invoke import BRIDGE_COMMAND, OUTPUT_PATH, publish
 from official import (
     API_HOST,
     API_PATH,
@@ -658,11 +658,13 @@ class BrowserSearchContractTest(unittest.TestCase):
             previous = Path.cwd()
             try:
                 os.chdir(root)
-                self.assertEqual(publish(payload, runner=runner), 0)
+                self.assertEqual(
+                    publish(payload, runner=runner, bridge_command=BRIDGE_COMMAND), 0
+                )
             finally:
                 os.chdir(previous)
             self.assertEqual(json.loads((root / OUTPUT_PATH).read_text(encoding="utf-8")), payload)
-        self.assertEqual(calls[0][0][0][1:4], ["-m", "service.cli.bridge", "artifact"])
+        self.assertEqual(calls[0][0][0][:2], [BRIDGE_COMMAND, "artifact"])
 
 
 if __name__ == "__main__":

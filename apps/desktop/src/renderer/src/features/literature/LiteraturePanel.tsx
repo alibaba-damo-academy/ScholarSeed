@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   ArrowRight,
+  EllipsisVertical,
   FileDown,
   Folder,
   FolderOpen,
@@ -344,11 +345,20 @@ export function LiteraturePanel(): React.JSX.Element {
             >
               {collection.name}
             </EllipsisText>
-            <span className="lit-count shrink-0 group-hover/collection:hidden group-focus-within/collection:hidden">
+          <span className="lit-count shrink-0 group-hover/collection:hidden group-focus-within/collection:hidden group-aria-expanded/collection:hidden">
               {collection.count}
             </span>
           </Button>
-          <span className="lit-node-actions hidden flex-none group-hover/collection:flex group-focus-within/collection:flex">
+          <span className="lit-node-actions hidden flex-none gap-[calc(var(--vds-space-1)/2)] group-hover/collection:flex group-focus-within/collection:flex group-aria-expanded/collection:flex">
+            <DropdownMenuTrigger asChild>
+              <IconButton
+                label={t('panel.moreCollection', { name: collection.name })}
+                size="sm"
+                variant="ghostIcon"
+                icon={<EllipsisVertical size={14} />}
+                onClick={(event) => event.stopPropagation()}
+              />
+            </DropdownMenuTrigger>
             <IconButton
               label={t('panel.newChild', { name: collection.name })}
               size="sm"
@@ -363,21 +373,6 @@ export function LiteraturePanel(): React.JSX.Element {
                   parentName: collection.name
                 })
               }}
-            />
-            <IconButton
-              label={t('panel.deleteCollection', { name: collection.name })}
-              size="sm"
-              variant="ghostIcon"
-              icon={<Trash size={14} />}
-              onClick={() =>
-                setDeleteTarget({
-                  kind: 'collection',
-                  id: collection.id,
-                  name: collection.name,
-                  count: collection.count,
-                  projectId: project?.id ?? projectId
-                })
-              }
             />
           </span>
         </div>
@@ -1061,9 +1056,9 @@ export function LiteraturePanel(): React.JSX.Element {
                       <IconButton
                         className="!border-1 !border-solid !border-[var(--vds-line-2)]"
                         label={t('panel.newTag')}
-                        size="sm"
+                        size="xs"
                         variant="ghostIcon"
-                        icon={<Plus size={14} />}
+                        icon={<Plus size={12} />}
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')
@@ -1081,9 +1076,9 @@ export function LiteraturePanel(): React.JSX.Element {
                       <IconButton
                         className="!border-1 !border-solid !border-[var(--vds-line-2)]"
                         label={t('panel.newTag')}
-                        size="sm"
+                        size="xs"
                         variant="ghostIcon"
-                        icon={<Plus size={14} />}
+                        icon={<Plus size={12} />}
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')

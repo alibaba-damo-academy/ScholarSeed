@@ -224,6 +224,9 @@
     "action": "Notification with action",
     "undo": "Undo",
     "default": "Default notification",
+    "titleOnly": "Title only",
+    "longDescriptionLabel": "Long description",
+    "longDescription": "This notification demonstrates an unusually long description using a fictional research workflow. It does not represent a real operation. A researcher might import many documents, inspect their metadata, compare different versions, and organize relevant material into a project. Some records may be missing authors or publication dates, while others may contain duplicate titles or incomplete identifiers. Detailed feedback about these conditions can require considerably more space than a short confirmation. This example includes background information, processing notes, and suggested next steps so that the notification can be observed with realistic overflow. Check whether the description truncates cleanly at the existing line limit without pushing the title, icon, or close button out of position. When the window becomes narrower, the notification should respect its normal width constraints instead of expanding across the page. Light and dark themes should preserve readable text and a clear distinction between the title and supporting content. Multiple notifications should remain independent, and dismissing one should not change the others. This is static demonstration text only: it does not upload documents, update metadata, create projects, or send conversation messages. Use this example alongside the default and title-only notifications to compare how the component presents different amounts of information.",
     "success": "Success notification",
     "error": "Error notification",
     "warning": "Warning notification"

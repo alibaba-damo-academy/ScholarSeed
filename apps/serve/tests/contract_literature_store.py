@@ -445,18 +445,36 @@ class LiteratureStoreTests(unittest.TestCase):
     def test_unorganized_sidebar_excludes_every_project_and_collection(self) -> None:
         repository = LiteratureRepository()
         repository.save(replace(self.item, id="loose"))
-        repository.save(replace(self.item, id="global", collection="Reading", collections=("Reading",)))
+        repository.save(
+            replace(self.item, id="global", collection="Reading", collections=("Reading",))
+        )
         repository.save(replace(self.item, id="project-only"), self.project.id)
-        repository.save(replace(self.item, id="project-classified", collection="Methods", collections=("Methods",)), self.project.id)
-        repository.save(replace(self.item, id="both", collection="Reading", collections=("Reading",)))
+        repository.save(
+            replace(
+                self.item, id="project-classified", collection="Methods", collections=("Methods",)
+            ),
+            self.project.id,
+        )
+        repository.save(
+            replace(self.item, id="both", collection="Reading", collections=("Reading",))
+        )
         repository.save(replace(self.item, id="both"), self.project.id)
 
         filters = {"without_collection": True, "without_project": True}
         self.assertEqual([item.id for item in repository.list(**filters)], ["loose"])
         self.assertEqual(repository.filtered_total(**filters), 1)
         # Existing collection-only consumers keep their original filter semantics.
-        self.assertEqual({item.id for item in repository.list(without_collection=True)}, {"loose", "project-only", "project-classified"})
-        self.assertEqual({item.id for item in repository.list(project_id=self.project.id, without_collection=True)}, {"project-only", "both"})
+        self.assertEqual(
+            {item.id for item in repository.list(without_collection=True)},
+            {"loose", "project-only", "project-classified"},
+        )
+        self.assertEqual(
+            {
+                item.id
+                for item in repository.list(project_id=self.project.id, without_collection=True)
+            },
+            {"project-only", "both"},
+        )
 
         app = FastAPI()
         app.state.content = self.content
@@ -467,7 +485,12 @@ class LiteratureStoreTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in result.json()["items"]], ["loose"])
         self.assertEqual(result.json()["total"], 1)
         self.assertEqual(client.get("/api/v1/literatures/counts").json()["without_collection"], 1)
-        self.assertEqual(client.get("/api/v1/literatures/counts", params={"project_id": self.project.id}).json()["without_collection"], 2)
+        self.assertEqual(
+            client.get("/api/v1/literatures/counts", params={"project_id": self.project.id}).json()[
+                "without_collection"
+            ],
+            2,
+        )
 
     def test_list_search_matches_publication_year(self) -> None:
         repository = LiteratureRepository()
@@ -478,6 +501,57 @@ class LiteratureStoreTests(unittest.TestCase):
             [self.item.id],
         )
         self.assertEqual(repository.filtered_total(q=str(self.item.year)), 1)
+
+    def test_attachment_sort_groups_by_presence_and_keeps_the_original_order(self) -> None:
+        """曲别针列排序：有附件的整组提前，组内仍是列表原始序。
+
+        附件只有「有 / 没有」两个值，若沿用全局 id 兜底键，组内顺序会被 id 重排，
+        与用户在未排序列表里看到的顺序不一致；因此次级键必须复用原始序。
+        """
+
+        root = Path(self.temporary.name) / "attachments"
+        root.mkdir()
+        repository = LiteratureRepository()
+        # 原始序（created_at 倒序）：newest → newer → middle → oldest。
+        for index, identifier in enumerate(("oldest", "middle", "newer", "newest")):
+            repository.save(replace(self.item, id=identifier, added_at=1_000.0 + index))
+        for identifier in ("newest", "middle"):
+            payload = f"%PDF-1.4 {identifier}".encode()
+            (root / f"{identifier}.pdf").write_bytes(payload)
+            repository.add_attachment(
+                identifier,
+                "paper.pdf",
+                str(root / f"{identifier}.pdf"),
+                kind="pdf",
+                revision=f"sha256:{sha256(payload).hexdigest()}",
+                role=AttachmentRole.PRIMARY,
+                media_type=PDF_MEDIA_TYPE,
+            )
+
+        self.assertEqual(
+            [item.id for item in repository.list()],
+            ["newest", "newer", "middle", "oldest"],
+        )
+        self.assertEqual(
+            [item.id for item in repository.list(sort="attachment", order="asc")],
+            ["newest", "middle", "newer", "oldest"],
+        )
+        # 方向只翻转附件这一级，组内原始序不变。
+        self.assertEqual(
+            [item.id for item in repository.list(sort="attachment", order="desc")],
+            ["newer", "oldest", "newest", "middle"],
+        )
+
+        app = FastAPI()
+        app.state.content = self.content
+        register_literature_routes(app)
+        client = TestClient(app)
+        result = client.get("/api/v1/literatures", params={"sort": "attachment", "order": "asc"})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(
+            [item["id"] for item in result.json()["items"]],
+            ["newest", "middle", "newer", "oldest"],
+        )
 
     def test_nested_records_and_organization_round_trip_losslessly(self) -> None:
         item = replace(

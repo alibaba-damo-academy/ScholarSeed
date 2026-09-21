@@ -53,7 +53,9 @@ python <SKILL_DIR>/scripts/invoke.py --provider visible-browser --query <query> 
    directory; inside a ScholarSeed Invocation this is the one-shot workspace) as sorted-key,
    `ensure_ascii=False`, UTF-8 JSON with a trailing newline.
 3. It publishes that file as a **`role: final` Invocation artifact** through the product
-   bridge (`python -m service.cli.bridge artifact publish`).
+   bridge (`scholarseed-bridge artifact publish`). The packaged Desktop injects its
+   relocatable bridge through `SCHOLARSEED_BRIDGE_DIR` and `PATH`; publication never imports
+   `service` from the Python interpreter used to run this Skill.
 4. **`invoke.py`'s process exit code is the *publish* status, not the search status.**
 
 > **Read the search outcome from the artifact's `status` field, never from the process

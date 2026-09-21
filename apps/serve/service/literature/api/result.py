@@ -315,7 +315,7 @@ def register_result_routes(
             catalog.require(session_id, SessionPrincipal(request_owner_id(request)))
         except SessionAccessError as error:
             raise HTTPException(HTTP_404_NOT_FOUND, "session_not_found") from error
-        result = await asyncio.to_thread(statuses.resolve, command.papers)
+        result = await asyncio.to_thread(statuses.resolve, command.papers, command.project_id)
         return {"items": result}
 
     @app.get("/api/sessions/{session_id}/literature/results/{card_id}")

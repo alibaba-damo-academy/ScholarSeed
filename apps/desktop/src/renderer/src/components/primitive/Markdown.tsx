@@ -10,12 +10,13 @@ import 'katex/dist/katex.min.css'
 
 import type { EvidenceAnnotation, EvidencePriority } from '../../model'
 import { isCitationUrl, type CitationLinkRange } from '../../contracts/citations'
-import { Checkbox, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui'
+import { Button, Checkbox, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui'
 import {
   type MarkdownAnswerAnnotation,
   rehypeScholarSeedDecorations
 } from '../markdown/decorate'
 import { GFM_PLUGIN } from '../markdown/gfm'
+import { relativeSessionFilePath } from '../markdown/links'
 import { prepareMarkdownSource, visibleMarkdownText } from '../markdown/source'
 
 export { visibleMarkdownText }
@@ -25,7 +26,10 @@ const MARKDOWN_CLASS_NAME = [
   'md min-w-0 max-w-full cursor-text select-text font-[var(--font)] text-[15.5px] font-normal leading-[1.62] text-[var(--text)]',
   '[overflow-wrap:anywhere] break-words [&>*:first-child]:mt-0',
   '[&_[data-scholarseed-citation-claim]]:font-bold [&_strong]:font-semibold [&_strong]:text-[var(--text)] [&_em]:italic',
-  '[&_code]:whitespace-normal [&_code]:rounded-[4px] [&_code]:border [&_code]:border-[var(--border-soft)]',
+  /* inline code 用 inline-block + max-w-full：inline 非替换元素不受 max-width 约束，
+     带 px/border 的长文件路径 code 会溢出行盒（对话区横向滚动条）；成为 inline-block
+     后 max-w-full 生效，短 code 仍内联、长 code 在 chip 内折行。 */
+  '[&_code]:inline-block [&_code]:max-w-full [&_code]:align-baseline [&_code]:whitespace-normal [&_code]:rounded-[4px] [&_code]:border [&_code]:border-[var(--border-soft)]',
   '[&_code]:bg-[var(--bg-3)] [&_code]:px-[5px] [&_code]:py-px [&_code]:font-[var(--font-mono)]',
   '[&_code]:text-[0.86em] [&_code]:[overflow-wrap:anywhere] [&_code]:break-words',
   '[&_code]:[-webkit-box-decoration-break:clone] [&_code]:[box-decoration-break:clone]',
@@ -298,6 +302,8 @@ interface MarkdownRenderOptions {
   citationUrls: ReadonlySet<string>
   renderMarker?: (annotation: MarkdownAnswerAnnotation) => React.ReactNode
   renderCitation?: (range: CitationLinkRange, children: React.ReactNode, href: string) => React.ReactNode
+  onOpenSessionFile?: (path: string) => void
+  renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
 }
 const MarkdownRenderContext = React.createContext<MarkdownRenderOptions>({
   evidence: new Map(), annotations: new Map(), citationUrls: new Set()
@@ -333,7 +339,7 @@ function markdownComponents(): Components {
       />
     },
     a: ({ node: _node, href, children, ...props }) => {
-      const { citationUrls, renderCitation } = React.useContext(MarkdownRenderContext)
+      const { citationUrls, renderCitation, onOpenSessionFile, renderSessionFileLink } = React.useContext(MarkdownRenderContext)
       if (renderCitation && href && (isCitationUrl(href) || citationUrls.has(href))) {
         const start = _node?.position?.start.offset
         const end = _node?.position?.end.offset
@@ -343,6 +349,16 @@ function markdownComponents(): Components {
         }
       }
       const url = safeExternalUrl(href ?? '')
+      const filePath = (onOpenSessionFile || renderSessionFileLink) && href ? relativeSessionFilePath(href) : null
+      if (filePath) {
+        if (renderSessionFileLink) return <>{renderSessionFileLink(filePath, children)}</>
+        return <Button
+          unstyled
+          className="inline cursor-pointer border-0 bg-transparent p-0 [font:inherit] text-[var(--vds-link)] underline hover:text-[var(--vds-link-hover)] focus-visible:[box-shadow:var(--vds-focus-brand)]"
+          data-testid="session-file-link"
+          onClick={() => onOpenSessionFile?.(filePath)}
+        >{children}</Button>
+      }
       return url
         ? <a {...props} href={url} rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); openExternalSource(url) }}>{children}</a>
         : <span>{children}</span>
@@ -402,6 +418,8 @@ export function Markdown({
   answerAnnotations = [],
   renderAnswerAnnotationMarker,
   renderCitation,
+  onOpenSessionFile,
+  renderSessionFileLink,
   citationUrls = EMPTY_CITATION_URLS
 }: {
   text: string
@@ -414,6 +432,8 @@ export function Markdown({
   answerAnnotations?: MarkdownAnswerAnnotation[]
   renderAnswerAnnotationMarker?: (annotation: MarkdownAnswerAnnotation) => React.ReactNode
   renderCitation?: (range: CitationLinkRange, children: React.ReactNode, href: string) => React.ReactNode
+  onOpenSessionFile?: (path: string) => void
+  renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
   citationUrls?: string[]
 }): React.JSX.Element {
   const renderMath = math ?? texMath
@@ -429,8 +449,8 @@ export function Markdown({
   )
   const citationUrlSet = React.useMemo(() => new Set(citationUrls), [citationUrls])
   const renderOptions = React.useMemo(
-    () => ({ evidence: evidenceById, annotations: answersById, citationUrls: citationUrlSet, renderMarker: renderAnswerAnnotationMarker, renderCitation }),
-    [answersById, citationUrlSet, evidenceById, renderAnswerAnnotationMarker, renderCitation]
+    () => ({ evidence: evidenceById, annotations: answersById, citationUrls: citationUrlSet, renderMarker: renderAnswerAnnotationMarker, renderCitation, onOpenSessionFile, renderSessionFileLink }),
+    [answersById, citationUrlSet, evidenceById, renderAnswerAnnotationMarker, renderCitation, onOpenSessionFile, renderSessionFileLink]
   )
   const decoration = React.useMemo(
     () => rehypeScholarSeedDecorations({ source, sourceMapped, evidence, answers: answerAnnotations, emphasizeCitations: Boolean(renderCitation), citationUrls: citationUrlSet }),
@@ -443,7 +463,9 @@ export function Markdown({
         rehypePlugins={renderMath ? [decoration, rehypeKatex] : [decoration]}
         remarkPlugins={renderMath ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkMath] : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks]}
         skipHtml
-        urlTransform={(url) => renderCitation && (isCitationUrl(url) || citationUrlSet.has(url)) ? url : safeExternalUrl(url)}
+        urlTransform={(url) => renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
+          ? url
+          : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url) ? url : safeExternalUrl(url)}
       >
         {renderedSource}
       </ReactMarkdown>

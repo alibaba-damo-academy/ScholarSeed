@@ -24,9 +24,9 @@ from service.chat.service.adapters import registrations, resolve_runtime_id
 # baseInstructions.md 维护替换 runtime 内置基础指令的完整基础指令 (base_instructions);
 # developerInstructions.md 维护叠加在其上的产品附加开发者指令 (developer_instructions)。
 # 两者由算法同学的 config.toml (instructions / developer_instructions) 同步维护:
-# baseInstructions.md 逐字对应 instructions, developerInstructions.md 的算法章节
-# (Response Language / Request Type Gate / Research Intent Clarification & Routing)
-# 对应 developer_instructions, 其余章节是产品自有内容。
+# baseInstructions.md 对应 instructions, developerInstructions.md 的算法章节
+# (Request Type Gate / Research Intent Clarification & Routing) 对应
+# developer_instructions, 其余章节是产品自有内容。
 BASE_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "baseInstructions.md"
 DEVELOPER_PROMPT_FILE = Path(__file__).resolve().parent / "prompts" / "developerInstructions.md"
 TEXT_ENCODING = "utf-8"

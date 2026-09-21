@@ -102,6 +102,24 @@ def scan_files(
     return tuple(found[path] for path in sorted(found))
 
 
+def entries_for_paths(space: ProjectSpace, paths: tuple[str, ...]) -> tuple[ResourceEntry, ...]:
+    """Inspect selected logical files without enumerating unrelated resources."""
+
+    resource_root = resolve_root(space.project, RootKind.RESOURCES).absolute.resolve()
+    linked_roots = tuple(mount.source.resolve() for mount in space.mounts)
+    allowed_roots = (resource_root, *linked_roots)
+    found: dict[str, ResourceEntry] = {}
+    for path in dict.fromkeys(paths):
+        try:
+            target = space.absolute(path)
+        except ContentError:
+            continue
+        entry = _entry(space, target, allowed_roots)
+        if entry is not None:
+            found[entry.path] = entry
+    return tuple(found[path] for path in sorted(found))
+
+
 def enumerate_files(
     space: ProjectSpace,
     cursor: str | None,
@@ -115,4 +133,4 @@ def enumerate_files(
     return ResourcePage(entries=entries, next_cursor=next_cursor)
 
 
-__all__ = ["GITIGNORE_FILENAME", "enumerate_files", "scan_files"]
+__all__ = ["GITIGNORE_FILENAME", "entries_for_paths", "enumerate_files", "scan_files"]

@@ -13,10 +13,20 @@ globalThis.ScholarSeedOfficeSelection = (() => {
     '.doc': WRITER_FORMAT_DOC,
     '.docx': WRITER_FORMAT_DOCX,
   })
+  const AUTOSCROLL_KIND_WRITER = 'writer'
+  const AUTOSCROLL_KIND_CALC = 'calc'
+  const CALC_FORMATS = Object.freeze(['.csv', '.xls', '.xlsx'])
 
   function writerFormat(filename) {
     const normalized = typeof filename === 'string' ? filename.toLowerCase() : ''
     return Object.entries(WRITER_FORMATS).find(([suffix]) => normalized.endsWith(suffix))?.[1]
+  }
+
+  function autoscrollKind(filename) {
+    const normalized = typeof filename === 'string' ? filename.toLowerCase() : ''
+    if (writerFormat(normalized)) return AUTOSCROLL_KIND_WRITER
+    if (CALC_FORMATS.some((suffix) => normalized.endsWith(suffix))) return AUTOSCROLL_KIND_CALC
+    return undefined
   }
 
   function cellCount(range) {
@@ -189,6 +199,7 @@ globalThis.ScholarSeedOfficeSelection = (() => {
   return Object.freeze({
     MAXIMUM_INLINE_CELLS,
     REFERENCE_MODE,
+    autoscrollKind,
     captureImpress,
     describe,
     describeImpress,

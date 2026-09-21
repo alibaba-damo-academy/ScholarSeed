@@ -6,6 +6,8 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
+import { Copy } from 'lucide-react'
+import aiThinking from '../../assets/ai-thinking.gif'
 import { activeThread, useApp, type ComposerReference } from '../../store'
 import {
   ConvCard,
@@ -71,6 +73,7 @@ import {
   useLatestDisplayCards
 } from './Cards'
 import { useInteractionPolicies } from './Interactions'
+import { activityDurationLabel, elapsedLabel } from './duration'
 import { Finalizations } from '../../features/resources/Finalizations'
 import { ReviewCard } from '../../features/resources/ReviewCard'
 import { hasDirtyReviewEditor } from '../../contracts/resources'
@@ -102,6 +105,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   CopyButton,
+  EllipsisText,
   IconButton,
   ScrollArea,
   Spinner,
@@ -148,7 +152,9 @@ const CHIP_BUTTON_CLASS =
 const FLAT_BUTTON_CLASS =
   'min-h-[30px] appearance-none rounded-[5px] border border-transparent bg-[var(--bg-3)] px-[11px] py-[6px] text-[11px] leading-[1.25] text-[var(--text-2)] [transition:background_0.16s_ease,border-color_0.16s_ease,box-shadow_0.16s_ease,color_0.16s_ease,filter_0.16s_ease,transform_0.16s_cubic-bezier(0.2,0.8,0.2,1)] hover:enabled:-translate-y-px hover:enabled:bg-[var(--hover-bg)] hover:enabled:text-[var(--text)] active:enabled:scale-[0.982] active:enabled:translate-y-0 active:enabled:bg-[var(--active-bg)] active:enabled:text-[var(--active-text)] active:enabled:shadow-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color-mix(in_oklch,var(--accent)_50%,transparent)] disabled:opacity-55'
 const READING_COLUMN_CLASS =
-  'box-border w-[min(100%,clamp(var(--conversation-reading-min),var(--conversation-reading-width),var(--conversation-reading-max)))] min-w-0 mx-auto'
+  'box-border w-full max-w-[var(--vds-conversation-content-width)] min-w-0 mx-auto'
+const QUESTION_OPTION_MARK_CLASS =
+  'h-[var(--vds-checkbox-mark-height)] w-[var(--vds-checkbox-mark-width)] rotate-[-45deg] translate-y-[var(--vds-checkbox-mark-offset-y)] border-solid border-current border-t-0 border-r-0 border-b-[length:var(--vds-checkbox-mark-border)] border-l-[length:var(--vds-checkbox-mark-border)]'
 const MESSAGE_ACTIONS_CLASS =
   'mt-[7px] flex items-center gap-[var(--vds-space-1)]'
 const TOOL_RUN_CLASS =
@@ -207,7 +213,7 @@ function retryReferences(
   for (const reference of references ?? []) {
     if (
       !reference.path ||
-      (reference.type !== 'file' && reference.type !== 'skill')
+      (reference.type !== 'file' && reference.type !== 'directory' && reference.type !== 'skill')
     )
       return null
     if (reference.type === 'skill') {
@@ -221,12 +227,24 @@ function retryReferences(
       })
       continue
     }
+    if (reference.type === 'directory') {
+      restored.push({
+        type: 'directory',
+        id: reference.id,
+        title: reference.title,
+        status: reference.status,
+        path: reference.path,
+        registrationRequired: true
+      })
+      continue
+    }
     restored.push({
       type: 'file',
       id: reference.id,
       title: reference.title,
       status: reference.status,
       path: reference.path,
+      registrationRequired: true,
       mediaType: reference.mediaType,
       sha256: reference.sha256,
       size: reference.size
@@ -272,20 +290,6 @@ function userMessageRefType(type: string, t: TFunction<'components'>): string {
   if (type === 'assistant_context')
     return t(USER_REFERENCE_TYPE_LABELS.assistant_context)
   return type
-}
-
-function elapsedLabel(
-  startedAt: number,
-  now: number,
-  t: TFunction<'components'>
-): string {
-  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
-  if (seconds < 60) return t('stream.seconds', { count: seconds })
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds % 60
-  return rest
-    ? t('stream.minutesSeconds', { minutes, seconds: rest })
-    : t('stream.minutes', { count: minutes })
 }
 
 function compactDurationLabel(
@@ -689,14 +693,14 @@ export function Stream({
   return (
     <div
       ref={streamRef}
-      className="conversation-stream"
+      className="conversation-stream [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)]"
       style={{
         flex: home ? 'none' : 1,
         minHeight: 0,
         overflowY: home ? 'visible' : 'auto',
         padding: home
-          ? '0 var(--conversation-inline-gutter) 8px'
-          : '26px var(--conversation-inline-gutter) 10px',
+          ? '0 var(--vds-conversation-inline-gutter) 8px'
+          : '26px var(--vds-conversation-inline-gutter) 10px',
         userSelect: 'text',
         WebkitUserSelect: 'text',
         cursor: 'auto'
@@ -706,6 +710,7 @@ export function Stream({
         ref={columnRef}
         key={threadKey}
         className={READING_COLUMN_CLASS}
+        data-testid="conversation-content"
         style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
       >
         {conv.length === 0 && <Empty home={home} />}
@@ -819,11 +824,12 @@ export function PendingHilDock(): React.JSX.Element | null {
   const interactions = pendingHilItems(activeThread(state).conversation)
   if (interactions.length === 0) return null
   return (
+    // 底部 pb-4：HIL 卡与下方执行计划/输入框容器的间距统一为 4px（卡自身 dock 态 mb-0）。
     <div
-      className="relative z-[var(--vds-z-local-top)] flex min-h-0 flex-[1_1_auto] flex-col overflow-hidden bg-transparent px-[13px] pt-[var(--vds-space-2)]"
+      className="relative z-[var(--vds-z-local-top)] flex min-h-0 flex-[1_1_auto] flex-col overflow-hidden bg-transparent px-[var(--vds-conversation-inline-gutter)] pt-[var(--vds-space-2)] pb-[var(--vds-space-1)]"
       data-testid="hil-dock"
     >
-      <div className={cx(READING_COLUMN_CLASS, 'flex min-h-0 flex-1 flex-col')}>
+      <div className={cx(READING_COLUMN_CLASS, '@container flex min-h-0 flex-1 flex-col')}>
         <HilCard
           key={interactions[0].requestId}
           item={interactions[0]}
@@ -842,7 +848,7 @@ export function ConversationControls({
 }): React.JSX.Element {
   return (
     // 禁 overflow-hidden: composer 的 @/技能弹层是 absolute 向上弹出、会超出本容器盒子被裁成一条边; 高度收敛靠 composer 内部限高滚动。
-    <div className="vds-ai-composer-host flex min-h-0 max-h-full flex-[0_1_auto] flex-col">
+    <div className="vds-ai-composer-host flex min-h-0 max-h-full flex-[0_1_auto] flex-col px-[var(--vds-conversation-scrollbar-width)]">
       <PendingHilDock />
       <div className="flex-none">{children}</div>
     </div>
@@ -862,7 +868,7 @@ function Working({ waiting }: { waiting: boolean }): React.JSX.Element {
       {waiting ? (
         <Icon name="schedule" size={14} />
       ) : (
-        <Spinner size="sm" aria-hidden="true" />
+        <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
       )}
       <span>{label}</span>
     </div>
@@ -1143,13 +1149,15 @@ function ActivityStatusIcon({
 }: {
   status: ToolItem['status']
 }): React.JSX.Element {
+  if (status === 'running') {
+    return <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
+  }
   return (
     <IconFont
       type={ACTIVITY_STATUS_ICONS[status]}
       className={cx(
         'inline-flex size-4 shrink-0 items-center justify-center',
-        TOOL_RUN_STATUS_TONE_CLASS[`is-${status}`],
-        status === 'running' && 'animate-spin motion-reduce:animate-none'
+        TOOL_RUN_STATUS_TONE_CLASS[`is-${status}`]
       )}
     />
   )
@@ -1498,7 +1506,7 @@ function ActivityRun({
   const durationEnd = running ? now : completedAt
   const taskDuration =
     startedAt !== undefined && durationEnd !== undefined
-      ? elapsedLabel(startedAt, durationEnd, t)
+      ? activityDurationLabel(startedAt, durationEnd, t)
       : null
   const stateLabel = running
     ? t('stream.executing')
@@ -1555,7 +1563,9 @@ function ActivityRun({
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
             {lineLabel}
           </span>
-          <span>{state}</span>
+          {/* 与 label 同款收缩约束：w-fit 触发按钮的 min-content 否则被 nowrap 状态文案撑宽，
+              窄对话区会出现横向滚动条。 */}
+          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{state}</span>
           <span className="inline-flex flex-none opacity-0 transition-opacity duration-150 group-hover/activity:opacity-100 group-focus-visible/activity:opacity-100">
             <Icon name="chevron-right" size={13} sw={1.8} />
           </span>
@@ -2913,7 +2923,7 @@ function HilCard({
         data-hil-kind="permission"
         data-hil-resolved="false"
         data-hil-state={item.hilState ?? 'pending'}
-        className="grid min-h-[60px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[10px] rounded-[10px] border border-[var(--border)] bg-[var(--bg-2)] py-[9px] pl-[var(--vds-space-3)] pr-[10px] shadow-[0_8px_24px_rgb(45_35_20/8%)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[0_0_0_2px_var(--accent-soft),0_8px_24px_rgb(45_35_20/8%)]"
+        className="grid min-h-[64px] min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-transparent px-[var(--vds-space-4)] py-[var(--vds-space-3)] outline-none [animation:cardIn_0.24s_ease_both] focus-visible:shadow-[var(--vds-focus-brand)] @max-[340px]:grid-cols-[auto_minmax(0,1fr)]"
         onKeyDown={(event) => {
           if (event.repeat || submitting) return
           if (event.key === 'Escape') {
@@ -2928,29 +2938,33 @@ function HilCard({
         }}
       >
         <span
-          className="grid size-[24px] place-items-center rounded-[7px] bg-[var(--accent-soft)] text-[var(--brand-ink)]"
+          className="grid size-[var(--vds-icon-8)] place-items-center text-[var(--vds-text-secondary)]"
           aria-hidden
         >
-          <Icon name="hand" size={14} sw={1.8} />
+          <IconFont
+            type="icon-wanquanfangwen"
+            className="text-[20px] leading-none"
+          />
         </span>
         <span className="flex min-w-0 flex-col gap-[3px]">
-          <span className="inline-flex items-center gap-[7px] text-xs font-bold text-[var(--text)]">
-            {t('stream.hil.requestPermission')}
+          <span className="flex min-w-0 items-center gap-[7px] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] font-bold text-[var(--text)]">
+            <span className="truncate">{t('stream.hil.requestPermission')}</span>
             {queueCount > 1 && (
-              <span className="text-[9.5px] font-medium text-[var(--text-3)]">
+              <span className="flex-none text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-medium text-[var(--text-3)]">
                 1 / {queueCount}
               </span>
             )}
           </span>
-          <span
-            className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-[10.5px] leading-[1.45] text-[var(--text-2)]"
-            title={summary}
+          <EllipsisText
+            className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--text-2)]"
+            tooltip={summary}
+            tooltipPortalled
           >
             {summary}
-          </span>
+          </EllipsisText>
           {item.hilState === 'failed' && (
             <span
-              className="text-[10px] leading-[1.4] text-[var(--c-tension)]"
+              className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--c-tension)]"
               data-testid="hil-submit-error"
             >
               {t('stream.hil.submitFailed', {
@@ -2966,31 +2980,32 @@ function HilCard({
             </span>
           )}
         </span>
-        <span className="inline-flex flex-none items-center gap-[5px]">
+        <span className="inline-flex flex-none items-center gap-[var(--vds-space-2)] @max-[340px]:col-span-2 @max-[340px]:justify-self-end">
           <Button
-            unstyled
+            variant="secondary"
+            size="sm"
             type="button"
             data-testid={`hil-permission-${dockOptions.deny.id}`}
             data-hil-decision="deny"
-            className="inline-flex h-[30px] cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-lg border border-transparent bg-transparent px-[10px] text-[11px] text-[var(--text-2)] hover:enabled:border-[var(--border)] hover:enabled:bg-[var(--bg-3)] focus-visible:border-[var(--border)] focus-visible:bg-[var(--bg-3)] disabled:cursor-default disabled:opacity-[0.62] [&_kbd]:min-w-4 [&_kbd]:rounded-[5px] [&_kbd]:border [&_kbd]:border-current [&_kbd]:px-[var(--vds-space-1)] [&_kbd]:py-px [&_kbd]:font-mono [&_kbd]:text-[8.5px] [&_kbd]:leading-[1.35] [&_kbd]:opacity-[0.66]"
+            className="whitespace-nowrap"
             disabled={submitting}
             onClick={deny}
           >
-            {t('stream.hil.deny')} <kbd>Esc</kbd>
+            {t('stream.hil.deny')}
           </Button>
           <Button
-            unstyled
+            variant="primary"
+            size="sm"
             type="button"
             data-testid={`hil-permission-${dockOptions.allowOnce.id}`}
             data-hil-decision="allow-once"
-            className="inline-flex h-[30px] cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-lg border border-[var(--brand-ink)] bg-[var(--brand-ink)] px-[10px] text-[11px] font-[650] text-white hover:enabled:brightness-[1.06] focus-visible:brightness-[1.06] disabled:cursor-default disabled:opacity-[0.62] [&_kbd]:min-w-4 [&_kbd]:rounded-[5px] [&_kbd]:border [&_kbd]:border-current [&_kbd]:px-[var(--vds-space-1)] [&_kbd]:py-px [&_kbd]:font-mono [&_kbd]:text-[8.5px] [&_kbd]:leading-[1.35] [&_kbd]:opacity-[0.66]"
+            className="whitespace-nowrap"
             disabled={submitting}
             onClick={answerOnce}
           >
             {submitting
               ? t('stream.hil.submitting')
-              : t('stream.hil.allowOnce')}{' '}
-            <kbd>↵</kbd>
+              : t('stream.hil.allowOnce')}
           </Button>
         </span>
       </div>
@@ -3006,7 +3021,9 @@ function HilCard({
       data-hil-resolved={done ? 'true' : 'false'}
       data-hil-state={item.hilState ?? 'pending'}
       className={cx(
-        'mb-[var(--vds-space-4)] min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]',
+        presentation === 'dock'
+          ? 'mb-0 min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]'
+          : 'mb-[var(--vds-space-4)] min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]',
         scrollableQuestion && 'flex min-h-0 flex-1 flex-col overflow-hidden'
       )}
     >
@@ -3178,7 +3195,12 @@ function HilCard({
                                 : 'border-[var(--border)] bg-transparent'
                             )}
                           >
-                            {on ? '✓' : ''}
+                            {on ? (
+                              <span
+                                aria-hidden="true"
+                                className={QUESTION_OPTION_MARK_CLASS}
+                              />
+                            ) : null}
                           </span>
                           <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
                             <span className="mr-[var(--vds-space-2)] font-medium text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
@@ -3996,40 +4018,45 @@ function UserBubble({
             </div>
           ) : null}
           {item.refs?.some(
-            (reference) => reference.type === 'file' && reference.path
+            (reference) => (reference.type === 'file' || reference.type === 'directory') && reference.path
           ) && (
             <div className="mb-[6px] flex w-min max-w-full flex-nowrap justify-start gap-[2px] overflow-x-auto overflow-y-hidden py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[2px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <SentAttachments
                 key={activeThread(state).sessionId}
-                refs={item.refs.flatMap((reference) =>
-                  reference.type === 'file' && reference.path
-                    ? [
-                        {
-                          type: 'file' as const,
-                          id: reference.id,
-                          title: reference.title,
-                          status: reference.status,
-                          path: reference.path,
-                          mediaType: reference.mediaType,
-                          sha256: reference.sha256,
-                          size: reference.size
-                        }
-                      ]
-                    : []
-                )}
+                refs={item.refs.flatMap((reference) => {
+                  if (!reference.path) return []
+                  if (reference.type === 'directory') return [{
+                    type: 'directory' as const,
+                    id: reference.id,
+                    title: reference.title,
+                    status: reference.status,
+                    path: reference.path
+                  }]
+                  if (reference.type === 'file') return [{
+                    type: 'file' as const,
+                    id: reference.id,
+                    title: reference.title,
+                    status: reference.status,
+                    path: reference.path,
+                    mediaType: reference.mediaType,
+                    sha256: reference.sha256,
+                    size: reference.size
+                  }]
+                  return []
+                })}
               />
             </div>
           )}
           {item.refs?.some(
             (reference) =>
-              (reference.type !== 'file' || !reference.path) &&
+              ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
               reference.type !== 'assistant_context'
           ) && (
             <div className="mt-[9px] flex flex-wrap gap-[6px] border-t border-[var(--border-soft)] pt-[var(--vds-space-2)]">
               {item
                 .refs!.filter(
                   (reference) =>
-                    (reference.type !== 'file' || !reference.path) &&
+                    ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
                     reference.type !== 'assistant_context'
                 )
                 .map((r) => (
@@ -4071,15 +4098,16 @@ function UserBubble({
           <div className={cx(MESSAGE_ACTIONS_CLASS, 'justify-end')}>
             <CopyButton
               type="button"
-              size="sm"
+              size="xs"
+              className="![--vds-icon-button-glyph:var(--vds-icon-7)]"
               variant="ghost"
               value={item.text}
               writeText={writeDesktopClipboard}
               idleLabel={t('stream.copyMessage')}
               copiedLabel={t('stream.copied')}
-            >
-              <Icon name="copy" size={14} />
-            </CopyButton>
+              iconOnly
+              icon={<Copy size={14} />}
+            />
           </div>
         )}
       </div>
@@ -4103,7 +4131,7 @@ function InteractionReply({
   })
   return (
     <div
-      className="mb-[22px] flex justify-end"
+      className="mt-[var(--vds-space-2)] mb-[22px] flex justify-end"
       data-testid="interaction-reply"
       data-interaction-request-id={item.requestId}
     >
@@ -4279,15 +4307,16 @@ function AgentMsg({
           <div className={MESSAGE_ACTIONS_CLASS}>
             <CopyButton
               type="button"
-              size="sm"
+              size="xs"
+              className="![--vds-icon-button-glyph:var(--vds-icon-7)]"
               variant="ghost"
               value={visibleMarkdownText(item.text || '')}
               writeText={writeDesktopClipboard}
               idleLabel={t('stream.copyReply')}
               copiedLabel={t('stream.copied')}
-            >
-              <Icon name="copy" size={14} />
-            </CopyButton>
+              iconOnly
+              icon={<Copy size={14} />}
+            />
           </div>
         )}
         {item.evidence?.length ? (
@@ -4509,6 +4538,7 @@ function ErrorCard({
           data-testid="turn-unknown-continue"
           disabled={confirming}
           loading={confirming}
+          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
           onClick={() => void continueInterruptedTurn()}
           size="sm"
           variant="outline"
@@ -4550,6 +4580,7 @@ function ErrorCard({
               data-testid="turn-regenerate"
               disabled={retrying || retried || retryUnknown}
               loading={retrying}
+              loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
               onClick={() => void onRetry(item)}
               variant="outline"
             >

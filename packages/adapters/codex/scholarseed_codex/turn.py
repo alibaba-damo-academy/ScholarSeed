@@ -19,7 +19,12 @@ from scholarseed_codex.activity import (
     skill_for_command,
 )
 from scholarseed_codex.emitter import CodexEmitter
-from scholarseed_codex.failure import ProviderFailure, provider_failure, unpack_error
+from scholarseed_codex.failure import (
+    ProviderFailure,
+    authentication_failure,
+    provider_failure,
+    unpack_error,
+)
 from scholarseed_codex.files import observed_changes, workspace_relative_path
 from scholarseed_codex.history import (
     replace_turn_snapshot,
@@ -451,7 +456,11 @@ class CodexTurnRuntime:
             self.provider_incident_kind = (
                 RuntimeIncidentKind.PROVIDER_RETRY
                 if will_retry
-                else RuntimeIncidentKind.RPC_REJECTED
+                else (
+                    RuntimeIncidentKind.AUTHENTICATION_REQUIRED
+                    if authentication_failure(failure)
+                    else RuntimeIncidentKind.RPC_REJECTED
+                )
             )
             incident = RuntimeIncident(
                 incident_id=self.provider_incident_id,
@@ -1082,7 +1091,17 @@ class CodexTurnRuntime:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
         if item_type == CODEX_COLLAB_TOOL_CALL_ITEM_TYPE:
-            for agent_thread_id in collaboration_receivers(item):
+            started = self.item_details.get(item_id, {})
+            receivers = tuple(
+                dict.fromkeys(
+                    (
+                        *collaboration_receivers(started),
+                        *collaboration_receivers(item),
+                    )
+                )
+            )
+            item = {**started, **item, "receiverThreadIds": list(receivers)}
+            for agent_thread_id in receivers:
                 await self._emitter.emit(
                     self._thread,
                     CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED,

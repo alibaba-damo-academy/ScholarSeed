@@ -36,8 +36,10 @@ from service.content.persistence.catalog import (
 from service.persistence.project import SQLITE_PRIMARY_RESULT_MASK, reader, transaction
 from service.platform.content import AssetKind, ExternalRootRef, ProjectRef, RootKind
 
-#: 挂载名的长度上限。目录名本身还有 OS 限制, 这里只挡明显异常的输入。
-MOUNT_NAME_MAX = 64
+#: 挂载名的长度上限 (UTF-8 字节)。挂载名镜像真实 OS 路径组件, 上限取各平台
+#: 组件限制的最严值 (macOS/POSIX NAME_MAX = 255 字节); 只挡明显异常的输入,
+#: 不拒绝 OS 合法的目录名。
+MOUNT_NAME_MAX_BYTES = 255
 OWNED_ROOT_TABLE = "content_owned_root"
 OWNED_ROOT_CONFLICT = "owned_root_conflict"
 OWNED_ROOT_UNAVAILABLE = "owned_root_unavailable"
@@ -153,7 +155,10 @@ class ExternalRootService:
         if (
             PurePosixPath(name).is_absolute()
             or "\\" in name
-            or any(not part or len(part) > MOUNT_NAME_MAX or part in {".", ".."} for part in parts)
+            or any(
+                not part or len(part.encode("utf-8")) > MOUNT_NAME_MAX_BYTES or part in {".", ".."}
+                for part in parts
+            )
             or (not nested and "/" in name)
         ):
             raise ContentError("invalid_mount")
@@ -233,4 +238,4 @@ def _available(source: Path, kind: AssetKind) -> bool:
     return source.is_dir() if kind is AssetKind.DIR else source.is_file()
 
 
-__all__ = ["MOUNT_NAME_MAX", "ExternalRootService", "mount_path_for"]
+__all__ = ["MOUNT_NAME_MAX_BYTES", "ExternalRootService", "mount_path_for"]

@@ -65,6 +65,21 @@ export type UpdateInstallStage = 'preparing' | 'copying' | 'restarting'
 export type UpdateErrorOrigin = 'check' | 'download' | 'install'
 
 /**
+ * 安装失败的结构化分类。主进程显式标注、随快照下发，展示侧据此选文案——绝不从 error
+ * 文本反推（原文可能是 Windows 控制台代码页下的中文 stderr，直接呈现会乱码，见 bug
+ * 87042987）。三类的用户出路不同：
+ * - `install_failed`：笼统的安装失败，给通用说法 + 重试。
+ * - `install_verify_unavailable`：签名校验**没能执行**（PowerShell 缺失/被策略拦截/输出
+ *   不可解析），重试大概率仍失败，文案引导用户去官网手动下载安装。
+ * - `install_signature_untrusted`：校验执行了但签名不可信或与打包策略发布者不符，属安全
+ *   拦截，文案明确「已阻止安装、请从官方渠道重新获取」，不引导无意义重试。
+ */
+export type UpdateInstallFallback =
+  | 'install_failed'
+  | 'install_verify_unavailable'
+  | 'install_signature_untrusted'
+
+/**
  * 主进程内部 updater → shell 的进度回调形状，不过 IPC 桥。
  *
  * 渲染层只读 UpdateSnapshot 这一个权威状态：shell 收到进度就把它并进快照再广播，
@@ -80,7 +95,7 @@ export interface UpdateProgress {
 
 export interface UpdateSnapshot {
   /** Explicit origin of an application-generated fallback; never inferred from error text. */
-  errorFallback?: 'install_failed'
+  errorFallback?: UpdateInstallFallback
   phase: UpdatePhase
   currentVersion: string
   checkedAt?: number
@@ -155,4 +170,10 @@ export interface StartUpdateResult {
   ok: boolean
   mode?: 'auto' | 'manual'
   error?: string
+  /**
+   * 安装失败的结构化分类。带它时**不带** `error` 原文：校验/安装失败的诊断（可能含
+   * 代码页乱码的 PowerShell stderr）只落 `$SCHOLARSEED_HOME/logs/update.log`，界面按分类
+   * 给本地化文案。见 bug 87042987。
+   */
+  errorFallback?: UpdateInstallFallback
 }

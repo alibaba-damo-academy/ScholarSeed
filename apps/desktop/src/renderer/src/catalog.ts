@@ -1,4 +1,19 @@
+import type { ModelInfo } from './api'
 import type { SessionNode, Thread } from './model'
+
+/**
+ * Whether the catalogue still offers a model the user may pick.
+ *
+ * An empty catalogue and an all-greyed catalogue are the same product state:
+ * nothing can be selected, so the composer must admit nothing. Not logged in
+ * with no personal connection lands exactly here — the server projects both
+ * built-in and subscription rows as disabled with a readable reason.
+ */
+export function hasSelectableModel(
+  models: ReadonlyArray<Pick<ModelInfo, 'disabled'>>
+): boolean {
+  return models.some((model) => !model.disabled)
+}
 
 /** Resolve the picker label from the active session before the new-session default. */
 export function selectedSessionModelKey(

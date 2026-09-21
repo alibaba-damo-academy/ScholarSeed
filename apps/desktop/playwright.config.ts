@@ -18,7 +18,7 @@ export default defineConfig({
   projects: [
     {
       name: 'smoke',
-      testMatch: /(electron-compat|startup|selection|auth)\.spec\.ts/,
+      testMatch: /(electron-compat|startup|selection|auth|settings)\.spec\.ts/,
       timeout: SMOKE_TIMEOUT_MS
     },
     {

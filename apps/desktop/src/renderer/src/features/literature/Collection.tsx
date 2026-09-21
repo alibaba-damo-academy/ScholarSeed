@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Alert, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input, ScrollArea } from '../../components/ui'
+import { Alert, Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogPortal, DialogTitle, Input, ScrollArea } from '../../components/ui'
 import { LiteratureApiError, updateLiteratureCollection, type LibraryCollection } from './api'
 import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
 
@@ -60,39 +60,42 @@ export function CollectionEditor({ target, onClose, onSaved }: {
       </div>
     })
   return <Dialog open onOpenChange={(open) => { if (!open && !saving) onClose() }}>
-    <DialogContent className="!flex !flex-col max-h-[calc(100dvh-var(--vds-space-6))] overflow-hidden" data-testid="collection-editor">
-      <DialogHeader>
-        <DialogTitle>{t(moving ? 'panel.moveTo' : 'panel.renameCollection')}</DialogTitle>
-        <DialogDescription>{t(moving ? 'panel.moveDescription' : 'panel.renameDescription', { name: target.name })}</DialogDescription>
-      </DialogHeader>
-      {error ? <Alert tone="error" title={t('panel.error.updateFailed')} description={error.detail ?? t(error.key)} /> : null}
-      {moving ? <ScrollArea className="min-h-0 flex-1">
-        <Button
-          className="w-full justify-start"
-          variant={parentId === null ? 'secondary' : 'ghost'}
+    {/* 渲染在文献面板内会被祖先 stacking context 困住，遮罩盖不住活动栏/分栏拖拽条/AI composer；提到 body 与同文件创建、删除弹窗一致。 */}
+    <DialogPortal>
+      <DialogContent className="!flex !flex-col max-h-[calc(100dvh-var(--vds-space-6))] overflow-hidden" data-testid="collection-editor">
+        <DialogHeader>
+          <DialogTitle>{t(moving ? 'panel.moveTo' : 'panel.renameCollection')}</DialogTitle>
+          <DialogDescription>{t(moving ? 'panel.moveDescription' : 'panel.renameDescription', { name: target.name })}</DialogDescription>
+        </DialogHeader>
+        {error ? <Alert tone="error" title={t('panel.error.updateFailed')} description={error.detail ?? t(error.key)} /> : null}
+        {moving ? <ScrollArea className="min-h-0 flex-1">
+          <Button
+            className="w-full justify-start"
+            variant={parentId === null ? 'secondary' : 'ghost'}
+            disabled={saving}
+            aria-pressed={parentId === null}
+            onClick={() => setParentId(null)}
+          >{t(target.projectId ? 'panel.projectRoot' : 'panel.globalRoot')}</Button>
+          {nodes(null)}
+        </ScrollArea> : <Input
+          autoFocus
+          label={t('panel.name')}
+          value={name}
           disabled={saving}
-          aria-pressed={parentId === null}
-          onClick={() => setParentId(null)}
-        >{t(target.projectId ? 'panel.projectRoot' : 'panel.globalRoot')}</Button>
-        {nodes(null)}
-      </ScrollArea> : <Input
-        autoFocus
-        label={t('panel.name')}
-        value={name}
-        disabled={saving}
-        onChange={(event) => setName(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.nativeEvent.isComposing && name.trim()) void submit()
-        }}
-      />}
-      <DialogFooter>
-        <Button variant="outline" disabled={saving} onClick={onClose}>{ui('cancel')}</Button>
-        <Button
-          loading={saving}
-          disabled={moving ? parentId === (target.parent_id ?? null) : !name.trim()}
-          onClick={() => void submit()}
-        >{ui('save')}</Button>
-      </DialogFooter>
-    </DialogContent>
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing && name.trim()) void submit()
+          }}
+        />}
+        <DialogFooter>
+          <Button variant="outline" disabled={saving} onClick={onClose}>{ui('cancel')}</Button>
+          <Button
+            loading={saving}
+            disabled={moving ? parentId === (target.parent_id ?? null) : !name.trim()}
+            onClick={() => void submit()}
+          >{ui('save')}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </DialogPortal>
   </Dialog>
 }

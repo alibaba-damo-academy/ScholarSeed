@@ -34,7 +34,6 @@ from service.literature.service.result import ARTIFACT_REFERENCE_FIELDS, SEARCH_
 from service.platform.bridge import ArtifactPublishFailure, DisplayCardContent
 
 GATE_ARTIFACT_ROLE = "supporting"
-GATE_INTERRUPT_SETTLE_SECONDS = 60.0
 # One tool call can run several skill stages; files are also rescanned while it runs.
 GATE_POLL_SECONDS = 2.0
 GATE_DECISION_CANCELLED = "cancelled"
@@ -227,8 +226,9 @@ class FulltextGate:
             task = live.current_task
             await live.interrupt()
             interrupted = True
+            await live.ledger.wait_terminal(turn_id)
             if task is not None:
-                await asyncio.wait({task}, timeout=GATE_INTERRUPT_SETTLE_SECONDS)
+                await asyncio.wait({task})
         await self._publish_card(live, checkpoint, turn_id)
         challenge, disposition, decision = await authorize_sources(
             live,

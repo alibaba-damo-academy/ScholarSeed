@@ -65,6 +65,7 @@ def _validate_stage(stage: Path) -> None:
         "scripts/input_contracts.py",
         "schema/input_examples.json",
         "scripts/chapter_pipeline.py",
+        "scripts/native_asset_checks.py",
         "scripts/native_document.py",
         "scripts/publication_files.py",
         "lib/manuscript_delta.py",

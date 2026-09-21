@@ -13,11 +13,18 @@ const OFFICE_PAINT_SETTLE_MS = 2_000
 const ONE_SHOT_E2E_ENABLED = process.env.SCHOLARSEED_ONE_SHOT_E2E === '1'
 const OFFICE_CORPUS_ROOT = process.env.SCHOLARSEED_OFFICE_CORPUS
 const SELECTION_MENU_BUDGET_MS = 500
+const CALC_SELECTION_MENU_TIMEOUT_MS = 2_000
 const DOC_CROSS_PAGE_SCROLL_DELTA = 1_900
 const DOC_CROSS_PAGE_SELECTION_X_RATIO = 0.5
 const DOC_CROSS_PAGE_SELECTION_START_Y_RATIO = 0.18
 const DOC_CROSS_PAGE_SELECTION_END_Y_RATIO = 0.58
 const DOC_CROSS_PAGE_DRAG_HOLD_MS = 1_500
+const SELECTION_AUTOSCROLL_OVERFLOW_PX = 48
+const SELECTION_AUTOSCROLL_HOLD_MS = 2_500
+const WRITER_AUTOSCROLL_SELECTION_X_RATIO = 0.15
+const WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.1
+const CALC_AUTOSCROLL_SELECTION_X_RATIO = 0.15
+const CALC_AUTOSCROLL_SELECTION_START_Y_RATIO = 0.25
 
 interface OfficeDiagnostic {
   hostId: string
@@ -58,6 +65,17 @@ function multipageDocumentArchive(): Uint8Array {
     'word/document.xml': '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>First page selection evidence.</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p><w:p><w:r><w:t>Second page selection evidence.</w:t></w:r></w:p><w:sectPr/></w:body></w:document>'
   }
   return archive(entries)
+}
+
+function autoscrollDocumentArchive(): Uint8Array {
+  const pages = Array.from({ length: 8 }, (_, index) => (
+    `<w:p><w:r><w:t>Autoscroll page ${index + 1} evidence.</w:t>${index < 7 ? '<w:br w:type="page"/>' : ''}</w:r></w:p>`
+  )).join('')
+  return archive({
+    '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    'word/document.xml': `<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${pages}<w:sectPr/></w:body></w:document>`
+  })
 }
 
 function spreadsheetArchive(): Uint8Array {
@@ -531,6 +549,182 @@ test('readonly Writer documents expose selection actions across pages', async ({
     await expect(menu).toBeVisible()
     await expect(menu.getByRole('button', { name: 'AI 润色', exact: true })).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'readonly-writer-cross-page-selection.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('DOCX selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const filename = 'selection-autoscroll.docx'
+    writeFileSync(join(resources, filename), autoscrollDocumentArchive())
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, filename)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${filename}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    const canvas = frame.contentFrame().locator('#qtcanvas')
+    const bounds = await canvas.boundingBox()
+    if (!bounds) throw new Error('DOCX canvas bounds unavailable')
+    const x = bounds.x + bounds.width * WRITER_AUTOSCROLL_SELECTION_X_RATIO
+    await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO)
+    await page.mouse.down()
+    await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
+    await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+    await expect(page.getByTestId('selection-action-host')).toBeHidden()
+    await page.mouse.up()
+
+    const menu = page.getByTestId('selection-action-host')
+    await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
+    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
+    const quote = page.getByTestId('assistant-selection-quote')
+    await expect(quote).toContainText('Autoscroll page 1 evidence.')
+    await expect(quote).toContainText('Autoscroll page 2 evidence.')
+    await page.screenshot({ path: join(runtime.artifacts, 'office-docx-selection-autoscroll.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('real DOC selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+  test.skip(!OFFICE_CORPUS_ROOT, 'requires SCHOLARSEED_OFFICE_CORPUS with the real Office fixture corpus')
+  const source = join(OFFICE_CORPUS_ROOT!, 'doc/poi-FloatingPictures.doc')
+  test.skip(!existsSync(source), 'missing doc/poi-FloatingPictures.doc')
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const filename = 'selection-autoscroll.doc'
+    copyFileSync(source, join(resources, filename))
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, filename)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${filename}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    const canvas = frame.contentFrame().locator('#qtcanvas')
+    const bounds = await canvas.boundingBox()
+    if (!bounds) throw new Error('DOC canvas bounds unavailable')
+    const x = bounds.x + bounds.width * WRITER_AUTOSCROLL_SELECTION_X_RATIO
+    await page.mouse.move(x, bounds.y + bounds.height * WRITER_AUTOSCROLL_SELECTION_START_Y_RATIO)
+    await page.mouse.down()
+    await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
+    await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+    await expect(page.getByTestId('selection-action-host')).toBeHidden()
+    await page.mouse.up()
+
+    const menu = page.getByTestId('selection-action-host')
+    await expect(menu).toBeVisible({ timeout: SELECTION_MENU_BUDGET_MS })
+    await menu.getByRole('button', { name: '添加到对话', exact: true }).click()
+    await page.getByTestId('ai-context-ref').filter({ hasText: filename }).hover()
+    const quote = page.getByTestId('assistant-selection-quote')
+    await expect(quote).toContainText('reader’s eye find the start of the next line.')
+    await expect(quote).toContainText('Here is an example of')
+    await page.screenshot({ path: join(runtime.artifacts, 'office-doc-selection-autoscroll.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('CSV and XLSX selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS * 2)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const csvRows = Array.from({ length: 120 }, (_, index) => `Autoscroll CSV row ${index + 1},${index + 1}`)
+  const files = [
+    { name: 'selection-autoscroll.csv', bytes: csvRows.join('\n') + '\n', screenshot: 'office-csv-selection-autoscroll.png' },
+    { name: 'selection-autoscroll.xlsx', bytes: largeSpreadsheetArchive(), screenshot: 'office-xlsx-selection-autoscroll.png' }
+  ]
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    for (const file of files) {
+      writeFileSync(join(resources, file.name), file.bytes)
+      await page.getByTestId('resource-refresh').click()
+      await openFile(page, file.name)
+      const frame = page.locator(`iframe[data-testid="office-editor"][title="${file.name}"]`)
+      await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+      const canvas = frame.contentFrame().locator('#qtcanvas')
+      const bounds = await canvas.boundingBox()
+      if (!bounds) throw new Error(`${file.name} canvas bounds unavailable`)
+      const x = bounds.x + bounds.width * CALC_AUTOSCROLL_SELECTION_X_RATIO
+      await page.mouse.move(x, bounds.y + bounds.height * CALC_AUTOSCROLL_SELECTION_START_Y_RATIO)
+      await page.mouse.down()
+      await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
+      await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+      await expect(page.getByTestId('selection-action-host')).toBeHidden()
+      await page.mouse.up()
+
+      const menu = page.getByTestId('selection-action-host')
+      await expect(menu).toBeVisible({ timeout: CALC_SELECTION_MENU_TIMEOUT_MS })
+      const range = /([A-Z]+)(\d+):([A-Z]+)(\d+)/.exec(await menu.innerText())
+      expect(range, `${file.name} selection range`).not.toBeNull()
+      expect(Number(range![4]), `${file.name} selection end row`).toBeGreaterThan(Number(range![2]))
+      await page.screenshot({ path: join(runtime.artifacts, file.screenshot) })
+    }
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('real XLS selection autoscroll follows the pointer beyond the workspace', async ({}, testInfo) => {
+  test.skip(!OFFICE_CORPUS_ROOT, 'requires SCHOLARSEED_OFFICE_CORPUS with the real Office fixture corpus')
+  const source = join(OFFICE_CORPUS_ROOT!, 'xls/sample-spreadsheet-100-rows.xls')
+  test.skip(!existsSync(source), 'missing xls/sample-spreadsheet-100-rows.xls')
+  test.setTimeout(OFFICE_READY_TIMEOUT_MS)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const filename = 'selection-autoscroll.xls'
+    copyFileSync(source, join(resources, filename))
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, filename)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${filename}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    const canvas = frame.contentFrame().locator('#qtcanvas')
+    const bounds = await canvas.boundingBox()
+    if (!bounds) throw new Error('XLS canvas bounds unavailable')
+    const x = bounds.x + bounds.width * CALC_AUTOSCROLL_SELECTION_X_RATIO
+    await page.mouse.move(x, bounds.y + bounds.height * CALC_AUTOSCROLL_SELECTION_START_Y_RATIO)
+    await page.mouse.down()
+    await page.mouse.move(x, bounds.y + bounds.height + SELECTION_AUTOSCROLL_OVERFLOW_PX, { steps: 24 })
+    await page.waitForTimeout(SELECTION_AUTOSCROLL_HOLD_MS)
+    await expect(page.getByTestId('selection-action-host')).toBeHidden()
+    await page.mouse.up()
+
+    const menu = page.getByTestId('selection-action-host')
+    await expect(menu).toBeVisible({ timeout: CALC_SELECTION_MENU_TIMEOUT_MS })
+    const range = /([A-Z]+)(\d+):([A-Z]+)(\d+)/.exec(await menu.innerText())
+    expect(range, 'XLS selection range').not.toBeNull()
+    expect(Number(range![4]), 'XLS selection end row').toBeGreaterThan(Number(range![2]))
+    await page.screenshot({ path: join(runtime.artifacts, 'office-xls-selection-autoscroll.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

@@ -6,7 +6,7 @@ const { execFileSync } = require('node:child_process')
 const { test } = require('node:test')
 const {
   pythonRelease, verifyPythonArchive, verifyPython, preparePython,
-  verifyDevelopmentPython, developmentPython, nativeTar
+  verifyDevelopmentPython, developmentPython, nativeTar, retryFilesystem
 } = require('../../../scripts/python.cjs')
 
 const REPO = path.resolve(__dirname, '../../..')
@@ -30,6 +30,25 @@ test('Windows extraction selects the native executable and Windows venv layout',
   const release = pythonRelease(REPO, 'win32', 'x86_64')
   assert.equal(release.executable, 'python/python.exe')
   assert.equal(release.venvExecutable, 'Scripts/python.exe')
+})
+
+test('Python cache publication retries transient Windows filesystem collisions', () => {
+  let attempts = 0
+  retryFilesystem(() => {
+    attempts += 1
+    if (attempts < 2) {
+      const error = new Error('temporary directory is still busy')
+      error.code = 'EPERM'
+      throw error
+    }
+    return 'published'
+  })
+  assert.equal(attempts, 2)
+  assert.throws(() => retryFilesystem(() => {
+    const error = new Error('permanent missing source')
+    error.code = 'ENOENT'
+    throw error
+  }), /permanent missing source/)
 })
 
 test('real native Python, venv and alternate-base rejection use the shared policy',

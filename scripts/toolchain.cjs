@@ -79,6 +79,13 @@ function checkVersion(name, actual, expected, filename) {
   return { version: actual, expected, path: filename }
 }
 
+function isVersionBelow(actual, minimum) {
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] !== minimum[index]) return actual[index] < minimum[index]
+  }
+  return false
+}
+
 function checkNode(repo = REPO) {
   return checkVersion('Node', process.versions.node, expectedVersions(repo).node, process.execPath)
 }
@@ -103,9 +110,9 @@ function checkUv(repo = REPO) {
   const actual = probe(filename, ['--version'], repo).split(/\s+/)[1]
   const minimum = pins[0].split('.').map(Number)
   const current = actual.split('.').map(Number)
-  const belowMinimum = current.some((part, index) => part < minimum[index]) &&
-    !current.some((part, index) => part > minimum[index])
-  if (belowMinimum) throw new Error(`uv ${actual} at ${filename}; requires >= ${pins[0]}`)
+  if (isVersionBelow(current, minimum)) {
+    throw new Error(`uv ${actual} at ${filename}; requires >= ${pins[0]}`)
+  }
   const checked = { version: actual, expected: pins[0], path: filename }
   // The supported uv additionally validates the entire configuration itself.
   probe(filename, ['cache', 'dir'], repo)

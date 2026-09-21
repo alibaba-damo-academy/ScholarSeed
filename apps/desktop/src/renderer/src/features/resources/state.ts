@@ -311,6 +311,7 @@ export type ImportDialogState =
 
 /** 树上的右键菜单（PRD「资料管理」）；null = 关闭。 */
 export interface NodeMenuState {
+  anchor?: { bottom: number; left: number; right: number; top: number; width: number }
   path: string
   name: string
   kind: 'file' | 'dir'

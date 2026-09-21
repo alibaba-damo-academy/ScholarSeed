@@ -1,6 +1,7 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
+import aiThinking from '../../assets/ai-thinking.gif'
 import { Icon } from '../../icons'
 import { IconFont } from '../primitive/Iconfont'
 import { activeThread, useApp } from '../../store'
@@ -14,7 +15,7 @@ import {
   todoProgressLabel,
   todoSummary
 } from '../../todo'
-import { Badge, Button, Card, Collapsible, CollapsibleContent, CollapsibleTrigger, EllipsisText } from '../ui'
+import { Badge, Button, Card, Collapsible, CollapsibleContent, CollapsibleTrigger, EllipsisText, Spinner } from '../ui'
 
 const ELAPSED_TICK_MS = 1_000
 const MILLISECONDS_PER_SECOND = 1_000
@@ -44,7 +45,9 @@ function StatusMark({ status }: { status: TodoDisplayStatus }): React.JSX.Elemen
       data-testid={`todo-mark-${status}`}
       aria-label={t(presentation.messageKey)}
     >
-      <IconFont type={presentation.mark} className={status === 'running' ? 'animate-spin motion-reduce:animate-none' : undefined} />
+      {status === 'running'
+        ? <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
+        : <IconFont type={presentation.mark} />}
     </span>
   )
 }
@@ -211,6 +214,7 @@ export function TodoPanel({
   const allDone = done === total
   const currentLabel = total > 0 ? summaryLabel : t('todo.summary.preparing')
   return (
+    /* compact 的 -mb-8 与 composer assistant 的 pt-12 相抵 → 执行计划与输入框间距 4px（AI 面板容器间距统一 4px）。 */
     <Card padding="sm" className={`!rounded-[var(--vds-radius-4)] !shadow-none ${compact ? '!px-[var(--vds-space-2)] !py-[var(--vds-space-1)] -mb-[var(--vds-space-2)]' : ''}`} data-testid="todo-panel" aria-label={t('todo.title')}>
       <Collapsible className="!gap-[var(--vds-space-1)]" key={`${thread.sessionId}:${thread.todoTurnId}:${allDone}`} defaultOpen={!compact && !allDone}>
         <CollapsibleTrigger asChild>

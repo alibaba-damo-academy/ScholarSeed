@@ -1,4 +1,6 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
+import { LOGIN_WINDOW_CHANNEL, WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM } from '../window'
+import { createLoginWindowSizing } from './window'
 // index.ts — Electron main entry.
 //
 // Lifecycle: app ready → start backend (pick port, spawn, await /api/healthz) →
@@ -61,11 +63,11 @@ import {
   type DesktopAuthSnapshot
 } from './handoff'
 import { createHandoffCoordinator } from './handoff-local'
-import { parseCallbackUrl } from './handoff-url'
+import { findCallbackUrl, parseCallbackUrl } from './handoff-url'
 import { showStartupScreen, type StartupScreen } from './startup'
 import * as updater from './updater'
 import { startupBuildNumber } from './version'
-import type { StartUpdateResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '../updates'
+import type { StartUpdateResult, UpdateCheckResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '../updates'
 import { LOCAL_LANE_UPDATE_REASON, updateCandidateKey } from '../updates'
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy } from './save'
@@ -88,12 +90,14 @@ import {
   supportsImportPickerTarget,
   type ImportPickerTarget
 } from '../picker'
+import { TRASH_NOT_COMPLETED_ERROR, waitForTrashCompletion } from './trash'
 
 const STARTUP_BUILD_NUMBER = startupBuildNumber(new Date())
 
 let backend: BackendHandle | null = null
 let lastBackendFailure: BackendFailure | null = null
 let mainWindow: BrowserWindow | null = null
+let setLoginWindowVisible: ((visible: boolean) => void) | null = null
 let startupScreen: StartupScreen | null = null
 const SCHOLARSEED_DEFAULT_WORKSPACE_ENV = 'SCHOLARSEED_DEFAULT_WORKSPACE'
 const SCHOLARSEED_DEVTOOLS_ENV = 'SCHOLARSEED_DEVTOOLS'
@@ -106,13 +110,19 @@ const ROOT_ROUTE = '/'
 const BACKEND_RESTART_BASE_DELAY_MS = 1000
 const BACKEND_RESTART_MAX_DELAY_MS = 15_000
 const BACKEND_PORT_REUSE_ATTEMPTS = 2
-const UPDATE_QUIT_DELAY_MS = 800
-// 一次更新已经在推进、或安装包已经暂存好。启动期的静默检查不能覆盖这些相位，否则
-// 用户点「重启完成更新」时状态已经被换回「发现新版本」，暂存包也就无从触发。
+// 退出前让「即将关闭并在后台安装」遮罩停留到能被读完：安装是独立进程、期间没有窗口，
+// 用户没读到这句就会把随后的黑屏当成卡死。800ms 一闪而过，2500ms 才够读完两行。
+// 仅用于更新重启路径；macOS 安装脚本等 app 退出上限 30s、Windows NSIS 也会等退出，均安全。
+const UPDATE_QUIT_DELAY_MS = 2500
+// 一次更新正在推进时，检查结果必须丢弃：覆盖上去等于把用户点「重启完成更新」时的状态
+// 换回「发现新版本」，正在跑的下载/安装也就无从收尾。
+//
+// `ready` **不在**其中：它是「包已下好、等用户挑时间重启」的等待态，而等待期间线上还会继续
+// 发布。把 ready 当成进行中，界面就被钉死在当初暂存的那一个包上，用户永远拿不到更新的构建
+// （只能装完一级再等下一级）。ready 下能不能推进由 updater.supersedeStagedUpdate 判定。
 const UPDATE_IN_FLIGHT_PHASES = new Set<UpdatePhase>([
   'downloading',
   'verifying',
-  'ready',
   'installing',
   'restarting',
   'manual'
@@ -280,6 +290,42 @@ function currentUpdateSnapshot(): UpdateSnapshot {
       : updater.initialUpdateSnapshot(pushLog))
   }
   return updateSnapshot
+}
+
+/**
+ * 把一次检查结果投影成权威快照。启动期检查、运行期周期复查与手动「检查更新」共用这一份，
+ * 三个入口才不会一个能推进暂存包、另一个不能。
+ *
+ * 三条判定，顺序即优先级：
+ * 1. 更新正在推进（下载/校验/安装/重启/手动兜底）→ 丢弃结果，别把进行中的状态换掉。
+ * 2. 已暂存待装（ready）→ 只有线上候选**严格新于**暂存包时才推进：回收旧包、退回
+ *    「发现新版本」。候选不比它新（或压根没有候选）就原地不动，用户点「重启完成更新」
+ *    装的仍是那个已校验的包，安装失败留在这一相位上的结果表面也不会被抹掉。
+ * 3. 其余相位 → 如实发布 available / up-to-date。
+ */
+function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
+  const snapshot = currentUpdateSnapshot()
+  if (UPDATE_IN_FLIGHT_PHASES.has(snapshot.phase)) return snapshot
+  const latest = result.has_update ? result.latest : null
+  if (snapshot.phase === 'ready') {
+    // 安装失败会把相位留在 ready 并带上错误（bug 86968393）：那是这次失败唯一的结果表面，
+    // 背景检查不能用「发现新版本」把它悄悄换掉。用户重试、或重启客户端（错误只在内存里，
+    // 重启即清空）之后才继续走推进判定。
+    if (snapshot.error || snapshot.errorFallback) return snapshot
+    if (!updater.supersedeStagedUpdate(latest, pushLog)) return snapshot
+  }
+  return publishUpdateSnapshot(latest
+    ? {
+        phase: 'available',
+        currentVersion: app.getVersion(),
+        checkedAt: Date.now(),
+        candidate: latest
+      }
+    : {
+        phase: 'up-to-date',
+        currentVersion: app.getVersion(),
+        checkedAt: Date.now()
+      })
 }
 
 function reportStartupFailure(title: string, message: string): void {
@@ -709,6 +755,10 @@ function dismissLanding(): void {
 function registerIpcHandlers(developerToolsEnabled: boolean): void {
   if (ipcHandlersRegistered) return
   ipcHandlersRegistered = true
+  ipcMain.handle(LOGIN_WINDOW_CHANNEL, (event, visible: unknown) => {
+    if (event.sender !== mainWindow?.webContents || typeof visible !== 'boolean') return
+    setLoginWindowVisible?.(visible)
+  })
 
   ipcMain.on('scholarseed:boot', (e) => {
     const desktopConfig = updater.resolveDesktopConfig(pushLog)
@@ -1025,29 +1075,32 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     try {
       // Completion is part of the authenticated product request, so it must use the
       // same Chromium session as redemption. Node's global fetch has no account cookie.
-      const completed = await win.webContents.session.fetch(
-        `${apiBase}/api/content/trash-token/complete`,
-        {
-          method: 'POST',
-          credentials: 'include',
-          redirect: 'error',
-          headers: {
-            'Content-Type': 'application/json',
-            [HOST_PROCESS_HEADER]: backendHostProcessKey()
-          },
-          body: JSON.stringify({ token: value })
-        }
-      )
-      if (!completed.ok) {
-        const payload = (await completed.json().catch(() => null)) as
+      const completed = await waitForTrashCompletion(async () => {
+        const response = await win.webContents.session.fetch(
+          `${apiBase}/api/content/trash-token/complete`,
+          {
+            method: 'POST',
+            credentials: 'include',
+            redirect: 'error',
+            headers: {
+              'Content-Type': 'application/json',
+              [HOST_PROCESS_HEADER]: backendHostProcessKey()
+            },
+            body: JSON.stringify({ token: value })
+          }
+        )
+        if (response.ok) return { ok: true }
+        const payload = (await response.json().catch(() => null)) as
           | { detail?: string }
           | null
+        const error = payload?.detail ?? `trash_receipt_http_${response.status}`
         return {
-          ok: true,
-          path: canonical,
-          error: payload?.detail ?? `trash_receipt_http_${completed.status}`
+          ok: false,
+          retryable: error === TRASH_NOT_COMPLETED_ERROR,
+          error
         }
-      }
+      })
+      if (!completed.ok) return { ok: false, path: canonical, error: completed.error }
       return { ok: true, path: canonical }
     } catch (e) {
       return {
@@ -1104,7 +1157,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   ipcMain.handle('veda:device-info', () => resolveDeviceInfo())
 
   // ── 桌面登录交接（官网浏览器登录 + 深链回跳）──
-  ipcMain.handle('scholarseed:desktop-login-start', () => desktopHandoff.start())
+  ipcMain.handle('scholarseed:desktop-login-start', (_event, language: unknown) =>
+    desktopHandoff.start(language === 'en' ? 'en' : 'zh'))
   ipcMain.handle('scholarseed:desktop-login-cancel', () => {
     desktopHandoff.cancel()
     return { ok: true }
@@ -1147,18 +1201,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     })
     try {
       const result = await updater.checkForUpdate(pushLog)
-      return publishUpdateSnapshot(result.has_update && result.latest
-        ? {
-            phase: 'available',
-            currentVersion: app.getVersion(),
-            checkedAt: Date.now(),
-            candidate: result.latest
-          }
-        : {
-            phase: 'up-to-date',
-            currentVersion: app.getVersion(),
-            checkedAt: Date.now()
-          })
+      return publishUpdateCheckResult(result)
     } catch (error) {
       return publishUpdateSnapshot({
         phase: 'failed',
@@ -1257,7 +1300,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         ...currentUpdateSnapshot(),
         phase: stillStaged ? 'ready' : 'failed',
         percent: stillStaged ? 100 : undefined,
-        ...updateInstallFailure(result.error),
+        ...updateInstallFailure(result),
         resumable: stillStaged ? undefined : false
       })
     }
@@ -1286,11 +1329,10 @@ async function createWindow(): Promise<void> {
   registerIpcHandlers(developerToolsEnabled)
   const rendererUrl = devUrl || apiBase + ROOT_ROUTE
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    ...WORKSPACE_WINDOW_SIZE,
     useContentSize: true,
-    minWidth: 1040,
-    minHeight: 660,
+    minWidth: WORKSPACE_WINDOW_MINIMUM.width,
+    minHeight: WORKSPACE_WINDOW_MINIMUM.height,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 14, y: 16 },
     backgroundColor: '#F8F8F5',
@@ -1303,6 +1345,7 @@ async function createWindow(): Promise<void> {
       backgroundThrottling: false // keep the pet's RAF loop alive when hidden (shoot mode)
     }
   })
+  setLoginWindowVisible = createLoginWindowSizing(mainWindow)
   if (process.platform === WINDOWS_PLATFORM) mainWindow.setMenuBarVisibility(false)
 
   requestOfficeFontAccess = installOfficeFontPermission(
@@ -1360,6 +1403,7 @@ async function createWindow(): Promise<void> {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    setLoginWindowVisible = null
   })
   if (devUrl) {
     const rendererSession = mainWindow.webContents.session
@@ -1403,24 +1447,13 @@ const STARTUP_UPDATE_CHECK_DELAY_MS = 4000
 const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 
 // 背景更新检查：启动后与运行期周期复查共用同一条路径，每次都直接打服务器查最新。
-// local lane 与进行中的更新都短路 —— in-flight 判定放在结果回来之后，因为用户可能
-// 正好在这几秒里点了下载，或启动时就恢复出暂存的「已就绪」，覆盖掉就等于把更新退回原点。
+// local lane 短路；结果的投影一律交 publishUpdateCheckResult，与手动「检查更新」同一份判定。
+// in-flight 判定放在结果回来之后，因为用户可能正好在这几秒里点了下载，覆盖掉就等于把
+// 进行中的更新退回原点。
 function runBackgroundUpdateCheck(): void {
   if (updater.updateLaneUnsupported(pushLog)) return
   void updater.checkForUpdate(pushLog).then((result) => {
-    if (UPDATE_IN_FLIGHT_PHASES.has(currentUpdateSnapshot().phase)) return
-    publishUpdateSnapshot(result.has_update && result.latest
-      ? {
-          phase: 'available',
-          currentVersion: app.getVersion(),
-          checkedAt: Date.now(),
-          candidate: result.latest
-        }
-      : {
-          phase: 'up-to-date',
-          currentVersion: app.getVersion(),
-          checkedAt: Date.now()
-        })
+    publishUpdateCheckResult(result)
   }).catch((error) => {
     pushLog(`[update] background check unavailable: ${String(error)}\n`)
   })
@@ -1518,10 +1551,12 @@ function handleProtocolUrl(url: string): void {
   }
 }
 
+const initialProtocolUrl = findCallbackUrl(process.argv)
+if (initialProtocolUrl) pendingProtocolUrl = initialProtocolUrl
+
 // 注册为 scholarseed:// 协议的默认处理程序 (需要在 ready 之前请求单例锁)
-// Headless acceptance and electron-vite development runs are isolated product
-// instances and must still run while another Desktop window is open. Applying
-// the interactive lock to either path makes it exit before opening a window.
+// Headless acceptance runs stay isolated; interactive development and packaged
+// launches share one process so the OS callback can be delivered reliably.
 const singleInstanceLockRequired = requiresSingleInstanceLock(
   process.env['ELECTRON_RENDERER_URL'],
   headless
@@ -1533,7 +1568,7 @@ if (!gotTheLock) {
   // Windows/Linux: 第二实例携带 URL Scheme 参数
   if (singleInstanceLockRequired) {
     app.on('second-instance', (_event, argv) => {
-      const url = argv.find(arg => arg.startsWith(`${SCHOLARSEED_PROTOCOL}://`))
+      const url = findCallbackUrl(argv)
       if (url) handleProtocolUrl(url)
       else if (mainWindow) {
         if (mainWindow.isMinimized()) mainWindow.restore()
@@ -1549,7 +1584,7 @@ if (!gotTheLock) {
   })
 
   app.whenReady().then(() => {
-    installApplicationMenu()
+    installApplicationMenu(Boolean(process.env['ELECTRON_RENDERER_URL']) && !headless)
     // 注册 scholarseed:// 协议
     let protocolRegistered: boolean
     if (process.defaultApp) {

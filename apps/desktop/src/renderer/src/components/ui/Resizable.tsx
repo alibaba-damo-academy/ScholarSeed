@@ -74,9 +74,11 @@ export interface ResizablePanelProps extends HTMLAttributes<HTMLDivElement> {
   defaultSize?: number
   defaultRightWidth?: string
   isCollapsed?: boolean
+  isLeftCollapsed?: boolean
   isMobile?: boolean
   leftPanel?: ReactNode
   leftWidth?: string
+  leftWidthStep?: number
   maxSize?: number
   maxLeftWidth?: number
   minSize?: number
@@ -457,9 +459,11 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
       defaultSize,
       defaultRightWidth,
       isCollapsed,
+      isLeftCollapsed = false,
       isMobile = false,
       leftPanel,
       leftWidth = DEFAULT_LEFT_WIDTH,
+      leftWidthStep,
       maxSize = DEFAULT_MAX_SIZE,
       maxLeftWidth = DEFAULT_MAX_SIZE,
       maxRightWidth = DEFAULT_MAX_SIZE,
@@ -504,7 +508,11 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
         safeMinPixels,
         Math.min(splitBoundaryToPixels(maxLeftWidth, hostWidth), hostWidth - SPLIT_MIN_PANEL_WIDTH)
       )
-      const nextWidth = `${clamp(nextPixels, safeMinPixels, safeMaxPixels)}px`
+      const constrainedPixels = clamp(nextPixels, safeMinPixels, safeMaxPixels)
+      const steppedPixels = leftWidthStep && leftWidthStep > 0
+        ? Math.round(constrainedPixels / leftWidthStep) * leftWidthStep
+        : constrainedPixels
+      const nextWidth = `${clamp(steppedPixels, safeMinPixels, safeMaxPixels)}px`
       setCurrentLeftWidth(nextWidth)
       onWidthChange?.(nextWidth)
     }
@@ -535,7 +543,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
     const splitPointer = useResizePointer(() => {
       pointerStartRef.current = null
       if ((rightWidth ?? uncontrolledRightWidth) !== undefined) finishRightSplitResize()
-    }, !isMobile && !(isCollapsed ?? !rightPanel))
+    }, !isMobile && !isLeftCollapsed && !(isCollapsed ?? !rightPanel))
 
     if (leftPanel !== undefined || rightPanel !== undefined) {
       const currentRightWidth = rightWidth ?? uncontrolledRightWidth
@@ -572,15 +580,16 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
         >
           <div
             className={cx(resizableSplitPanelClassName, resizableSplitMobilePanelClassName, 'vds-resizable-split__panel--left')}
+            hidden={isLeftCollapsed}
             style={{
-              flex: rightSized && !collapsed ? '1 1 auto' : undefined,
-              minWidth: rightSized && !collapsed ? splitBoundaryToCss(minLeftWidth) : undefined,
-              width: collapsed ? '100%' : leftPanelWidth
+              flex: rightSized && !collapsed && !isLeftCollapsed ? '1 1 auto' : undefined,
+              minWidth: rightSized && !collapsed && !isLeftCollapsed ? splitBoundaryToCss(minLeftWidth) : undefined,
+              width: isLeftCollapsed ? '0%' : collapsed ? '100%' : leftPanelWidth
             }}
           >
             {leftPanel}
           </div>
-          {!collapsed && !isMobile ? (
+          {!collapsed && !isLeftCollapsed && !isMobile ? (
             <button
               aria-label={t('resize.action')}
               className={cx(
@@ -631,7 +640,7 @@ export const ResizablePanel = forwardRef<HTMLDivElement, ResizablePanelProps>(
                 ? `min(${splitBoundaryToCss(maxRightWidth)}, calc(100% - ${splitBoundaryToCss(minLeftWidth)}))`
                 : undefined,
               minWidth: rightSized ? splitBoundaryToCss(minRightWidth) : undefined,
-              width: collapsed ? '0%' : rightSized ? `var(${RIGHT_WIDTH_PROPERTY})` : rightPanelWidth
+              width: collapsed ? '0%' : isLeftCollapsed ? '100%' : rightSized ? `var(${RIGHT_WIDTH_PROPERTY})` : rightPanelWidth
             }}
           >
             {rightPanel}

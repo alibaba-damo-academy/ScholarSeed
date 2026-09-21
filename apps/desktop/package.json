@@ -79,17 +79,21 @@
     "@vitejs/plugin-react": "^4.3.2",
     "c8": "^10.0.0",
     "electron": "44.3.0",
-    "electron-builder": "26.3.5",
-    "electron-vite": "^2.3.0",
+    "electron-builder": "26.15.7",
+    "electron-vite": "4.0.1",
     "postcss": "^8.5.6",
-    "prettier": "^3.6.2",
+    "prettier": "3.9.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.6.3",
-    "vite": "^5.4.8",
+    "vite": "7.3.6",
     "i18next": "26.4.2",
     "react-i18next": "17.0.13"
+  },
+  "overrides": {
+    "dompurify": "3.4.15",
+    "ejs": "6.0.1"
   },
   "build": {
     "appId": "com.scholarseed.desktop",
@@ -108,6 +112,10 @@
       "package.json"
     ],
     "extraResources": [
+      {
+        "from": "resources/notices",
+        "to": "notices"
+      },
       {
         "from": "out/renderer",
         "to": "renderer"

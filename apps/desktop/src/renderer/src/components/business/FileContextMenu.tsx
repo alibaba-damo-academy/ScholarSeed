@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { OpenWithApp, openPathWith } from '../../api'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
-import { copyPath, listOpenWithApps, openByDefault, OpenContext, revealInFinder } from '../../fileOpen'
+import { copyPath, listOpenWithApps, openByDefault, OpenContext, revealInFinder, revealLabelKey } from '../../fileOpen'
 import { useApp } from '../../store'
 import {
   ContextMenu,
@@ -94,7 +94,7 @@ export function FileContextMenu({
           </ContextMenuItem>
         )}
         <ContextMenuItem className={MENU_ITEM_CLASS_NAME} data-testid="file-menu-reveal" onSelect={() => { close(); revealInFinder(ctx) }}>
-          {t('fileMenu.reveal')}
+          {t(revealLabelKey())}
         </ContextMenuItem>
         <ContextMenuItem className={MENU_ITEM_CLASS_NAME} data-testid="file-menu-copy" onSelect={() => { close(); void copyPath(ctx) }}>
           {t('fileMenu.copy')}

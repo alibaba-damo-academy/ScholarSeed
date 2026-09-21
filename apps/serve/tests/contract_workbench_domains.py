@@ -466,6 +466,16 @@ def test_resource_tree_carries_authoritative_link_root_identity() -> None:
             and payload["linked_roots"][linked.root_id]["source_path"] == str(outside.resolve()),
             f"status={response.status_code} body={response.text[:300]}",
         )
+        continued = client.get(
+            "/api/resource/tree",
+            params={"project": current.id, "path": "关联资料", "depth": 1},
+        )
+        check(
+            "旧布局关联目录可按资料根相对路径续扫",
+            continued.status_code == 200
+            and any(node.get("name") == "外部资料.md" for node in continued.json()["nodes"]),
+            f"status={continued.status_code} body={continued.text[:300]}",
+        )
     finally:
         shutil.rmtree(project, ignore_errors=True)
         shutil.rmtree(outside, ignore_errors=True)

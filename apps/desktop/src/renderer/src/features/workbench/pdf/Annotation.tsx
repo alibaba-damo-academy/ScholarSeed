@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button, CopyButton, IconButton, Textarea } from '../../../components/ui'
+import { PromptSettingsGuide } from '../../../components/business/PromptSettingsGuide'
 import { Icon } from '../../../icons'
 import { MAX_SELECTION_REQUIREMENT_CHARS } from '../../../../../prompts'
 import type { PdfComment, PdfMark } from '../api'
@@ -65,21 +66,20 @@ export function PdfAnnotation({
     if (await onComment(body)) setCommentOpen(false)
   }
   const submitExplanation = (): void => {
-    if (!explanationDraft.trim()) return
     onExplain(explanationDraft.trim())
     setExplanationOpen(false)
   }
 
   return (
-    <section className="w-[288px] overflow-hidden" data-testid={`pdf-annotation-inspector-${mark.id}`} onMouseUp={(event) => event.stopPropagation()}>
+    <section className="w-[288px] max-w-full max-h-[var(--vds-pdf-annotation-max-height)] overflow-x-hidden overflow-y-auto overscroll-contain" data-testid={`pdf-annotation-inspector-${mark.id}`} onMouseUp={(event) => event.stopPropagation()}>
       <header className="flex min-w-0 items-center gap-1 px-3.5 pb-2 pt-3 text-sm text-[var(--vds-text-tertiary)]" title={location}>
         <span className="shrink-0">{t('pdfAnnotation.pageLocation', { page: mark.page })}</span>
         <span className="truncate">{mark.text}</span>
         {comments.length > 0 ? <span className="shrink-0">{t('pdfAnnotation.commentStatus')}</span> : null}
       </header>
       {comments.length > 0 ? (
-        <div className="mx-3.5 mb-2 grid gap-1 rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] px-3 py-2 text-sm leading-5 text-[var(--vds-text-secondary)]">
-          {comments.map((comment) => <p className="m-0 whitespace-pre-wrap" key={comment.id}>{comment.body}</p>)}
+        <div className="mx-3.5 mb-2 grid min-w-0 max-h-[var(--vds-pdf-annotation-preview-max-height)] gap-1 overflow-x-hidden overflow-y-auto overscroll-contain rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] px-3 py-2 text-sm leading-5 text-[var(--vds-text-secondary)]" tabIndex={0} role="region" aria-label={t('pdfAnnotation.commentLabel')}>
+          {comments.map((comment) => <p className="m-0 min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]" key={comment.id}>{comment.body}</p>)}
         </div>
       ) : null}
       <div data-testid="pdf-annotation-styles" className="grid grid-cols-3 gap-1 px-3.5 pb-2 pt-1" aria-label={t('pdfAnnotation.styles')}>
@@ -126,8 +126,9 @@ export function PdfAnnotation({
       ) : null}
       {explanationOpen ? (
         <div className="grid gap-2 border-t border-[var(--vds-divider-default)] p-3">
-          <Textarea autoFocus label={t('pdfAnnotation.explainPrompt')} maxLength={MAX_SELECTION_REQUIREMENT_CHARS} value={explanationDraft} rows={3} onChange={(event) => setExplanationDraft(event.target.value)} />
-          <Button className="justify-self-start" size="sm" disabled={!explanationDraft.trim() || analyzing} onClick={submitExplanation}>{t('pdfAnnotation.submitExplanation')}</Button>
+          <Textarea autoFocus label={t('pdfAnnotation.explainPrompt')} placeholder={t('pdfAnnotation.explainPlaceholder')} maxLength={MAX_SELECTION_REQUIREMENT_CHARS} value={explanationDraft} rows={2} onChange={(event) => setExplanationDraft(event.target.value)} />
+          <PromptSettingsGuide prefix={t('pdfAnnotation.promptGuide')} linkPrefix={t('pdfAnnotation.promptGuideLinkPrefix')} linkLabel={t('pdfAnnotation.promptSettings')} />
+          <Button className="justify-self-start" size="sm" disabled={analyzing} onClick={submitExplanation}>{t('pdfAnnotation.submitExplanation')}</Button>
         </div>
       ) : null}
       <div data-testid="pdf-annotation-delete" className="border-t border-[var(--vds-divider-default)] px-2 py-2">

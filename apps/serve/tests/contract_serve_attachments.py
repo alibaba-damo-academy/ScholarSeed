@@ -374,6 +374,71 @@ def main() -> int:
         local_preview.text,
     )
 
+    local_directory = root / "selected-folder"
+    local_directory.mkdir()
+    (local_directory / "nested.md").write_text("selected folder content", encoding="utf-8")
+    directory_registration = client.post(
+        "/api/serve/sessions/session-a/file-references",
+        json={"paths": [str(local_directory)]},
+    )
+    directory_reference = (directory_registration.json().get("references") or [{}])[0]
+    directory_reference_id = str(directory_reference.get("reference_id") or "")
+    check(
+        "selected directory stays one typed reference without importing its children",
+        directory_registration.status_code == 200
+        and directory_reference.get("kind") == InputKind.DIRECTORY.value
+        and bool(directory_reference_id)
+        and not (live_a.runtime_workdir / local_directory.name).exists(),
+        directory_registration.text,
+    )
+    directory_as_file = client.post(
+        "/api/serve/sessions/session-a/turns",
+        json={"input": [{"type": "file", "reference_id": directory_reference_id}]},
+    )
+    check(
+        "directory reference cannot be consumed as a file",
+        directory_as_file.status_code == 400
+        and directory_as_file.json().get("error") == "turn_input_invalid",
+        directory_as_file.text,
+    )
+    directory_turn = client.post(
+        "/api/serve/sessions/session-a/turns",
+        json={
+            "input": [{"type": "directory", "reference_id": directory_reference_id}],
+            "wait": True,
+        },
+    )
+    directory_items = adapter_a.inputs[-1].items if adapter_a.inputs else ()
+    check(
+        "selected directory is sent to the runtime as one directory input",
+        directory_turn.status_code == 202
+        and len(directory_items) == 1
+        and directory_items[0]["kind"] == InputKind.DIRECTORY.value
+        and directory_items[0]["path"] == str(local_directory),
+        str(directory_items),
+    )
+    other_session_directory = client.post(
+        "/api/serve/sessions/session-b/turns",
+        json={"input": [{"type": "directory", "reference_id": directory_reference_id}]},
+    )
+    check(
+        "directory reference remains scoped to its original session",
+        other_session_directory.status_code == 400
+        and other_session_directory.json().get("error") == "turn_input_invalid",
+        other_session_directory.text,
+    )
+    local_directory.rename(root / "moved-folder")
+    missing_directory_turn = client.post(
+        "/api/serve/sessions/session-a/turns",
+        json={"input": [{"type": "directory", "reference_id": directory_reference_id}]},
+    )
+    check(
+        "a moved directory fails revalidation before runtime admission",
+        missing_directory_turn.status_code == 400
+        and missing_directory_turn.json().get("error") == "turn_input_invalid",
+        missing_directory_turn.text,
+    )
+
     cross_reference = client.post(
         "/api/serve/sessions/session-b/turns",
         json={

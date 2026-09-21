@@ -1,3 +1,4 @@
+import { Folder } from 'lucide-react'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -11,6 +12,8 @@ import { IconFont } from './Iconfont'
 import { fileIconForName } from './FileIcon'
 
 type FileReference = Extract<ComposerReference, { type: 'file' }>
+type DirectoryReference = Extract<ComposerReference, { type: 'directory' }>
+type LocalReference = FileReference | DirectoryReference
 
 const ATTACHMENTS_CLASS_NAME = 'contents'
 const ATTACHMENT_ITEM_CLASS_NAME =
@@ -33,7 +36,7 @@ const ATTACHMENT_REMOVE_CLASS_NAME =
   'relative ml-auto flex !size-2 scale-[0.8] !min-h-3 !min-w-3 shrink-0 items-center justify-center !p-0 text-[var(--vds-text-tertiary)]'
 const ATTACHMENT_REMOVE_ICON_CLASS_NAME = 'block text-[12px]'
 
-function fileName(ref: FileReference): string {
+function fileName(ref: LocalReference): string {
   const title = ref.title || ref.id
   const clean = title.split(/[?#]/)[0] || title
   const slash = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'))
@@ -63,22 +66,22 @@ export function ComposerAttachments({
 }): React.JSX.Element | null {
   const { t } = useTranslation('ui')
   const documents = useDocumentWorkspace()
-  const fileRefs = refs
+  const localRefs = refs
     .map((ref, index) => ({ ref, index }))
     .filter(
-      (row): row is { ref: FileReference; index: number } =>
-        row.ref.type === FILE_REF_KIND
+      (row): row is { ref: LocalReference; index: number } =>
+        row.ref.type === FILE_REF_KIND || row.ref.type === 'directory'
     )
-  if (!fileRefs.length) return null
+  if (!localRefs.length) return null
   const openPreviewPaths = new Set(
     Object.values(documents.sessions).map((session) => session.source.path)
   )
 
   return (
     <div className={ATTACHMENTS_CLASS_NAME}>
-      {fileRefs.map(({ ref, index }) => {
+      {localRefs.map(({ ref, index }) => {
         const name = fileName(ref)
-        const open = onOpen
+        const open = onOpen && ref.type === 'file'
           ? (): void => onOpen(attachmentPreviewTarget(ref))
           : undefined
         const previewOpen = openPreviewPaths.has(ref.path)
@@ -111,7 +114,7 @@ export function ComposerAttachments({
               tabIndex={open ? 0 : undefined}
             >
               <div className={ATTACHMENT_ICON_CLASS_NAME}>
-                {React.createElement(fileIconForName(ref.title || ref.id), {
+                {React.createElement(ref.type === 'directory' ? Folder : fileIconForName(ref.title || ref.id), {
                   size: 16,
                   strokeWidth: 1.8
                 })}
@@ -143,7 +146,7 @@ export function ComposerAttachments({
                 />
               )}
             </div>
-            {renderActions && (
+            {renderActions && ref.type === 'file' && (
               <div className={ATTACHMENT_ACTIONS_CLASS_NAME}>
                 {renderActions(ref)}
               </div>

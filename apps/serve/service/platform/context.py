@@ -154,7 +154,8 @@ class ContextRef:
 
     `source_id` 的含义随 `kind` 而定，但**永远是稳定 ID 而非绝对路径**：
     FILE/DIR → 项目内相对路径；LITERATURE → 条目 id；SESSION → 会话 id。
-    `source_revision` 和 `anchor` 用于在 Turn 准入时判断来源是否已经变化。
+    待发送的普通 FILE 按 source_id 读取最新版；冻结后的 source_revision
+    记录本轮实际读取的版本。精确锚点仍用版本校验来源变化。
     """
 
     ref_id: str

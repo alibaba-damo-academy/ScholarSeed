@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pdf_fixture
+from pypdf import PdfReader, PdfWriter
+
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'scripts'),str(ROOT/'lib')]
 from task_contract import configure,atomic_json,read_request
@@ -24,12 +27,11 @@ class LocalPapersTest(unittest.TestCase):
         configure(self.ws,{'intent':'Review supplied papers and mechanisms; continue automatically.',
                           'outline_review':'auto','auto_authorization':'continue automatically',
                           'publication':{'format':'markdown'}})
-    def pdf(self,n=0,title=None):
-        import pymupdf as fitz
-        path=self.sources/f'paper {n}.pdf';doc=fitz.open();page=doc.new_page()
+    def pdf(self,n=0,title=None,author='Ada Example'):
+        path=self.sources/f'paper {n}.pdf';doc=pdf_fixture.open();page=doc.new_page()
         page.insert_text((50,90),f'Local evidence {n}. The method uses conditional matching.')
         page.insert_text((50,120),'The experiment tests the stated setting. Limitations remain conditional.')
-        doc.set_metadata({'title':title or f'Local research {n}','author':'Ada Example'});doc.save(path);doc.close();return path
+        doc.set_metadata({'title':title or f'Local research {n}','author':author});doc.save(path);doc.close();return path
     def search(self,n,duplicate=None):
         papers=[{'paper_id':str(i+100),'title':f'Supplement {i}','authors':['Remote Author'],'year':2024,
                  'abstract':'Supported mechanism description.','source':'paperhub','tier':2} for i in range(n)]
@@ -50,10 +52,7 @@ class LocalPapersTest(unittest.TestCase):
         self.assertEqual(len(load_local(self.ws)),1)
 
     def test_semicolon_authors_remain_individual_people(self):
-        import pymupdf
-        source=self.pdf()
-        with pymupdf.open(source) as doc:
-            metadata=doc.metadata;metadata['author']='Alice Tester; Bob Reviewer';doc.set_metadata(metadata);doc.saveIncr()
+        source=self.pdf(author='Alice Tester; Bob Reviewer')
         import_pdfs(self.ws,{'files':[str(source)]})
         self.assertEqual(next(iter(load_local(self.ws).values()))['authors'],[{'name':'Alice Tester'},{'name':'Bob Reviewer'}])
 
@@ -133,9 +132,18 @@ class LocalPapersTest(unittest.TestCase):
         import_pdfs(self.ws,{'files':[str(self.pdf())]});paper=next(iter(load_local(self.ws).values()))
         Path(paper['local_source']['path']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'snapshot'):load_local(self.ws)
+    def test_password_protected_pdf_is_rejected_without_import(self):
+        source=self.pdf()
+        writer=PdfWriter(clone_from=PdfReader(source))
+        writer.encrypt('private-password',algorithm='AES-256')
+        encrypted=self.sources/'encrypted.pdf'
+        writer.write(encrypted)
+        with self.assertRaisesRegex(ValueError,'encrypted'):
+            import_pdfs(self.ws,{'files':[str(encrypted)]})
+        self.assertEqual(load_local(self.ws),{})
+
     def test_empty_scanned_pdf_cannot_be_claimed_fulltext(self):
-        import pymupdf as fitz
-        path=self.sources/'scanned.pdf';doc=fitz.open();doc.new_page();doc.save(path);doc.close()
+        path=self.sources/'scanned.pdf';doc=pdf_fixture.open();doc.new_page();doc.save(path);doc.close()
         import_pdfs(self.ws,{'files':[str(path)]});pid,paper=next(iter(load_local(self.ws).items()))
         value,row=acquire(pid,paper,hub_base='http://invalid',cache=Cache(self.ws/'cache'),breaker=Breaker(),timeout=1,sources=('paperhub',))
         self.assertIsNone(value);self.assertEqual(row['outcome'],'extract_failed')

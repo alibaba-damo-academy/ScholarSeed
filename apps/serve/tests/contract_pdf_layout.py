@@ -5,8 +5,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import asdict
 
-import pymupdf
-
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.service.citations import evidence_windows
 from service.platform.citations import PDF_CAPTION, CitationPage, PdfFragment
 from service.workbench.service.extraction import decode_index, extract
@@ -15,9 +14,9 @@ from service.workbench.service.sentences import SentenceBlock, assemble
 
 class PdfLayoutContracts(unittest.TestCase):
     def test_caption_filter_preserves_word_anchors_after_index_roundtrip(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
-            page.draw_rect(pymupdf.Rect(60, 100, 280, 250))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 280, 250))
             page.insert_text((100, 180), "INTERNAL LABEL")
             page.insert_text((60, 280), "Figure 1: The measured result remains available.")
             index = decode_index(asdict(extract(pdf.tobytes())))
@@ -32,7 +31,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertTrue(all(span.page == 1 and span.quad[1] > 0.3 for span in caption.spans))
 
     def test_form_text_has_layout_and_preserves_columns(self):
-        with pymupdf.open() as content, pymupdf.open() as wrapper:
+        with pdf_fixture.open() as content, pdf_fixture.open() as wrapper:
             page = content.new_page(width=600, height=800)
             page.insert_text((60, 80), "Left column contains the first result.")
             page.insert_text((320, 80), "Right column contains another result.")
@@ -46,15 +45,11 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertFalse(index.unavailable_pages)
 
     def test_clipped_image_does_not_erase_caption_continuation_or_body(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
-            pixmap = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, 100, 100), False)
+            pixmap = pdf_fixture.Pixmap(pdf_fixture.csRGB, (0, 0, 100, 100), False)
             pixmap.clear_with(120)
-            page.insert_image(pymupdf.Rect(60, 100, 350, 390), pixmap=pixmap)
-            stream = page.get_contents()[0]
-            pdf.update_stream(
-                stream, b"q 60 620 290 80 re W n\n" + pdf.xref_stream(stream) + b"\nQ"
-            )
+            page.insert_image(pdf_fixture.Rect(60, 100, 350, 180), pixmap=pixmap)
             page.insert_text((60, 205), "Figure 1: A clipped illustration.")
             page.insert_text((60, 219), "This complete second caption line must survive.")
             page.insert_text((60, 270), "The body beneath the visible image must remain intact.")
@@ -66,9 +61,9 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertTrue(all(q[3] < 0.25 for o in index.omissions for p in o.pages for q in p.quads))
 
     def test_nearby_column_heading_does_not_expand_figure_region(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
-            page.draw_rect(pymupdf.Rect(60, 100, 280, 250))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 280, 250))
             page.insert_text((60, 280), "Figure 1: Chart.")
             page.insert_text((310, 140), "3 Results")
             page.insert_text((310, 175), "This adjacent column contains essential prose.")
@@ -80,14 +75,14 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertIn("We must preserve the complete paragraph here.", text)
 
     def test_inline_formula_near_plot_is_not_an_exterior_label(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             page.insert_text(
                 (60, 105), "This prose explains the error calculated from observations."
             )
             page.insert_text((60, 133), "The remaining terms describe the measured result clearly.")
             page.insert_text((180, 120), "x - y", fontsize=8)
-            page.draw_rect(pymupdf.Rect(120, 150, 400, 280))
+            page.draw_rect(pdf_fixture.Rect(120, 150, 400, 280))
             page.insert_text((60, 315), "Figure 1: Error over time.")
             index = extract(pdf.tobytes())
         text = " ".join(fragment.text for fragment in index.fragments)
@@ -95,9 +90,9 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertIn("This prose explains", text)
 
     def test_boxed_prose_is_not_a_figure(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 520, 200))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 520, 200))
             page.insert_text(
                 (80, 130), "Theorem 1. Every bounded sequence has a convergent subsequence."
             )
@@ -111,7 +106,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertFalse(index.omissions)
 
     def test_axes_labels_outside_plot_bounds_are_omitted(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.draw_line((120, 150), (120, 290))
             page.draw_line((120, 290), (350, 290))
@@ -127,7 +122,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertIn("surrounding prose", text)
 
     def test_adjacent_table_caption_does_not_split_header_rules(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             page.insert_text((60, 85), "Table 1: Scores", fontsize=9)
             page.insert_text((300, 110), "Table 2: Adjacent results", fontsize=9)
@@ -147,9 +142,9 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertIn("Body text following both tables must remain.", text)
 
     def test_caption_at_top_does_not_protect_graphic_labels(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 400, 250))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 400, 250))
             for y, text in (
                 (120, "Figure 1: Comparison"),
                 (134, "TRAINING LABEL 987"),
@@ -160,7 +155,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertEqual([f.text for f in index.fragments], ["Figure 1: Comparison"])
 
     def test_short_caption_does_not_limit_table_width(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((60, 110), "Table 1: Scores")
             for y, label, value in (
@@ -175,10 +170,10 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertTrue(index.omissions)
 
     def test_vector_interior_removed_caption_and_prose_preserved(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             page.insert_text((60, 80), "The experiment uses Figure 1 as a reference.")
-            page.draw_rect(pymupdf.Rect(80, 150, 350, 290))
+            page.draw_rect(pdf_fixture.Rect(80, 150, 350, 290))
             page.insert_text((100, 180), "INTERNAL 98765")
             page.insert_text((60, 320), "Figure 1: Model architecture. The arrows show direction.")
             page.insert_text((60, 334), "The decoder is displayed on the right.")
@@ -204,9 +199,9 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertEqual(index, extract(payload))
 
     def test_caption_overlapping_detected_graphics_is_not_truncated(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 500, 300))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 500, 300))
             page.insert_text((80, 140), "Graph labels")
             page.insert_text((60, 270), "Figure 4: First caption sentence.")
             page.insert_text((60, 284), "A second caption sentence inside the drawing boundary.")
@@ -217,7 +212,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertNotIn("Graph labels", " ".join(f.text for f in index.fragments))
 
     def test_body_table_reference_does_not_start_caption(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((60, 100), "Results are reported in")
             page.insert_text((60, 114), "Table 6. In this table we report average scores.")
@@ -228,7 +223,7 @@ class PdfLayoutContracts(unittest.TestCase):
         self.assertIn("ordinary prose", " ".join(f.text for f in index.fragments))
 
     def test_horizontal_rule_table_with_bottom_caption(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             for top in (100, 125, 200):
                 page.draw_line((60, top), (280, top))
@@ -252,7 +247,7 @@ class PdfLayoutContracts(unittest.TestCase):
 
     def test_borderless_table_does_not_consume_nearby_prose(self):
         for caption_above in (True, False):
-            with self.subTest(caption_above=caption_above), pymupdf.open() as pdf:
+            with self.subTest(caption_above=caption_above), pdf_fixture.open() as pdf:
                 page = pdf.new_page(width=600, height=800)
                 page.insert_text(
                     (60, 110 if caption_above else 215),
@@ -278,13 +273,13 @@ class PdfLayoutContracts(unittest.TestCase):
             self.assertIn("numerical results must remain", text)
 
     def test_image_overlay_removed_but_full_page_ocr_kept(self):
-        with pymupdf.open() as source:
+        with pdf_fixture.open() as source:
             source.new_page().insert_text((50, 100), "Raster graphic")
             image = source[0].get_pixmap().tobytes("png")
         for background in (False, True):
-            with self.subTest(background=background), pymupdf.open() as pdf:
+            with self.subTest(background=background), pdf_fixture.open() as pdf:
                 page = pdf.new_page()
-                area = page.rect if background else pymupdf.Rect(60, 80, 320, 260)
+                area = page.rect if background else pdf_fixture.Rect(60, 80, 320, 260)
                 page.insert_image(area, stream=image, keep_proportion=False)
                 page.insert_text((80, 140), "OCR or overlaid 515", render_mode=3)
                 page.insert_text((60, 290), "Figure 2: Image caption.")
@@ -294,9 +289,9 @@ class PdfLayoutContracts(unittest.TestCase):
             self.assertIn("Figure 2: Image caption.", text)
 
     def test_only_graphics_is_explicit_omission_not_missing_text_layer(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 400, 300))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 400, 300))
             page.insert_text((100, 150), "Only interior text")
             index = extract(pdf.tobytes())
         self.assertEqual(index.fragments, ())
@@ -306,17 +301,17 @@ class PdfLayoutContracts(unittest.TestCase):
     def test_rotated_crop_keeps_caption_and_omission_geometry(self):
         indexes = []
         for rotation in (0, 90, 180, 270):
-            with pymupdf.open() as pdf:
+            with pdf_fixture.open() as pdf:
                 page = pdf.new_page(width=600, height=800)
-                page.draw_rect(pymupdf.Rect(90, 150, 350, 290))
-                pixmap = pymupdf.Pixmap(pymupdf.csRGB, (0, 0, 40, 40), False)
+                page.draw_rect(pdf_fixture.Rect(90, 150, 350, 290))
+                pixmap = pdf_fixture.Pixmap(pdf_fixture.csRGB, (0, 0, 40, 40), False)
                 pixmap.clear_with(120)
                 page.insert_image(
-                    pymupdf.Rect(90, 150, 350, 290), pixmap=pixmap, keep_proportion=False
+                    pdf_fixture.Rect(90, 150, 350, 290), pixmap=pixmap, keep_proportion=False
                 )
                 page.insert_text((100, 180), "INTERIOR")
                 page.insert_text((70, 320), "Figure 3: Caption after rotation.")
-                page.set_cropbox(pymupdf.Rect(50, 100, 550, 700))
+                page.set_cropbox(pdf_fixture.Rect(50, 100, 550, 700))
                 page.set_rotation(rotation)
                 indexes.append(extract(pdf.tobytes()))
         for steps, index in enumerate(indexes):

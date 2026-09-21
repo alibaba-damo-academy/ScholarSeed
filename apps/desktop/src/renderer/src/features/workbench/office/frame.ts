@@ -7,6 +7,7 @@ import localFontsSource from './local-fonts.js?raw'
 import localeSource from './locale.js?raw'
 import paletteSource from './palette.js?raw'
 import clipboardSource from './clipboard.js?raw'
+import autoscrollSource from './autoscroll.js?raw'
 import docSource from './doc.js?raw'
 import docxSource from './docx.js?raw'
 import selectionSource from './selection.js?raw'
@@ -59,6 +60,7 @@ export function officeFrameDocument(t: TFunction<'workbench'>, locale: string): 
   const localeUrl = sourceUrl(localeSource)
   const paletteUrl = sourceUrl(paletteSource)
   const clipboardUrl = sourceUrl(clipboardSource)
+  const autoscrollUrl = sourceUrl(autoscrollSource)
   const config = JSON.stringify({
     locale,
     errors: officeFailureLabels(t),
@@ -127,7 +129,7 @@ body{display:block}.canvas{position:relative;width:100%;height:100%}
 #ime-input{position:absolute;left:0;top:0;width:1px;height:1px;margin:0;border:0;padding:0;overflow:hidden;white-space:pre;resize:none;opacity:0;pointer-events:none}
 </style></head><body>
 <div class="canvas"><div id="loading"><span id="status"></span><button id="retry" data-testid="office-fonts-retry" type="button" hidden></button></div><canvas id="qtcanvas" contenteditable="true" oncontextmenu="event.preventDefault()" onkeydown="event.preventDefault()"></canvas><textarea id="ime-input" aria-label="Office text input" tabindex="-1" wrap="off" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea></div>
-<script src="${localFontsUrl}"></script><script src="${localeUrl}"></script><script src="${inputUrl}"></script><script src="${clipboardUrl}"></script><script>
+<script src="${localFontsUrl}"></script><script src="${localeUrl}"></script><script src="${inputUrl}"></script><script src="${clipboardUrl}"></script><script src="${autoscrollUrl}"></script><script src="${selectionUrl}"></script><script>
 'use strict';
 const config=${config};
 const canvas=document.getElementById('qtcanvas');
@@ -138,15 +140,19 @@ const retry=document.getElementById('retry');
 status.textContent=config.text.starting;retry.textContent=config.text.reload;
 let port, filename, processor, expectedDocumentKind, bytes, palette, editable=false, started=false, starting=false, disposed=false, searchVisible=false, documentKind='', pasteShortcutPending=false,bindingId='',bindingSequence=0,readyFrame=0,layoutPaintFrame=0,workerReady=false,layoutFinished=false,layoutPaintAcknowledged=false;
 let startupStartedAt=0,runtimeReadyAt=0,documentReadonlyReason='',viewportRequestSequence=0,layoutPaintRequestId=0;
-let selectionPoint,selectionPointAt=0;
-let writer=false,legacyDoc=false,legacyDocSelectionDragging=false;
+let selectionPoint,selectionAnchorPoint,selectionPointAt=0;
+let writer=false,selectionAutoscrollKind='',selectionDragging=false;
 let embeddedActive=false;
 const caretCommand='caret';
 const caretRequestCommand='caret_request';
 const selectionCommitCommand='selection_commit';
 const selectionDragCommand='selection_drag';
-const legacyDocSuffix='.doc';
+const selectionAutoscrollCommand='selection_autoscroll';
 const primaryPointerButton=0;
+const hostDocument=parent.document;
+const selectionAutoscroll=ScholarSeedOfficeAutoscroll.create({element:canvas,onSelectionStep:step=>{
+  if(selectionAutoscrollKind==='writer')port?.postMessage({cmd:selectionAutoscrollCommand,x:step.x,y:step.y});
+}});
 const officeInput=ScholarSeedOfficeInput.create({element:imeInput,canvas,enabled:()=>editable&&writer&&!embeddedActive,shortcuts:config.shortcuts.input,sendCommand:command=>port?.postMessage({cmd:'input_command',command}),sendText:text=>port?.postMessage({cmd:'input_text',text}),requestCaret:()=>port?.postMessage({cmd:caretRequestCommand})});
 const imagePaths=new Set();
 let serializedImagePaths=[];
@@ -266,7 +272,7 @@ function onThread(event){
   else if(message.cmd==='selection'){
     const presentationDelayMs=selectionPointAt?performance.now()-selectionPointAt:undefined;
     diagnostic('selection-extracted',{extractionDurationMs:message.extractionDurationMs,presentationDelayMs});
-    post('selection',{selection:message.selection,point:selectionPoint})
+    post('selection',{selection:message.selection,point:selectionAnchorPoint||selectionPoint})
   }
   else if(message.cmd==='persist'){serializedImagePaths=[...imagePaths];const saved=FS.readFile('/tmp/office/'+filename);post('saved-bytes',{bytes:saved},[saved.buffer])}
 	  else if(message.cmd==='selection_replaced')post('selection-replaced',{requestId:message.requestId})
@@ -293,7 +299,7 @@ window.addEventListener('message',event=>{
   if(message.type==='bind'){
     bindingId=String(message.bindingId||'');bindingSequence+=1;cancelDocumentReady();workerReady=false;layoutFinished=false;layoutPaintAcknowledged=false;layoutPaintRequestId=0;
     canvas.style.visibility='hidden';loading.hidden=false;status.textContent=config.text.loading;delete status.dataset.error;
-    bytes=new Uint8Array(message.bytes);filename=message.filename;processor=message.processor;expectedDocumentKind=message.expectedDocumentKind;legacyDoc=String(filename||'').toLowerCase().endsWith(legacyDocSuffix);legacyDocSelectionDragging=false;editable=Boolean(message.editable);if(started)upload();else void start()
+    selectionAutoscroll.stop();bytes=new Uint8Array(message.bytes);filename=message.filename;processor=message.processor;expectedDocumentKind=message.expectedDocumentKind;selectionAutoscrollKind=ScholarSeedOfficeSelection.autoscrollKind(filename)||'';selectionDragging=false;editable=Boolean(message.editable);if(started)upload();else void start()
   }
   else if(message.type==='theme')applyPalette(message.palette);
   else if(message.type==='font-permission-result'){
@@ -324,19 +330,41 @@ window.addEventListener('message',event=>{
     for(const path of serializedImagePaths){if(imagePaths.has(path)){FS.unlink(path);imagePaths.delete(path)}}
     serializedImagePaths=[];
   }
-  else if(message.type==='dispose'){disposed=true;cancelDocumentReady();officeInput.destroy();port?.postMessage({cmd:'dispose'});port?.close()}
+  else if(message.type==='dispose'){disposed=true;cancelDocumentReady();hostDocument.removeEventListener('pointerup',finishSelectionDrag,true);selectionAutoscroll.destroy();officeInput.destroy();port?.postMessage({cmd:'dispose'});port?.close()}
 });
 retry.addEventListener('click',()=>void start());
 void start();
 window.addEventListener('focus',()=>post('focus'));
-document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionPointAt=0;post('focus');if(writer&&legacyDoc&&event.isPrimary&&event.button===primaryPointerButton){legacyDocSelectionDragging=true;port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
-document.addEventListener('pointerup',event=>{
-  selectionPoint={x:event.clientX,y:event.clientY};
+document.addEventListener('pointerdown',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAnchorPoint=selectionPoint;selectionPointAt=0;post('focus');if(documentKind===selectionAutoscrollKind&&event.isPrimary&&event.button===primaryPointerButton){selectionDragging=true;diagnostic('selection-drag',{active:true,eventType:event.type});selectionAutoscroll.start(event);port?.postMessage({cmd:selectionDragCommand,active:true})}},true);
+document.addEventListener('pointermove',event=>{selectionPoint={x:event.clientX,y:event.clientY};selectionAutoscroll.move(event)},true);
+function captureSelectionAnchor(event){
+  if(event.view===window)selectionPoint={x:event.clientX,y:event.clientY};
+  selectionAnchorPoint=selectionPoint;
   selectionPointAt=performance.now();
-  if(legacyDocSelectionDragging){legacyDocSelectionDragging=false;port?.postMessage({cmd:selectionDragCommand,active:false});port?.postMessage({cmd:selectionCommitCommand})}
+}
+function finishSelectionDrag(event){
+  if(!selectionDragging)return;
+  const wasActive=selectionDragging;
+  selectionDragging=false;
+  if(event.view!==window){
+    const pointerInit={bubbles:true,cancelable:true,view:window,clientX:selectionPoint.x,clientY:selectionPoint.y,button:primaryPointerButton,buttons:0};
+    canvas.dispatchEvent(new PointerEvent('pointerup',{...pointerInit,pointerId:event.pointerId,pointerType:event.pointerType,isPrimary:event.isPrimary}));
+    canvas.dispatchEvent(new MouseEvent('mouseup',pointerInit));
+  }
+  captureSelectionAnchor(event);
+  diagnostic('selection-drag',{active:false,eventType:event.type,wasActive});
+  port?.postMessage({cmd:selectionDragCommand,active:false})
+  if(selectionAutoscrollKind==='writer')port?.postMessage({cmd:selectionCommitCommand});
+  selectionAutoscroll.stop(event);
+}
+document.addEventListener('pointerup',event=>{
+  if(!selectionDragging)captureSelectionAnchor(event);
+  finishSelectionDrag(event);
   if(documentKind==='impress')port?.postMessage({cmd:selectionCommitCommand});
 },true);
-document.addEventListener('pointercancel',()=>{if(legacyDocSelectionDragging){legacyDocSelectionDragging=false;port?.postMessage({cmd:selectionDragCommand,active:false});port?.postMessage({cmd:selectionCommitCommand})}},true);
+document.addEventListener('pointercancel',finishSelectionDrag,true);
+canvas.addEventListener('lostpointercapture',finishSelectionDrag,true);
+hostDocument.addEventListener('pointerup',finishSelectionDrag,true);
 document.addEventListener('keydown',event=>{
   if(shortcutMatches(event,config.shortcuts.save)){event.preventDefault();event.stopImmediatePropagation();post('save-request');return}
   if(shortcutMatches(event,config.shortcuts.find)){event.preventDefault();event.stopImmediatePropagation();post('office-search-open');return}
@@ -370,6 +398,7 @@ else post('frame-ready');
       URL.revokeObjectURL(localeUrl)
       URL.revokeObjectURL(paletteUrl)
       URL.revokeObjectURL(clipboardUrl)
+      URL.revokeObjectURL(autoscrollUrl)
     }
   }
 }

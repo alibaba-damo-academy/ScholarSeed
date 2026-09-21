@@ -6,6 +6,7 @@ module never imports product paths or reads native thread databases.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
@@ -31,6 +32,8 @@ CODEX_REMOTE_AUTH_CONFIG = 'cli_auth_credentials_store="ephemeral"'
 CODEX_MODEL_PROVIDER_KEY = "model_provider"
 CODEX_MODEL_PROVIDERS_KEY = "model_providers"
 TEXT_ENCODING = "utf-8"
+CODEX_CATALOG_DIRECTORY = "model-catalogs"
+CODEX_CATALOG_SUFFIX = ".json"
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -40,6 +43,24 @@ def configured_codex_executable(environ: Mapping[str, str] | None = None) -> str
 
     source = os.environ if environ is None else environ
     return str(source.get(SCHOLARSEED_CODEX_EXECUTABLE_ENV, "") or "").strip()
+
+
+def store_model_catalog(runtime_home: Path, payload: bytes) -> Path:
+    directory = runtime_home / CODEX_CATALOG_DIRECTORY
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / (hashlib.sha256(payload).hexdigest() + CODEX_CATALOG_SUFFIX)
+    if destination.is_file() and destination.read_bytes() == payload:
+        return destination
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(payload)
+        os.replace(temporary_path, destination)
+        return destination
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def prepare_codex_runtime_home(*, native_authentication: bool = False) -> Path:

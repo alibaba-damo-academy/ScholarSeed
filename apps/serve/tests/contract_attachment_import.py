@@ -8,10 +8,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from apps.serve.tests import pdf as pdf_fixture
 from apps.serve.tests.contract_pdf_records import _records
 from service.content.domain.model import ContentError
 from service.content.persistence.catalog import ContentCatalog
@@ -195,7 +195,7 @@ def run() -> None:
                 raise AssertionError("invalid mount admitted")
         embedded_records = _records()
         embedded_records["marks"][0]["color"] = "purple"
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page()
             document.embfile_add(
                 "scholarseed-annotations.json", json.dumps(embedded_records).encode()

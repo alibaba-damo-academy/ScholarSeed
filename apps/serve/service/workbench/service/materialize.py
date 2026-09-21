@@ -7,12 +7,11 @@ import os
 import stat
 from pathlib import Path, PurePosixPath
 
-import pymupdf
-
 from service.platform.citations import CitationDocument, PdfMaterialization
+from service.platform.pdf import PdfDocumentError, PdfPasswordError, pdf_document_text
 from service.platform.storage import NOFOLLOW, canonical_root, open_directory
 
-MATERIALIZER_VERSION = f"mupdf-{pymupdf.VersionBind}/text-v1"
+MATERIALIZER_VERSION = "pdfium-text-v2"
 MAX_DOCUMENT_BYTES = 100_000_000
 MAX_DOCUMENT_PAGES = 2_000
 MAX_TEXT_BYTES = 16_000_000
@@ -41,16 +40,15 @@ def _extract(document: CitationDocument) -> tuple[bytes, int]:
     if len(document.payload) > MAX_DOCUMENT_BYTES:
         raise ValueError("pdf_materialize_source_too_large")
     try:
-        with pymupdf.open(stream=document.payload, filetype="pdf") as pdf:
-            if pdf.is_encrypted and not pdf.authenticate(""):
-                raise ValueError("pdf_materialize_encrypted")
-            if pdf.page_count > MAX_DOCUMENT_PAGES:
-                raise ValueError("pdf_materialize_too_many_pages")
-            pages = [page.get_text("text", sort=True).replace("\r\n", "\n") for page in pdf]
+        pages = pdf_document_text(document.payload)
+        if len(pages) > MAX_DOCUMENT_PAGES:
+            raise ValueError("pdf_materialize_too_many_pages")
+    except PdfPasswordError as error:
+        raise ValueError("pdf_materialize_encrypted") from error
+    except PdfDocumentError as error:
+        raise ValueError("pdf_materialize_invalid_pdf") from error
     except ValueError:
         raise
-    except Exception as error:
-        raise ValueError("pdf_materialize_invalid_pdf") from error
     text = PAGE_SEPARATOR.join(page.rstrip("\n") for page in pages).strip()
     if len(text) < MIN_TEXT_CHARACTERS:
         raise ValueError("pdf_materialize_text_layer_missing")

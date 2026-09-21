@@ -1,4 +1,5 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
+import { LOGIN_WINDOW_CHANNEL } from '../window'
 // preload — the only bridge between renderer and main. Exposes the backend API
 // base URL (the renderer talks ASP/HTTP/SSE straight to it), backend log stream,
 // shoot-scene events, an external-open helper, and the version-update surface.
@@ -8,7 +9,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DesktopAuthSnapshot } from '../main/handoff'
 import type { OfficeClipboardResult } from '../main/clipboard'
 import type { StartUpdateResult, UpdateDiagnosis, UpdateSnapshot } from '../updates'
-import type { RendererPreferences } from '../preferences'
+import type { PreferenceLanguage, RendererPreferences } from '../preferences'
 import type { DesktopNotificationInput, DesktopNotificationResult } from '../notifications'
 import type { SystemPermissionId, SystemPermissionsSnapshot } from '../permissions'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
@@ -167,8 +168,8 @@ const bridge = {
     return ipcRenderer.invoke('veda:device-info')
   },
   // ── 桌面登录交接（官网浏览器登录 + 深链回跳）──
-  desktopLoginStart(): Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }> {
-    return ipcRenderer.invoke('scholarseed:desktop-login-start')
+  desktopLoginStart(language: PreferenceLanguage): Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }> {
+    return ipcRenderer.invoke('scholarseed:desktop-login-start', language)
   },
   desktopLoginCancel(): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('scholarseed:desktop-login-cancel')
@@ -186,6 +187,9 @@ const bridge = {
   },
   claimLanding(): Promise<boolean> {
     return ipcRenderer.invoke('scholarseed:landing-claim')
+  },
+  setLoginWindowVisible(visible: boolean): Promise<void> {
+    return ipcRenderer.invoke(LOGIN_WINDOW_CHANNEL, visible)
   },
   landingDismiss(): Promise<{ ok: boolean }> {
     return ipcRenderer.invoke('scholarseed:landing-dismiss')

@@ -55,20 +55,15 @@ test('catalog and runtime initialization remain indeterminate', () => {
   )
 })
 
-test('Office warmup defaults to a compact expandable status bar', () => {
-  assert.match(warmupSource, /<Collapsible/)
-  assert.match(warmupSource, /<CollapsibleTrigger/)
-  assert.match(warmupSource, /<CollapsibleContent/)
-  assert.match(warmupSource, /React\.useState\(false\)/)
-  assert.match(warmupSource, /status\.stage === 'error' \|\| open/)
-  assert.match(
-    warmupSource,
-    /w-\[calc\(var\(--vds-popover-width-md\)-var\(--vds-space-10\)\)\]/
-  )
-  assert.match(warmupSource, /aria-label=\{t\('officeWarmup\.title'\)\}/)
+test('Office warmup stays hidden during normal initialization', () => {
+  assert.match(warmupSource, /if \(status\.stage !== 'error'\) return null/)
+  assert.doesNotMatch(warmupSource, /<Collapsible/)
+  assert.doesNotMatch(warmupSource, /<ProgressBar/)
+  assert.doesNotMatch(warmupSource, /<Spinner/)
 })
 
-test('Office warmup keeps failure recovery visible without expanding details', () => {
-  assert.match(warmupSource, /status\.stage === 'error'/)
+test('Office warmup keeps failure recovery visible', () => {
+  assert.match(warmupSource, /data-testid="office-font-warmup"/)
+  assert.match(warmupSource, /officeWarmup\.error/)
   assert.match(warmupSource, /officeWarmup\.retry/)
 })

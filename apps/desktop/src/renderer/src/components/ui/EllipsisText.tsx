@@ -7,6 +7,7 @@ import { cx } from './utils'
 export interface EllipsisTextProps extends HTMLAttributes<HTMLSpanElement> {
   children: ReactNode
   tooltip?: ReactNode
+  tooltipContentClassName?: string
   tooltipAlign?: TooltipAlign
   tooltipOffset?: number
   tooltipPortalled?: boolean
@@ -20,6 +21,7 @@ export const EllipsisText = forwardRef<HTMLSpanElement, EllipsisTextProps>(
       children,
       className,
       tooltip,
+      tooltipContentClassName,
       tooltipAlign = 'center',
       tooltipOffset,
       tooltipPortalled = false,
@@ -60,6 +62,7 @@ export const EllipsisText = forwardRef<HTMLSpanElement, EllipsisTextProps>(
         anchorRef={textRef}
         className={cx('min-w-0', wrapperClassName)}
         content={tooltip ?? children}
+        contentClassName={tooltipContentClassName}
         disabled={!overflowing}
         offset={tooltipOffset}
         portalled={tooltipPortalled}

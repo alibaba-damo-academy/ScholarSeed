@@ -62,7 +62,13 @@ from scholarseed_runtime.contract.resource import (
 from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY, RUNTIME_SUSPEND_STALE
 
 logger = logging.getLogger(RESOURCE_LIFECYCLE_LOGGER)
+# A child of the lifecycle logger: it inherits that logger's configured level, so the record
+# survives the desktop's default root WARNING, while staying out of the ResourceEvidence stream
+# consumers read off the parent.
+READINESS_LOGGER = f"{RESOURCE_LIFECYCLE_LOGGER}.readiness"
+readiness_logger = logging.getLogger(READINESS_LOGGER)
 POOL_RESOURCE_LOG = "codex_resource_lifecycle"
+POOL_READINESS_LOG = "codex_pooled_readiness_fallback"
 POOL_LEASE_RELEASED = "released"
 POOL_HOST_EXITED = "exited"
 POOL_CLOSE_FAILED = "close_failed"
@@ -229,6 +235,7 @@ class CodexHostPool:
         self._closing: asyncio.Task[None] | None = None
         self._readiness_cache: dict[ReadinessKey, tuple[float, CodexRuntimeReadiness]] = {}
         self._readiness_probe_lock = asyncio.Lock()
+        self._pooled_readiness_signature = ""
 
     async def probe_readiness(
         self,
@@ -950,22 +957,63 @@ class CodexHostPool:
             self._reservations.clear()
             self._requests.clear()
             self._readiness_cache.clear()
+            self._pooled_readiness_signature = ""
 
 
 def _pooled_runtime_readiness(
     pool: CodexHostPool, executable: str = ""
 ) -> CodexRuntimeReadiness | None:
+    """A resident host is positive evidence only; it never proves the runtime unusable.
+
+    ``probe_readiness(prefer_pooled=True)`` answers a runtime-level question: can this
+    executable be used at all. A pooled slot that is starting, stopping or closing is a
+    session-level transient — it says nothing about the executable, so it must not be
+    projected as ``ready=False``. Reporting it as such made one activation's ~2s startup
+    window surface as ``codex_process_not_ready`` to every caller, including sessions that
+    already owned a healthy host (AOne bug 86998131). Without a READY host we return
+    ``None`` and let the caller fall back to the real CLI probe.
+    """
+
     resolved = discover_codex_executable(executable)
     if not resolved:
         return None
-    candidates = [
-        slot.host.readiness
+    ready = [
+        slot
+        for (host_executable, _identity, _environment, _role), slot in pool._hosts.items()
+        if host_executable == resolved
+        and slot.state is HostState.READY
+        and slot.host.readiness.ready
+    ]
+    if ready:
+        # Newest generation wins: it is the most recent successful initialize we observed.
+        return max(ready, key=lambda slot: slot.host.readiness.process_generation).host.readiness
+    _log_pooled_readiness_fallback(pool, resolved)
+    return None
+
+
+def _log_pooled_readiness_fallback(pool: CodexHostPool, resolved: str) -> None:
+    """Record why pooled evidence was declined, deduplicated on the observed slot states.
+
+    ``/api/healthz`` is filtered out of the uvicorn access log, so a readiness dip is
+    otherwise invisible. Only slot-scoped identifiers are emitted — never the host key,
+    which carries the environment digest and runtime identity.
+    """
+
+    slots = [
+        {
+            "host_id": slot.host_id,
+            "role": slot.role.value,
+            "slot_state": slot.state.value,
+            "process_state": slot.host.readiness.process_state,
+            "process_generation": slot.host.readiness.process_generation,
+        }
         for (host_executable, _identity, _environment, _role), slot in pool._hosts.items()
         if host_executable == resolved
     ]
-    if not candidates:
-        return None
-    return min(
-        candidates,
-        key=lambda readiness: (readiness.ready, -readiness.process_generation),
+    payload = json.dumps(
+        {"slots": sorted(slots, key=lambda row: str(row["host_id"]))}, sort_keys=True
     )
+    if payload == pool._pooled_readiness_signature:
+        return
+    pool._pooled_readiness_signature = payload
+    readiness_logger.info("%s %s", POOL_READINESS_LOG, payload)

@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.persistence import files as literature_files
@@ -48,7 +48,7 @@ class ResourceExcerptContract(unittest.TestCase):
         registry = ProjectRegistry(str(root), catalog)
         self.content = ContentService(registry, catalog)
         self.project = self.content.create_project("Excerpt API")
-        with pymupdf.open() as document:
+        with pdf_fixture.open() as document:
             document.new_page().insert_text((50, 50), "Contract source")
             pdf_payload = document.tobytes()
         self.revision = self.content.revision(pdf_payload)

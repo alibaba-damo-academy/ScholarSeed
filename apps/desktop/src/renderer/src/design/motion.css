@@ -1,6 +1,8 @@
 :root {
   --vds-duration-fast: 120ms;
   --vds-duration-normal: 180ms;
+  --vds-carousel-transition-duration: 500ms;
+  --vds-carousel-transition-ease: cubic-bezier(0.4, 0, 0.2, 1);
   --vds-ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 

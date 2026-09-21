@@ -6,6 +6,8 @@ const OFFICE_CLIPBOARD_PERMISSIONS = new Set([
   CLIPBOARD_WRITE_PERMISSION
 ])
 const OFFICE_FRAME_URL = 'about:srcdoc'
+// A check handler replaces Chromium's defaults, so re-grant the main frame's clipboard write.
+const RENDERER_CLIPBOARD_WRITE_PERMISSIONS = new Set([CLIPBOARD_WRITE_PERMISSION])
 
 export interface PermissionDetails {
   embeddingOrigin?: string
@@ -55,6 +57,19 @@ function isOfficeFrame(
     && details.requestingUrl === OFFICE_FRAME_URL
 }
 
+function isRendererMainFrame(
+  webContents: unknown,
+  expectedContents: unknown,
+  requestingOrigin: string,
+  rendererOrigin: string | null,
+  details: PermissionDetails
+): boolean {
+  return Boolean(rendererOrigin)
+    && webContents === expectedContents
+    && details.isMainFrame === true
+    && originOf(requestingOrigin) === rendererOrigin
+}
+
 export function installOfficeFontPermission(
   session: PermissionSession,
   webContents: unknown,
@@ -63,6 +78,10 @@ export function installOfficeFontPermission(
   const rendererOrigin = originOf(rendererUrl)
 
   session.setPermissionCheckHandler((requester, permission, requestingOrigin, details) => {
+    if (
+      RENDERER_CLIPBOARD_WRITE_PERMISSIONS.has(permission)
+      && isRendererMainFrame(requester, webContents, requestingOrigin, rendererOrigin, details)
+    ) return true
     const embeddingOrigin = originOf(details.embeddingOrigin)
     if (
       !rendererOrigin
@@ -77,6 +96,13 @@ export function installOfficeFontPermission(
   const requestAccess = async (): Promise<boolean> => true
 
   session.setPermissionRequestHandler((requester, permission, callback, details) => {
+    if (
+      RENDERER_CLIPBOARD_WRITE_PERMISSIONS.has(permission)
+      && isRendererMainFrame(requester, webContents, details.requestingUrl ?? '', rendererOrigin, details)
+    ) {
+      callback(true)
+      return
+    }
     const embeddingOrigin = originOf(details.embeddingOrigin)
     if (
       !rendererOrigin

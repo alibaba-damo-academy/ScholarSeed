@@ -9,6 +9,7 @@ class InputKind(str, Enum):
     TEXT = "text"
     LOCAL_IMAGE = "local_image"
     FILE = "file"
+    DIRECTORY = "directory"
     SKILL = "skill"
 
 

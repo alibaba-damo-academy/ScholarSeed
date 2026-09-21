@@ -12,6 +12,7 @@ export const REVIEW_VERDICTS = {
 
 const GENERATION_LABELS = { SUCCESS: 'reviewProjection.generation.SUCCESS', PARTIAL_SUCCESS: 'reviewProjection.generation.PARTIAL_SUCCESS', FAILED: 'reviewProjection.generation.FAILED' } as const
 const GENERATION_STATUSES = new Set(Object.keys(GENERATION_LABELS))
+const REVIEW_CHECKPOINTS = new Set<string>(['outline', 'result'])
 const OUTPUT_FORMATS = new Set(['latex_pdf', 'markdown', null])
 const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', null])
 const DECISION_SOURCES = new Set(['user', 'default', null])
@@ -36,10 +37,17 @@ const isStrings = (value: unknown): value is string[] => Array.isArray(value) &&
 const isCount = (value: unknown): boolean => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 const isOptionalCount = (value: unknown): boolean => value === null || isCount(value)
 
+export function reviewSupersessionKey(value: Record<string, unknown>): string | null {
+  return typeof value.workspace === 'string' && value.workspace
+    && typeof value.checkpoint === 'string' && REVIEW_CHECKPOINTS.has(value.checkpoint)
+    ? value.workspace
+    : null
+}
+
 export function parseReview(value: Record<string, unknown>): LiteratureReview | null {
   if (value.schema_version !== '1.1' || typeof value.session_id !== 'string' || !value.session_id
     || typeof value.workspace !== 'string' || typeof value.title !== 'string' || typeof value.intent !== 'string'
-    || (value.checkpoint !== 'outline' && value.checkpoint !== 'result')
+    || typeof value.checkpoint !== 'string' || !REVIEW_CHECKPOINTS.has(value.checkpoint)
     || typeof value.status !== 'string' || !Object.prototype.hasOwnProperty.call(REVIEW_STATUS, value.status)
     || (value.generation_status != null && (typeof value.generation_status !== 'string' || !GENERATION_STATUSES.has(value.generation_status)))
     || ![value.included, value.fulltext, value.abstract_only, value.pending_checks, value.cited].every(isOptionalCount) || !isCount(value.section_count)

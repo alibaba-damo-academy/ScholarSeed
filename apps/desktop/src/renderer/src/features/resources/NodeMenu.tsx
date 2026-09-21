@@ -6,7 +6,7 @@ import {
   ExternalLink,
   Link,
   Pencil,
-  Sparkles,
+  MessageCirclePlus,
   Settings,
   Trash2,
   Unlink,
@@ -15,13 +15,8 @@ import {
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../../components/ui'
 import { useApp } from '../../store'
+import { revealLabelKey } from '../../fileOpen'
 import { findResourceNode } from './state'
-
-/** 菜单宽度，用于靠右时回折，避免菜单被窗口裁掉。 */
-const MENU_WIDTH = 204
-
-/** 菜单预估高度，用于靠下时上翻。 */
-const MENU_HEIGHT = 372
 
 /**
  * 资料树右键菜单（PRD「资料管理」）。
@@ -35,9 +30,6 @@ export function NodeMenu(): React.JSX.Element | null {
   const menu = state.resource.nodeMenu
   if (!menu) return null
 
-  // 贴边时回折，保证菜单完整可见。
-  const left = Math.max(8, Math.min(menu.x, window.innerWidth - MENU_WIDTH - 8))
-  const top = Math.max(8, Math.min(menu.y, window.innerHeight - MENU_HEIGHT - 8))
   const linkRoot = menu.linkRoot
   const isLinkRoot = linkRoot?.mountPath === menu.path
 
@@ -62,7 +54,7 @@ export function NodeMenu(): React.JSX.Element | null {
       key: 'ai-context',
       separatorAfter: true,
       label: t('menu.addToConversation'),
-      Icon: Sparkles,
+      Icon: MessageCirclePlus,
       run: () => void act.addAiContextRef({
         kind: menu.kind,
         sourceId: menu.path,
@@ -80,7 +72,7 @@ export function NodeMenu(): React.JSX.Element | null {
     }] : []),
     {
       key: 'reveal',
-      label: t('menu.reveal'),
+      label: t(revealLabelKey()),
       Icon: ExternalLink,
       run: () => void act.revealResourceNode(menu.path)
     },
@@ -123,7 +115,7 @@ export function NodeMenu(): React.JSX.Element | null {
     }}>
       <DropdownMenuContent
         className="vds-node-menu max-h-[calc(100vh-16px)] overflow-y-auto"
-        style={{ left, top }}
+        position={menu.anchor ? { kind: 'anchor', ...menu.anchor } : { kind: 'point', x: menu.x, y: menu.y }}
         data-testid="resource-node-menu"
       >
         {items.map((item) => {

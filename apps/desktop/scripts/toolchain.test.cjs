@@ -33,8 +33,8 @@ test('the bootstrap rejects a wrong uv even when configuration cannot be parsed'
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-uv-bootstrap-'))
   try {
     fs.writeFileSync(path.join(directory, 'pyproject.toml'),
-      '[tool.uv]\nrequired-version = "==999.0.0"\nunknown-future-setting = true\n')
-    assert.throws(() => checkUv(directory), /expected 999.0.0/)
+      '[tool.uv]\nrequired-version = ">=999.0.0"\nunknown-future-setting = true\n')
+    assert.throws(() => checkUv(directory), /requires >= 999.0.0/)
   } finally { fs.rmSync(directory, { recursive: true, force: true }) }
 })
 

@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
   useToast
 } from '../../components/ui'
-import { listOpenWithApps, revealInFinder, type OpenContext } from '../../fileOpen'
+import { listOpenWithApps, revealInFinder, revealLabelKey, type OpenContext } from '../../fileOpen'
 import { resolveRevealTarget } from '../resources/api'
 import {
   useWorkspaceController,
@@ -225,7 +225,7 @@ export function DocumentExternalOpen({ session }: { session: DocumentSession }):
           )}
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={!externalContext} onSelect={() => { if (externalContext) revealInFinder(externalContext) }}>
-            {t('dock.openLocation')}
+            {t(revealLabelKey())}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => void runExternalAction(() => saveDocumentCopy(workspace, session))}>
             {t('dock.saveAsExternal')}

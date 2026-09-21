@@ -46,6 +46,7 @@ _AUTH_CODES = frozenset(
     {
         "authentication_error",
         "invalid_api_key",
+        "model_bridge_credential_required",
         "permission_denied",
         "runtime_not_authenticated",
         "unauthorized",
@@ -135,6 +136,10 @@ def provider_failure(value: Any) -> ProviderFailure:
     )
 
 
+def authentication_failure(failure: ProviderFailure) -> bool:
+    return failure.code.casefold() in _AUTH_CODES
+
+
 def _safe_message(code: str) -> str:
     return _SAFE_MESSAGES.get(code.casefold(), PROVIDER_FAILURE_MESSAGE)
 
@@ -176,6 +181,7 @@ __all__ = [
     "CODEX_PROVIDER_FAILED",
     "PROVIDER_FAILURE_MESSAGE",
     "ProviderFailure",
+    "authentication_failure",
     "provider_failure",
     "unpack_error",
 ]

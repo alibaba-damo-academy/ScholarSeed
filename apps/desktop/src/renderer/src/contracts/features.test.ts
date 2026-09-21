@@ -77,6 +77,7 @@ test('document panels aggregate by identity and keep their business matcher', ()
   }
   const first = {
     id: 'literature-notes',
+    label: () => 'Notes',
     title: 'Notes',
     matches: (_context: DocumentPanelContext) => true,
     render: () => null

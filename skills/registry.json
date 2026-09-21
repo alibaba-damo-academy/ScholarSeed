@@ -17,7 +17,7 @@
   "scanners": ["skill-scanner"],
   "dependencies": {
     "agentic-search": {"skills": ["web-search"]},
-    "fast-search": {},
+    "fast-search": {"skills": ["web-search"]},
     "project-literature": {
       "executables": ["scholarseed-bridge"]
     },
@@ -32,8 +32,8 @@
     },
     "literature-review": {
       "skills": ["agentic-search"],
-      "python": ["jieba==0.42.1", "matplotlib==3.10.8", "pysbd==0.3.4"],
-      "imports": ["openai", "httpx", "jieba", "fitz", "matplotlib", "PIL", "pysbd"],
+      "python": ["matplotlib==3.10.8", "pysbd==0.3.4"],
+      "imports": ["openai", "httpx", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd"],
       "bundled_executables": ["xelatex", "pdflatex", "bibtex", "kpsewhich"]
     }
   }

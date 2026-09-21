@@ -41,6 +41,7 @@ IDENTITY_CHUNK_BYTES = 1024 * 1024
 IDENTITY_MANAGED = "managed"
 IDENTITY_OBSERVED = "observed"
 OBSERVED_MARKER_PREFIX = "observed:"
+FILE_IDENTITY_PREFIX = "fs:"
 ACTIVE_BINDING = 1
 INACTIVE_BINDING = 0
 ASSET_COLUMNS = {
@@ -51,19 +52,48 @@ ASSET_COLUMNS = {
     "root_id": "TEXT",
 }
 REPLACEMENT_COLUMNS = {
-    "before_device": "INTEGER",
-    "before_inode": "INTEGER",
+    "before_device": "TEXT",
+    "before_inode": "TEXT",
     "sha256": "TEXT",
     "previous_sha256": "TEXT",
     "state": "TEXT",
 }
 
 
+def _encode_file_identity(value: int) -> str:
+    return f"{FILE_IDENTITY_PREFIX}{value}"
+
+
+def _decode_file_identity(value: object) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.startswith(FILE_IDENTITY_PREFIX):
+        try:
+            return int(value.removeprefix(FILE_IDENTITY_PREFIX))
+        except ValueError as error:
+            raise ContentError(PREPARED_CONFLICT) from error
+    raise ContentError(PREPARED_CONFLICT)
+
+
+def _physical_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
+def _stored_identity(
+    row: sqlite3.Row, device: str = "device", inode: str = "inode"
+) -> tuple[int, int]:
+    return _decode_file_identity(row[device]), _decode_file_identity(row[inode])
+
+
+def _encoded_identity(value: os.stat_result) -> tuple[str, str]:
+    return _encode_file_identity(value.st_dev), _encode_file_identity(value.st_ino)
+
+
 def _schema(connection: sqlite3.Connection) -> None:
     connection.execute(f"""CREATE TABLE IF NOT EXISTS {ASSET_TABLE} (
         asset_id TEXT PRIMARY KEY, creation_marker TEXT NOT NULL UNIQUE,
         receipt TEXT NOT NULL, path TEXT NOT NULL,
-        device INTEGER NOT NULL, inode INTEGER NOT NULL
+        device TEXT NOT NULL, inode TEXT NOT NULL
     )""")
     connection.execute(f"""CREATE TABLE IF NOT EXISTS {RELOCATION_TABLE} (
         asset_id TEXT PRIMARY KEY REFERENCES {ASSET_TABLE}(asset_id),
@@ -72,7 +102,7 @@ def _schema(connection: sqlite3.Connection) -> None:
     connection.execute(f"""CREATE TABLE IF NOT EXISTS {REPLACEMENT_TABLE} (
         asset_id TEXT PRIMARY KEY REFERENCES {ASSET_TABLE}(asset_id),
         operation_id TEXT NOT NULL, staging_path TEXT NOT NULL,
-        device INTEGER NOT NULL, inode INTEGER NOT NULL
+        device TEXT NOT NULL, inode TEXT NOT NULL
     )""")
     columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({REPLACEMENT_TABLE})")}
     for name, kind in REPLACEMENT_COLUMNS.items():
@@ -131,9 +161,9 @@ def _recover_replacements(
         ):
             raise ContentError(PREPARED_UNAVAILABLE)
         physical = _physical_for_row(scope, row["path"], row)
-        observed = (physical.st_dev, physical.st_ino)
-        if observed == (row["next_device"], row["next_inode"]):
-            disposable = (row["before_device"], row["before_inode"])
+        observed = _physical_identity(physical)
+        if observed == _stored_identity(row, "next_device", "next_inode"):
+            disposable = _stored_identity(row, "before_device", "before_inode")
             if row["state"] == REPLACEMENT_PREPARED:
                 directory, name = scope.open_parent(row["path"])
                 try:
@@ -152,7 +182,12 @@ def _recover_replacements(
                 connection.execute(
                     f"UPDATE {ASSET_TABLE} SET device = ?, inode = ?, sha256 = ?, size = ?"
                     " WHERE asset_id = ?",
-                    (*observed, row["next_sha256"], physical.st_size, row["asset_id"]),
+                    (
+                        *_encoded_identity(physical),
+                        row["next_sha256"],
+                        physical.st_size,
+                        row["asset_id"],
+                    ),
                 )
                 connection.execute(
                     f"UPDATE {REPLACEMENT_TABLE} SET state = ? WHERE asset_id = ?",
@@ -163,12 +198,17 @@ def _recover_replacements(
             connection.execute(
                 f"UPDATE {ASSET_TABLE} SET device = ?, inode = ?, sha256 = ?, size = ?"
                 " WHERE asset_id = ?",
-                (*observed, row["next_sha256"], physical.st_size, row["asset_id"]),
+                (
+                    *_encoded_identity(physical),
+                    row["next_sha256"],
+                    physical.st_size,
+                    row["asset_id"],
+                ),
             )
-        elif observed != (row["device"], row["inode"]):
+        elif observed != _stored_identity(row):
             raise ContentError(PREPARED_CONFLICT)
         else:
-            disposable = (row["next_device"], row["next_inode"])
+            disposable = _stored_identity(row, "next_device", "next_inode")
         directory, _ = scope.open_parent(row["path"])
         try:
             try:
@@ -274,10 +314,9 @@ def replace_file(
                         asset_id,
                         operation_id,
                         staging_path,
-                        physical.st_dev,
-                        physical.st_ino,
-                        row["device"],
-                        row["inode"],
+                        *_encoded_identity(physical),
+                        _encode_file_identity(_stored_identity(row)[0]),
+                        _encode_file_identity(_stored_identity(row)[1]),
                         sha256,
                         previous_sha256,
                         REPLACEMENT_PREPARED,
@@ -316,7 +355,7 @@ def replace_file(
                     raise ContentError(PREPARED_CONFLICT)
         finally:
             directory.close()
-        if (staged.st_dev, staged.st_ino) != (pending["device"], pending["inode"]):
+        if _physical_identity(staged) != _stored_identity(pending):
             raise ContentError(PREPARED_CONFLICT)
         action()
         _recover_replacements(scope, connection, (asset_id,), ())
@@ -341,7 +380,7 @@ def _matches(scope: ProjectSpace, row: sqlite3.Row, path: str) -> bool:
         if error.code == PREPARED_CONFLICT or isinstance(error.__cause__, FileNotFoundError):
             return False
         raise
-    return (physical.st_dev, physical.st_ino) == (row["device"], row["inode"])
+    return _physical_identity(physical) == _stored_identity(row)
 
 
 def _matching_row(
@@ -361,9 +400,10 @@ def _matching_row(
         if error.code == PREPARED_CONFLICT or isinstance(error.__cause__, FileNotFoundError):
             return None
         raise
-    if (physical.st_dev, physical.st_ino) == (row["device"], row["inode"]):
+    stored_device, stored_inode = _stored_identity(row)
+    if _physical_identity(physical) == (stored_device, stored_inode):
         return row
-    if not recover_device or physical.st_dev == row["device"] or physical.st_ino != row["inode"]:
+    if not recover_device or physical.st_dev == stored_device or physical.st_ino != stored_inode:
         return None
     continuity = row["identity_kind"] == IDENTITY_MANAGED or (
         row["identity_kind"] == IDENTITY_OBSERVED
@@ -375,7 +415,7 @@ def _matching_row(
         return None
     connection.execute(
         f"UPDATE {ASSET_TABLE} SET device = ? WHERE asset_id = ?",
-        (physical.st_dev, row["asset_id"]),
+        (_encode_file_identity(physical.st_dev), row["asset_id"]),
     )
     return connection.execute(
         f"SELECT * FROM {ASSET_TABLE} WHERE asset_id = ?",
@@ -459,8 +499,8 @@ def _recover(
                 " inode = COALESCE(?, inode) WHERE asset_id = ?",
                 (
                     row["destination"],
-                    physical.st_dev if physical is not None else None,
-                    physical.st_ino if physical is not None else None,
+                    _encode_file_identity(physical.st_dev) if physical is not None else None,
+                    _encode_file_identity(physical.st_ino) if physical is not None else None,
                     row["asset_id"],
                 ),
             )
@@ -592,7 +632,7 @@ def _asset(scope: ProjectSpace, row: sqlite3.Row) -> FileAssetRef:
     if row["active"] != ACTIVE_BINDING:
         raise ContentError(PREPARED_CONFLICT)
     physical = _physical_for_row(scope, row["path"], row)
-    if (physical.st_dev, physical.st_ino) != (row["device"], row["inode"]):
+    if _physical_identity(physical) != _stored_identity(row):
         raise ContentError(PREPARED_CONFLICT)
     return FileAssetRef(
         project_id=scope.project.id,
@@ -666,7 +706,7 @@ def identify(scope: ProjectSpace, database: str, path: str) -> AssetBinding:
                     (digest, physical.st_size, row["asset_id"]),
                 )
         else:
-            if any(candidate["inode"] == physical.st_ino for candidate in active_rows):
+            if any(_stored_identity(candidate)[1] == physical.st_ino for candidate in active_rows):
                 raise ContentError(PREPARED_CONFLICT)
             mount = scope.mount_for(normalized)
             relocated = [
@@ -674,7 +714,7 @@ def identify(scope: ProjectSpace, database: str, path: str) -> AssetBinding:
                 for candidate in connection.execute(
                     f"SELECT * FROM {ASSET_TABLE} WHERE active = ?", (ACTIVE_BINDING,)
                 ).fetchall()
-                if (candidate["device"], candidate["inode"]) == (physical.st_dev, physical.st_ino)
+                if _stored_identity(candidate) == _physical_identity(physical)
                 and not _matches(scope, candidate, candidate["path"])
             ]
             if len(relocated) > 1:
@@ -713,8 +753,7 @@ def identify(scope: ProjectSpace, database: str, path: str) -> AssetBinding:
                         marker,
                         json.dumps({"path": normalized}, sort_keys=True, separators=(",", ":")),
                         normalized,
-                        physical.st_dev,
-                        physical.st_ino,
+                        *_encoded_identity(physical),
                         IDENTITY_OBSERVED,
                         digest,
                         physical.st_size,
@@ -769,8 +808,7 @@ def rebind(
             " WHERE asset_id = ?",
             (
                 normalized_destination,
-                physical.st_dev,
-                physical.st_ino,
+                *_encoded_identity(physical),
                 mount.root_id if mount is not None else None,
                 row["asset_id"],
             ),
@@ -808,7 +846,7 @@ def status(
         except ContentError as error:
             state = AssetState.CONFLICT if error.code == PREPARED_CONFLICT else AssetState.MISSING
             return AssetBinding(asset=reference, state=state)
-        if (physical.st_dev, physical.st_ino) != (row["device"], row["inode"]):
+        if _physical_identity(physical) != _stored_identity(row):
             return AssetBinding(asset=reference, state=AssetState.CONFLICT)
         revision = f"sha256:{row['sha256']}" if row["sha256"] else None
         return AssetBinding(asset=reference, state=AssetState.AVAILABLE, revision=revision)
@@ -854,8 +892,7 @@ def materialize(
                 prepared.marker,
                 receipt,
                 created.path,
-                physical.st_dev,
-                physical.st_ino,
+                *_encoded_identity(physical),
                 IDENTITY_MANAGED,
                 prepared.sha256,
                 prepared.size,
@@ -915,10 +952,7 @@ def read(
 
             def verify(descriptor: int) -> None:
                 physical = os.fstat(descriptor)
-                if (physical.st_dev, physical.st_ino) != (
-                    row["device"],
-                    row["inode"],
-                ) or (
+                if _physical_identity(physical) != _stored_identity(row) or (
                     row["identity_kind"] == IDENTITY_MANAGED
                     and creation_marker(descriptor) != row["creation_marker"]
                 ):

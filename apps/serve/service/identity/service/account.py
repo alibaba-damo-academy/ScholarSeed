@@ -18,6 +18,7 @@ JWT，它此刻是否仍然有效。
 from __future__ import annotations
 
 import errno as errno_module
+import itertools
 import logging
 import os
 import threading
@@ -66,6 +67,8 @@ REVOCATION_OVERLAP_S = 1.0
 JWKS_MIN_REFRESH_S = 10.0
 HTTP_TIMEOUT_S = 2.0
 EXCEPTION_CHAIN_LIMIT = 8
+# 后台刷新线程名。daemon：serve 是每用户一个本地进程，退出时不该被这条腿拖住。
+REVOCATION_REFRESH_THREAD = "account-revocations"
 
 
 def _exception_diagnostics(exc: BaseException) -> Dict[str, Any]:
@@ -95,9 +98,12 @@ class AccountTrust:
     """校验托管账号服务签发的终端用户令牌。
 
     HTTP 取数是同步的：调用点在 auth middleware（async）与 /api/auth/me（sync）两侧，
-    改异步要把 AuthService.identity 整条链染色。真正出网的只有缓存未命中那一次
-    （吊销面至多每 REVOCATION_REFRESH_S 一次），超时压到 HTTP_TIMEOUT_S 以框住事件
-    循环的最坏阻塞。缓存由 sync 路由的线程池并发触达，故一把锁护住刷新与读取。
+    改异步要把 AuthService.identity 整条链染色。因此吊销面的稳态刷新走后台单飞线程
+    （见 `_revoked`），请求路径只读内存集合、永不出网；仍然同步阻塞的只剩两处 ——
+    冷启动首拉（无旧缓存可用，等这一次才不至于拿空集合放行已吊销令牌）与 JWKS 的
+    kid 未命中（密钥轮转，罕见）。这两处由调用方挪出事件循环（`run_in_threadpool`），
+    超时压到 HTTP_TIMEOUT_S 以框住最坏阻塞。缓存由线程池并发触达，故一把锁护住读写，
+    而 HTTP 一律在锁外做：持锁出网会让读缓存的请求排在 2s 超时后面，等于没挪。
     """
 
     def __init__(
@@ -107,6 +113,7 @@ class AccountTrust:
         issuer: str = "",
         client: Optional[httpx.Client] = None,
         clock: Callable[[], float] = time.monotonic,
+        spawn: Optional[Callable[[Callable[[], None]], None]] = None,
     ) -> None:
         self._base_url = base_url.strip().rstrip("/")
         self._issuer = issuer.strip()
@@ -114,13 +121,27 @@ class AccountTrust:
         # 单调时钟可注入（契约测按刷新节律推时间，不靠 sleep）；默认 monotonic：系统
         # 改时间不应让吊销缓存冻住或狂刷。
         self._clock = clock
+        # 后台执行器同理可注入：契约测据此确定性地跑完一次刷新，而不是 sleep 等线程。
+        self._spawn = spawn if spawn is not None else self._spawn_thread
         self._lock = threading.Lock()
         self._keys: Dict[str, Any] = {}
         self._keys_fetched_at: Optional[float] = None
-        self._revoked_jtis: set[str] = set()
+        # jti → 原 token 的 exp（None = account 未回 expires_at，版本偏斜时永不淘汰：
+        # 宁可多留，也不能猜一个 exp 把仍可能验签通过的令牌提前踢掉）。
+        self._revoked_jtis: Dict[str, Optional[float]] = {}
         self._revoked_since: Optional[float] = None
         self._revocations_fetched_at: Optional[float] = None
-        self._request_sequence = 0
+        # 是否成功拉到过吊销面。False 时不得用空集合判定（等于放行已吊销令牌），
+        # 只能同步等首拉 —— 这条与下面的 stale 节流共同决定 `_revoked` 的分支。
+        self._revocations_loaded = False
+        # 后台刷新单飞：并发请求只允许一个在途，否则每个请求起一条线程。
+        self._revocations_inflight = False
+        # 出网计数现在会被后台线程与请求线程并发递增，用 count 保证取号原子。
+        self._request_sequence = itertools.count(1)
+
+    @staticmethod
+    def _spawn_thread(target: Callable[[], None]) -> None:
+        threading.Thread(target=target, name=REVOCATION_REFRESH_THREAD, daemon=True).start()
 
     @property
     def base_url(self) -> str:
@@ -222,41 +243,113 @@ class AccountTrust:
     # ── 吊销增量 ──
 
     def _revoked(self, jti: str) -> bool:
+        """判定 jti 是否已吊销。稳态下只读内存集合，刷新交后台单飞。
+
+        取舍要记账：后台刷新意味着「触发刷新的那一个请求」仍按旧集合判定，吊销生效
+        延迟由 REVOCATION_REFRESH_S 变成 REVOCATION_REFRESH_S + 一个请求间隔。换来的是
+        请求路径不再被最多 HTTP_TIMEOUT_S 的同步出网卡住 —— 那不只慢这一个请求，
+        middleware 是 async 的，它会连带冻住整个事件循环上的并发请求。
+        """
         # 无 jti 无法判断吊销状态。required claims 已经拦掉这种令牌，这里是兜底。
         if not jti:
             return True
+        stale_refresh = False
         with self._lock:
-            self._refresh_revocations_locked()
-            return jti in self._revoked_jtis
+            if not self._revocations_stale_locked():
+                return jti in self._revoked_jtis
+            if not self._revocations_loaded:
+                # 从未成功拉到过：拿空集合判定等于放行已吊销令牌，只能同步等这一次。
+                # 仍受上面的 stale 节流约束（失败也计时），上游持续不可用时不会退化成
+                # 每请求都等一次超时。
+                self._fetch_revocations_locked()
+                return jti in self._revoked_jtis
+            if not self._revocations_inflight:
+                self._revocations_inflight = True
+                stale_refresh = True
+            revoked = jti in self._revoked_jtis
+        if stale_refresh:
+            self._spawn(self._refresh_revocations)
+        return revoked
 
-    def _refresh_revocations_locked(self) -> None:
-        now = self._clock()
+    def _revocations_stale_locked(self) -> bool:
         fetched_at = self._revocations_fetched_at
-        if fetched_at is not None and now - fetched_at < REVOCATION_REFRESH_S:
-            return
-        params = {} if self._revoked_since is None else {"since": self._revoked_since}
-        payload = self._get(REVOCATIONS_PATH, params)
-        self._revocations_fetched_at = now
+        if fetched_at is None:
+            return True
+        return self._clock() - fetched_at >= REVOCATION_REFRESH_S
+
+    def _revocation_params_locked(self) -> Dict[str, Any]:
+        return {} if self._revoked_since is None else {"since": self._revoked_since}
+
+    def _fetch_revocations_locked(self) -> None:
+        """持锁同步拉一次。只有冷启动首拉走这里 —— 锁内出网是因为此刻没有旧缓存可读。"""
+
+        payload = self._get(REVOCATIONS_PATH, self._revocation_params_locked())
+        # 刷新尝试即计时（含失败）：否则上游不可用时每个请求都要等一次超时。
+        self._revocations_fetched_at = self._clock()
         if payload is None:
             return
+        self._merge_revocations_locked(payload)
+
+    def _refresh_revocations(self) -> None:
+        """后台刷新体。HTTP 必须在锁外：持锁出网会让读缓存的请求排在超时后面。"""
+
+        try:
+            with self._lock:
+                params = self._revocation_params_locked()
+            payload = self._get(REVOCATIONS_PATH, params)
+            now = self._clock()
+            with self._lock:
+                # 拉不到就沿用缓存（account 抖一下不该让全员归属状态翻转）；代价是吊销
+                # 最多晚 REVOCATION_REFRESH_S 生效。
+                self._revocations_fetched_at = now
+                if payload is not None:
+                    self._merge_revocations_locked(payload)
+        finally:
+            with self._lock:
+                self._revocations_inflight = False
+
+    def _merge_revocations_locked(self, payload: Dict[str, Any]) -> None:
         latest: Optional[float] = None
         for entry in payload.get("revocations") or []:
             if not isinstance(entry, dict):
                 continue
             jti = str(entry.get("jti") or "")
             if jti:
-                self._revoked_jtis.add(jti)
+                expires_at = entry.get("expires_at")
+                self._revoked_jtis[jti] = (
+                    float(expires_at) if isinstance(expires_at, (int, float)) else None
+                )
             revoked_at = entry.get("revoked_at")
             if isinstance(revoked_at, (int, float)):
                 latest = float(revoked_at) if latest is None else max(latest, float(revoked_at))
         if latest is not None:
             self._revoked_since = latest - REVOCATION_OVERLAP_S
+        self._prune_expired_locked()
+        # 空列表也是成功的一拉（当前无人被吊销），故无条件置位。
+        self._revocations_loaded = True
+
+    def _prune_expired_locked(self) -> None:
+        """淘汰原 token 已过 exp 的 jti：它们再也不可能通过验签，留着只是常驻内存。
+
+        必须留出 DECODE_LEEWAY_S 余量 —— PyJWT 的 leeway 让 exp 过了 30s 以内的令牌
+        **仍然验签通过**（见 identity 里的 jwt.decode）。若按 `now > expires_at` 就淘汰，
+        那 30s 窗口里已吊销的令牌会被放行，淘汰本身就变成了漏洞。
+        """
+
+        cutoff = self._clock() - DECODE_LEEWAY_S
+        expired = [
+            jti
+            for jti, expires_at in self._revoked_jtis.items()
+            if expires_at is not None and expires_at <= cutoff
+        ]
+        for jti in expired:
+            del self._revoked_jtis[jti]
 
     # ── HTTP ──
 
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        self._request_sequence += 1
-        request_id = self._request_sequence
+        # 取号走 itertools.count：请求线程与后台刷新线程都会进这里，`+= 1` 不是原子的。
+        request_id = next(self._request_sequence)
         started = time.perf_counter()
         try:
             response = self._client.get(self._base_url + path, params=params)

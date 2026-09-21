@@ -44,4 +44,4 @@ npm --prefix apps/desktop run typecheck
 
 ## 许可证
 
-本仓库的原创内容采用 [Apache License 2.0](LICENSE) 授权。随附第三方组件及素材仍遵循各自的许可证与声明，不被本仓库许可证替代。已有声明见 [Office](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) 和 [paper-fulltext-dl](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)；第三方授权审核仍需完成。
+本仓库的原创内容采用 [Apache License 2.0](LICENSE) 授权。随附第三方组件及素材仍遵循各自的许可证与声明，不被本仓库许可证替代。已有声明见 [Desktop notices 与对应源码](apps/desktop/resources/notices/README.md)、[Office](apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md) 和 [paper-fulltext-dl](skills/community/precise-literature-search/vendor/THIRD_PARTY_NOTICES.md)；第三方授权审核仍需完成。

@@ -12,6 +12,43 @@ import { createServer, type ViteDevServer } from 'vite'
 const FIXTURE_URL = '/components/ui.render.fixture.html'
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
+test('effort thumb remains stable during an asynchronous save', async () => {
+  await withFixture(async (page) => {
+    const slider = page.getByTestId('render-effort-pending').getByRole('slider')
+    await slider.press('End')
+    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
+    assert.equal(await slider.getAttribute('aria-busy'), 'true')
+    assert.equal(await slider.isDisabled(), false)
+    await slider.press('Home')
+    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
+    await page.getByRole('button', { name: 'Complete effort save' }).click()
+    assert.equal(await slider.getAttribute('aria-valuetext'), 'High')
+    assert.equal(await slider.getAttribute('aria-busy'), 'false')
+  })
+})
+
+test('effort slider commits discrete choices once after drag and supports keyboard and fixed models', async () => {
+  await withFixture(async (page) => {
+    const slider = page.getByTestId('render-effort').getByRole('slider')
+    await slider.focus()
+    await page.keyboard.press('ArrowRight')
+    assert.equal(await page.getByTestId('render-effort-value').textContent(), 'low')
+    assert.equal(await slider.getAttribute('aria-valuetext'), 'Low')
+    const track = await slider.locator('..').boundingBox()
+    assert.ok(track)
+    await page.mouse.move(track.x + track.width / 3, track.y + track.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(track.x + track.width, track.y + track.height / 2, { steps: 8 })
+    assert.equal(await page.getByTestId('render-effort-changes').textContent(), '1')
+    await page.mouse.up()
+    assert.equal(await page.getByTestId('render-effort-value').textContent(), 'high')
+    assert.equal(await page.getByTestId('render-effort-changes').textContent(), '2')
+    await slider.press('Home')
+    assert.equal(await page.getByTestId('render-effort-value').textContent(), '')
+    assert.equal(await page.getByTestId('render-effort-fixed').getByRole('slider').isDisabled(), true)
+  })
+})
+
 async function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -72,6 +109,74 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
   }
 }
 
+test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feedback', async () => {
+  await withFixture(async (page) => {
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (text: string) => window.localStorage.setItem('copied-text', text) }
+      })
+    })
+    const button = page.getByTestId('render-copy-icon')
+    const geometry = () => button.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      const style = getComputedStyle(element)
+      const iconBounds = element.querySelector('svg')!.getBoundingClientRect()
+      return { width: bounds.width, height: bounds.height, padding: style.padding, iconWidth: iconBounds.width, iconHeight: iconBounds.height }
+    })
+    const expectedGeometry = { width: 24, height: 24, padding: '0px', iconWidth: 14, iconHeight: 14 }
+    assert.equal(await button.getAttribute('aria-label'), '复制')
+    assert.deepEqual(await geometry(), expectedGeometry)
+    await button.hover()
+    assert.deepEqual(await geometry(), expectedGeometry)
+    await button.focus()
+    await page.keyboard.press('Enter')
+    assert.equal(await page.evaluate(() => window.localStorage.getItem('copied-text')), 'icon-copy-value')
+    assert.equal(await button.getAttribute('data-copy-status'), 'success')
+    assert.equal(await button.getAttribute('aria-label'), '已复制')
+    assert.equal(await button.locator('[aria-live="polite"]').textContent(), '已复制')
+    assert.deepEqual(await geometry(), expectedGeometry)
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async () => { throw new Error('clipboard rejected') } }
+      })
+    })
+    await button.click()
+    assert.equal(await button.getAttribute('data-copy-status'), 'error')
+    assert.equal(await button.getAttribute('aria-label'), '复制失败')
+    assert.deepEqual(await geometry(), expectedGeometry)
+  })
+})
+
+test('image spinners load their asset without rotating it or changing default spinners', async () => {
+  await withFixture(async (page) => {
+    const defaultSpinner = page.getByTestId('render-spinner-default')
+    const imageSpinner = page.getByTestId('render-spinner-image')
+    const image = imageSpinner.locator('img')
+    await image.waitFor()
+    await image.evaluate(async (element: HTMLImageElement) => element.decode())
+    assert.equal(await image.evaluate((element: HTMLImageElement) => element.naturalWidth), 320)
+    assert.equal(await image.getAttribute('alt'), '')
+    assert.equal(await image.getAttribute('aria-hidden'), 'true')
+    assert.equal(await imageSpinner.getAttribute('role'), 'status')
+    assert.equal(await imageSpinner.getAttribute('aria-label'), await defaultSpinner.getAttribute('aria-label'))
+    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).animationName), 'none')
+    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).borderTopWidth), '0px')
+    assert.equal(await defaultSpinner.locator('img').count(), 0)
+    assert.equal(await defaultSpinner.evaluate(element => getComputedStyle(element).animationName), 'vds-spin')
+    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).width),
+      await defaultSpinner.evaluate(element => getComputedStyle(element).width))
+    const imageButton = page.getByTestId('render-button-loading-image')
+    const defaultButton = page.getByTestId('render-button-loading-default')
+    assert.equal(await imageButton.isDisabled(), true)
+    assert.equal(await imageButton.getAttribute('data-loading'), 'true')
+    assert.equal(await imageButton.locator('img').getAttribute('src'), await image.getAttribute('src'))
+    assert.equal(await defaultButton.isDisabled(), true)
+    assert.equal(await defaultButton.locator('img').count(), 0)
+  })
+})
+
 test('closed Sheet portals remove both content and overlay from the page', async () => {
   await withFixture(async (page) => {
     assert.equal(await page.getByTestId('render-sheet-content').count(), 0)
@@ -96,6 +201,17 @@ test('Sheet trigger restores focus after a modal sheet closes', async () => {
   })
 })
 
+test('Escape dismisses a child Sheet without closing its ancestor modal Sheet', async () => {
+  await withFixture(async page => {
+    await page.getByTestId('render-sheet-trigger').click()
+    await page.getByTestId('nested-sheet-trigger').click()
+    await page.getByTestId('nested-sheet-close').focus()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('nested-sheet-content').waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('render-sheet-trigger-content').isVisible(), true)
+  })
+})
+
 test('DialogClose asChild preserves child classes and composes its click handler', async () => {
   await withFixture(async (page) => {
     await page.getByTestId('render-dialog-open').click()
@@ -110,13 +226,100 @@ test('DialogClose asChild preserves child classes and composes its click handler
 
 test('assistant host constrains the transcript to its own scroll viewport', async () => {
   await withFixture(async (page) => {
-    const css = await readFile(path.join(ROOT_DIR, 'shell/workbench.css'), 'utf8')
-    await page.setContent('<div style="height:300px;display:flex;flex-direction:column"><div class="vds-ai-stream"><div class="conversation-stream" style="flex:1;min-height:0;overflow-y:auto"><div style="height:1200px">Long transcript</div></div></div></div>')
-    await page.addStyleTag({ content: css })
+    const source = await readFile(path.join(ROOT_DIR, 'features/assistant/AiPanel.tsx'), 'utf8')
+    const hostClass = source.match(/className="([^"]+)" data-testid="ai-stream"/)?.[1]
+    assert.ok(hostClass)
+    await page.locator('#root').evaluate((root, className) => {
+      root.innerHTML = `<div style="height:300px;display:flex;flex-direction:column"><div class="${className}"><div class="conversation-stream" style="flex:1;min-height:0;overflow-y:auto"><div style="height:1200px">Long transcript</div></div></div></div>`
+    }, hostClass)
     const dimensions = await page.locator('.conversation-stream').evaluate(el => ({ height: el.clientHeight, content: el.scrollHeight }))
     assert.ok(dimensions.height < 300, 'Stream must receive a bounded height from its flex host')
     assert.ok(dimensions.content > dimensions.height, 'Stream, not its host, owns scrolling')
     assert.equal(await page.locator('.vds-ai-stream').evaluate(el => getComputedStyle(el).overflowY), 'hidden')
+  })
+})
+
+test('question option check mark uses centered checkbox geometry', async () => {
+  await withFixture(async (page) => {
+    const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+    const markClass = stream.match(/const QUESTION_OPTION_MARK_CLASS =\s*'([^']+)'/)?.[1]
+    assert.ok(markClass, 'question options should own a geometric check mark class')
+    assert.doesNotMatch(stream, /\{on \? '✓' : ''\}/)
+    await page.locator('#root').evaluate((root, className) => {
+      root.innerHTML = `<span data-testid="question-option-box" style="display:grid;place-items:center;width:14px;height:14px"><span data-testid="question-option-mark" class="${className}"></span></span>`
+    }, markClass)
+    const centers = await page.getByTestId('question-option-box').evaluate((box) => {
+      const mark = box.querySelector<HTMLElement>('[data-testid="question-option-mark"]')
+      if (!mark) throw new Error('missing question option mark')
+      const boxRect = box.getBoundingClientRect()
+      const markRect = mark.getBoundingClientRect()
+      return {
+        horizontal: Math.abs(boxRect.x + boxRect.width / 2 - (markRect.x + markRect.width / 2)),
+        vertical: Math.abs(boxRect.y + boxRect.height / 2 - (markRect.y + markRect.height / 2))
+      }
+    })
+    assert.ok(centers.horizontal <= 1)
+    assert.ok(centers.vertical <= 1)
+  })
+})
+
+test('permission dock uses the full-access icon and text-only actions', async () => {
+  const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  const permissionDock = stream.slice(
+    stream.indexOf("if (presentation === 'dock' && !isQuestion && !done)"),
+    stream.indexOf("const scrollableQuestion = presentation === 'dock' && isQuestion && !done")
+  )
+  assert.match(permissionDock, /<IconFont[\s\S]*?type="icon-wanquanfangwen"/)
+  assert.match(permissionDock, /<Button\s+variant="secondary"\s+size="sm"/)
+  assert.match(permissionDock, /<Button\s+variant="primary"\s+size="sm"/)
+  assert.doesNotMatch(permissionDock, /<kbd>/)
+})
+
+test('conversation and controls share a centered capped column at every panel width', async () => {
+  const PANEL_WIDTHS = [480, 760, 900, 1440]
+  const CONTENT_WIDTH = 760
+  const VIEWPORT_HEIGHT = 300
+  const TRANSCRIPT_HEIGHTS = [100, 1200]
+  const PIXEL_TOLERANCE = 1
+  await withFixture(async (page) => {
+    const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+    const columnClass = stream.match(/const READING_COLUMN_CLASS =\s*'([^']+)'/)?.[1]
+    const streamClass = stream.match(/className="(conversation-stream[^"]*)"/)?.[1]
+    const controlsClass = stream.match(/className="(vds-ai-composer-host[^"]*)"/)?.[1]
+    assert.ok(columnClass && streamClass && controlsClass)
+    for (const width of PANEL_WIDTHS) {
+      for (const height of TRANSCRIPT_HEIGHTS) {
+        await page.locator('#root').evaluate((root, layout) => {
+          root.innerHTML = `<div data-layout="panel" style="width:${layout.width}px"><div class="${layout.streamClass}" style="height:${layout.viewportHeight}px;overflow-y:auto;padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="transcript" class="${layout.columnClass}" style="height:${layout.height}px">Transcript</div></div><div class="${layout.controlsClass}"><div style="padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="composer" class="${layout.columnClass}">Composer</div></div></div></div>`
+        }, { width, height, viewportHeight: VIEWPORT_HEIGHT, columnClass, streamClass, controlsClass })
+        const panel = await page.locator('[data-layout="panel"]').boundingBox()
+        const transcript = await page.locator('[data-layout="transcript"]').boundingBox()
+        const composer = await page.locator('[data-layout="composer"]').boundingBox()
+        assert.ok(panel && transcript && composer)
+        assert.ok(Math.abs(transcript.width - composer.width) < PIXEL_TOLERANCE)
+        assert.ok(Math.abs(transcript.x - composer.x) < PIXEL_TOLERANCE)
+        assert.ok(Math.abs(transcript.x + transcript.width / 2 - panel.x - panel.width / 2) < PIXEL_TOLERANCE)
+        assert.ok(transcript.width <= CONTENT_WIDTH)
+        if (width > CONTENT_WIDTH) assert.equal(transcript.width, CONTENT_WIDTH)
+      }
+    }
+  })
+})
+
+test('answer selection comment fits the toolbar width in a narrow assistant', async () => {
+  const TOOLBAR_WIDTH = 260
+  await withFixture(async (page) => {
+    const source = await readFile(path.join(ROOT_DIR, 'features/assistant/Annotations.tsx'), 'utf8')
+    const draft = source.slice(source.indexOf("{draft.mode === 'actions'"))
+    const commentClass = draft.match(/\) : \(\s*<div className="([^"]+)"/)?.[1]
+    assert.ok(commentClass)
+    await page.locator('#root').evaluate((root, layout) => {
+      root.innerHTML = `<div data-layout="anchor" style="width:${layout.width}px"><div data-layout="comment" class="${layout.commentClass}"><input style="min-width:0;width:100%" /></div></div>`
+    }, { width: TOOLBAR_WIDTH, commentClass })
+    const anchor = await page.locator('[data-layout="anchor"]').boundingBox()
+    const comment = await page.locator('[data-layout="comment"]').boundingBox()
+    assert.ok(anchor && comment)
+    assert.ok(comment.x >= anchor.x && comment.x + comment.width <= anchor.x + anchor.width)
   })
 })
 
@@ -276,6 +479,37 @@ test('NavigationTabs marks only tabs with unsaved edits', async () => {
       await page.getByRole('tab', { name: 'Alpha.md' }).locator('i[aria-label="未保存"]').count(),
       0
     )
+  })
+})
+
+test('NavigationTabs preserves manual horizontal scrolling across parent rerenders', async () => {
+  await withFixture(async (page) => {
+    const navigationTabs = page.getByTestId('render-navigation-tabs-scroll')
+    const rightmostScroll = await navigationTabs.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth
+      return element.scrollLeft
+    })
+    assert.ok(rightmostScroll > 0)
+
+    await page.getByTestId('render-navigation-tabs-rerender').click()
+    await page.waitForTimeout(600)
+
+    assert.equal(await navigationTabs.evaluate((element) => element.scrollLeft), rightmostScroll)
+  })
+})
+
+test('NavigationTabs reveals a newly activated tab', async () => {
+  await withFixture(async (page) => {
+    const navigationTabs = page.getByTestId('render-navigation-tabs-scroll')
+    assert.equal(await navigationTabs.evaluate((element) => element.scrollLeft), 0)
+
+    await page.getByTestId('render-navigation-tabs-activate-last').click()
+    await page.waitForFunction(() => {
+      const element = document.querySelector<HTMLElement>('[data-testid="render-navigation-tabs-scroll"]')
+      return Boolean(element && element.scrollLeft > 0)
+    })
+
+    assert.ok(await navigationTabs.evaluate((element) => element.scrollLeft > 0))
   })
 })
 
@@ -1128,7 +1362,7 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     )
     const errorToast = controlledToaster.getByRole('alert')
     await assert.equal(await errorToast.getByText('同步失败').textContent(), '同步失败')
-    await assert.equal(await errorToast.evaluate((element) => window.getComputedStyle(element).alignItems), 'center')
+    await assert.equal(await errorToast.evaluate((element) => window.getComputedStyle(element).alignItems), 'flex-start')
     await controlledToaster.getByRole('button', { name: '关闭通知' }).first().click()
     await assert.equal(await page.getByTestId('render-toaster-controlled-count').textContent(), '1')
 
@@ -1359,7 +1593,7 @@ test('modal dialog contains keyboard focus, dismisses only the nested layer and 
 })
 
 
-test('nonmodal dialog permits Tab to leave and does not render a blocking backdrop', async () => {
+test('nonmodal dialog permits Tab to leave and ignores implicit dismissal without a blocking backdrop', async () => {
   await withFixture(async (page) => {
     await page.getByTestId('nonmodal-dialog-open').click()
     const content = page.getByTestId('nonmodal-dialog-content')
@@ -1368,7 +1602,10 @@ test('nonmodal dialog permits Tab to leave and does not render a blocking backdr
     await page.keyboard.press('Tab')
     assert.equal(await page.getByTestId('nonmodal-after').evaluate(el => el === document.activeElement), true)
     await page.getByTestId('nonmodal-after').click()
-    await content.waitFor({ state: 'hidden' })
+    assert.equal(await content.isVisible(), true)
+    await page.keyboard.press('Escape')
+    assert.equal(await content.isVisible(), true)
+    assert.equal(await page.locator('.vds-dialog-overlay').count(), 0)
   })
 })
 
@@ -1464,7 +1701,7 @@ test('menu keyboard skips disabled items, wraps and dismisses only the focused s
 
 test('icon buttons keep square geometry without text-button padding and loading replaces the icon', async () => {
   await withFixture(async page => {
-    for (const [size, edge, iconEdge] of [['sm', 26, 14], ['md', 32, 16], ['lg', 40, 16]] as const) {
+    for (const [size, edge, iconEdge] of [['sm', 28, 14], ['md', 32, 16], ['lg', 40, 16]] as const) {
       const button = page.getByTestId(`square-icon-${size}`)
       const geometry = await button.evaluate(el => {
         const bounds = el.getBoundingClientRect()

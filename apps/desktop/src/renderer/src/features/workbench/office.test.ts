@@ -212,7 +212,11 @@ test('Office native palette commits application appearance, background and Calc 
   const updates: Array<{ path: string; values: Record<string, unknown>; committed: boolean }> = []
   const provider = {
     createInstanceWithArguments: (_service: string, args: Array<{ Value: string }>) => {
-      const update = { path: args[0].Value, values: {}, committed: false }
+      const update: { path: string; values: Record<string, unknown>; committed: boolean } = {
+        path: args[0].Value,
+        values: {},
+        committed: false
+      }
       updates.push(update)
       return {
         setPropertyValue: (name: string, value: unknown) => { update.values[name] = value },
@@ -296,8 +300,10 @@ test('Office iframe lifetime belongs to one persistent app-level host', () => {
 })
 
 test('Office selection reports a frame-local point and binds its viewport projection to the tab', () => {
-  assert.match(source, /point:selectionPoint/)
-  assert.match(source, /selectionPoint=\{x:event\.clientX,y:event\.clientY\}/)
+  assert.match(source, /point:selectionAnchorPoint\|\|selectionPoint/)
+  assert.match(source, /function captureSelectionAnchor\(event\)[\s\S]*selectionAnchorPoint=selectionPoint/)
+  assert.match(source, /document\.addEventListener\('pointermove',event=>\{selectionPoint=\{x:event\.clientX,y:event\.clientY\};selectionAutoscroll\.move\(event\)\}/)
+  assert.doesNotMatch(source, /document\.addEventListener\('pointermove',[\s\S]*selectionAnchorPoint=selectionPoint[\s\S]*selectionAutoscroll\.move\(event\)/)
   assert.match(runtimeSource, /controller\.setSelection\(viewId/)
   assert.match(runtimeSource, /selectionViewport\(/)
 })
@@ -548,14 +554,28 @@ test('Impress pointer release commits the final native text selection', () => {
   assert.match(threadSource, /case SELECTION_COMMIT_COMMAND: scheduleSelectionReport\(\); break/)
 })
 
-test('Legacy DOC pointer drag keeps the action menu hidden until release', () => {
+test('Writer and Calc pointer drags keep the action menu hidden until release', () => {
   assert.match(source, /const selectionDragCommand='selection_drag'/)
-  assert.match(source, /writer&&legacyDoc&&event\.isPrimary&&event\.button===primaryPointerButton/)
-  assert.match(source, /legacyDocSelectionDragging=true;port\?\.postMessage\(\{cmd:selectionDragCommand,active:true\}\)/)
-  assert.match(source, /legacyDocSelectionDragging=false;port\?\.postMessage\(\{cmd:selectionDragCommand,active:false\}\)/)
-  assert.match(threadSource, /let writerSelectionDragging = false/)
-  assert.match(threadSource, /case SELECTION_DRAG_COMMAND:[\s\S]*writerSelectionDragging = Boolean\(event\.data\.active\)/)
-  assert.match(threadSource, /selectionChanged\(\) \{[\s\S]*if \(!writerSelectionDragging\) scheduleSelectionReport\(\)/)
+  assert.match(source, /documentKind===selectionAutoscrollKind&&event\.isPrimary&&event\.button===primaryPointerButton/)
+  assert.match(source, /selectionDragging=true;[\s\S]*selectionAutoscroll\.start\(event\);port\?\.postMessage\(\{cmd:selectionDragCommand,active:true\}\)/)
+  assert.match(source, /function finishSelectionDrag\(event\)[\s\S]*selectionDragging=false;[\s\S]*captureSelectionAnchor\(event\);[\s\S]*port\?\.postMessage\(\{cmd:selectionDragCommand,active:false\}\)[\s\S]*selectionAutoscroll\.stop\(event\)/)
+  assert.match(source, /document\.addEventListener\('pointerup',event=>\{[\s\S]*if\(!selectionDragging\)captureSelectionAnchor\(event\);[\s\S]*finishSelectionDrag\(event\)/)
+  assert.match(source, /selectionAutoscrollKind==='writer'\)port\?\.postMessage\(\{cmd:selectionCommitCommand\}\)/)
+  assert.match(source, /canvas\.addEventListener\('lostpointercapture',finishSelectionDrag,true\)/)
+  assert.match(source, /hostDocument\.addEventListener\('pointerup',finishSelectionDrag,true\)/)
+  assert.match(source, /hostDocument\.removeEventListener\('pointerup',finishSelectionDrag,true\)/)
+  assert.match(source, /view:window,clientX:selectionPoint\.x,clientY:selectionPoint\.y[\s\S]*canvas\.dispatchEvent\(new PointerEvent\('pointerup',[\s\S]*canvas\.dispatchEvent\(new MouseEvent\('mouseup'/)
+  assert.match(threadSource, /let selectionDragging = false/)
+  assert.match(threadSource, /case SELECTION_DRAG_COMMAND:[\s\S]*selectionDragging = Boolean\(event\.data\.active\)[\s\S]*documentKind === 'calc'\) reportSelection\(\)[\s\S]*else scheduleSelectionReport\(\)/)
+  assert.match(threadSource, /selectionChanged\(\) \{[\s\S]*if \(!selectionDragging\) scheduleSelectionReport\(\)/)
+  assert.match(threadSource, /function autoscrollWriterSelection\(horizontal, vertical\)[\s\S]*getViewCursor\(\)[\s\S]*goDown\(SELECTION_STEP_COUNT, true\)/)
+  assert.match(threadSource, /case SELECTION_AUTOSCROLL_COMMAND:[\s\S]*autoscrollWriterSelection\(Number\(event\.data\.x\), Number\(event\.data\.y\)\)/)
+  assert.match(source, /selectionAutoscrollKind==='writer'\)port\?\.postMessage\(\{cmd:selectionAutoscrollCommand/)
+})
+
+test('Calc selection autoscroll leaves range extension to the native pointer drag', () => {
+  assert.match(source, /if\(selectionAutoscrollKind==='writer'\)port\?\.postMessage\(\{cmd:selectionAutoscrollCommand/)
+  assert.doesNotMatch(threadSource, /function autoscrollCalcSelection/)
 })
 
 test('Writer selections retain their complete cross-paragraph range', () => {
@@ -744,7 +764,7 @@ test('document toolbar exposes history without a separate save-version action', 
   assert.doesNotMatch(historySource, /fetchResourceVersionAnnotations|PdfPreview|history\.preview\.pdf/)
   assert.match(historySource, /const canInspectVersion = \(path: string\): boolean => viewerForPath\(path\) !== 'pdf'/)
   assert.match(historySource, /const disabled = !canPreview \|\| !canInspectVersion\(version\.path\) \|\| version\.state === 'tombstone'/)
-  assert.match(historySource, /\{!disabled && <ChevronRight/)
+  assert.match(historySource, /\{!disabled && <IconButton[^>]*icon=\{<ChevronRight \/>\}/)
   assert.match(historySource, /useTranslation\('workbench'\)/)
   assert.match(historySource, /<SheetTrigger data-testid="document-version-history">\{t\('history\.trigger'\)\}<\/SheetTrigger>/)
   assert.deepEqual(historyMessages.map(messages => messages.trigger), ['版本历史', 'Version history'])
@@ -806,8 +826,9 @@ test('document toolbar keeps external open beside the breadcrumb without stretch
   assert.match(externalSource, /w-56/)
   assert.match(externalSource, /<DropdownMenuTrigger asChild>[\s\S]*external-open-menu/)
   assert.match(externalSource, /<DropdownMenuContent align="end"/)
-  assert.match(externalSource, /<DropdownMenuItem[\s\S]*openLocation/)
-  assert.match(externalSource, /<DropdownMenuItem[\s\S]*saveAsExternal/)
+  assert.match(externalSource, /<DropdownMenuItem[\s\S]*openDocumentWithApplication/)
+  assert.match(externalSource, /<DropdownMenuItem[^>]*disabled=\{!externalContext\}[\s\S]*revealInFinder/)
+  assert.match(externalSource, /<DropdownMenuItem[\s\S]*saveDocumentCopy/)
   assert.doesNotMatch(externalSource, /defaultExternalApp\?\.name|defaultApp/)
   assert.match(toolbar, /\{session\.capabilities\.can_save\s*&&\s*\(\s*<Tooltip[\s\S]*data-testid="document-save"[\s\S]*<\/Tooltip>\s*\)\}/)
   assert.match(toolbar, /<IconButton[\s\S]*icon=\{<Save \/>\}[\s\S]*data-testid="document-save"/)

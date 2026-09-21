@@ -36,7 +36,7 @@ test('the time columns keep room for a timestamp that carries seconds', () => {
     for (const key of ['created_at', 'updated_at']) {
         assert.match(
             listSource,
-            new RegExp(`${key}: \\{ labelKey: 'columns\\.${key}', sort: '${key}', minimum: 160 \\}`)
+            new RegExp(`${key}: \\{\\s*labelKey: 'columns\\.${key}',\\s*sort: '${key}',\\s*minimum: 160\\s*\\}`)
         )
     }
     assert.match(listSource, /width: Math\.max\(COLUMN_META\[entry\.key\]\.minimum, entry\.width\)/)
@@ -54,7 +54,7 @@ test('chip columns let the cell do the clipping so truncation stays detectable',
 test('the projects column shows only the first project and folds the rest into a +N chip', () => {
   // 一篇文献可归属多个项目: 全览列只画第一个, 其余折叠成计数芯片, 避免行高与列宽被项目数撑爆。
   assert.doesNotMatch(listSource, /item\.projects\.map\(/)
-  assert.match(listSource, /<Badge className=\{CHIP_CLASS\} tone="brand">\{item\.projects\[0\]\.name\}<\/Badge>/)
+  assert.match(listSource, /<Badge\s+className=\{CHIP_CLASS\}\s+tone="brand"\s*>\s*\{item\.projects\[0\]\.name\}\s*<\/Badge>/)
   assert.match(listSource, /\+\{item\.projects\.length - 1\}/)
   // 计数芯片同样不参与压缩, 否则它会先自我省略而失去 tooltip 判定依据。
   assert.match(listSource, /const MORE_CHIP_CLASS = 'shrink-0 max-w-none tabular-nums'/)
@@ -72,7 +72,7 @@ test('the batch bar exports bib and reports how many entries were written', () =
   assert.equal(engine.getFixedT('en', 'literature')('batch.exportSucceeded', { count: 2 }), 'Exported 2 literature items')
   // 条数取后端实际写入的 count, 请求 id 只在响应缺字段时兜底。
   assert.match(listSource, /const exported = result\.count \?\? ids\.length/)
-  assert.match(listSource, /toast\(\{ title: literature\('batch\.exportSucceeded', \{ count: exported \}\), tone: 'success' \}\)/)
+  assert.match(listSource, /toast\(\{\s*title: literature\('batch\.exportSucceeded', \{ count: exported \}\),\s*tone: 'success'\s*\}\)/)
 })
 
 test('every literature column reveals its full text through a truncation tooltip', () => {
@@ -98,7 +98,7 @@ test('double-clicking a row opens its primary fulltext and nothing else', () => 
   )
   assert.match(
     listSource,
-    /onDoubleClick=\{\s*primaryAttachment \? \(\) => onOpenFulltext\(primaryAttachment\.id\) : undefined\s*\}/
+    /onDoubleClick=\{\s*primaryAttachment\s*\? \(\) => onOpenFulltext\(primaryAttachment\.id\)\s*: undefined\s*\}/
   )
   assert.doesNotMatch(listSource, /onDoubleClick=\{onOpen\}/)
 
@@ -115,4 +115,38 @@ test('double-clicking a row opens its primary fulltext and nothing else', () => 
   // 复选框与展开附件这两个自管点击的单元格, 也要挡住双击冒泡到整行。
   const stopped = listSource.match(/onDoubleClick=\{\(event\) => event\.stopPropagation\(\)\}/g) ?? []
   assert.equal(stopped.length, 2)
+})
+
+test('the paperclip column sorts like every other column and stays a fixed leading column', () => {
+  // 曲别针列复用普通列那一条排序切换: 同列再点反转、写 SORT_STORAGE_KEY、
+  // 交给 catalogue.query。表头里不允许再抄一份 localStorage + query 逻辑。
+  assert.match(
+    listSource,
+    /const applySort = \(sort: NonNullable<LiteratureQuery\['sort'\]>\): void => \{\s*const order = query\.sort === sort && query\.order === 'asc' \? 'desc' : 'asc'\s*localStorage\.setItem\(SORT_STORAGE_KEY, JSON\.stringify\(\{ sort, order \}\)\)\s*catalogue\.query\(\{ sort, order \}\)\s*\}/
+  )
+  // 两个入口: 曲别针按钮 + 普通列表头。定义处不算调用。
+  assert.equal(listSource.match(/applySort\(/g)?.length, 2)
+  // 普通列表头只剩取键与判空, 反转/持久化/查询都交给 applySort。
+  assert.match(
+    listSource,
+    /onClick=\{\(\) => \{\s*const sort = COLUMN_META\[column\.key\]\.sort\s*if \(!sort\) return\s*applySort\(sort\)\s*\}\}/
+  )
+
+  // 排序键与后端 ATTACHMENT_SORT_KEY 同名; 它经契约类型进入查询, 不在此处拼字符串。
+  assert.match(
+    listSource,
+    /const ATTACHMENT_SORT: NonNullable<LiteratureQuery\['sort'\]> = 'attachment'/
+  )
+  const contractSource = readFileSync(new URL('../../contracts/literature.ts', import.meta.url), 'utf8')
+  assert.match(contractSource, /export type LiteratureSort = 'attachment' \|/)
+
+  // 表头只有曲别针, 不显示升降状态; 单元格仍是展开附件的那个 chevron, 不被换掉。
+  assert.match(listSource, /icon=\{<Icon name="clip" size=\{13\} \/>\}/)
+  assert.match(listSource, /name=\{expanded \? 'chevron-down' : 'chevron-right'\}/)
+
+  // 这一列固定常驻标题前: 不进 COLUMN_META, 因此不能被隐藏、拖动或改宽。
+  assert.doesNotMatch(listSource, /attachment: \{ labelKey: 'columns\./)
+
+  assert.equal(engine.getFixedT('zh', 'literature')('list.sortByAttachment'), '按附件排序')
+  assert.equal(engine.getFixedT('en', 'literature')('list.sortByAttachment'), 'Sort by attachment')
 })

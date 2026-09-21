@@ -1,7 +1,8 @@
 /** Public renderer contract for the global literature catalogue. */
 import type { RecordTarget } from './workbench'
 
-export type LiteratureSort = 'citation_key' | 'item_type' | 'bib_type' | 'title' | 'subtitle' | 'creator' | 'publication' | 'year' | 'published_date' | 'doi' | 'arxiv' | 'isbn' | 'url' | 'volume' | 'number' | 'pages' | 'publisher' | 'address' | 'created_at' | 'updated_at' | 'last_read_at'
+/** `attachment` 不是文献字段，而是「有没有附件」的派生排序键（有=0，无=1）。 */
+export type LiteratureSort = 'attachment' | 'citation_key' | 'item_type' | 'bib_type' | 'title' | 'subtitle' | 'creator' | 'publication' | 'year' | 'published_date' | 'doi' | 'arxiv' | 'isbn' | 'url' | 'volume' | 'number' | 'pages' | 'publisher' | 'address' | 'created_at' | 'updated_at' | 'last_read_at'
 export type SortOrder = 'asc' | 'desc'
 export type AttachmentFilter = 'any' | 'with_pdf' | 'without_pdf'
 export interface LiteratureFacet { id: string; name: string; count: number; color?: string | null; parent_id?: string | null; project_id?: string | null }

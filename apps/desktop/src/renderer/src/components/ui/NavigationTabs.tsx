@@ -122,6 +122,7 @@ export function NavigationTabs({
   const overviewLabel = providedOverviewLabel ?? t('navigation.overview')
   const rootRef = useRef<HTMLDivElement>(null)
   const measureRef = useRef<HTMLDivElement>(null)
+  const lastRevealedTabRef = useRef<HTMLDivElement | null>(null)
   const [compressed, setCompressed] = useState(false)
   const [contextMenuOpenTabId, setContextMenuOpenTabId] = useState<string | null>(null)
 
@@ -159,10 +160,12 @@ export function NavigationTabs({
   }, [overviewLabel, tabs])
 
   useLayoutEffect(() => {
-    rootRef.current
-      ?.querySelector<HTMLDivElement>('[role="tab"][aria-selected="true"]')
-      ?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
-  }, [value, tabs])
+    const activeTab = rootRef.current
+      ?.querySelector<HTMLDivElement>('[role="tab"][aria-selected="true"]') ?? null
+    if (activeTab === lastRevealedTabRef.current) return
+    lastRevealedTabRef.current = activeTab
+    activeTab?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+  })
 
   useEffect(() => {
     if (contextMenuOpenTabId && !tabs.some((tab) => tab.id === contextMenuOpenTabId)) {

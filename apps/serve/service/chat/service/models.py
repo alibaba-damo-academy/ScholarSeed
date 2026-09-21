@@ -11,11 +11,13 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from scholarseed_runtime.contract import (
+    ModelCapabilities,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
     ModelIntent,
     ModelThinking,
+    ModelToolProtocol,
     ModelTransport,
     ModelWireProtocol,
 )
@@ -35,7 +37,7 @@ from service.chat.service.providers import (
 from service.chat.service.settings import SettingsService
 from service.chat.service.subscriptions import SubscriptionService
 from service.identity.service.account_token import CONV_MESSAGE_ID_HEADER, CONV_TURN_ID_HEADER
-from service.identity.utils import LOCAL_USER_ID
+from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_DEFAULT, owner_id_for
 from service.settings.capabilities import (
     BUDGET_FORM,
     CAPABILITY_DECLARED_KEY,
@@ -46,9 +48,11 @@ from service.settings.capabilities import (
     CONTEXT_WINDOW_KEY,
     EFFORT_FORM,
     IMAGE_INPUT_KEY,
+    IMAGE_MODALITY,
     INPUT_MODALITIES_KEY,
     MAX_OUTPUT_TOKENS_KEY,
     PDF_INPUT_KEY,
+    PDF_MODALITY,
     REASONING_EFFORTS_KEY,
     REASONING_OPTIONS_KEY,
     TOGGLE_FORM,
@@ -94,11 +98,12 @@ SCHOLARSEED_CODEX_PROVIDER_ID = "scholarseed"
 SCHOLARSEED_CODEX_PROVIDER_NAME = "ScholarSeed"
 SCHOLARSEED_MODEL_API_KEY_ENV = "SCHOLARSEED_MODEL_API_KEY"
 SCHOLARSEED_MODEL_HEADER_ENV_PREFIX = "SCHOLARSEED_MODEL_HEADER"
-CODEX_AUTO_REVIEW_MODEL_ID = "codex-auto-review"
 SUBSCRIPTION_BILLING = "subscription"
 # Historical session identity only; never offered or admitted as a model connection.
 RETIRED_NATIVE_MODEL_KEY = "codex-subscription-default"
 API_BILLING = "api"
+MODEL_TEXT_MODALITY = "text"
+MODEL_INPUT_FLAGS = {IMAGE_INPUT_KEY: IMAGE_MODALITY, PDF_INPUT_KEY: PDF_MODALITY}
 PERSONAL_MODEL_SOURCE = "personal"
 # BYOK reaches an upstream only where a translation leg exists. Today that is the
 # OpenAI-compatible one (``CompletionBridge`` turns Responses into Chat Completions).
@@ -158,6 +163,21 @@ def _thinking_token(thinking: ModelThinking | None) -> str:
     return f"{enabled}/{budget}"
 
 
+def _runtime_capabilities(selected_row: Mapping[str, Any]) -> ModelCapabilities:
+    input_modalities = selected_row.get(INPUT_MODALITIES_KEY)
+    if input_modalities is None:
+        declared_flags = [
+            modality for key, modality in MODEL_INPUT_FLAGS.items() if selected_row.get(key) is True
+        ]
+        if declared_flags:
+            input_modalities = [MODEL_TEXT_MODALITY, *declared_flags]
+    return ModelCapabilities(
+        tool_protocol=ModelToolProtocol.JSON_SCHEMA,
+        input_modalities=(tuple(input_modalities) if input_modalities is not None else None),
+        reasoning_efforts=tuple(selected_row.get(REASONING_EFFORTS_KEY) or ()),
+    )
+
+
 @dataclass(frozen=True)
 class SessionModelSpec:
     """One selected UI model plus the private connection used to open a session."""
@@ -173,6 +193,7 @@ class SessionModelSpec:
     # 该坐标声明的思考形态载荷（``reasoning_options``）。思考参数按声明生成，所以解析一次
     # 就要带到消费方；让下游再按模型名判一次，等于回到 proposal 78 I1 否决的做法。
     reasoning_options: list[dict[str, Any]] | None = None
+    capabilities: ModelCapabilities = ModelCapabilities()
 
     def runtime_model(
         self, reasoning_effort: str = "", thinking: ModelThinking | None = None
@@ -217,6 +238,7 @@ class SessionModelSpec:
             context_window=context_window,
             reasoning_effort=reasoning_effort,
             thinking=thinking,
+            capabilities=self.capabilities,
         )
         return intent, credential_port
 
@@ -232,6 +254,8 @@ class ModelService:
         profiles: ModelProfileStore | None = None,
         subscriptions: SubscriptionService | None = None,
         turn_ids: Callable[[str], str] | None = None,
+        *,
+        ownership_axis: str = OWNERSHIP_AXIS_DEFAULT,
     ) -> None:
         self._settings = settings
         self._completions = completions or CompletionBridge("")
@@ -243,15 +267,32 @@ class ModelService:
         self._turn_ids = turn_ids
         self._profiles = profiles or ModelProfileStore()
         self._subscriptions = subscriptions
+        # 本域同时用两个身份，混成一个就会两头都错：真实账号（``user_id``）驱动网关计量与
+        # 内置模型凭据门禁，归属身份驱动个人连接的可见性与本地凭据定位。轴由组合根注入，
+        # 归属身份一律经 ``_owner_id`` 投影，不散落在各调用点手写比较。
+        self._ownership_axis = str(ownership_axis or OWNERSHIP_AXIS_DEFAULT)
+
+    def _owner_id(self, user_id: str) -> str:
+        """把真实账号身份投影成本地数据归属身份（只喂个人连接腿，绝不喂计量腿）。"""
+
+        return owner_id_for(user_id, self._ownership_axis)
 
     async def catalog(self, *, refresh: bool = False, user_id: str = "") -> dict[str, Any]:
+        """Project the model menu.
+
+        ``user_id`` 是**真实账号**身份：内置模型的网关凭据门禁必须看它（machine 轴下归属
+        身份恒为机器级常量，拿它判门禁会让内置模型即使登录也永久置灰）。个人连接一律走
+        ``_owner_id`` 投影出的归属身份，因此登录/登出/切号都不影响用户自配连接的可见性。
+        """
+
         if refresh:
             invalidate_codex_auth_cache()
         config = self._config()
-        document = self._profiles.list(owner_id=user_id)
+        owner_id = self._owner_id(user_id)
+        document = self._profiles.list(owner_id=owner_id)
         models = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(models, config, user_id)
-        self._mark_subscription_gate(models, user_id)
+        self._mark_subscription_gate(models, owner_id)
         if self._subscriptions is not None:
             profiles = {
                 item["profile_id"]
@@ -260,7 +301,7 @@ class ModelService:
             }
             for profile_id in profiles:
                 try:
-                    directory = await self._subscriptions.models(user_id, profile_id)
+                    directory = await self._subscriptions.models(owner_id, profile_id)
                 except OAuthFailure:
                     for item in models:
                         if item.get("profile_id") == profile_id:
@@ -283,7 +324,7 @@ class ModelService:
         return {
             "configured": bool(models),
             "runtime_id": RUNTIME_ID,
-            "current_model": self._selected_key(config, models, user_id=user_id),
+            "current_model": self._selected_key(config, models),
             "available_models": models,
             # 管理页专用的另一半分区: 关掉显示的模型绝不进 available_models, 否则对话框又能
             # 选到它们; 但管理页必须仍能看到它们, 才谈得上恢复。
@@ -324,12 +365,12 @@ class ModelService:
             if budget.get("min") is None or budget.get("max") is None:
                 raise SessionModelUnavailableError("该模型的思考预算区间尚未确认，请改用思考开关。")
 
-    def _mark_subscription_gate(self, models: list[dict[str, Any]], user_id: str) -> None:
+    def _mark_subscription_gate(self, models: list[dict[str, Any]], owner_id: str) -> None:
         for model in models:
             if model.get("billing") != SUBSCRIPTION_BILLING:
                 continue
             state = (
-                self._subscriptions.status(user_id, model["profile_id"])["state"]
+                self._subscriptions.status(owner_id, model["profile_id"])["state"]
                 if self._subscriptions is not None
                 else CredentialState.DISCONNECTED.value
             )
@@ -358,7 +399,7 @@ class ModelService:
     async def select(self, model_key: str, *, persist: bool, user_id: str = "") -> dict[str, Any]:
         requested = model_key.strip()
         config = self._config()
-        document = self._profiles.list(owner_id=user_id)
+        document = self._profiles.list(owner_id=self._owner_id(user_id))
         models = self._catalog_models(config, document)
         available = {str(row.get("key") or "") for row in models}
         if not requested or requested not in available:
@@ -372,11 +413,12 @@ class ModelService:
     def profiles(self, *, user_id: str = "") -> dict[str, Any]:
         """Return the redacted personal connection inventory."""
 
-        document = self._profiles.list(owner_id=user_id)
+        owner_id = self._owner_id(user_id)
+        document = self._profiles.list(owner_id=owner_id)
         if self._subscriptions is not None:
             for profile in document["profiles"]:
                 if is_oauth_connection(profile):
-                    profile["oauth"] = self._subscriptions.status(user_id, profile["id"])
+                    profile["oauth"] = self._subscriptions.status(owner_id, profile["id"])
         return document
 
     def inference_connection(
@@ -387,7 +429,7 @@ class ModelService:
         Private return value: only the inference transport may consume it.
         """
         config = self._config()
-        document = self._profiles.list(owner_id=user_id)
+        document = self._profiles.list(owner_id=self._owner_id(user_id))
         rows = self._catalog_models(config, document)
         row = next((item for item in rows if item["key"] == model_key), None)
         if row is None:
@@ -456,7 +498,8 @@ class ModelService:
         self, values: Mapping[str, Any], profile_id: str = "", *, user_id: str = ""
     ) -> dict[str, Any]:
         """Validate the current candidate before committing an owned connection."""
-        existing = self._profiles.profile(profile_id, owner_id=user_id) if profile_id else None
+        owner_id = self._owner_id(user_id)
+        existing = self._profiles.profile(profile_id, owner_id=owner_id) if profile_id else None
         if profile_id and existing is None:
             raise UnknownProfileError("model connection is unavailable")
         candidate = prepare_personal_connection(values, existing=existing)
@@ -467,14 +510,16 @@ class ModelService:
                 if not profile_id:
                     raise SessionModelUnavailableError("oauth_login_before_model_selection")
                 await self._subscriptions.validate_models(
-                    user_id, profile_id, candidate[SELECTED_MODELS_KEY]
+                    owner_id, profile_id, candidate[SELECTED_MODELS_KEY]
                 )
         else:
             await self._validate_personal_connection(candidate)
-        profile = self._profiles.upsert(candidate, profile_id, owner_id=user_id)
+        # owner_id 驱动归属谓词, user_id 是落盘的 owner 戳(真实建者)——两者只在 machine
+        # 轴下不同值, 见 ModelProfileStore._owner_stamp。
+        profile = self._profiles.upsert(candidate, profile_id, owner_id=owner_id, user_id=user_id)
         if is_oauth_connection(profile) and existing is not None:
             if existing[SELECTED_MODELS_KEY] != profile[SELECTED_MODELS_KEY]:
-                self._completions.revoke_connection(user_id, profile_id)
+                self._completions.revoke_connection(owner_id, profile_id)
         return {**self.profiles(user_id=user_id), "profile": profile}
 
     async def set_profile_enabled(
@@ -482,15 +527,16 @@ class ModelService:
     ) -> dict[str, Any]:
         """Toggle whether one connection's selected models reach the model menu."""
 
+        owner_id = self._owner_id(user_id)
         if enabled:
-            candidate = self._profiles.profile(profile_id, owner_id=user_id)
+            candidate = self._profiles.profile(profile_id, owner_id=owner_id)
             if candidate is None:
                 raise UnknownProfileError("model connection is unavailable")
             if not is_oauth_connection(candidate):
                 await self._validate_personal_connection(candidate)
-        self._profiles.set_enabled(profile_id, enabled, owner_id=user_id)
+        self._profiles.set_enabled(profile_id, enabled, owner_id=owner_id)
         if not enabled:
-            self._completions.revoke_connection(user_id, profile_id)
+            self._completions.revoke_connection(owner_id, profile_id)
         return await self._selection(user_id=user_id)
 
     async def set_model_hidden(
@@ -503,7 +549,9 @@ class ModelService:
         缓存 —— 同一条连接上其余模型仍然可见可用。
         """
 
-        self._profiles.set_model_hidden(profile_id, model_id, hidden, owner_id=user_id)
+        self._profiles.set_model_hidden(
+            profile_id, model_id, hidden, owner_id=self._owner_id(user_id)
+        )
         return await self._selection(user_id=user_id)
 
     @staticmethod
@@ -518,24 +566,19 @@ class ModelService:
             raise ValueError(f"{PERSONAL_CONNECTION_INVALID_ERROR}{result['message']}")
 
     async def delete_profile(self, profile_id: str, *, user_id: str = "") -> dict[str, Any]:
-        profile = self._profiles.profile(profile_id, owner_id=user_id)
+        owner_id = self._owner_id(user_id)
+        profile = self._profiles.profile(profile_id, owner_id=owner_id)
         if profile is not None and is_oauth_connection(profile) and self._subscriptions is not None:
-            self._subscriptions.disconnect(user_id, profile_id)
-        self._profiles.delete(profile_id, owner_id=user_id)
+            self._subscriptions.disconnect(owner_id, profile_id)
+        self._profiles.delete(profile_id, owner_id=owner_id)
         return await self._selection(user_id=user_id)
 
     def probe_profile(
         self, values: Mapping[str, Any], profile_id: str = "", *, user_id: str = ""
     ) -> dict[str, Any]:
-        """Test one candidate connection without saving it or changing the active one."""
+        """Test endpoint access through its model directory, without running inference."""
 
-        _require_supported_personal_provider(values.get("provider"))
-        existing = self._profiles.profile(profile_id, owner_id=user_id) if profile_id else None
-        if profile_id and existing is None:
-            raise UnknownProfileError("model connection is unavailable")
-        if is_oauth_connection(values) or (existing and is_oauth_connection(existing)):
-            raise SessionModelUnavailableError("use_oauth_model_directory")
-        return probe_personal_connection(values, existing)
+        return self.profile_models(values, profile_id, user_id=user_id)
 
     @staticmethod
     def providers() -> dict[str, Any]:
@@ -549,7 +592,11 @@ class ModelService:
         """Read the models a candidate endpoint advertises, without saving anything."""
 
         _require_supported_personal_provider(values.get("provider"))
-        existing = self._profiles.profile(profile_id, owner_id=user_id) if profile_id else None
+        existing = (
+            self._profiles.profile(profile_id, owner_id=self._owner_id(user_id))
+            if profile_id
+            else None
+        )
         if profile_id and existing is None:
             raise UnknownProfileError("model connection is unavailable")
         if is_oauth_connection(values) or (existing and is_oauth_connection(existing)):
@@ -567,7 +614,7 @@ class ModelService:
     def selected_model_key(self, model_key: str = "", *, user_id: str = "") -> str:
         """Resolve account-visible model intent without registering execution credentials."""
         config = self._config()
-        document = self._profiles.list(owner_id=user_id)
+        document = self._profiles.list(owner_id=self._owner_id(user_id))
         return self._available_key(model_key, config, document)
 
     def _available_key(
@@ -606,16 +653,21 @@ class ModelService:
         hook rather than a value because one registration outlives many turns; callers whose
         registration *is* one turn pass their own resolver, everyone else gets the session-keyed
         one injected into this service.
+
+        ``user_id`` 是真实账号身份, 计量腿原样用它; 个人连接腿一律用 ``_owner_id`` 投影出的
+        归属身份, 所以执行面只带着计量身份进来也能解析到本机的订阅连接。
         """
 
         config = self._config()
-        document = self._profiles.list(owner_id=user_id)
+        owner_id = self._owner_id(user_id)
+        document = self._profiles.list(owner_id=owner_id)
         selected = self._available_key(model_key, config, document)
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
         declared_options = selected_row.get(REASONING_OPTIONS_KEY)
         reasoning_options = list(declared_options or ()) or None
+        capabilities = _runtime_capabilities(selected_row)
         model_run = ModelRun(
             provider_id=str(
                 selected_row.get("profile_id") or selected_row.get("provider") or selected
@@ -631,16 +683,16 @@ class ModelService:
         resolve_turn_id = turn_id_provider if turn_id_provider is not None else self._turn_ids
         personal_profile_id, personal_model_id = parse_personal_model_key(selected)
         if personal_profile_id in self._profile_ids(document):
-            profile = self._profiles.profile(personal_profile_id, owner_id=user_id)
+            profile = self._profiles.profile(personal_profile_id, owner_id=owner_id)
             if profile is not None and is_oauth_connection(profile):
                 if self._subscriptions is None:
                     raise SessionModelUnavailableError("oauth_service_unavailable")
                 registration = self._subscriptions.register(
-                    user_id,
+                    owner_id,
                     personal_profile_id,
                     personal_model_id,
                     session_id,
-                    {CODEX_AUTO_REVIEW_MODEL_ID: personal_model_id},
+                    {},
                     reasoning_effort=reasoning_effort,
                 )
                 return SessionModelSpec(
@@ -650,6 +702,11 @@ class ModelService:
                     config={},
                     billing=SUBSCRIPTION_BILLING,
                     reasoning_options=reasoning_options,
+                    capabilities=ModelCapabilities(
+                        tool_protocol=ModelToolProtocol.PROVIDER_NATIVE,
+                        input_modalities=capabilities.input_modalities,
+                        reasoning_efforts=capabilities.reasoning_efforts,
+                    ),
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
@@ -681,6 +738,7 @@ class ModelService:
                 config=runtime_config,
                 billing=API_BILLING,
                 reasoning_options=reasoning_options,
+                capabilities=capabilities,
                 executable=self._settings.runtime_executable(),
                 codex_provider=personal_provider,
                 process_environment=personal_environment,
@@ -709,6 +767,7 @@ class ModelService:
             config=runtime_config,
             billing=billing,
             reasoning_options=reasoning_options,
+            capabilities=capabilities,
             executable=self._settings.runtime_executable(),
             codex_provider=provider,
             process_environment=environment,
@@ -845,13 +904,7 @@ class ModelService:
             return False
         return not _api_key(config)
 
-    def _selected_key(
-        self,
-        config: dict[str, Any],
-        models: list[dict[str, Any]],
-        *,
-        user_id: str = "",
-    ) -> str:
+    def _selected_key(self, config: dict[str, Any], models: list[dict[str, Any]]) -> str:
         available = {str(row.get("key") or "") for row in models}
         selected = self._settings.runtime_model() or current_model_key(config)
         if selected in available:
@@ -1002,7 +1055,6 @@ def _codex_provider(
         metering_headers = dict(private_headers)
         if session_id:
             metering_headers[CONV_MESSAGE_ID_HEADER] = session_id
-        selected_model = wire_model_name(str(config.get("model_name") or "").strip())
         registration = completions.register(
             endpoint=call_url or f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}",
             responses_endpoint=f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}",
@@ -1013,7 +1065,6 @@ def _codex_provider(
             ),
             api_key=api_key,
             headers=metering_headers,
-            model_routes=({CODEX_AUTO_REVIEW_MODEL_ID: selected_model} if selected_model else {}),
             token_provider=(account_tokens.current if account_tokens is not None else None),
             turn_id_provider=turn_id_provider,
             source_text=source_text,

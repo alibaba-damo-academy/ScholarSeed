@@ -1,5 +1,5 @@
 import type { SubscriptionRequest, SubscriptionReply } from '../../subscriptions'
-import type { RendererPreferences } from '../../preferences'
+import type { PreferenceLanguage, RendererPreferences } from '../../preferences'
 import type { DesktopNotificationInput, DesktopNotificationResult } from '../../notifications'
 import type { SystemPermissionId, SystemPermissionsSnapshot } from '../../permissions'
 import type { OfficeImageResult, OfficeImageSource } from '../../images'
@@ -88,7 +88,7 @@ declare global {
     getAuthToken: () => Promise<string>
     getDeviceInfo: () => Promise<{ device_id: string; device_label: string }>
     /** 发起官网浏览器登录（主进程生成 state 并开系统浏览器）。 */
-    desktopLoginStart: () => Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }>
+    desktopLoginStart: (language: PreferenceLanguage) => Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }>
     desktopLoginCancel: () => Promise<{ ok: boolean }>
     /** 挂载时 claim 当前交接快照（深链早于渲染层到达时相位不丢）。 */
     desktopAuthState: () => Promise<DesktopAuthSnapshot>
@@ -97,6 +97,7 @@ declare global {
     onDesktopAuth: (cb: (snapshot: DesktopAuthSnapshot) => void) => () => void
     /** 冷启动首页认领：未 dismissed 前每次挂载都可认领，harness 恒 false。 */
     claimLanding: () => Promise<boolean>
+    setLoginWindowVisible: (visible: boolean) => Promise<void>
     /** 首页被关闭（跳过 / 登录采纳）后回报主进程，本进程内不再重新认领。 */
     landingDismiss: () => Promise<{ ok: boolean }>
     /** 终结型交接失败时主进程主动把首页推回来（proposal 73 §6.4）。与 claimLanding 的

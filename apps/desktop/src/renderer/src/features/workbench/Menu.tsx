@@ -1,6 +1,7 @@
 import { documentDisplayTitle } from '../../delivery'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
+import { MessageCirclePlus } from 'lucide-react'
 
 import {
   ContextMenuContent,
@@ -9,6 +10,7 @@ import {
 } from '../../components/ui'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
 import { useApp } from '../../store'
+import { revealLabelKey } from '../../fileOpen'
 import type { AdjacentPosition } from './layout'
 import {
   tabIdsForClose,
@@ -93,6 +95,7 @@ export function DocumentTabMenu({
         disabled={!fileLocation}
         onSelect={() => void act.attachActiveFileToAi()}
       >
+        <MessageCirclePlus />
         {resourceText('menu.addToConversation')}
       </ContextMenuItem>
       <ContextMenuItem data-testid="tab-copy-name" onSelect={() => void act.copyResourceName(documentDisplayTitle(tab, conversation, workbench))}>
@@ -110,7 +113,7 @@ export function DocumentTabMenu({
         disabled={!fileLocation}
         onSelect={() => void act.revealActiveDocument()}
       >
-        {resourceText('menu.reveal')}
+        {resourceText(revealLabelKey())}
       </ContextMenuItem>
       <ContextMenuSeparator />
       {TAB_CLOSE_ITEMS.map((item) => (

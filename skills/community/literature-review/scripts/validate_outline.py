@@ -233,7 +233,7 @@ def validate(outline: dict, allowed: set[str], limits: dict,
             if language not in {'default','chinese','english'}:
                 errors.append(f"section {sid} language must be default, chinese or english")
         elif 'language' in node:
-            errors.append(f"subsection {sid} must inherit its top-level chapter language")
+            errors.append(f"subsection {sid} must inherit its top-level chapter language; omit the language key entirely (including default, null or the parent value)")
         title = str(node.get("title") or "").strip().casefold()
         if title in seen_titles:
             errors.append(f"section {sid} repeats the title already used by section {seen_titles[title]}")

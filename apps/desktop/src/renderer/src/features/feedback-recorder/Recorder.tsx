@@ -1,6 +1,7 @@
 import React from 'react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
+import { createPortal } from 'react-dom'
 
 import { submitFeedback } from '../../api'
 import {
@@ -10,6 +11,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPortal,
   DialogTitle,
   IconButton,
   Tooltip,
@@ -124,14 +126,9 @@ export function Recorder(): React.JSX.Element {
     return () => window.clearInterval(timer)
   }, [phase, session?.sessionId])
 
-  const start = (): void => {
-    dispose()
-    const next = createRecordingSession()
-    sessionRef.current = next
-    latestStepRef.current = undefined
-    stepCountRef.current = 0
+  const installProbe = React.useCallback((startedAtMs: number): void => {
     leaseRef.current = installRecorderProbe({
-      startedAtMs: next.startedAtMs,
+      startedAtMs,
       latestStep: () => latestStepRef.current,
       onStep: (step) => {
         if (stepCountRef.current >= RECORDER_MAX_STEPS) {
@@ -151,7 +148,28 @@ export function Recorder(): React.JSX.Element {
         })
       }
     })
+  }, [updateSession])
+
+  const start = (): void => {
+    dispose()
+    const next = createRecordingSession()
+    sessionRef.current = next
+    latestStepRef.current = undefined
+    stepCountRef.current = 0
+    installProbe(next.startedAtMs)
     setSession(next)
+    setPhase('recording')
+  }
+
+  const setPaused = (paused: boolean): void => {
+    const current = sessionRef.current
+    if (!current) return
+    if (paused) {
+      dispose()
+      setPhase('paused')
+      return
+    }
+    installProbe(current.startedAtMs)
     setPhase('recording')
   }
 
@@ -167,7 +185,6 @@ export function Recorder(): React.JSX.Element {
     sessionRef.current = stopped
     const generated = generateSummary(stopped, {
       step: (index, kind, target, note) => t('feedbackRecorder.summary.step', { index, kind, target, note }),
-      failedRequests: (count) => t('feedbackRecorder.summary.failedRequests', { count }),
       screenshots: (count) => t('feedbackRecorder.summary.screenshots', { count }),
       screenshotNote: (index, note) => t('feedbackRecorder.summary.screenshotNote', { index, note }),
       empty: t('feedbackRecorder.summary.empty')
@@ -305,8 +322,8 @@ export function Recorder(): React.JSX.Element {
     }
   }
 
-  return (
-    <div ref={rootRef} className="fixed left-0 top-0 size-0" {...{ [RECORDER_ROOT_ATTRIBUTE]: 'root' }}>
+  return createPortal((
+    <div ref={rootRef} className="fixed left-0 top-0 z-[var(--vds-z-feedback-recorder)] size-0" {...{ [RECORDER_ROOT_ATTRIBUTE]: 'root' }}>
       {phase === 'idle' ? (
         <TooltipProvider>
           <Tooltip anchorRef={entryRef} portalled>
@@ -314,9 +331,10 @@ export function Recorder(): React.JSX.Element {
               <IconButton
                 ref={setEntrySurface}
                 style={floating.style}
-                className="fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-feedback-recorder)] !h-12 !w-12 touch-none cursor-move !rounded-full !border-[var(--vds-error-light-border)] ![background:var(--vds-surface-raised)] shadow-[var(--vds-shadow-lg)] [--vds-icon-button-glyph:var(--vds-icon-10)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-error-bg-default)] hover:![background:var(--vds-error-light-bg-default)] hover:shadow-[var(--vds-shadow-focus)] will-change-transform"
+                size="xs"
+                className="fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] touch-none cursor-move !rounded-full !border-[var(--vds-error-light-border)] ![background:var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-error-bg-default)] hover:![background:var(--vds-error-light-bg-default)] hover:shadow-[var(--vds-shadow-focus)] will-change-transform"
                 icon={(
-                  <span className="block h-3 w-3 rounded-full bg-[var(--vds-error-bg-default)]" />
+                  <span className="block h-1.5 w-1.5 rounded-full bg-[var(--vds-error-bg-default)]" />
                 )}
                 label={t('feedbackRecorder.entry')}
                 title={undefined}
@@ -331,13 +349,16 @@ export function Recorder(): React.JSX.Element {
           </Tooltip>
         </TooltipProvider>
       ) : null}
-      {phase === 'recording' && session ? (
+      {(phase === 'recording' || phase === 'paused') && session ? (
         <Capture
           elapsedSeconds={elapsedSeconds}
           error={error}
           floating={floating}
           hasStep={Boolean(latestStepRef.current)}
           note={latestStepRef.current ? session.notes[latestStepRef.current.stepId] || '' : ''}
+          paused={phase === 'paused'}
+          screenshotCount={session.screenshots.length}
+          stepCount={session.steps.length}
           onCancel={clearSession}
           onCapture={() => void capture()}
           onNoteChange={(text) => {
@@ -350,6 +371,7 @@ export function Recorder(): React.JSX.Element {
               return { ...current, notes }
             })
           }}
+          onPauseChange={setPaused}
           onStop={stop}
         />
       ) : null}
@@ -394,24 +416,30 @@ export function Recorder(): React.JSX.Element {
       ) : null}
       {phase === 'done' ? (
         <Dialog open onOpenChange={(open) => { if (!open) clearSession() }}>
-          <DialogContent data-feedback-recorder-root="done">
-            <DialogHeader>
-              <DialogTitle>{t('feedback.received')}</DialogTitle>
-              <DialogDescription>
-                {[
-                  ticket ? t('feedbackRecorder.done.ticket', { ticket }) : '',
-                  descriptionTruncated
-                    ? t('feedbackRecorder.notices.descriptionTruncated', {
-                      limit: RECORDER_DESCRIPTION_MAX_LENGTH
-                    })
-                    : ''
-                ].filter(Boolean).join(' ')}
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter><Button onClick={clearSession}>{t('feedback.done')}</Button></DialogFooter>
-          </DialogContent>
+          <DialogPortal>
+            <DialogContent
+              className="!z-[var(--vds-z-feedback-recorder-dialog)]"
+              overlayClassName="!z-[var(--vds-z-feedback-recorder-overlay)]"
+              data-feedback-recorder-root="done"
+            >
+              <DialogHeader>
+                <DialogTitle>{t('feedback.received')}</DialogTitle>
+                <DialogDescription>
+                  {[
+                    ticket ? t('feedbackRecorder.done.ticket', { ticket }) : '',
+                    descriptionTruncated
+                      ? t('feedbackRecorder.notices.descriptionTruncated', {
+                        limit: RECORDER_DESCRIPTION_MAX_LENGTH
+                      })
+                      : ''
+                  ].filter(Boolean).join(' ')}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter><Button onClick={clearSession}>{t('feedback.done')}</Button></DialogFooter>
+            </DialogContent>
+          </DialogPortal>
         </Dialog>
       ) : null}
     </div>
-  )
+  ), document.body)
 }

@@ -10,50 +10,60 @@ from writing_contract import read_request, section_label
 from generation_errors import GenerationError, diagnostic
 from chapter_plan import compile_plan, cards_plain, TERMINAL
 from asset_plan import derive
-from language_plan import section_language
 from manuscript_delta import apply_delta, REFINE_GUIDANCE
+from figure_caption import CAPTION_CONTENT_GUIDANCE
 from native_document import assemble, extension, figure_files, chapter_frame, complete_chapter
-from native_table_layout import inspect_native_tables
 from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
 
-CHAPTER_GUIDANCE = r'''Continue only the assigned chapter as raw native text, not JSON,
-not a Markdown code fence, and not a complete document. For latex_pdf output
-write LaTeX; for markdown write Markdown. The script records the chapter ID.
-Read all supplied paper-card business content. Follow the assigned analytical
-tasks, local instructions and confirmed subsection titles. The final user message
-supplies the exact chapter opening already written by the script. Return only
-the continuation after it, never repeat or replace that opening. Direct children
-of its level-one \section use \subsection with the supplied labels; Markdown
-children of ## use ###. Do not skip a heading level. Start with prose when no
-subheading is needed; do not introduce another copy of the chapter title.
-For an abstract, write prose only; the script also appends its closing wrapper.
-An unsectioned component has no opening: return only its requested content and
-do not manufacture a chapter heading. The assembler adds the document template
-and byline, not another chapter heading.
-Write the actual planned tables directly in the chapter (LaTeX or Markdown),
-with their planned captions, labels, comparison dimensions and evidence. Do not
-produce structured table JSON. Chapters without planned tables must not invent one.
-Write every reader-facing part of this chapter in the packet's output_language,
-including prose, subsection headings and native table captions/cells. Do not switch
-an abstract or conclusion to English by convention. Technical symbols, established
-terms and proper names may remain in their standard form.
-For figures, explain their scientific contribution and use \ref{fig:F1} with the
-actual ID in owning prose. Never emit figure environments, placeholders, fbox,
-includegraphics, figure captions, labels or drawing instructions. A separate
-agent supplies completed images and the assembler inserts their real wrappers.
-Use only supplied citation keys with \citep or \citet. Keep valid LaTeX mathematics
-and literal special-character escaping; do not JSON-escape the raw output.
-All chapters run concurrently. Use the outline and prerequisites to keep notation
-consistent; do not wait for another chapter. Abstract/synthesis/conclusion jobs
-use the full corpus and outline; the subsequent full-document refinement reconciles
-their wording. A complete response with content defects is retained for refinement
-or main, never regenerated for editorial reasons.'''
-CHAPTER_SYSTEM = TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + '\n' + CHAPTER_GUIDANCE
+CHAPTER_GUIDANCE = r'''Write the assigned chapter as a raw native continuation: LaTeX for
+latex_pdf, Markdown for markdown. The script records its ID and assembles it.
+
+CHAPTER SCOPE AND OPENING
+Use assigned analytical tasks, all supplied paper-card business content, local
+instructions and confirmed subsection titles. The last message supplies the
+script-written opening: continue after it. Direct children of \section use
+\subsection with supplied labels; children of ## use ###. Start with prose when
+no subheading is needed. An abstract is prose only; its closing wrapper is scripted.
+An unsectioned component has no invented heading. Output contains neither a JSON
+wrapper, code fence, repeated opening nor a complete document/template/byline.
+
+LANGUAGE AND EVIDENCE
+The packet's output_language governs prose, subheadings and table captions/cells. Standard
+technical symbols, terms and proper names may retain their normal form. Use only
+supplied citation keys through \citep or \citet for LaTeX; preserve mathematics and
+escape literal special characters, without JSON-escaping native output.
+
+ASSET OWNERSHIP
+asset_contract is the complete local asset permission list, derived from the
+confirmed outline. Broader evidence, navigation and other chapters' assets supply
+context, not permission to add a table or image here. Empty tables means zero
+tables; express comparisons in prose. Otherwise write each listed table exactly
+once beneath its specified section/subsection, using its label, dimensions,
+allowed evidence and caption meaning. Write native tables, not table JSON.
+Figure assets have a different owner: this chapter supplies explanation and
+references only (LaTeX: Figure~\ref{fig:F1}, Chinese: 图~\ref{fig:F1}). The figure
+branch and assembler supply the image, environment, label and caption together;
+the continuation contains no figure wrapper, includegraphics, placeholder or
+caption for them. Table references likewise use labels, not guessed print numbers.
+
+''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
+CONCURRENT HANDOFF
+All chapters run concurrently. Resolve notation from the outline/prerequisites;
+do not wait for another chapter. Abstract/synthesis/conclusion receive full
+context for synthesis, but still author only their assigned scope and assets.
+The single refinement reconciles the assembled document; completed responses
+with editorial defects are retained for refinement or main, never regenerated.
+'''
+CHAPTER_SYSTEM = (TASK_GUIDANCE + '\n' + MANUSCRIPT_WRITING_GUIDANCE + '\n' +
+                  CHAPTER_GUIDANCE)
 
 TABLE_AUTHORING_GUIDANCE_LATEX = r'''TABLE AUTHORING CONTRACT
 This chapter owns planned tables. Write each one exactly once at its scientifically
-appropriate point and discuss it in the surrounding prose. Preserve its supplied
-table_id, caption, tab: label, comparison dimensions and allowed citation keys.
+appropriate point within its assigned owner and discuss it in surrounding prose.
+Use only asset_contract.tables; preserve each table_id, tab: label, comparison
+dimensions, allowed citation keys and scientific caption meaning. Render the
+caption content in one \caption{...} followed by its \label{tab:T1}; LaTeX supplies
+the display number. A legacy numbered caption is rewritten as descriptive content.
 
 Every table uses a table environment with centering and is width-bounded by
 \linewidth. Prefer \begin{tabularx}{\linewidth}{...}. A bare tabular containing
@@ -80,16 +90,18 @@ and that no table can exceed \linewidth.'''
 
 TABLE_AUTHORING_GUIDANCE_MARKDOWN = r'''TABLE AUTHORING CONTRACT
 This chapter owns planned tables. Write each one exactly once at its scientifically
-appropriate point, preserve its supplied table_id, caption, anchor, comparison
-dimensions and allowed citation keys, and discuss it in the surrounding prose.
-Keep cells concise and evidence-backed; do not invent unplanned tables.'''
+appropriate point, preserve its supplied table_id, scientific caption meaning, comparison dimensions and allowed citation
+keys. Put <a id="tab:T1"></a> immediately before its descriptive caption and pipe
+table, using the supplied label. Discuss it in surrounding prose. The list in
+asset_contract.tables is exhaustive; keep cells concise and evidence-backed.'''
 
 TABLE_REPAIR_GUIDANCE = r'''TABLE LAYOUT REPAIR
 Deterministic preflight found problems only in the tables listed in
 table_layout_warnings. Repair every reported problem while preserving each
-affected table's scientific meaning, caption, label, citations, units,
+affected table's scientific meaning, label, citations, units,
 qualifications, rows and comparison dimensions. Modify only the listed tables;
-tables not listed passed preflight and must not be redesigned as part of this repair.
+tables not listed must not be redesigned for layout. Asset-contract warnings are
+a separate repair scope; caption wording may change to remove self-numbering.
 
 Make each affected table width-bounded by \linewidth. Prefer tabularx with
 ragged-right wrapping X columns for free text. Replace inappropriate l/c/r columns,
@@ -97,6 +109,14 @@ keep fixed widths conservative, and shorten only redundant wording without losin
 meaning. Use resizebox{\linewidth}{!} only when a readable tabularx design is not
 feasible. Compilation alone is insufficient: resolve the reported structural
 layout problems in the returned source delta.'''
+
+
+def chapter_asset_contract(packet):
+    def entries(kind, id_key):
+        return [{k: item.get(k) for k in (id_key, 'section_id', 'label', 'caption_draft')}
+                for item in packet.get(kind, [])]
+    return {'tables': entries('shared_tables', 'table_id'),
+            'figures': entries('shared_figures', 'figure_id')}
 
 
 def chapter_system(packet):
@@ -108,6 +128,7 @@ def chapter_system(packet):
 
 
 def chapter_messages(packet):
+    packet = {**packet, 'asset_contract': chapter_asset_contract(packet)}
     messages=[{'role':'system','content':chapter_system(packet)},
               {'role':'user','content':json.dumps(packet,ensure_ascii=False)}]
     if 'chapter_opening' not in packet:
@@ -119,7 +140,11 @@ def chapter_messages(packet):
         tail=(f'The {kind} opening below has already been written. Continue AFTER it. '
               'Return only the continuation, without repeating the opening or adding a closing wrapper.\n'
               'Now continue this chapter:\n\n'+packet['chapter_opening'])
-    return [*messages,{'role':'user','content':tail}]
+    scope = packet['asset_contract']
+    summary = ('Local asset scope: tables=' + json.dumps([t['label'] for t in scope['tables']]) +
+               '; figure callouts only=' + json.dumps([f['label'] for f in scope['figures']]) +
+               '. Use the supplied owners and caption content; printed numbering belongs to the publisher.\n')
+    return [*messages,{'role':'user','content':summary+tail}]
 
 def local_outline(outline,ids):
     return {**outline,'outline_tree':[s for s in outline['outline_tree'] if s['section_id'] in ids]} if outline['outline_tree'] else outline
@@ -143,6 +168,7 @@ def packet_for(jobs,plan,outline,assets,cards,keys,task,request,completed,format
         [keys[p] for p in (table['paper_ids'] or paper_ids) if p in keys]}
         for table in owned['shared_tables']]
     global_task={k:v for k,v in task.items() if k!='section_instructions'}
+    from language_plan import section_language
     owner=selected['outline_tree'][0] if selected.get('outline_tree') else {}
     default_language_value=request.get('language','ENGLISH').lower()
     output_language=section_language(owner,default_language_value)
@@ -267,6 +293,8 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         # V1 includes actual image wrappers/captions. Included text dependencies
         # are supplied in full as independent delta targets, never just paths.
         from publication_files import source_bundle
+        from native_table_layout import inspect_native_tables
+        from native_asset_checks import inspect_native_assets, inspect_chapter_figures
         packet_path=gen/'refine.packet.json'
         if packet_path.exists():
             packet=read(packet_path);sources=packet['sources']
@@ -287,6 +315,16 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         save(gen/'_status/table_layout_precheck.json',table_report)
         request_packet=dict(packet);request_packet.pop('table_layout_warnings',None)
         request_packet['resolved_section_languages']=contract.get('resolved_section_languages',{})
+        asset_plan = derive(request_packet['confirmed_outline'])
+        asset_report = inspect_native_assets(sources, asset_plan, spec['format'])
+        chapters = {p['chapter_ids'][0]: (gen/'chapters'/f"{p['chapter_ids'][0]}.{suffix}").read_text() for p in packets}
+        chapter_warnings = inspect_chapter_figures(chapters, spec['format'])
+        asset_report['issues'].extend(chapter_warnings)
+        asset_report['status'] = 'WARNING' if asset_report['issues'] else 'SUCCESS'
+        save(gen/'_status/asset_contract_precheck.json', asset_report)
+        request_packet.pop('asset_contract_warnings', None)
+        if asset_report['issues']:
+            request_packet['asset_contract_warnings'] = asset_report['issues']
         refine_guidance=REFINE_GUIDANCE
         if table_report['issues']:
             request_packet['table_layout_warnings']=table_report['issues']
@@ -313,7 +351,10 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         post_table_report=(inspect_native_tables(result['main'],planned_tables)
                            if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_postcheck.json',post_table_report)
+        post_asset_report = inspect_native_assets(result, asset_plan, spec['format'])
+        save(gen/'_status/asset_contract_postcheck.json', post_asset_report)
         status.update(status='SUCCESS',artifact=str(v2),**applied,
+                      asset_contract=post_asset_report,
                       table_layout=post_table_report,
                       refinement_applied=not (gen/'refine.error.json').exists(),
                       next_action='Edit v2 and its dependencies directly; run workflow publish.')

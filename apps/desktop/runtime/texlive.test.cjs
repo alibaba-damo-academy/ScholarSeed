@@ -40,7 +40,8 @@ test('vendored manifest selects platform-specific archives', () => {
   assert.deepEqual(arm.executables, ['xelatex', 'pdflatex', 'bibtex', 'kpsewhich'])
   // Windows has its own archive with platform-specific binaries and .fmt files.
   assert.equal(win.texlive, '2026')
-  assert.equal(win.archive, 'texlive-2026-windows.tar.gz')
+  assert.ok(path.isAbsolute(win.archive))
+  assert.equal(path.basename(win.archive), 'texlive-2026-windows.tar.gz')
   assert.equal(win.bin_relative, 'texlive/bin/windows')
   assert.equal(win.machine, 'x86_64')
   assert.deepEqual(win.executables, ['xelatex', 'pdflatex', 'bibtex', 'kpsewhich'])

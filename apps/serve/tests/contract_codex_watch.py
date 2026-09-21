@@ -99,18 +99,24 @@ class CodexRouterContract(unittest.TestCase):
         router = ThreadRouter()
         router.register_agents(
             "parent",
+            "parent-turn",
             {"type": "collabAgentToolCall", "receiverThreadIds": ["child", "attached"]},
             {"parent", "attached"},
         )
         self.assertEqual(router.agent("child").owner_thread_id, "parent")
+        self.assertEqual(router.agent("child").owner_turn_id, "parent-turn")
         self.assertIsNone(router.agent("attached"))
         router.register_agents(
             "parent",
+            "parent-turn",
             {"type": "subAgentActivity", "agentThreadId": "child", "agentPath": "review"},
             {"parent"},
         )
         router.register_agents(
-            "parent", {"type": "collabAgentToolCall", "receiverThreadIds": ["child"]}, {"parent"}
+            "parent",
+            "parent-turn",
+            {"type": "collabAgentToolCall", "receiverThreadIds": ["child"]},
+            {"parent"},
         )
         self.assertEqual(router.agent("child").agent_path, "review")
         router.close("unrelated")
@@ -346,6 +352,64 @@ class CodexInteractionContract(unittest.TestCase):
 
 
 class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
+    async def test_collaboration_completion_closes_started_receivers_without_stopping_agents(self):
+        for receivers in (None, [], ["child-b", "child-c", "child-c"]):
+            with self.subTest(receivers=receivers):
+                self.events.clear()
+                started = {
+                    "id": "wait-one",
+                    "type": "collabAgentToolCall",
+                    "tool": "wait",
+                    "receiverThreadIds": ["child-a", "child-b"],
+                    "status": "inProgress",
+                }
+                await self.state.notification(
+                    "item/started",
+                    {"turnId": "turn", "item": started},
+                    generation=1,
+                )
+                completed = {"id": "wait-one", "type": "collabAgentToolCall", "status": "timedOut"}
+                completed["agentsStates"] = {
+                    "child-a": {
+                        "status": "running",
+                        "message": "private transport diagnostic",
+                    }
+                }
+                if receivers is not None:
+                    completed["receiverThreadIds"] = receivers
+                await self.state.notification(
+                    "item/completed",
+                    {"turnId": "turn", "item": completed},
+                    generation=1,
+                )
+                closures = [
+                    event
+                    for event in self.events
+                    if event.kind == CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED
+                ]
+                expected = {"child-a", "child-b", *(receivers or [])}
+                self.assertEqual(
+                    {event.item_id for event in closures},
+                    {f"wait-one:{receiver}" for receiver in expected},
+                )
+                self.assertEqual(len(closures), len(expected))
+                self.assertTrue(all(event.payload["status"] == "timedOut" for event in closures))
+                self.assertTrue(all(event.payload["ok"] is False for event in closures))
+                self.assertTrue(
+                    all(event.payload["details"]["operation"] == "wait" for event in closures)
+                )
+                self.state._request.assert_not_awaited()
+                self.assertNotIn("private transport diagnostic", str(closures))
+                self.assertEqual(closures[0].payload["details"]["agent_status"], "running")
+                await self.state.notification(
+                    "item/started",
+                    {"turnId": "turn", "item": {**started, "id": "wait-two"}},
+                    generation=1,
+                )
+                self.assertEqual(
+                    self.events[-1].kind, CodexSessionEventKind.NATIVE_ACTIVITY_STARTED
+                )
+
     async def test_failed_terminal_projection_can_retry_authoritative_completion(self) -> None:
         self.state.active_turn_id = "retry-terminal"
         terminal = {"id": "retry-terminal", "status": "completed"}

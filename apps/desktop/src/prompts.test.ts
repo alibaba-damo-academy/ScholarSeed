@@ -22,6 +22,8 @@ test('prompt round trip preserves multiline Unicode and rejects oversized entrie
 test('temporary requirements supplement the saved prompt and restoring one leaves the others', () => {
   const prompts = { explain: '解释术语', polish: '改善行文', translate: '采用领域术语' }
   assert.equal(selectionInstruction(prompts, 'polish', '更简洁'), '改善行文\n\n更简洁')
+  assert.equal(selectionInstruction(prompts, 'polish', ''), '改善行文')
+  assert.equal(selectionInstruction(prompts, 'explain', '   '), '解释术语')
   assert.equal(selectionInstruction(prompts, 'translate'), '采用领域术语')
   const restored = { ...prompts, polish: DEFAULT_SELECTION_PROMPTS.polish }
   assert.equal(restored.explain, prompts.explain)

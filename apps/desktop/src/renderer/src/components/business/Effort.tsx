@@ -10,11 +10,10 @@ import {
 } from '../../reasoning'
 import { feedback } from '../../contracts/feedback'
 import { useApp } from '../../store'
-import { Button, Popover, PopoverContent, PopoverTrigger } from '../ui'
-import { IconFont } from '../primitive'
+import { Slider } from '../ui'
 
 /** Model parameter scoped to a session; remembered separately for new conversations. */
-export function Effort(): React.JSX.Element {
+export function useEffort() {
   const { t } = useTranslation('conversation')
   const { state, set, patchThread } = useApp()
   const sessionId = state.activeSession
@@ -42,7 +41,6 @@ export function Effort(): React.JSX.Element {
     (reasoningOptions.length > 0 || efforts.length > 0)
   const fixedThinking = reasoningSupported && reasoningOptions.length === 0 && efforts.length === 0
   const [pending, setPending] = React.useState(false)
-  const [menuOpen, setMenuOpen] = React.useState(false)
   const switching = React.useRef(false)
   const unavailable =
     !model || (!reasoningSupported && !value)
@@ -94,7 +92,7 @@ export function Effort(): React.JSX.Element {
     }
   }
 
-  const selectedLabel = reasoningLabel(value, t)
+  const selectedLabel = reasoningLabel(value, t, true)
   const options = [
     {
       value: DEFAULT_REASONING_EFFORT,
@@ -112,66 +110,72 @@ export function Effort(): React.JSX.Element {
       all.findIndex((item) => item.value === option.value) === index
   )
 
+  return {
+    value,
+    options,
+    label: fixedThinking ? t('reasoning.fixed') : selectedLabel,
+    disabled: Boolean(unavailable || fixedThinking),
+    pending,
+    select
+  }
+}
+
+interface EffortProps {
+  value: string
+  options: { value: string; label: string }[]
+  disabled: boolean
+  pending?: boolean
+  onSelect: (value: string) => void
+}
+
+export function Effort({ value, options, disabled, pending = false, onSelect }: EffortProps): React.JSX.Element {
+  const { t } = useTranslation('conversation')
+  const [draft, setDraft] = React.useState(value)
+  const draftRef = React.useRef(value)
+  React.useEffect(() => {
+    if (pending) return
+    draftRef.current = value
+    setDraft(value)
+  }, [value, pending])
+  const index = Math.max(0, options.findIndex((option) => option.value === draft))
+  const max = Math.max(0, options.length - 1)
+  const commit = (): void => {
+    if (!disabled && !pending && draftRef.current !== value) onSelect(draftRef.current)
+  }
   return (
-    // 与模型选择器同一套宽度逻辑: 跟随内容宽度, 以 160px 收口, 空间不足时压缩并截断。
-    <div className="min-w-0 flex-[0_1_auto] max-w-[160px]">
-      <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            data-testid="reasoning-selector"
-            aria-label={t('reasoning.label')}
-            aria-haspopup="listbox"
-            disabled={Boolean(unavailable || pending || fixedThinking)}
-            variant="ghost"
-            size="content"
-            unstyled
-            className="group flex min-h-8 w-full items-center justify-between gap-[12px] rounded-[8px] border-0 bg-transparent px-[12px] py-[5px] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)] transition-colors duration-[var(--vds-duration-fast)] hover:bg-[var(--vds-other-overlay-1)] focus-visible:bg-[var(--vds-surface-hover)]"
-          >
-            <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">
-              {fixedThinking
-                ? t('reasoning.fixed')
-                : t('reasoning.selected', { effort: selectedLabel })}
-            </span>
-            <IconFont
-              aria-hidden="true"
-              className="flex-none text-[14px] leading-none text-[var(--vds-text-tertiary)]"
-              type="a-line-switch-arrow-down-s"
-            />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          className="no-drag z-[var(--vds-z-popover)] min-w-[146px] gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] p-[var(--vds-space-1)]"
-          data-testid="reasoning-menu"
-        >
-          {options.map((option) => {
-            const selected = option.value === value
-            return (
-              <Button
-                key={option.value}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                variant="ghost"
-                size="content"
-                unstyled
-                className={[
-                  'flex min-h-8 w-full items-center rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
-                  selected
-                    ? 'bg-[var(--vds-bg-white-active)]'
-                    : 'bg-transparent hover:bg-[var(--vds-bg-white-hover)]'
-                ].join(' ')}
-                onClick={() => {
-                  void select(option.value)
-                  setMenuOpen(false)
-                }}
-              >
-                {option.label}
-              </Button>
-            )
-          })}
-        </PopoverContent>
-      </Popover>
+    <div
+      className="relative w-full"
+      onPointerUp={commit}
+      onKeyUp={commit}
+      onBlur={commit}
+      onPointerCancel={() => {
+        draftRef.current = value
+        setDraft(value)
+      }}
+    >
+      <Slider
+        data-testid="reasoning-slider"
+        aria-label={t('reasoning.label')}
+        aria-valuetext={options[index]?.label}
+        aria-busy={pending}
+        min={0}
+        max={max}
+        step={1}
+        value={index}
+        disabled={disabled || max === 0}
+        onValueChange={(next: number) => {
+          if (pending) return
+          const option = options[next]
+          if (!option) return
+          draftRef.current = option.value
+          setDraft(option.value)
+        }}
+      />
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center justify-between">
+        {options.map((option) => (
+          <span key={option.value} className="size-[var(--vds-space-1)] rounded-full bg-[var(--vds-text-tertiary)]" />
+        ))}
+      </div>
     </div>
   )
 }

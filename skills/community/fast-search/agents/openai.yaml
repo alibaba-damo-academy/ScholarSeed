@@ -1,4 +1,4 @@
 interface:
   display_name: "Veryfast Academic Search"
   short_description: "Low-latency academic paper discovery"
-  default_prompt: "Use $fast-search to quickly find the most relevant academic papers for this query."
+  default_prompt: "Use $fast-search and $web-search to quickly find the most relevant academic papers. Start every public-web batch through $web-search; accept direct native only as a compatibility result, and return to $web-search if it fails."

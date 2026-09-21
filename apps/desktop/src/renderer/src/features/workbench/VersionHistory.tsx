@@ -13,6 +13,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogPortal,
   AlertDialogTitle,
   AlertTitle,
   Badge,
@@ -23,6 +24,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
+  DialogPortal,
   DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
@@ -373,10 +375,10 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
                   <small className="block truncate text-xs text-[var(--vds-text-tertiary)]">{version.restored_from_sequence ? t('history.restoredFrom', { sequence: version.restored_from_sequence }) : version.turn_id ? t('history.agentTurn', { id: version.turn_id }) : version.path}</small>
                 </Button>
                 <Button data-testid="version-history-restore" variant="secondary" size="sm" disabled={readOnly || current} title={readOnly ? t('history.gitReadOnly') : current ? t('history.currentRestoreDisabled') : undefined} onClick={() => void restore(version)}>{t('history.restore')}</Button>
-                <DropdownMenu><DropdownMenuTrigger asChild><IconButton label={t('history.moreActions')} icon={<MoreHorizontal />} size="sm" variant="ghost" /></DropdownMenuTrigger><DropdownMenuContent>
+                <DropdownMenu><DropdownMenuTrigger asChild><IconButton label={t('history.moreActions')} icon={<MoreHorizontal />} size="sm" variant="ghost" /></DropdownMenuTrigger><DropdownMenuContent className="z-[var(--vds-z-sheet-flyout)]">
                   <DropdownMenuItem onSelect={() => openAlias(version)}><Pencil />{t('history.alias')}</DropdownMenuItem><DropdownMenuSeparator /><DropdownMenuItem destructive disabled={readOnly || current} onSelect={() => void openDelete(version)}><Trash2 />{t('history.deleteVersion')}</DropdownMenuItem>
                 </DropdownMenuContent></DropdownMenu>
-                {!disabled && <ChevronRight aria-hidden className="pointer-events-none size-4 text-[var(--vds-text-tertiary)]" />}
+                {!disabled && <IconButton data-testid="version-history-inspect" label={t('history.inspect', { sequence: version.sequence })} icon={<ChevronRight />} size="sm" variant="ghost" onClick={() => void inspect(version)} />}
               </div>
             })}
           </div></section>)}
@@ -386,7 +388,7 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
       </div>
     </SheetContent></SheetPortal>, document.body)}
 
-    <Dialog open={aliasTarget !== null} onOpenChange={(next) => { if (!next && !mutating) setAliasTarget(null) }}><DialogContent><DialogHeader><DialogTitle>{t('history.aliasTitle', { sequence: aliasTarget?.sequence ?? 0 })}</DialogTitle><DialogDescription>{t('history.aliasDescription')}</DialogDescription></DialogHeader><Input autoFocus maxLength={80} value={aliasValue} placeholder={t('history.aliasPlaceholder')} onChange={(event) => setAliasValue(event.target.value)} /><DialogFooter><DialogClose disabled={mutating}>{t('history.cancel')}</DialogClose><Button disabled={mutating} onClick={() => void saveAlias()}>{t('history.saveAlias')}</Button></DialogFooter></DialogContent></Dialog>
-    <AlertDialog open={deleteTarget !== null} onOpenChange={(next) => { if (!next && !mutating) setDeleteTarget(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('history.deleteTitle', { sequence: deleteTarget?.version.sequence ?? 0 })}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.preview.deletable ? deleteTarget.preview.affected_delivery_ids.length > 0 ? t('history.deleteDeliveryImpact', { count: deleteTarget.preview.affected_delivery_ids.length }) : t('history.deleteDescription') : t('history.deleteBlocked')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={mutating}>{t('history.cancel')}</AlertDialogCancel><AlertDialogAction variant="danger" disabled={mutating || !deleteTarget?.preview.deletable} onClick={(event) => void confirmDelete(event)}>{t('history.confirmDelete')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <Dialog open={aliasTarget !== null} onOpenChange={(next) => { if (!next && !mutating) setAliasTarget(null) }}><DialogPortal><DialogContent><DialogHeader><DialogTitle>{t('history.aliasTitle', { sequence: aliasTarget?.sequence ?? 0 })}</DialogTitle><DialogDescription>{t('history.aliasDescription')}</DialogDescription></DialogHeader><Input autoFocus maxLength={80} value={aliasValue} placeholder={t('history.aliasPlaceholder')} onChange={(event) => setAliasValue(event.target.value)} /><DialogFooter><DialogClose disabled={mutating}>{t('history.cancel')}</DialogClose><Button disabled={mutating} onClick={() => void saveAlias()}>{t('history.saveAlias')}</Button></DialogFooter></DialogContent></DialogPortal></Dialog>
+    <AlertDialog open={deleteTarget !== null} onOpenChange={(next) => { if (!next && !mutating) setDeleteTarget(null) }}><AlertDialogPortal><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t('history.deleteTitle', { sequence: deleteTarget?.version.sequence ?? 0 })}</AlertDialogTitle><AlertDialogDescription>{deleteTarget?.preview.deletable ? deleteTarget.preview.affected_delivery_ids.length > 0 ? t('history.deleteDeliveryImpact', { count: deleteTarget.preview.affected_delivery_ids.length }) : t('history.deleteDescription') : t('history.deleteBlocked')}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={mutating}>{t('history.cancel')}</AlertDialogCancel><AlertDialogAction variant="danger" disabled={mutating || !deleteTarget?.preview.deletable} onClick={(event) => void confirmDelete(event)}>{t('history.confirmDelete')}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialogPortal></AlertDialog>
   </Sheet>
 }

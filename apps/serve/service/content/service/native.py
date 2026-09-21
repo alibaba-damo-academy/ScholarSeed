@@ -24,6 +24,8 @@ CREATION_ATTRIBUTE = b"user.scholarseed.creation"
 LEGACY_CREATION_ATTRIBUTE = b"user.shushen.creation"
 CREATION_ATTRIBUTES = (CREATION_ATTRIBUTE, LEGACY_CREATION_ATTRIBUTE)
 CREATION_MARKER_BYTES = 32
+COPY_CHUNK_BYTES = 1024 * 1024
+COPY_STAGING_MODE = 0o600
 NATIVE_DEFAULT_FLAGS = 0
 CLONE_NOFOLLOW = 0x0001
 RENAME_EXCL_DARWIN = 0x00000004
@@ -176,14 +178,65 @@ _PUBLISHERS: dict[str, Callable[[int, DirectoryHandle, str], None]] = {
 }
 
 
-def publish_descriptor(source: int, directory: DirectoryHandle, name: str) -> None:
+def publish_descriptor(source: int, directory: DirectoryHandle, name: str) -> bool:
+    """Publish exclusively and report whether the staging name was consumed."""
     if sys.platform == WINDOWS:
         os.rename(storage.path_for_file(source), directory.child(name))
-        return
+        return True
     publisher = _PUBLISHERS.get(sys.platform)
     if publisher is None:
         raise OSError(errno.ENOTSUP, "descriptor publication unsupported")
     publisher(source, directory, name)
+    return False
+
+
+def copy_descriptor_exclusive(
+    source: int,
+    directory: DirectoryHandle,
+    name: str,
+    mode: int,
+    *,
+    marker: str = "",
+) -> os.stat_result:
+    """Create an independent destination file without consuming the source."""
+
+    if not stat.S_ISREG(os.fstat(source).st_mode):
+        raise OSError(errno.EINVAL, "copy source is not a regular file")
+    target = directory.open(
+        name,
+        os.O_RDWR | os.O_CREAT | os.O_EXCL | storage.NOFOLLOW,
+        COPY_STAGING_MODE,
+    )
+    identity = os.fstat(target)
+    source_position = os.lseek(source, 0, os.SEEK_CUR)
+    try:
+        if not stat.S_ISREG(identity.st_mode):
+            raise OSError(errno.EINVAL, "copy target is not a regular file")
+        if marker:
+            set_creation_marker(target, marker)
+        os.lseek(source, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(target), "wb") as stream:
+            while chunk := os.read(source, COPY_CHUNK_BYTES):
+                stream.write(chunk)
+            stream.flush()
+        storage.preserve_mode(target, mode)
+        os.fsync(target)
+        directory.sync()
+        return os.fstat(target)
+    except BaseException:
+        os.close(target)
+        target = -1
+        try:
+            current = directory.stat(name)
+            if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                directory.unlink(name)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        os.lseek(source, source_position, os.SEEK_SET)
+        if target >= 0:
+            os.close(target)
 
 
 def sync_published_descriptor(source: int, directory: DirectoryHandle, name: str) -> None:

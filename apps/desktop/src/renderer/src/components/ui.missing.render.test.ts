@@ -111,7 +111,7 @@ test('ported DeepRD primitives render and expose core interactions', async () =>
     assert.ok(dropdownBounds)
     assert.ok(dropdownTriggerBounds)
     await assert.equal(await dropdown.evaluate((element) => element.parentElement === document.body), true)
-    assert.ok(dropdownBounds.x + dropdownBounds.width <= dropdownTriggerBounds.x + dropdownTriggerBounds.width + 1)
+    assert.ok(Math.abs(dropdownBounds.x - dropdownTriggerBounds.x) <= 1)
     assert.ok(dropdownBounds.y >= dropdownTriggerBounds.y + dropdownTriggerBounds.height)
     await page.getByRole('menuitem', { name: 'Archive' }).click()
     await assert.equal(await page.getByTestId('render-dropdown-value').textContent(), 'Archive')
@@ -137,9 +137,11 @@ test('ported DeepRD primitives render and expose core interactions', async () =>
     await assert.equal(await page.getByTestId('render-navigation-menu-content').isVisible(), false)
 
     await page.getByRole('button', { name: 'Next slide' }).click()
-    await assert.equal(await page.getByTestId('render-carousel-active-slide').textContent(), 'Second')
+    const carouselContent = page.getByTestId('render-carousel-active-slide')
+    await assert.equal(await carouselContent.textContent(), 'FirstSecond')
+    assert.match(await carouselContent.getAttribute('style') ?? '', /translateX\(calc\(-1 \*/)
     await page.getByRole('button', { name: 'Previous slide' }).click()
-    await assert.equal(await page.getByTestId('render-carousel-active-slide').textContent(), 'First')
+    assert.match(await carouselContent.getAttribute('style') ?? '', /translateX\(calc\(-0 \*/)
 
     await page.getByRole('button', { name: '15' }).click()
     await assert.equal(await page.getByTestId('render-calendar-value').textContent(), '15')

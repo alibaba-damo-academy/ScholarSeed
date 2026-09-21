@@ -113,11 +113,6 @@
   border-bottom: 1px solid var(--vds-border-default);
 }
 
-.vds-top-bar-navigation-trailing {
-  box-sizing: border-box;
-  padding-inline-end: var(--vds-top-bar-actions-width, 0px);
-}
-
 .vds-brand {
   border: 0;
   background: transparent;
@@ -1401,18 +1396,8 @@
   cursor: grabbing;
 }
 
-.vds-workbench-surface:has(.vds-ai-panel.is-cover) .vds-workbench-main-column {
-  display: none;
-}
-
 .vds-ai-panel.is-cover {
   flex: 1 1 auto;
-}
-
-/* cover 全屏且左侧面板不可见时面板顶到窗口左缘，头部内容让开 macOS 红绿灯
-   （红绿灯画在 x:14 起，约 66px 宽；88px 与 TopBarLeft 的留白一致）。 */
-.vds-ai-panel.is-cover-window .vds-ai-head {
-  padding-left: 88px;
 }
 
 .vds-ai-panel.is-docked .vds-ai-head {
@@ -1615,19 +1600,6 @@
   margin-top: 4px;
   font-size: 10.5px;
   color: var(--wb-muted);
-}
-
-.vds-ai-stream {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  padding: 6px 14px 10px;
-  overflow: hidden;
-}
-
-.vds-ai-stream > .conversation-stream {
-  padding: 0 !important;
 }
 
 .vds-ai-stream-empty h3 {
@@ -2462,13 +2434,6 @@
   background: var(--wb-surface);
 }
 
-/* AI 面板内复用 0.1 的 Stream / Composer，需要把它们约束在面板宽度内。 */
-.vds-ai-stream {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
 .vds-ai-composer-host {
   flex: 0 1 auto;
 }
@@ -2887,15 +2852,6 @@
 
 .vds-document-view.is-viewer-toolbar {
   grid-template-rows: minmax(0, 1fr);
-}
-
-.vds-pdf-side-panel.is-expanded,
-.vds-pdf-document-panel.is-expanded,
-.vds-pdf-annotations.is-expanded {
-  left: 0;
-  width: auto;
-  min-width: 0;
-  max-width: none;
 }
 
 .vds-document-view-slot {
@@ -4425,7 +4381,6 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 12px;
-  min-height: 148px;
   padding: 16px;
   border: 1px solid var(--vds-border-default);
   border-radius: 12px;

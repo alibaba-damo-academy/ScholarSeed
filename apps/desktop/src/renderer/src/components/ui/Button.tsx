@@ -40,6 +40,7 @@ export function buttonVariants(options: ButtonVariantsOptions = {}): string {
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   loading?: boolean
+  loadingIcon?: ReactNode
   size?: ButtonSize
   unstyled?: boolean
   variant?: ButtonVariant
@@ -54,6 +55,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       disabled,
       icon,
       loading = false,
+      loadingIcon,
       size = 'md',
       type = 'button',
       unstyled = false,
@@ -70,7 +72,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       type={type}
       {...props}
     >
-      {loading ? <Spinner className="-ms-[var(--vds-space-1)]" size="sm" /> : icon}
+      {loading ? loadingIcon ?? <Spinner className="-ms-[var(--vds-space-1)]" size="sm" /> : icon}
       {children}
     </button>
   )

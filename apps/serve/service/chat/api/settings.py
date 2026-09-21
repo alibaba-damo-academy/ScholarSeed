@@ -36,7 +36,12 @@ from service.chat.schema import (
 from service.chat.service.models import GATEWAY_CREDENTIAL_REQUIRED_REASON, ModelService
 from service.chat.service.settings import SettingsService
 from service.chat.service.subscriptions import SubscriptionService
-from service.identity.utils import LOCAL_USER_ID, request_user_id, require_host_process
+from service.identity.utils import (
+    LOCAL_USER_ID,
+    request_owner_id,
+    request_user_id,
+    require_host_process,
+)
 from service.settings.connections import UnknownProfileError
 
 PROFILE_NOT_FOUND_STATUS = 404
@@ -234,7 +239,9 @@ def mount_setting_routes(
     async def subscription_login(connection_id: str, request: Request) -> dict:
         require_host_process(request)
         try:
-            return await subscription_service().login(request_user_id(request), connection_id)
+            return await subscription_service().login(
+                request_owner_id(request), connection_id, user_id=request_user_id(request)
+            )
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error
 
@@ -244,7 +251,7 @@ def mount_setting_routes(
     ) -> dict:
         try:
             return subscription_service().login_status(
-                request_user_id(request), connection_id, transaction_id
+                request_owner_id(request), connection_id, transaction_id
             )
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error
@@ -255,7 +262,7 @@ def mount_setting_routes(
     ) -> dict:
         try:
             subscription_service().cancel_login(
-                request_user_id(request), connection_id, transaction_id
+                request_owner_id(request), connection_id, transaction_id
             )
             return {"ok": True}
         except ValueError as error:
@@ -264,7 +271,7 @@ def mount_setting_routes(
     @app.delete("/api/settings/model-connections/{connection_id}/credentials")
     async def subscription_disconnect(connection_id: str, request: Request) -> dict:
         try:
-            subscription_service().disconnect(request_user_id(request), connection_id)
+            subscription_service().disconnect(request_owner_id(request), connection_id)
             return models.profiles(user_id=request_user_id(request))
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error
@@ -272,7 +279,7 @@ def mount_setting_routes(
     @app.get("/api/settings/model-connections/{connection_id}/models")
     async def subscription_models(connection_id: str, request: Request) -> dict:
         try:
-            return await subscription_service().models(request_user_id(request), connection_id)
+            return await subscription_service().models(request_owner_id(request), connection_id)
         except ValueError as error:
             raise HTTPException(_profile_error_status(error), str(error)) from error
 

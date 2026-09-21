@@ -869,7 +869,7 @@ export async function fetchResourceCandidatePage(
         source_id: node.path,
         label: node.name,
         hint: node.kind === 'dir' ? 'folder' : resourceFileKindLabel(node.name),
-        retention: 'session' as const,
+        retention: 'next_turn' as const,
         origin: 'explicit' as const
       })),
       nextOffset: nodes.length > 0 && nextOffset < (payload.total ?? nextOffset)
@@ -888,7 +888,7 @@ function resourceContextQuery(query: string): { path: string; term: string } {
   const slash = normalized.lastIndexOf('/')
   const relativePath = slash >= 0 ? normalized.slice(0, slash) : ''
   return {
-    path: relativePath ? `${RESOURCE_ROOT_SOURCE_ID}/${relativePath}` : '',
+    path: relativePath,
     term: slash >= 0 ? normalized.slice(slash + 1) : normalized
   }
 }
@@ -943,7 +943,7 @@ export async function fetchResourceCandidates(
           label: item.path.slice(item.path.lastIndexOf('/') + 1),
           hint: item.path,
           created_at: item.created_at,
-          retention: 'session' as const,
+          retention: 'next_turn' as const,
           origin: 'explicit' as const
         })))
       cursor = payload.next_cursor ?? null
@@ -1002,7 +1002,7 @@ export async function fetchLiteratureCandidates(
             .join(' · '),
           ...(Number.isFinite(createdAt) ? { created_at: createdAt / 1000 } : {}),
           ...(Number.isFinite(openedAt) ? { opened_at: openedAt / 1000 } : {}),
-          retention: 'session' as const,
+          retention: 'next_turn' as const,
           origin: 'explicit' as const
         }
       }))

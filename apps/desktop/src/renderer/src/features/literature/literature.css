@@ -20,7 +20,7 @@
   background: var(--lit-paper);
 }
 .lit-toolbar {
-  min-height: 52px;
+  min-height: var(--vds-workbench-content-toolbar-height);
   padding: 7px 14px;
   border-bottom: 1px solid var(--lit-line);
   display: flex;

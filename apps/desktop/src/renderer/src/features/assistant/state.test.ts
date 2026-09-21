@@ -7,6 +7,7 @@ import type {
 } from '../../contracts/assistant.ts'
 import {
   contextRefMatchesCandidate,
+  mergeContextCandidates,
   replaceCurrentDocumentRefs
 } from './state.ts'
 
@@ -56,4 +57,61 @@ test('automatic current document reuses an explicit source across revisions', ()
     ),
     false
   )
+})
+
+test('manual file addition promotes a versioned automatic ref instead of duplicating it', () => {
+  const automatic = ref('automatic', 'case1.md', 'current_document')
+  const candidate: AssistantContextCandidate = {
+    kind: 'file',
+    source_id: 'case1.md',
+    label: 'case1.md',
+    retention: 'session',
+    origin: 'explicit'
+  }
+
+  const result = mergeContextCandidates([automatic], [candidate], [], () => 'new')
+
+  assert.equal(contextRefMatchesCandidate(automatic, candidate), true)
+  assert.deepEqual(result.acceptedRefIds, ['automatic'])
+  assert.deepEqual(result.refs, [{
+    ...automatic,
+    source_revision: null,
+    retention: 'session',
+    origin: 'explicit'
+  }])
+  assert.equal(result.changed, true)
+})
+
+test('manual file addition collapses existing unsubmitted duplicate refs', () => {
+  const automatic = ref('automatic', 'case1.md', 'current_document')
+  const explicit = { ...ref('explicit', 'case1.md', 'explicit'), retention: 'session' as const }
+  const result = mergeContextCandidates([automatic, explicit], [{
+    kind: 'file', source_id: 'case1.md', label: 'case1.md', retention: 'session', origin: 'explicit'
+  }], [], () => 'new')
+
+  assert.deepEqual(result.refs.map((item) => item.ref_id), ['explicit'])
+  assert.deepEqual(result.acceptedRefIds, ['explicit'])
+})
+
+test('opening another file preserves manually added and submitted refs', () => {
+  const explicit = { ...ref('explicit', 'case1.md', 'explicit'), retention: 'session' as const }
+  const submitted = ref('submitted', 'queued.md', 'current_document')
+  const automatic = ref('automatic', 'old.md', 'current_document')
+  const result = mergeContextCandidates([explicit, submitted, automatic], [{
+    kind: 'file', source_id: 'case2.md', label: 'case2.md', origin: 'current_document'
+  }], ['submitted'], () => 'new')
+
+  assert.deepEqual(result.refs.map((item) => item.ref_id), ['explicit', 'submitted', 'new'])
+  assert.deepEqual(result.acceptedRefIds, ['new'])
+})
+
+test('manual addition does not mutate a submitted automatic ref', () => {
+  const submitted = ref('submitted', 'case1.md', 'current_document')
+  const result = mergeContextCandidates([submitted], [{
+    kind: 'file', source_id: 'case1.md', label: 'case1.md', retention: 'session', origin: 'explicit'
+  }], ['submitted'], () => 'new')
+
+  assert.deepEqual(result.refs.map((item) => item.ref_id), ['submitted', 'new'])
+  assert.equal(result.refs[0].origin, 'current_document')
+  assert.equal(result.refs[1].origin, 'explicit')
 })

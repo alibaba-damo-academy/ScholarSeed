@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import math
 import os
 import sqlite3
@@ -36,6 +37,10 @@ LOCK_WAIT_TIMEOUT_SECONDS = 40.0
 LOCK_SUFFIX = ".lock"
 INITIAL_GENERATION = 0
 WINDOWS_LOCK_VIOLATION = 33
+LOGGER = logging.getLogger(__name__)
+#: 共享归属下按 connection_id 定位真实存储行的确定序: 活凭据优先, 同状态按 owner 字典序。
+#: 表上只有复合主键、没有 UNIQUE(connection_id), 所以"至多一行"是运行时断言而非 schema 保证。
+SHARED_ROW_ORDER = "state != ?, owner_id"
 WINDOWS_PRIVATE_ACL_SCRIPT = """
 $ErrorActionPreference = 'Stop'
 $path = $env:SCHOLARSEED_PRIVATE_PATH
@@ -143,15 +148,51 @@ class ModelCredentialStore:
         self,
         path: Path = MODEL_CREDENTIALS_DB,
         lock_directory: Path = MODEL_CREDENTIAL_LOCKS,
+        *,
+        shared_ownership: bool = False,
     ) -> None:
         self.path = path
         self.lock_directory = lock_directory
+        # 归属轴 machine 时为真: 一条连接的凭据属于这台机器, 于是读写都按 connection_id
+        # 定位真实存储行, 而不是按 (owner, connection) 复合键 —— 否则登录态一变、归属身份
+        # 跟着变, 已授权的凭据就读空(表现为"连接还在却要求重新授权")。只改定位谓词:
+        # owner_id 列继续如实记录真实建者, 轴改回隔离时原主仍在, 零不可逆迁移。
+        self._shared_ownership = bool(shared_ownership)
 
     @staticmethod
     def _scope(owner_id: str, connection_id: str) -> tuple[str, str]:
         if not owner_id.strip() or not connection_id.strip():
             raise ValueError("model credential owner and connection are required")
         return owner_id, connection_id
+
+    def _stored_scope(
+        self, database: sqlite3.Connection, scope: tuple[str, str]
+    ) -> tuple[str, str]:
+        """把调用方持有的身份解析成真实存储行的键。
+
+        非共享归属下原样返回复合键。共享归属下沿用已存在那一行的 owner, 于是刷新与吊销
+        永远命中真实行, 不会为 ``(local, conn)`` 另写一行 tombstone、却把 ``(真实账号, conn)``
+        的活凭据留在原地 —— 那种 split-brain 的表现是"断开连接之后旧 token 仍能复活"。
+        """
+
+        if not self._shared_ownership:
+            return scope
+        rows = database.execute(
+            f"SELECT owner_id, state FROM model_credentials WHERE connection_id = ? "
+            f"ORDER BY {SHARED_ROW_ORDER}",
+            (scope[1], CredentialState.CONNECTED.value),
+        ).fetchall()
+        if not rows:
+            return scope
+        if len(rows) > 1:
+            # 不静默择一: 同一 connection_id 出现多行说明轴翻转过或历史数据异常。
+            # 只记 owner 与状态 —— token、账号标签一律不入日志。
+            LOGGER.warning(
+                "model_credential_scope_ambiguous connection_id=%s rows=%s",
+                scope[1],
+                [(row["owner_id"], row["state"]) for row in rows],
+            )
+        return self._scope(str(rows[0]["owner_id"]), scope[1])
 
     @contextmanager
     def _database(self) -> Iterator[sqlite3.Connection]:
@@ -186,6 +227,7 @@ class ModelCredentialStore:
     def read(self, owner_id: str, connection_id: str) -> CredentialRecord:
         scope = self._scope(owner_id, connection_id)
         with self._database() as database:
+            scope = self._stored_scope(database, scope)
             row = database.execute(
                 "SELECT * FROM model_credentials WHERE owner_id = ? AND connection_id = ?",
                 scope,
@@ -215,6 +257,7 @@ class ModelCredentialStore:
         scope = self._scope(owner_id, connection_id)
         with self._database() as database:
             database.execute("BEGIN IMMEDIATE")
+            scope = self._stored_scope(database, scope)
             row = database.execute(
                 "SELECT generation FROM model_credentials WHERE owner_id = ? AND connection_id = ?",
                 scope,
@@ -256,6 +299,7 @@ class ModelCredentialStore:
         scope = self._scope(owner_id, connection_id)
         with self._database() as database:
             database.execute("BEGIN IMMEDIATE")
+            scope = self._stored_scope(database, scope)
             row = database.execute(
                 "SELECT generation FROM model_credentials WHERE owner_id = ? AND connection_id = ?",
                 scope,
@@ -277,7 +321,10 @@ class ModelCredentialStore:
         scope = self._scope(owner_id, connection_id)
         # Length-prefixing prevents ambiguous identities; neither token nor account
         # label appears in filesystem names. A lock file is never unlinked while used.
-        identity = "".join(f"{len(part)}:{part}" for part in scope).encode()
+        # 共享归属下锁身份只取 connection_id: 一条连接归这台机器, 登录态变化不能让同一条
+        # 连接拿到两把锁 —— 那样两个账号能并发刷新同一份 refresh_token, 互相把对方顶掉。
+        parts = (scope[1],) if self._shared_ownership else scope
+        identity = "".join(f"{len(part)}:{part}" for part in parts).encode()
         name = sha256(identity).hexdigest() + LOCK_SUFFIX
         self.lock_directory.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
         _protect_path(self.lock_directory, PRIVATE_DIRECTORY_MODE)

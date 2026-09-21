@@ -13,6 +13,8 @@ from scholarseed_codex.protocol.state import (
 @dataclass(frozen=True)
 class AgentRoute:
     owner_thread_id: str
+    owner_turn_id: str = ""
+    owner_item_id: str = ""
     agent_path: str = ""
 
 
@@ -21,6 +23,7 @@ class ThreadRouter:
         self._turns: dict[str, str] = {}
         self._items: dict[str, str] = {}
         self._agents: dict[str, AgentRoute] = {}
+        self._agent_statuses: dict[str, str] = {}
 
     def bind_turn(self, turn_id: str, thread_id: str) -> None:
         self._turns[turn_id] = thread_id
@@ -46,11 +49,19 @@ class ThreadRouter:
         self._agents = {
             key: route for key, route in self._agents.items() if route.owner_thread_id != thread_id
         }
+        self._agent_statuses = {
+            key: status for key, status in self._agent_statuses.items() if key in self._agents
+        }
 
     def register_agents(
-        self, owner_thread_id: str, item: Mapping[str, Any], attached: Collection[str]
+        self,
+        owner_thread_id: str,
+        owner_turn_id: str,
+        item: Mapping[str, Any],
+        attached: Collection[str],
     ) -> None:
         item_type = str(item.get("type") or "")
+        owner_item_id = str(item.get("id") or "")
         if item_type == CODEX_COLLAB_TOOL_CALL_ITEM_TYPE:
             raw = item.get("receiverThreadIds")
             candidates = [str(entry or "") for entry in raw] if isinstance(raw, list) else []
@@ -68,8 +79,16 @@ class ThreadRouter:
                 continue
             self._agents[agent_thread_id] = AgentRoute(
                 owner_thread_id=owner_thread_id,
+                owner_turn_id=owner_turn_id,
+                owner_item_id=owner_item_id,
                 agent_path=agent_path,
             )
+
+    def update_agent_status(self, thread_id: str, status: str) -> bool:
+        if not thread_id or not status or self._agent_statuses.get(thread_id) == status:
+            return False
+        self._agent_statuses[thread_id] = status
+        return True
 
     def resolve(self, params: Mapping[str, Any]) -> str:
         thread_id = str(params.get("threadId") or "")

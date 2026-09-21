@@ -10,6 +10,7 @@ import {
   DialogContent,
   DialogFooter,
   DialogHeader,
+  DialogPortal,
   DialogTitle,
   Textarea
 } from '../../components/ui'
@@ -27,7 +28,6 @@ import { writeClipboardImage } from '../../components/primitive/clipboard'
 const CLOCK_PART_WIDTH = 2
 const MILLISECOND_PART_WIDTH = 3
 const STEP_NUMBER_OFFSET = 1
-const MINIMUM_ELAPSED_MS = 0
 const UNKNOWN_CLOCK_LABEL = '--:--:--.---'
 const PAGE_LANDMARK_TAGS = new Set(['main', 'section', 'aside'])
 const STEP_ACTION_TONES: Record<StepKind, 'brand' | 'neutral' | 'success' | 'warning'> = {
@@ -57,12 +57,6 @@ interface ReviewProps {
   onSummaryChange: (field: keyof SummaryFields, value: string) => void
 }
 
-function requestTone(status?: number, error?: string): 'error' | 'success' | 'neutral' {
-  if (error || (status !== undefined && status >= 400)) return 'error'
-  if (status !== undefined) return 'success'
-  return 'neutral'
-}
-
 function formatClockTime(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return UNKNOWN_CLOCK_LABEL
@@ -71,12 +65,6 @@ function formatClockTime(value: string): string {
   const seconds = String(date.getSeconds()).padStart(CLOCK_PART_WIDTH, '0')
   const milliseconds = String(date.getMilliseconds()).padStart(MILLISECOND_PART_WIDTH, '0')
   return `${hours}:${minutes}:${seconds}.${milliseconds}`
-}
-
-function elapsedFromStart(value: string, startedAtMs: number): number {
-  const occurredAtMs = Date.parse(value)
-  if (!Number.isFinite(occurredAtMs)) return MINIMUM_ELAPSED_MS
-  return Math.max(MINIMUM_ELAPSED_MS, occurredAtMs - startedAtMs)
 }
 
 function reviewTargetLabel(step: RecordedStep): string {
@@ -127,11 +115,17 @@ function ScreenshotEditor({ screenshot, onDelete, onNoteChange }: ScreenshotEdit
       </div>
     </div>
     <Dialog open={zoomed} onOpenChange={setZoomed}>
-      <DialogContent aria-label={t('feedbackRecorder.review.zoomScreenshot')} className="!top-0 !left-0 !h-screen !w-screen !max-w-none !translate-x-0 !translate-y-0 !transform-none !flex !flex-col !rounded-none !border-0 !p-[var(--vds-space-4)]">
-        <DialogHeader><DialogTitle>{t('feedbackRecorder.review.zoomScreenshot')}</DialogTitle></DialogHeader>
-        <img className="min-h-0 min-w-0 flex-1 rounded-[var(--vds-radius-2)] border border-[var(--vds-border-default)] object-contain" src={screenshot.previewUrl} alt={t('feedbackRecorder.review.screenshotAlt')} />
-        <DialogFooter><Button variant="secondary" loading={copying} onClick={() => void copy()}>{copied ? t('feedbackRecorder.review.copied') : t('feedbackRecorder.review.copyScreenshot')}</Button></DialogFooter>
-      </DialogContent>
+      <DialogPortal>
+        <DialogContent
+          aria-label={t('feedbackRecorder.review.zoomScreenshot')}
+          className="!top-0 !left-0 !z-[var(--vds-z-feedback-recorder-nested-dialog)] !h-screen !w-screen !max-w-none !translate-x-0 !translate-y-0 !transform-none !flex !flex-col !rounded-none !border-0 !p-[var(--vds-space-4)]"
+          overlayClassName="!z-[var(--vds-z-feedback-recorder-nested-overlay)]"
+        >
+          <DialogHeader><DialogTitle>{t('feedbackRecorder.review.zoomScreenshot')}</DialogTitle></DialogHeader>
+          <img className="min-h-0 min-w-0 flex-1 rounded-[var(--vds-radius-2)] border border-[var(--vds-border-default)] object-contain" src={screenshot.previewUrl} alt={t('feedbackRecorder.review.screenshotAlt')} />
+          <DialogFooter><Button variant="secondary" loading={copying} onClick={() => void copy()}>{copied ? t('feedbackRecorder.review.copied') : t('feedbackRecorder.review.copyScreenshot')}</Button></DialogFooter>
+        </DialogContent>
+      </DialogPortal>
     </Dialog>
     </>
   )
@@ -151,148 +145,128 @@ export function Review({
   onSummaryChange
 }: ReviewProps): React.JSX.Element {
   const { t } = useTranslation('components')
-  const stepNumberById = new Map(
-    session.steps.map((step, index) => [step.stepId, index + STEP_NUMBER_OFFSET])
-  )
+  const [editingNoteStepId, setEditingNoteStepId] = React.useState<string | null>(null)
   return (
     <Dialog open onOpenChange={(open) => { if (!open && !submitting) onCancel() }}>
-      <DialogContent
-        hideCloseButton
-        className="!z-[var(--vds-z-modal)] !flex !h-[calc(100vh-32px)] !w-[calc(100vw-32px)] !max-w-none flex-col gap-[var(--vds-space-3)] overflow-hidden !p-[var(--vds-space-4)]"
-        overlayClassName="!z-[var(--vds-z-overlay)]"
-        data-feedback-recorder-root="review"
-      >
+      <DialogPortal>
+        <DialogContent
+          hideCloseButton
+          className="!z-[var(--vds-z-feedback-recorder-dialog)] !flex !h-[calc(100vh-32px)] !w-[calc(100vw-32px)] !max-w-none flex-col gap-[var(--vds-space-3)] overflow-hidden !p-[var(--vds-space-4)]"
+          overlayClassName="!z-[var(--vds-z-feedback-recorder-overlay)]"
+          data-feedback-recorder-root="review"
+        >
         <DialogHeader>
           <DialogTitle>{t('feedbackRecorder.review.title')}</DialogTitle>
         </DialogHeader>
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] gap-[var(--vds-space-4)] overflow-hidden">
-          <div className="min-h-0 space-y-[var(--vds-space-3)] overflow-y-auto pr-[var(--vds-space-1)]">
-            <Card className="space-y-[var(--vds-space-3)] p-[var(--vds-space-4)]">
-              <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
-                <h3 className="text-sm font-semibold text-[var(--vds-text-primary)]">{t('feedbackRecorder.review.steps')}</h3>
-                <Badge tone="neutral">{session.steps.length}</Badge>
-              </div>
-              <ol className="space-y-[var(--vds-space-3)]">
-                {session.steps.map((step, index) => {
-                  const screenshots = session.screenshots.filter((screenshot) => screenshot.stepId === step.stepId)
-                  return (
-                    <li key={step.stepId} className="space-y-[var(--vds-space-3)] rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] p-[var(--vds-space-3)]">
-                      <div className="space-y-[var(--vds-space-1)]">
-                        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-sm text-[var(--vds-text-primary)]">
-                          <Badge tone="brand">{index + STEP_NUMBER_OFFSET}</Badge>
-                          <span className="text-[var(--vds-text-secondary)]">
-                            {step.page.dialogLabel
-                              ? t('feedbackRecorder.review.sourceDialog', {
-                                page: step.page.label || step.page.title,
-                                dialog: step.page.dialogLabel
-                              })
-                              : t('feedbackRecorder.review.sourcePage', {
-                                value: step.page.label || step.page.title
-                              })}
-                          </span>
-                          <Badge tone={STEP_ACTION_TONES[step.kind]}>
-                            {t(STEP_ACTION_LABEL_KEYS[step.kind])}
-                          </Badge>
-                          <span className="font-medium">{reviewTargetLabel(step)}</span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-xs text-[var(--vds-text-secondary)]">
-                          <time dateTime={step.occurredAt}>{formatClockTime(step.occurredAt)}</time>
-                          <span>{t('feedbackRecorder.elapsedMs', { value: step.elapsedMs })}</span>
-                        </div>
-                        {step.value !== undefined ? (
-                          <div className="flex gap-[var(--vds-space-2)] text-xs text-[var(--vds-text-secondary)]">
-                            <span className="shrink-0 font-medium">{t('feedbackRecorder.review.inputValue')}</span>
-                            <span className="break-all text-[var(--vds-text-primary)]">
-                              {step.value || t('feedbackRecorder.review.emptyValue')}
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
-                      <Textarea
-                        className="!min-h-[var(--vds-control-height-md)]"
-                        maxLength={RECORDER_NOTE_MAX_LENGTH}
-                        placeholder={t('feedbackRecorder.note.label')}
-                        rows={1}
-                        value={session.notes[step.stepId] || ''}
-                        onChange={(event) => onNoteChange(step.stepId, event.currentTarget.value)}
-                      />
-                      {screenshots.length ? (
-                        <div className="space-y-[var(--vds-space-2)]">
-                          <div className="flex items-center gap-[var(--vds-space-2)] text-xs font-medium text-[var(--vds-text-secondary)]">
-                            <span>{t('feedbackRecorder.review.linkedScreenshots')}</span>
-                            <Badge tone="neutral">{screenshots.length}</Badge>
-                          </div>
-                          <div className="grid gap-[var(--vds-space-3)]">
-                            {screenshots.map((screenshot) => (
-                              <ScreenshotEditor
-                                key={screenshot.screenshotId}
-                                screenshot={screenshot}
-                                onDelete={onDeleteScreenshot}
-                                onNoteChange={onScreenshotNoteChange}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </li>
-                  )
-                })}
-              </ol>
-            </Card>
-            <Card className="space-y-[var(--vds-space-3)] p-[var(--vds-space-4)]">
-              <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
-                <h3 className="text-sm font-semibold text-[var(--vds-text-primary)]">{t('feedbackRecorder.review.requests')}</h3>
-                <Badge tone="neutral">{session.requests.length}</Badge>
-              </div>
-              <div className="space-y-[var(--vds-space-2)]">
-                {session.requests.map((request) => {
-                  const linkedStep = request.stepId ? stepNumberById.get(request.stepId) : undefined
-                  return (
-                    <details key={request.requestId} className="rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] p-[var(--vds-space-3)] text-xs">
-                      <summary className="flex cursor-pointer items-center gap-[var(--vds-space-2)] text-[var(--vds-text-primary)]">
-                        <Badge tone={requestTone(request.status, request.error)}>{request.status || request.error || '...'}</Badge>
-                        <span>{request.method}</span>
-                        <span className="min-w-0 flex-1 truncate">{request.url}</span>
-                        <time className="whitespace-nowrap text-[var(--vds-text-secondary)]" dateTime={request.startedAt}>{formatClockTime(request.startedAt)}</time>
-                        <span className="whitespace-nowrap text-[var(--vds-text-secondary)]">{t('feedbackRecorder.elapsedMs', { value: elapsedFromStart(request.startedAt, session.startedAtMs) })}</span>
-                        <span className="whitespace-nowrap">{t('feedbackRecorder.durationMs', { value: request.durationMs })}</span>
-                      </summary>
-                      <div className="mt-[var(--vds-space-2)] space-y-[var(--vds-space-2)] break-all whitespace-pre-wrap text-[var(--vds-text-secondary)]">
-                        {linkedStep ? <div>{t('feedbackRecorder.review.linkedStep', { id: linkedStep })}</div> : null}
-                        {request.requestBody ? <pre className="overflow-auto">{request.requestBody}</pre> : null}
-                        {request.responseBody ? <pre className="overflow-auto">{request.responseBody}</pre> : null}
-                        {request.error ? <div className="text-[var(--vds-error-text-primary)]">{request.error}</div> : null}
-                      </div>
-                    </details>
-                  )
-                })}
-              </div>
-            </Card>
-          </div>
-          <Card className="min-h-0 space-y-[var(--vds-space-3)] overflow-y-auto p-[var(--vds-space-4)]">
+        <div className="min-h-0 flex-1 space-y-[var(--vds-space-4)] overflow-y-auto pr-[var(--vds-space-1)]">
+          <Card className="space-y-[var(--vds-space-3)] p-[var(--vds-space-4)]">
             <h3 className="text-sm font-semibold text-[var(--vds-text-primary)]">{t('feedbackRecorder.review.summary')}</h3>
+            <p className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
+              {t('feedbackRecorder.review.summaryHint')}
+            </p>
             <Textarea
               label={t('feedbackRecorder.review.final')}
+              placeholder={t('feedbackRecorder.review.summaryPlaceholder')}
+              rows={6}
               value={summary.final}
               onChange={(event) => onSummaryChange('final', event.currentTarget.value)}
             />
-            <Textarea
-              label={t('feedbackRecorder.review.actual')}
-              value={summary.actual}
-              onChange={(event) => onSummaryChange('actual', event.currentTarget.value)}
-            />
-            <Textarea
-              label={t('feedbackRecorder.review.expected')}
-              value={summary.expected}
-              onChange={(event) => onSummaryChange('expected', event.currentTarget.value)}
-            />
-            <Textarea
-              label={t('feedbackRecorder.review.additional')}
-              value={summary.additional}
-              onChange={(event) => onSummaryChange('additional', event.currentTarget.value)}
-            />
             {warning ? <Alert tone="warning" title={warning} /> : null}
             {error ? <div className="text-xs text-[var(--vds-error-text-primary)]">{error}</div> : null}
+          </Card>
+          <Card className="space-y-[var(--vds-space-3)] p-[var(--vds-space-4)]">
+            <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
+              <h3 className="text-sm font-semibold text-[var(--vds-text-primary)]">{t('feedbackRecorder.review.steps')}</h3>
+              <Badge tone="neutral">{session.steps.length}</Badge>
+            </div>
+            <ol className="space-y-[var(--vds-space-3)]">
+              {session.steps.map((step, index) => {
+                const screenshots = session.screenshots.filter((screenshot) => screenshot.stepId === step.stepId)
+                const isEditingNote = editingNoteStepId === step.stepId
+                const stepNote = session.notes[step.stepId] || ''
+                return (
+                  <li key={step.stepId} className="space-y-[var(--vds-space-3)] rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] p-[var(--vds-space-3)]">
+                    <div className="space-y-[var(--vds-space-1)]">
+                      <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-sm text-[var(--vds-text-primary)]">
+                        <Badge tone="brand">{index + STEP_NUMBER_OFFSET}</Badge>
+                        <span className="text-[var(--vds-text-secondary)]">
+                          {step.page.dialogLabel
+                            ? t('feedbackRecorder.review.sourceDialog', {
+                              page: step.page.label || step.page.title,
+                              dialog: step.page.dialogLabel
+                            })
+                            : t('feedbackRecorder.review.sourcePage', {
+                              value: step.page.label || step.page.title
+                            })}
+                        </span>
+                        <Badge tone={STEP_ACTION_TONES[step.kind]}>
+                          {t(STEP_ACTION_LABEL_KEYS[step.kind])}
+                        </Badge>
+                        <span className="font-medium">{reviewTargetLabel(step)}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-[var(--vds-space-2)] text-xs text-[var(--vds-text-secondary)]">
+                        <time dateTime={step.occurredAt}>{formatClockTime(step.occurredAt)}</time>
+                        <span>{t('feedbackRecorder.elapsedMs', { value: step.elapsedMs })}</span>
+                        {stepNote ? (
+                          <span className="break-words text-[var(--vds-text-primary)]">
+                            {t('feedbackRecorder.review.stepNote', { value: stepNote })}
+                          </span>
+                        ) : null}
+                        {!isEditingNote ? (
+                          <Button size="content" variant="link" onClick={() => setEditingNoteStepId(step.stepId)}>
+                            {stepNote
+                              ? t('feedbackRecorder.review.editStepNote')
+                              : t('feedbackRecorder.review.addStepNote')}
+                          </Button>
+                        ) : null}
+                      </div>
+                      {step.value !== undefined ? (
+                        <div className="flex gap-[var(--vds-space-2)] text-xs text-[var(--vds-text-secondary)]">
+                          <span className="shrink-0 font-medium">{t('feedbackRecorder.review.inputValue')}</span>
+                          <span className="break-all text-[var(--vds-text-primary)]">
+                            {step.value || t('feedbackRecorder.review.emptyValue')}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                    {isEditingNote ? (
+                      <div className="flex items-start gap-[var(--vds-space-2)]">
+                        <Textarea
+                          autoFocus
+                          className="!min-h-[var(--vds-control-height-md)] flex-1"
+                          maxLength={RECORDER_NOTE_MAX_LENGTH}
+                          placeholder={t('feedbackRecorder.note.label')}
+                          rows={1}
+                          value={stepNote}
+                          onChange={(event) => onNoteChange(step.stepId, event.currentTarget.value)}
+                        />
+                        <Button size="sm" variant="ghost" onClick={() => setEditingNoteStepId(null)}>
+                          {t('feedback.done')}
+                        </Button>
+                      </div>
+                    ) : null}
+                    {screenshots.length ? (
+                      <div className="space-y-[var(--vds-space-2)]">
+                        <div className="flex items-center gap-[var(--vds-space-2)] text-xs font-medium text-[var(--vds-text-secondary)]">
+                          <span>{t('feedbackRecorder.review.linkedScreenshots')}</span>
+                          <Badge tone="neutral">{screenshots.length}</Badge>
+                        </div>
+                        <div className="grid gap-[var(--vds-space-3)] lg:grid-cols-2">
+                          {screenshots.map((screenshot) => (
+                            <ScreenshotEditor
+                              key={screenshot.screenshotId}
+                              screenshot={screenshot}
+                              onDelete={onDeleteScreenshot}
+                              onNoteChange={onScreenshotNoteChange}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </li>
+                )
+              })}
+            </ol>
           </Card>
         </div>
         <DialogFooter>
@@ -301,7 +275,8 @@ export function Review({
             {t('feedbackRecorder.review.submit')}
           </Button>
         </DialogFooter>
-      </DialogContent>
+        </DialogContent>
+      </DialogPortal>
     </Dialog>
   )
 }

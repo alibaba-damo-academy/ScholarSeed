@@ -15,7 +15,10 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
+import pdfplumber
+
 PARSER_VERSION = 'caption-sentences-v1'
+PDF_LAYOUT_PARAMETERS = {'boxes_flow': .5}
 _PDF_LOCK=Lock()  # PDF layout code has process-wide state; downloads remain concurrent.
 MAX_UNPACKED_BYTES = 160 * 1024 * 1024
 MAX_MEMBERS = 6000
@@ -285,49 +288,49 @@ def _reading_order(blocks,page_width):
     return ordered
 
 
+def _box_area(box):
+    return max(0,box[2]-box[0])*max(0,box[3]-box[1])
+
+
+def _intersection_ratio(left,right):
+    overlap=(max(left[0],right[0]),max(left[1],right[1]),min(left[2],right[2]),min(left[3],right[3]))
+    return _box_area(overlap)/max(_box_area(left),1)
+
+
 def _pdf_blocks(data,warnings):
-    import pymupdf
-    document=pymupdf.open(stream=data,filetype='pdf');blocks=[];removed=[]
-    for i,page in enumerate(document):
+    document=pdfplumber.open(io.BytesIO(data),laparams=PDF_LAYOUT_PARAMETERS);blocks=[];removed=[]
+    for i,page in enumerate(document.pages):
         regions=[]
-        for image in page.get_image_info():
-            rect=pymupdf.Rect(image['bbox'])
-            if rect.get_area()>.85*page.rect.get_area():
+        page_box=(0,0,float(page.width),float(page.height))
+        for image in page.images:
+            rect=(float(image['x0']),float(image['top']),float(image['x1']),float(image['bottom']))
+            if _box_area(rect)>.85*_box_area(page_box):
                 warnings.append(f'page {i+1}: full-page raster requires OCR/layout-aware parsing')
             else:regions.append(('image',rect))
         try:
-            tables=page.find_tables().tables
-            regions.extend(('table',pymupdf.Rect(table.bbox)) for table in tables)
+            regions.extend(('table',tuple(map(float,table.bbox))) for table in page.find_tables())
         except Exception as exc:warnings.append(f'page {i+1}: table detection unavailable ({type(exc).__name__})')
-        if hasattr(page,'cluster_drawings'):
-            for rect in page.cluster_drawings():
-                if rect.width>20 and rect.height>20 and rect.get_area()<.7*page.rect.get_area():
-                    regions.append(('vector_graphic',rect))
-        # PyMuPDF can group same-height lines from two columns into one block.
-        # Split that grouping at the gutter before choosing reading order.
-        raw=[];middle=page.rect.width/2
-        for number,block in enumerate(page.get_text('dict',flags=pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES)['blocks']):
-            if block.get('type')!=0:continue
-            groups={}
-            for line in block.get('lines',[]):
-                box=line['bbox'];side=0 if box[2]<middle+5 else 1 if box[0]>middle-5 else -1
-                groups.setdefault(side,[]).append((box,''.join(span['text'] for span in line['spans'])))
-            if not (0 in groups and 1 in groups):
-                groups={-1:[(line['bbox'],''.join(span['text'] for span in line['spans'])) for line in block.get('lines',[])]}
-            for lines in groups.values():
-                if not lines:continue
-                rect=pymupdf.Rect(lines[0][0])
-                for box,_ in lines[1:]:rect|=pymupdf.Rect(box)
-                raw.append((*rect,'\n'.join(text for _,text in lines),number,0))
-        raw=_reading_order(raw,page.rect.width)
+        for drawing in [*page.curves,*page.rects]:
+            rect=(float(drawing['x0']),float(drawing['top']),float(drawing['x1']),float(drawing['bottom']))
+            if rect[2]-rect[0]>20 and rect[3]-rect[1]>20 and _box_area(rect)<.7*_box_area(page_box):
+                regions.append(('vector_graphic',rect))
+        raw=[]
+        for number,block in enumerate(page.objects.get('textboxhorizontal',())):
+            text=str(block.get('text') or '').strip()
+            if text:raw.append((float(block['x0']),float(block['top']),float(block['x1']),float(block['bottom']),text,number,0))
+        if not raw:
+            for number,line in enumerate(page.extract_text_lines(layout=False,return_chars=False)):
+                text=str(line.get('text') or '').strip()
+                if text:raw.append((float(line['x0']),float(line['top']),float(line['x1']),float(line['bottom']),text,number,0))
+        raw=_reading_order(raw,page.width)
         for block in raw:
             if len(block)>6 and block[6]!=0:continue
-            bbox=pymupdf.Rect(block[:4]);text=block[4].strip()
+            bbox=tuple(block[:4]);text=block[4].strip()
             if not text:continue
-            marginal=bbox.y0<45 or bbox.y1>page.rect.height-40
+            marginal=bbox[1]<45 or bbox[3]>page.height-40
             if marginal and re.fullmatch(r'\d+',text):continue
             caption=re.match(r'^(?:Fig(?:ure)?\.?|Table|图|表)\s*\d+[\s.:：]',text,re.I)
-            overlaps=any((bbox&rect).get_area()/max(bbox.get_area(),1)>.5 for _,rect in regions)
+            overlaps=any(_intersection_ratio(bbox,rect)>.5 for _,rect in regions)
             if overlaps and not caption:continue
             if overlaps and caption:warnings.append(f'page {i+1}: caption overlaps a removed region; caption/data boundary is unverified')
             if caption and re.match(r'^(?:Table|表)',text,re.I) and not any(k=='table' for k,_ in regions):
@@ -339,8 +342,10 @@ def _pdf_blocks(data,warnings):
             blocks.append({'kind':kind,'raw':text,'marginal':marginal,'source':{'page':i+1,'bbox':list(bbox)}})
         removed.extend({'page':i+1,'kind':kind,'bbox':list(rect)} for kind,rect in regions)
     repeated=Counter(b['raw'] for b in blocks if b['marginal'] and len(b['raw'])<160)
-    blocks=[b for b in blocks if not (b['marginal'] and repeated[b['raw']]>=max(3,(len(document)+1)//2))]
-    return blocks,{'pages':len(document),'removed_regions':removed}
+    page_count=len(document.pages)
+    blocks=[b for b in blocks if not (b['marginal'] and repeated[b['raw']]>=max(3,(page_count+1)//2))]
+    document.close()
+    return blocks,{'pages':page_count,'removed_regions':removed}
 
 
 def parse_source(path,output_dir=None):

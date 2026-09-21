@@ -180,6 +180,7 @@ export interface DocumentPanelContext {
 /** A business feature that can extend matching documents with one side panel. */
 export interface DocumentPanelContribution {
   id: string
+  label: (i18n: i18n) => string
   title: ReactNode
   placement?: 'toolbar' | 'viewer'
   matches: (context: DocumentPanelContext) => boolean

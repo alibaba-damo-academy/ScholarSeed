@@ -11,9 +11,9 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import pymupdf
 from PIL import Image
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.persistence.citations import CitationStore
 from service.assistant.persistence.store import AssistantStore
 from service.assistant.service.citations import CitationService, citation_handles
@@ -55,13 +55,13 @@ from service.workbench.service.sentences import SentenceBlock, reading_order, se
 
 
 def pdf_bytes(*, rotation: int = 0, crop: bool = False) -> bytes:
-    with pymupdf.open() as pdf:
+    with pdf_fixture.open() as pdf:
         for _ in range(2):
             page = pdf.new_page(width=600, height=800)
             page.insert_text((100, 200), "First sentence. Repeated sentence.")
             page.insert_text((350, 500), "Independent column.")
             if crop:
-                page.set_cropbox(pymupdf.Rect(50, 100, 550, 700))
+                page.set_cropbox(pdf_fixture.Rect(50, 100, 550, 700))
             page.set_rotation(rotation)
         return pdf.tobytes()
 
@@ -331,7 +331,7 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(named_encoding(b"dup 11 /angbracketright put"), {11: "〉"})
 
     def test_split_text_runs_follow_physical_line_order(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             page.insert_text((70, 100), "We examine the NSP", fontsize=11)
             page.insert_text((100, 114), "Next result follows.", fontsize=11)
@@ -684,7 +684,7 @@ class CitationContracts(unittest.TestCase):
 
     def test_sentence_boundaries_keep_abbreviations_decimals_and_closing_quotes(self):
         text = 'Dr. J. Smith used Fig. 2, e.g. a value of 3.14. "It worked!" Next sentence.'
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=1000)
             page.insert_text((40, 100), text, fontsize=10)
             payload = pdf.tobytes()
@@ -742,10 +742,10 @@ class CitationContracts(unittest.TestCase):
         )
 
     def test_length_splits_never_claim_a_complete_sentence(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=2000)
             text = " ".join(["measurement"] * 130) + "."
-            page.insert_textbox(pymupdf.Rect(40, 40, 550, 1900), text, fontsize=11)
+            page.insert_textbox(pdf_fixture.Rect(40, 40, 550, 1900), text, fontsize=11)
             index = extract(pdf.tobytes())
         self.assertGreater(len(index.fragments), 1)
         self.assertTrue(
@@ -753,7 +753,7 @@ class CitationContracts(unittest.TestCase):
         )
 
     def test_partial_page_does_not_bridge_omitted_text(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text(
                 (40, 700),
@@ -772,7 +772,7 @@ class CitationContracts(unittest.TestCase):
 
     def test_layout_supported_continuations_keep_page_coordinates(self):
         for cross_page in (False, True):
-            with self.subTest(cross_page=cross_page), pymupdf.open() as pdf:
+            with self.subTest(cross_page=cross_page), pdf_fixture.open() as pdf:
                 page = pdf.new_page()
                 page.insert_text(
                     (40, 700),
@@ -800,7 +800,10 @@ class CitationContracts(unittest.TestCase):
             ("Table 2 summarizes the resulting effects.", 11, False),
         ]
         for following, size, blank in cases:
-            with self.subTest(following=following, size=size, blank=blank), pymupdf.open() as pdf:
+            with (
+                self.subTest(following=following, size=size, blank=blank),
+                pdf_fixture.open() as pdf,
+            ):
                 page = pdf.new_page()
                 page.insert_text(
                     (40, 700),
@@ -829,19 +832,19 @@ class CitationContracts(unittest.TestCase):
                     self.assertTrue(0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1)
 
     def test_implicit_word_spaces_follow_layout_word_boundaries(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((100, 100), "Attention", fontsize=10)
-            following = 100 + pymupdf.get_text_length("Attention", fontsize=10) + 1.5
+            following = 100 + pdf_fixture.get_text_length("Attention", fontsize=10) + 1.5
             page.insert_text((following, 100), "mechanisms.", fontsize=10)
             index = extract(pdf.tobytes())
         self.assertEqual([fragment.text for fragment in index.fragments], ["Attention mechanisms."])
 
     def test_subscript_stays_with_its_sentence_and_highlight(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((100, 100), "Parameter b", fontsize=10)
-            x = 100 + pymupdf.get_text_length("Parameter b", fontsize=10)
+            x = 100 + pdf_fixture.get_text_length("Parameter b", fontsize=10)
             page.insert_text((x, 102), "1", fontsize=7)
             page.insert_text((x + 4, 100), " = 0.9. Next sentence.", fontsize=10)
             page.insert_text((100, 113), "Following line.", fontsize=10)
@@ -860,12 +863,14 @@ class CitationContracts(unittest.TestCase):
         self.assertLess(first[1], 0.2)
 
     def test_chinese_text_and_parallel_columns_keep_distinct_anchors(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)
             page.insert_text((60, 100), "蓝组二十三，红组十七。", fontname="china-s")
-            page.insert_textbox(pymupdf.Rect(60, 160, 250, 250), "Left uses cobalt.\nScore is 73.")
             page.insert_textbox(
-                pymupdf.Rect(350, 160, 540, 250), "Right uses nickel.\nScore is 73."
+                pdf_fixture.Rect(60, 160, 250, 250), "Left uses cobalt.\nScore is 73."
+            )
+            page.insert_textbox(
+                pdf_fixture.Rect(350, 160, 540, 250), "Right uses nickel.\nScore is 73."
             )
             index = extract(pdf.tobytes())
         self.assertIn("蓝组二十三，红组十七。", [f.text for f in index.fragments])
@@ -875,11 +880,11 @@ class CitationContracts(unittest.TestCase):
         self.assertLess(scores[0].pages[0].quads[0][2], scores[1].pages[0].quads[0][0])
 
     def test_mixed_scan_reports_unreadable_page_without_losing_text_page(self):
-        with pymupdf.open() as image_source:
+        with pdf_fixture.open() as image_source:
             page = image_source.new_page()
             page.insert_text((60, 100), "Image-only value is 909.")
             image = page.get_pixmap().tobytes("png")
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((60, 100), "Text page value is 515.")
             scan = pdf.new_page()
@@ -890,11 +895,13 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(index.fragments[0].pages[0].page, 1)
 
     def test_failed_pdf_jobs_produce_no_citation_receipts_and_do_not_block_next_file(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             pdf.new_page()
             blank = pdf.tobytes()
             encrypted = pdf.tobytes(
-                encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="test-password", owner_pw="owner"
+                encryption=pdf_fixture.PDF_ENCRYPT_AES_256,
+                user_pw="test-password",
+                owner_pw="owner",
             )
         for payload, expected in (
             (blank, "pdf_no_text_layer"),
@@ -936,7 +943,7 @@ class CitationContracts(unittest.TestCase):
                 self.assertAlmostEqual(actual, wanted)
 
     def test_cross_page_window_preserves_receipt_geometry_and_original_text(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             pdf.new_page().insert_text((70, 700), "The cross-page trial enrolled")
             pdf.new_page().insert_text((70, 80), "73 participants and lasted 9 days.")
             self.source.payload = pdf.tobytes()
@@ -967,7 +974,7 @@ class CitationContracts(unittest.TestCase):
         )
 
     def test_window_does_not_skip_intervening_text_or_blank_page(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "Alpha result.")
             page.insert_text((70, 200), "Intervening unrelated paragraph.")
@@ -988,7 +995,7 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(result["fragments"][0]["pages"], [1])
 
     def test_search_dehyphenates_without_rewriting_receipt(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "The micro-\nscope recorded 42 units.")
             self.source.payload = pdf.tobytes()
@@ -1000,7 +1007,7 @@ class CitationContracts(unittest.TestCase):
         self.assertIn("micro-\nscope", result["fragments"][0]["text"])
 
     def test_existing_invisible_text_layer_is_readable(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "Existing OCR layer reports 63 samples.", render_mode=3)
             self.source.payload = pdf.tobytes()
@@ -1019,9 +1026,9 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(citation_handles("```md\n[x](scholarseed-cite:fake)\n```"), ())
 
     def test_filtered_index_receipts_and_coverage_survive_reopen(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 400, 250))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 400, 250))
             page.insert_text((100, 150), "PRIVATE_CHART_VALUE 98765")
             page.insert_text((60, 280), "Figure 1: The original caption.")
             self.source.payload = pdf.tobytes()
@@ -1052,7 +1059,7 @@ class CitationContracts(unittest.TestCase):
         self.assertEqual(before["quote"], "Figure 1: The original caption.")
 
     def test_formula_receipt_resolves_to_authorized_region_preview(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
             page.insert_text((70, 100), "Result: x = y + z = 42 + 7 = 49.")
             self.source.payload = pdf.tobytes()
@@ -1070,9 +1077,9 @@ class CitationContracts(unittest.TestCase):
             self.service.preview("session", "answer:1", revision, handle, 2)
 
     def test_fully_omitted_document_returns_ready_empty_evidence(self):
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             page = pdf.new_page()
-            page.draw_rect(pymupdf.Rect(60, 100, 400, 250))
+            page.draw_rect(pdf_fixture.Rect(60, 100, 400, 250))
             page.insert_text((100, 150), "Chart-only 98765")
             self.source.payload = pdf.tobytes()
         self.ready()

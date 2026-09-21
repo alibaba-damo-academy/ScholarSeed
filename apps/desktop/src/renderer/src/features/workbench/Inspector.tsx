@@ -13,11 +13,13 @@ export function DocumentPanelActions({
   panels: DocumentPanelContribution[]
   onToggle: (panelId: string) => void
 }): React.JSX.Element {
+  const { i18n } = useTranslation()
   return (
     <>
       {panels.map((panel) => (
         <Button
           key={panel.id}
+          aria-label={panel.label(i18n)}
           aria-pressed={activePanelId === panel.id}
           data-testid={`document-panel-toggle-${panel.id}`}
           variant={activePanelId === panel.id ? 'secondary' : 'outline'}

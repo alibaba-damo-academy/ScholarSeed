@@ -35,6 +35,7 @@ from service.identity.service.account_token import (  # noqa: E402
     CONV_MESSAGE_ID_HEADER,
     CONV_TURN_ID_HEADER,
 )
+from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_MACHINE  # noqa: E402
 from service.settings.catalog import (  # noqa: E402
     _is_deeprd_gateway,
     converge_gateway_model_config,
@@ -582,11 +583,14 @@ def test_personal_profile_keeps_its_own_credential() -> None:
         account_tokens=SimpleNamespace(current=lambda _user_id: "account-token"),
         profiles=store,
     )
+    # 个人端点是 Responses-only、又不在生产 bridge 的 source_endpoints 里, 只有声明了思考
+    # 深度的调用才真的上桥 —— 要断言桥上那条腿的凭据, 先得让它上桥。
     with patch.object(model_module, "load_builtin_work_config", return_value={}):
         service.session_spec(
             personal_model_key(profile["id"], "personal-model"),
             session_id="personal-session",
             user_id="signed-in-user",
+            reasoning_effort="",
         )
     upstream = next(iter(bridge._upstreams.values()))
     check(
@@ -692,6 +696,71 @@ def test_model_listing_does_not_persist() -> None:
     check("listing refuses a provider without a translation leg", refused)
 
 
+def test_connection_probe_uses_model_directory() -> None:
+    """The editor tests connectivity without requiring or invoking a selected model."""
+    store = ModelProfileStore()
+    service, _selected = build_service(store)
+    saved = store.upsert(profile_values())
+    before = store.path.read_bytes()
+    requests: list[httpx.Request] = []
+    status = 200
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method != "GET" or request.url.path != "/v1/models":
+            return httpx.Response(400, json={"error": "unexpected inference request"})
+        if status != 200:
+            return httpx.Response(status, json={"error": "directory unavailable"})
+        return httpx.Response(200, json={"data": [{"id": "available-model"}]})
+
+    app = FastAPI()
+    mount_setting_routes(app, models=service, settings=SimpleNamespace(), runtime=SimpleNamespace())
+
+    async def probe(values: dict, profile_id: str = "") -> dict:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/serve/model-profiles/probe", json={**values, "profile_id": profile_id}
+            )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    real_client = httpx.Client
+    with patch(
+        "service.chat.service.probe.httpx.Client",
+        side_effect=lambda **kwargs: real_client(transport=httpx.MockTransport(upstream), **kwargs),
+    ):
+        for wire_api in ("chat_completions", "responses"):
+            for selected in ((), ("personal-model",)):
+                result = asyncio.run(probe(profile_values(models=selected, wire_api=wire_api)))
+                check(
+                    f"{wire_api} probe with {selected} reads directory", result["ok"], str(result)
+                )
+        result = asyncio.run(probe(profile_values(models=(), api_key=""), saved["id"]))
+        check("saved connection probe reuses credential", result["ok"], str(result))
+        for status in (401, 404):
+            result = asyncio.run(probe(profile_values(models=())))
+            check(
+                f"probe preserves directory HTTP {status} failure",
+                not result["ok"] and result.get("error_class") == f"http_status_{status}",
+                str(result),
+            )
+        check(
+            "every probe is one authenticated GET with no inference body",
+            len(requests) == 7
+            and all(
+                request.method == "GET"
+                and str(request.url) == "https://personal.example.test/v1/models"
+                and not request.content
+                and request.headers.get("Authorization") == "Bearer personal-test-key"
+                for request in requests
+            ),
+        )
+    check("connection probes leave saved profiles unchanged", store.path.read_bytes() == before)
+    store.delete(saved["id"])
+
+
 def test_product_catalog_hides_concrete_subscription_models() -> None:
     """Native subscription models are not explicit product model connections."""
     qwen = {
@@ -756,6 +825,94 @@ def test_builtin_models_greyed_out_when_signed_out() -> None:
         qwen_in = next(row for row in signed_in["available_models"] if row["key"] == "qwen3.8-max")
         check("登录后内置模型恢复可选", not qwen_in.get("disabled"), str(qwen_in))
         check("恢复可选时不携带置灰原因", not qwen_in.get("disabled_reason_code"), str(qwen_in))
+
+
+class _RecordingSubscriptions:
+    """记下订阅腿被问到的归属身份 —— 用来证明它与内置门禁腿喂的不是同一个值。"""
+
+    def __init__(self) -> None:
+        self.owners: list[str] = []
+
+    def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        self.owners.append(owner_id)
+        return {"state": "connected", "account_label": "", "billing": "subscription"}
+
+    async def models(self, owner_id: str, connection_id: str) -> dict[str, Any]:
+        self.owners.append(owner_id)
+        return {"models": []}
+
+
+def test_machine_axis_splits_gateway_gate_and_personal_connection_identities() -> None:
+    """machine 轴下两个身份各喂各的: 真实账号给内置门禁, 归属身份给个人连接。
+
+    把整条路由换成归属身份会让内置模型即使登录也永久置灰; 完全不拆则登出后自配的订阅
+    连接从菜单消失。这条同时钉住两个方向。
+    """
+
+    store = ModelProfileStore(shared_ownership=True)
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    subscriptions = _RecordingSubscriptions()
+    service = ModelService(
+        SimpleNamespace(  # type: ignore[arg-type]
+            runtime_executable=lambda: "codex",
+            runtime_model=lambda: "",
+            set_runtime_model=lambda _value: None,
+        ),
+        CompletionBridge("http://127.0.0.1:9999", shared_ownership=True),
+        account_tokens=SimpleNamespace(current=lambda _user_id: "account-token"),
+        profiles=store,
+        subscriptions=subscriptions,  # type: ignore[arg-type]
+        ownership_axis=OWNERSHIP_AXIS_MACHINE,
+    )
+    # 登录态下建立的连接: owner 戳是真实账号, 而归属身份是机器级常量。
+    profile = store.upsert(
+        {
+            "authentication": "oauth",
+            "oauth_provider": "chatgpt",
+            "selected_models": [{"id": "gpt-5", "label": ""}],
+        },
+        owner_id=LOCAL_USER_ID,
+        user_id="u-real",
+    )
+    subscription_key = personal_model_key(profile["id"], "gpt-5")
+    gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
+    with (
+        patch("service.chat.service.models.available_models", return_value=gateway_catalog),
+        patch("service.chat.service.models._api_key", return_value=""),
+    ):
+        signed_out = asyncio.run(service.catalog(user_id=LOCAL_USER_ID))
+        signed_in = asyncio.run(service.catalog(user_id="u-real"))
+
+    def rows(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {row["key"]: row for row in payload["available_models"]}
+
+    out, back = rows(signed_out), rows(signed_in)
+    check(
+        "登出后自配订阅连接仍在目录里且未置灰",
+        subscription_key in out and not out[subscription_key].get("disabled"),
+        str(sorted(out)),
+    )
+    check(
+        "登出后内置网关模型仍按真实账号置灰",
+        out[GATEWAY_MODEL_KEY].get("disabled") is True,
+        str(out.get(GATEWAY_MODEL_KEY)),
+    )
+    check(
+        "登录后自配订阅连接不受影响",
+        subscription_key in back and not back[subscription_key].get("disabled"),
+        str(sorted(back)),
+    )
+    check(
+        "登录后内置网关模型恢复可选（没被归属身份污染）",
+        not back[GATEWAY_MODEL_KEY].get("disabled"),
+        str(back.get(GATEWAY_MODEL_KEY)),
+    )
+    check(
+        "订阅腿只被喂归属身份, 从不被喂真实账号",
+        bool(subscriptions.owners) and set(subscriptions.owners) == {LOCAL_USER_ID},
+        str(subscriptions.owners),
+    )
 
 
 def test_declared_empty_legacy_connection_uses_product_gateway() -> None:
@@ -1407,6 +1564,7 @@ def main() -> int:
     test_inference_uses_selected_personal_model()
     test_inference_sends_turn_and_session_metering_headers()
     test_unsaved_model_api_probe()
+    test_connection_probe_uses_model_directory()
     test_personal_profile_is_a_catalog_source()
     test_official_personal_endpoint_uses_verified_vendor_capabilities()
     test_catalog_display_provenance_preserves_user_labels_and_model_identity()
@@ -1420,6 +1578,7 @@ def main() -> int:
     test_model_listing_does_not_persist()
     test_product_catalog_hides_concrete_subscription_models()
     test_builtin_models_greyed_out_when_signed_out()
+    test_machine_axis_splits_gateway_gate_and_personal_connection_identities()
     test_declared_empty_legacy_connection_uses_product_gateway()
     test_credential_fields_never_erase_the_builtin_catalog()
     test_builtin_lane_credential_comes_from_env_not_config()

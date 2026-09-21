@@ -8,9 +8,9 @@ from dataclasses import replace
 from pathlib import Path
 
 import httpx
-import pymupdf
 from openpyxl import Workbook
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.persistence.invocations import (
     AssistantInvocationConflictError,
     AssistantInvocationStore,
@@ -464,7 +464,7 @@ class ResourceContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_pdf_partial_sentence_verifies_hash_inside_geometry(self):
         sentence = "Three repeated measurements; other conditions were unchanged."
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page(width=500, height=400)
         page.insert_text((40, 120), sentence, fontsize=12)
         payload = document.tobytes()

@@ -50,15 +50,17 @@ test('visible path failure consumers store message identity and redraw in their 
   assert.deepEqual(open, { key: 'dock.desktopUnavailable' })
   assert.deepEqual(reveal, { key: 'feedback.revealDesktopUnavailable' })
   const dock = readFileSync(new URL('./features/workbench/Dock.tsx', import.meta.url), 'utf8')
+  const external = readFileSync(new URL('./features/workbench/External.tsx', import.meta.url), 'utf8')
   const store = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
-  for (const source of [dock, store]) {
+  for (const source of [external, store]) {
     assert.match(source, /opened.applicationFailure\?\.code === 'desktop_bridge_unavailable'/)
     assert.doesNotMatch(source, /opened.error === 'desktop bridge unavailable'/)
     assert.match(source, /detail: opened.error/)
   }
   assert.match(dock, /useTranslation\('workbench'\)/)
-  assert.match(dock, /t\(externalOpenError.key\)/)
-  const panel = readFileSync(new URL('./features/resources/ResourcePanel.tsx', import.meta.url), 'utf8')
-  assert.match(panel, /useTranslation\('resources'\)/)
-  assert.match(panel, /t\(resource.notice.text.key\)/)
+  assert.match(external, /t\(result\.error\?\.key \?\? 'dock\.openFailed'\)/)
+  const app = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+  assert.match(app, /function ResourceNoticeToast\(\)/)
+  assert.match(app, /useTranslation\('resources'\)/)
+  assert.match(app, /t\(notice.text.key\)/)
 })

@@ -47,7 +47,6 @@ from urllib.parse import urlparse
 
 MIN_PYTHON = (3, 12)
 RECOMMENDED_PYTHON = (3, 12)
-PRODUCT_PYTHON_ENV = "SCHOLARSEED_PYTHON"
 
 # (import name, pip name, required?, what breaks without it)
 #
@@ -58,11 +57,13 @@ PRODUCT_PYTHON_ENV = "SCHOLARSEED_PYTHON"
 PACKAGES = [
     ("openai", "openai", True, "every LLM stage; the gateway speaks the OpenAI protocol"),
     ("httpx", "httpx", True, "HTTP transport for the SDK"),
-    ("fitz", "PyMuPDF", False,
-     "PDF full-text extraction. fetch_fulltext.py's cascade can still DOWNLOAD a "
-     "PDF without it but cannot read one, so every paper that PaperHub did not "
-     "serve as parsed LaTeX degrades to abstract-only — visible as a low "
-     "02_retrieval/fulltext_report.json coverage, not as an error"),
+    ("pypdfium2", "pypdfium2", False,
+     "PDF full-text extraction and page rendering. Without it PDF sources degrade "
+     "to abstract-only and publication page verification remains incomplete"),
+    ("pdfplumber", "pdfplumber", False,
+     "layout-aware PDF parsing, including columns, tables and figure exclusion"),
+    ("pypdf", "pypdf", False,
+     "PDF metadata, encryption and embedded-file handling"),
     ("matplotlib", "matplotlib", False,
      "data_chart rendering requires this package; a missing required chart is a "
      "technical failure, never silently dropped"),
@@ -80,6 +81,7 @@ LATEX_BINARIES = [
      "scripts/templates.py probes .bst availability with it; without it every "
      "citation style reports as unavailable whether or not it is"),
 ]
+
 
 # Not a check, a statement. `pandoc` is deliberately absent from the lists
 # above: the Markdown output format is rendered natively by
@@ -108,22 +110,10 @@ class Report:
 
 
 def check_python(rep: Report) -> None:
-    version = sys.version_info
-    product_python = os.environ.get(PRODUCT_PYTHON_ENV, "").strip()
-    expected = (
-        pathlib.Path(product_python).expanduser().resolve()
-        if product_python
-        else (_slr_paths.HOME / ".venv").resolve()
-    )
-    active = pathlib.Path(sys.executable).resolve()
-    rep.add(
-        "runtime",
-        "bound Python 3.12.x",
-        version[:2] == MIN_PYTHON and active == expected,
-        True,
-        detail=f"{sys.executable}: {version.major}.{version.minor}.{version.micro}",
-        hint="set SCHOLARSEED_PYTHON to the product Python or run scripts/setup with Python 3.12",
-    )
+    v = sys.version_info
+    expected = _slr_paths.HOME / '.venv'
+    rep.add('runtime', 'bound Python 3.12.x', v[:2]==(3,12) and pathlib.Path(sys.prefix).resolve()==expected.resolve(), True,
+            detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}', hint='run scripts/setup with Python 3.12')
 
 
 def check_packages(rep: Report) -> None:
@@ -210,14 +200,11 @@ def check_providers(rep: Report, profile: str) -> None:
     if "figures_image" in stages:
         image_specific_token = os.environ.get("IMAGE_API_KEY", "").strip()
         image_token = image_specific_token or token.strip()
-        image_source = (
-            "IMAGE_API_KEY" if image_specific_token else "SCHOLARSEED_ACCOUNT_TOKEN fallback"
-        )
+        image_source = ("IMAGE_API_KEY" if image_specific_token
+                        else "SCHOLARSEED_ACCOUNT_TOKEN fallback")
         rep.add(
-            "providers",
-            "image credential",
-            _is_configured(image_token),
-            False,
+            "providers", "image credential",
+            _is_configured(image_token), False,
             detail=f"image model stage; source: {image_source}",
             hint="export IMAGE_API_KEY or SCHOLARSEED_ACCOUNT_TOKEN before generating images",
         )

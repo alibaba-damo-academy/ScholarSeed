@@ -22,34 +22,29 @@ import { hasProjectScope, useApp } from '../store'
 import { ActivityRail } from './ActivityRail'
 import { ModulePanel } from './ModulePanel'
 import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from './ProjectMenu'
-import { TopBar, TopBarLeft, TopBarRight } from './TopBar'
+import { TopBar, TopBarLeft } from './TopBar'
+import {
+  ACTIVITY_RAIL_WIDTH,
+  MODULE_PANEL_DEFAULT_WIDTH,
+  MODULE_PANEL_MAX_WIDTH,
+  MODULE_PANEL_WIDTH_STEP,
+  MODULE_PANEL_WIDTH_UNIT,
+  modulePanelWidthCss,
+  parseModulePanelWidth,
+  topBarLeftWidth
+} from './geometry'
 
 const MODULE_PANEL_WIDTH_STORAGE_KEY = 'scholarseed.modulePanel.width'
 const AI_PANEL_WIDTH_STORAGE_KEY = 'scholarseed.aiPanel.width'
-const MODULE_PANEL_DEFAULT_WIDTH = 256
-const MODULE_PANEL_MAX_WIDTH = 462
-const ACTIVITY_RAIL_WIDTH = 56
-const MODULE_PANEL_WIDTH_UNIT = 'px'
 const AI_PANEL_DEFAULT_WIDTH = 320
 const AI_PANEL_MIN_WIDTH = 320
 const AI_PANEL_MAX_WIDTH_PERCENT = 55
 const MAIN_WORKBENCH_MIN_WIDTH = 160
-const WORKBENCH_SPLIT_CLASS_NAME =
-  'min-h-0 flex-1 [background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-header-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-header-height),transparent_0)]'
-
-function clampModulePanelWidth(width: number): number {
-  return Math.min(Math.max(width, MODULE_PANEL_DEFAULT_WIDTH), MODULE_PANEL_MAX_WIDTH)
-}
+const WORKBENCH_SPLIT_CLASS_NAME = String.raw`min-h-0 flex-1 [--vds-resizable-handle-active-guide-color:var(--vds-border-default)] [--vds-resizable-handle-active-guide-edge-color:var(--vds-border-default)] [--vds-resizable-handle-current-guide-color:var(--vds-border-default)] [--vds-resizable-handle-current-guide-edge-color:var(--vds-border-default)] [--vds-resizable-handle-drag-guide-color:var(--vds-border-default)] [--vds-resizable-handle-drag-guide-edge-color:var(--vds-border-default)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-content-toolbar-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-content-toolbar-height),transparent_0)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-position:right_top] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-repeat:no-repeat] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-size:50%_100%] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:left-1/2 [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:translate-x-0 [&>.vds-resizable-split\_\_panel]:flex [&>.vds-resizable-split\_\_panel]:min-h-0 [&>.vds-resizable-split\_\_panel]:overflow-hidden [&>.vds-resizable-split\_\_panel--left]:shrink-0`
 
 function readStoredModulePanelWidth(): number {
   const raw = window.localStorage.getItem(MODULE_PANEL_WIDTH_STORAGE_KEY)
-  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN
-  return Number.isFinite(parsed) ? clampModulePanelWidth(parsed) : MODULE_PANEL_DEFAULT_WIDTH
-}
-
-function parsePanelWidth(width: string): number {
-  const parsed = Number.parseInt(width.replace(MODULE_PANEL_WIDTH_UNIT, ''), 10) - ACTIVITY_RAIL_WIDTH
-  return Number.isFinite(parsed) ? clampModulePanelWidth(parsed) : MODULE_PANEL_DEFAULT_WIDTH
+  return raw ? parseModulePanelWidth(raw) : MODULE_PANEL_DEFAULT_WIDTH
 }
 
 function readStoredAiPanelWidth(): number {
@@ -65,23 +60,11 @@ function parseAiPanelWidth(width: string): number {
 
 function renderMainWorkbench(): React.JSX.Element {
   return (
-    <main className="vds-workbench-main">
+    <main className="vds-workbench-main h-full min-h-0">
       <div className="vds-workbench-pane flex-1 min-h-0 overflow-hidden bg-[var(--vds-bg-gray-default)]">
         <Workbench />
       </div>
     </main>
-  )
-}
-
-function renderSideWorkbench(): React.JSX.Element {
-  return (
-    <div className="vds-workbench-side">
-      {/* 活动栏恒在：项目级视图的禁用态由条目自己的 requiresProject 表达，
-          头像入口 (PRD②) 与新建项目入口更不能随面板一起消失。无项目时只隐
-          模块面板 —— 面板内容全都以项目为参数。 */}
-      <ActivityRail />
-      <ModulePanel />
-    </div>
   )
 }
 
@@ -131,28 +114,24 @@ function renderMainSurface(
       {body}
     </div>
   )
+  const dockedAiPanel = aiPanelOpen && aiPanelDocked && !aiPanelCover
 
   return (
     <div className="vds-workbench-surface">
-      {aiPanelOpen && aiPanelDocked && !aiPanelCover ? (
-        <ResizablePanel
-          aria-label={resizeAssistantLabel}
-          className="vds-ai-panel-resizable min-h-0 flex-1 [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-x-auto [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-y-hidden"
-          defaultRightWidth={`${aiPanelWidth}${MODULE_PANEL_WIDTH_UNIT}`}
-          leftPanel={mainColumn}
-          minLeftWidth={MAIN_WORKBENCH_MIN_WIDTH}
-          maxRightWidth={AI_PANEL_MAX_WIDTH_PERCENT}
-          minRightWidth={AI_PANEL_MIN_WIDTH}
-          onRightWidthChange={onAiPanelWidthChange}
-          onRightWidthChangeEnd={onAiPanelWidthChangeEnd}
-          rightPanel={<AiPanel />}
-        />
-      ) : (
-        <>
-          {mainColumn}
-          {aiPanelOpen && <AiPanel />}
-        </>
-      )}
+      <ResizablePanel
+        aria-label={resizeAssistantLabel}
+        className={`vds-ai-panel-resizable min-h-0 flex-1 [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-x-auto [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-y-hidden${dockedAiPanel ? ' [background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-header-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-header-height),transparent_0)]' : ''}`}
+        defaultRightWidth={`${aiPanelWidth}${MODULE_PANEL_WIDTH_UNIT}`}
+        isCollapsed={!dockedAiPanel}
+        leftPanel={mainColumn}
+        minLeftWidth={MAIN_WORKBENCH_MIN_WIDTH}
+        maxRightWidth={AI_PANEL_MAX_WIDTH_PERCENT}
+        minRightWidth={AI_PANEL_MIN_WIDTH}
+        onRightWidthChange={onAiPanelWidthChange}
+        onRightWidthChangeEnd={onAiPanelWidthChangeEnd}
+        rightPanel={dockedAiPanel ? <AiPanel /> : null}
+      />
+      {aiPanelOpen && !aiPanelDocked && !aiPanelCover ? <AiPanel /> : null}
     </div>
   )
 }
@@ -208,10 +187,12 @@ export function WorkbenchShell(): React.JSX.Element {
   // 未选项目时整条模块面板隐藏：面板内容全都以项目为参数，留着只会展示一棵
   // 报错的树。「展开侧栏」按钮一起收掉 —— 没有面板可展开时它是个死入口。
   const panelBlocked = viewRequiresProject(state.mainView) && !hasProjectScope(state)
-  const sidePanelWidth = modulePanelWidth + ACTIVITY_RAIL_WIDTH
-  const modulePanelWidthValue = `${sidePanelWidth}${MODULE_PANEL_WIDTH_UNIT}`
+  const modulePanelVisible = state.modulePanelOpen && !panelBlocked
+  const assistantExpanded = state.aiPanel.open && state.aiPanel.cover
+  const modulePanelWidthValue = topBarLeftWidth(modulePanelWidth, modulePanelVisible)
+  const modulePanelResizeWidth = modulePanelWidthCss(modulePanelWidth)
   const persistModulePanelWidth = (width: string): void => {
-    const nextWidth = parsePanelWidth(width)
+    const nextWidth = parseModulePanelWidth(width)
     setModulePanelWidth(nextWidth)
     window.localStorage.setItem(MODULE_PANEL_WIDTH_STORAGE_KEY, String(nextWidth))
   }
@@ -241,56 +222,52 @@ export function WorkbenchShell(): React.JSX.Element {
             </div>
           </div>
         ) : (
-          <>
-            {state.modulePanelOpen && !panelBlocked ? (
+          renderMainSurface(
+            t('panels.resizeAssistant'),
+            assistantExpanded ? null : <TopBar leftWidth={modulePanelWidthValue} />,
+            <div className="vds-workbench-body [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-x-auto [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-y-hidden">
+              {assistantExpanded && modulePanelVisible ? (
+                <div
+                  className="absolute left-0 top-0 z-[var(--vds-z-local-raised)]"
+                  style={{ width: modulePanelWidthCss(modulePanelWidth + ACTIVITY_RAIL_WIDTH) }}
+                >
+                  <TopBarLeft showRightBorder={false} />
+                </div>
+              ) : null}
+              <div className={`flex shrink-0${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}>
+                <ActivityRail />
+              </div>
               <ResizablePanel
                 aria-label={t('panels.resizeModule')}
                 className={WORKBENCH_SPLIT_CLASS_NAME}
-                leftPanel={(
-                  <div className="vds-workbench-column">
-                    <TopBarLeft />
-                    {renderSideWorkbench()}
+                isLeftCollapsed={!modulePanelVisible}
+                leftPanel={modulePanelVisible ? (
+                  <div className={`flex min-h-0 min-w-0 flex-1${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}>
+                    <ModulePanel />
                   </div>
-                )}
-                leftWidth={modulePanelWidthValue}
-                maxLeftWidth={MODULE_PANEL_MAX_WIDTH + ACTIVITY_RAIL_WIDTH}
-                minLeftWidth={MODULE_PANEL_DEFAULT_WIDTH + ACTIVITY_RAIL_WIDTH}
-                rightPanel={(
-                  <div className="vds-workbench-column">
-                    {renderMainSurface(
-                      t('panels.resizeAssistant'),
-                      <TopBarRight />,
-                      <div className="vds-workbench-body [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-x-auto [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-y-hidden">
-                        {renderMainWorkbench()}
-                      </div>,
-                      state.aiPanel.open,
-                      state.aiPanel.docked,
-                      state.aiPanel.cover,
-                      aiPanelWidthRef.current,
-                      persistAiPanelWidth,
-                      commitAiPanelWidth
-                    )}
-                  </div>
-                )}
+                ) : null}
+                leftWidth={modulePanelResizeWidth}
+                leftWidthStep={MODULE_PANEL_WIDTH_STEP}
+                maxLeftWidth={MODULE_PANEL_MAX_WIDTH}
+                minLeftWidth={MODULE_PANEL_DEFAULT_WIDTH}
                 onWidthChange={persistModulePanelWidth}
+                rightPanel={(
+                  <div className="flex min-h-0 min-w-0 flex-1">
+                    <div className={assistantExpanded ? 'hidden' : 'min-h-0 min-w-0 flex-1'}>
+                      {renderMainWorkbench()}
+                    </div>
+                    {assistantExpanded ? <AiPanel /> : null}
+                  </div>
+                )}
               />
-            ) : (
-              renderMainSurface(
-                t('panels.resizeAssistant'),
-                <TopBar leftWidth={modulePanelWidthValue} />,
-                <div className="vds-workbench-body [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-x-auto [.vds-ai-panel-resizable>.vds-resizable-split__panel--left_&]:overflow-y-hidden">
-                  <ActivityRail />
-                  {renderMainWorkbench()}
-                </div>,
-                state.aiPanel.open,
-                state.aiPanel.docked,
-                state.aiPanel.cover,
-                aiPanelWidthRef.current,
-                persistAiPanelWidth,
-                commitAiPanelWidth
-              )
-            )}
-          </>
+            </div>,
+            state.aiPanel.open,
+            state.aiPanel.docked,
+            state.aiPanel.cover,
+            aiPanelWidthRef.current,
+            persistAiPanelWidth,
+            commitAiPanelWidth
+          )
         )}
 
         {state.resource.importDialog && <ImportDialog />}

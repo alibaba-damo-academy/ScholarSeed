@@ -1,7 +1,11 @@
 import { JoinLibraryMenu, JoinedLabel } from './JoinMenu'
 import { paperJoinKey, type JoinDestination } from './join'
 import { useJoinedPapers } from './joinState'
-import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
+import {
+  literatureErrorMessage,
+  searchFailureMessageKey,
+  type LiteratureErrorMessage
+} from './error'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
@@ -41,10 +45,12 @@ import {
 } from './api'
 import { searchEventText, visibleSearchOutput } from './output'
 import {
+  reviewEvidence,
   visibleSearchPapers,
   type AccessFilter,
   type DecisionFilter,
-  type ResultSort
+  type ResultSort,
+  type ReviewEvidence
 } from './result'
 
 const TASK_ID_PREFIX = 'literature-search:'
@@ -242,45 +248,47 @@ const DECISION_FILTER_LABELS: Record<DecisionFilter, string> = {
   excluded: '未纳入'
 }
 
+const REVIEW_EVIDENCE_KEYS = {
+  fulltext: 'searchResult.fulltext',
+  abstract: 'searchResult.abstractOnly',
+  metadata: 'searchResult.metadataOnly',
+  unknown: 'searchResult.other'
+} as const
+const REVIEW_EVIDENCE_TONES = {
+  fulltext: 'success',
+  abstract: 'warning',
+  metadata: 'neutral',
+  unknown: 'neutral'
+} as const
+
 interface FulltextAccessBadgeProps {
   access?: LiteratureSearchPaper['access']
-  fulltext?: LiteratureSearchPaper['fulltext']
+  evidence?: ReviewEvidence
   reviewResults: boolean
   t: TFunction<'literature'>
 }
 
 function FulltextAccessBadge({
   access,
-  fulltext,
+  evidence = 'unknown',
   reviewResults,
   t
 }: FulltextAccessBadgeProps): React.JSX.Element {
-  const hasFulltext = reviewResults
-    ? fulltext === 'fulltext'
-    : access === 'open'
-  const needsAbstract = reviewResults && fulltext === 'abstract'
   const label = reviewResults
-    ? fulltext === 'fulltext'
-      ? t('searchResult.fulltext')
-      : fulltext === 'abstract'
-        ? t('searchResult.abstractOnly')
-        : t('searchResult.unverified')
+    ? t(REVIEW_EVIDENCE_KEYS[evidence])
     : access === 'open'
       ? t('search.openAccess')
       : t('search.findFulltext')
+  const tone = reviewResults
+    ? REVIEW_EVIDENCE_TONES[evidence]
+    : access === 'open'
+      ? 'success'
+      : access === 'closed'
+        ? 'warning'
+        : 'neutral'
 
   return (
-    <Badge
-      className="w-fit justify-self-start"
-      size="sm"
-      tone={
-        hasFulltext
-          ? 'success'
-          : needsAbstract || access === 'closed'
-            ? 'warning'
-            : 'neutral'
-      }
-    >
+    <Badge className="w-fit justify-self-start" size="sm" tone={tone}>
       {label}
     </Badge>
   )
@@ -340,10 +348,17 @@ export function literatureSearchElapsedLabel(
   return t('search.elapsedSeconds', { seconds: remainder })
 }
 
-export function LiteratureSearchTab({
-  tabId
+export function LiteratureSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
+  const { state } = useApp()
+  const projectId = state.homeSelectedProjectId ?? undefined
+  return <ScopedLiteratureSearchTab key={JSON.stringify([tabId, projectId])} tabId={tabId} projectId={projectId} />
+}
+
+function ScopedLiteratureSearchTab({
+  tabId, projectId
 }: {
   tabId: string
+  projectId?: string
 }): React.JSX.Element {
   const { t } = useTranslation('literature')
   const taskId = tabId.startsWith(TASK_ID_PREFIX)
@@ -441,13 +456,13 @@ export function LiteratureSearchTab({
   useEffect(() => {
     if (running || !papers.length) return
     let active = true
-    loadSearchLibraryStatus(papers).then((ids) => {
+    loadSearchLibraryStatus(papers, projectId).then((ids) => {
       if (active) setSavedIds(ids)
     })
     return () => {
       active = false
     }
-  }, [papers, running])
+  }, [papers, running, projectId])
   useEffect(() => {
     if (!running) return
     setNow(Date.now())
@@ -546,6 +561,10 @@ export function LiteratureSearchView({
   const [access, setAccess] = useState<AccessFilter>('all')
   const [decision, setDecision] = useState<DecisionFilter>('all')
   const running = status === 'pending' || status === 'running'
+  const failureKey = searchFailureMessageKey(error)
+  const failureMessage = failureKey ? t(failureKey) : undefined
+  // 进度信息栏 = 模型可见输出 + 已知失败码折算出的用户文案, 失败原因因此和过程同处一栏。
+  const processText = [output, failureMessage].filter(Boolean).join('\n')
   const [processOpen, setProcessOpen] = useState(
     () => running && (!taskId || !visitedSearchTasks.has(taskId))
   )
@@ -593,11 +612,27 @@ export function LiteratureSearchView({
       data-testid="literature-search-tab"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 flex-wrap items-center justify-between gap-[var(--vds-space-3)] border-b border-[var(--vds-border-default)] px-[var(--vds-space-5)] py-[var(--vds-space-2)]">
-            <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-1)]">
-              <h1 className="!m-0 break-words !text-sm !font-normal !leading-5 !text-[var(--vds-text-tertiary)]">
+          <header className="flex min-w-0 shrink-0 flex-nowrap items-center justify-between gap-[var(--vds-space-3)] overflow-x-auto whitespace-nowrap border-b border-[var(--vds-border-default)] px-[var(--vds-space-5)] py-[var(--vds-space-2)]">
+            <div className="flex shrink-0 flex-nowrap items-center gap-[var(--vds-space-1)]">
+              <h1 className="!m-0 min-w-0 whitespace-nowrap !text-sm !font-normal !leading-5 !text-[var(--vds-text-tertiary)]">
                 {query ? (
-                  <Trans t={t} i18nKey="search.summary" values={{ query }} components={{ keyword: <span className="text-[var(--vds-text-primary)]" /> }} />
+                  <Trans
+                    t={t}
+                    i18nKey="search.summary"
+                    values={{ query }}
+                    components={{
+                      keyword: (
+                        <EllipsisText
+                          className="max-w-[var(--vds-literature-search-query-max-width)] text-[var(--vds-text-primary)]"
+                          wrapperClassName="!max-w-[min(100%,var(--vds-literature-search-query-max-width))] align-middle"
+                          tooltipPortalled
+                          tooltipSide="bottom"
+                        >
+                          {query}
+                        </EllipsisText>
+                      )
+                    }}
+                  />
                 ) : t('search.title')}
               </h1>
               <span className="text-sm font-normal leading-5 text-[var(--vds-text-primary)]">
@@ -629,7 +664,7 @@ export function LiteratureSearchView({
             <Alert
               tone="error"
               title={t('search.incomplete')}
-              description={error}
+              description={failureMessage ?? error}
             />
           ) : null}
           {warning ? <Alert tone="warning" description={warning} /> : null}
@@ -657,7 +692,7 @@ export function LiteratureSearchView({
               </CollapsibleTrigger>
               <CollapsibleContent className="[--vds-collapsible-content-padding:var(--vds-space-2)]">
                   <pre className="m-0 max-h-[var(--vds-layout-session-output-max-height)] overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs leading-6 text-[var(--vds-text-secondary)]">
-                    {output ||
+                    {processText ||
                       (running ? t('search.starting') : t('search.noOutput'))}
                   </pre>
               </CollapsibleContent>
@@ -697,7 +732,7 @@ export function LiteratureSearchView({
                       <span>{t('search.abstract')}</span>
                       <span>
                         {reviewResults
-                          ? t('searchResult.fulltextStatus')
+                          ? t('searchResult.reviewEvidence')
                           : t('searchResult.fulltextAccess')}
                       </span>
                     </div>
@@ -735,40 +770,10 @@ export function LiteratureSearchView({
                               </PaperSourceLink>
                             </strong>
                             <PaperMetadata paper={paper} />
-                            <span className="mt-2 flex flex-wrap gap-1">
-                              {paper.decision &&
-                              paper.decision !== 'candidate' ? (
-                                <Badge
-                                  size="sm"
-                                  tone={
-                                    paper.decision === 'included'
-                                      ? 'success'
-                                      : 'neutral'
-                                  }
-                                >
-                                  {paper.decision === 'included'
-                                    ? t('searchResult.included')
-                                    : t('searchResult.excluded')}
-                                </Badge>
-                              ) : null}
-                              {paper.fulltext &&
-                              paper.fulltext !== 'unknown' ? (
-                                <Badge
-                                  size="sm"
-                                  tone={
-                                    paper.fulltext === 'fulltext'
-                                      ? 'success'
-                                      : 'warning'
-                                  }
-                                >
-                                  {paper.fulltext === 'fulltext'
-                                    ? t('searchResult.fulltext')
-                                    : t('searchResult.abstractOnly')}
-                                </Badge>
-                              ) : null}
-                            </span>
-                            {isSaved(paper) ? <JoinedLabel />
-                              : <JoinLibraryMenu papers={[paper]} size="md" onJoined={onJoined} />}
+                            <div className="mt-[var(--vds-space-2)]">
+                              {isSaved(paper) ? <JoinedLabel />
+                                : <JoinLibraryMenu papers={[paper]} size="md" onJoined={onJoined} />}
+                            </div>
                           </div>
                           <p
                             tabIndex={0}
@@ -778,7 +783,7 @@ export function LiteratureSearchView({
                           </p>
                           <FulltextAccessBadge
                             access={paper.access}
-                            fulltext={paper.fulltext}
+                            evidence={reviewEvidence(paper)}
                             reviewResults={reviewResults}
                             t={t}
                           />
@@ -827,7 +832,7 @@ export function LiteratureSearchView({
             <div className="mt-2">
               <FulltextAccessBadge
                 access={focused.access}
-                fulltext={focused.fulltext}
+                evidence={reviewEvidence(focused)}
                 reviewResults={reviewResults}
                 t={t}
               />

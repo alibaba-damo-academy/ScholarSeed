@@ -35,7 +35,7 @@ from scholarseed_runtime.contract import (
 from scholarseed_runtime.contract.artifact import ArtifactRole
 from scholarseed_runtime.contract.evidence import RuntimeProcessEvent, RuntimeRpcEvidence
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
-from scholarseed_runtime.contract.input import TurnInput
+from scholarseed_runtime.contract.input import InputKind, TurnInput
 from scholarseed_runtime.contract.inventory import SkillInventory
 from scholarseed_runtime.contract.resource import ResourceReceipt
 from scholarseed_runtime.contract.session import SuspendState
@@ -58,6 +58,8 @@ from service.chat.constants import (
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_MESSAGE_REMOVED,
     PRODUCT_EVENT_MODEL_CAPABILITY_RESOLUTION,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_PAPER_SEARCH_COMPLETED,
     PRODUCT_EVENT_REASONING_DELTA,
     PRODUCT_EVENT_RUNTIME_ERROR,
@@ -77,6 +79,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_USAGE_UPDATED,
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_WEB_SEARCH_COMPLETED,
+    PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_REFERENCE_SKILL,
     PRODUCT_SESSION_STATE_CLOSED,
@@ -118,6 +121,11 @@ from service.chat.runtime.projection import (
     ARTIFACT_PUBLISH_FILE_NOT_FOUND,
     ARTIFACT_PUBLISH_IO_FAILED,
     ARTIFACT_PUBLISH_PATH_INVALID,
+    COLLABORATION_ACTIVITY_TYPE,
+    COLLABORATION_CLOSURE_REASON,
+    COLLABORATION_CLOSURE_STATUS,
+    COLLABORATION_EVENT_KINDS,
+    COLLABORATION_LIFECYCLE_KINDS,
     FILE_HASH_CHUNK_BYTES,
     INTERNAL_EVENT_KEY_PREFIX,
     PORTABLE_ASSISTANT_ROLE,
@@ -299,9 +307,9 @@ class LiveSession:
         self._runtime_evidence_seq = 0
         self._process_evidence: list[RuntimeProcessEvent] = []
         self._rpc_evidence: list[RuntimeRpcEvidence] = []
-        self._local_input_files: dict[str, Path] = {}
-        self._local_input_file_ids: dict[Path, str] = {}
-        self._restore_local_input_files()
+        self._local_input_paths: dict[str, tuple[Path, InputKind]] = {}
+        self._local_input_path_ids: dict[Path, str] = {}
+        self._restore_local_input_paths()
         self.ledger = SessionLedger(
             self.id, catalog, self.publish, self._trace, logger, self._projection_lock
         )
@@ -574,6 +582,7 @@ class LiveSession:
         async with self.lifecycle_lock:
             driver = self.runtime_driver
             if driver is None:
+                self.active_product_turn_id = ""
                 return True
             if (
                 self.running
@@ -613,6 +622,7 @@ class LiveSession:
             self.runtime_session = None
             self._skill_inventory = None
             self.bridge_token = ""
+            self.active_product_turn_id = ""
             if self._on_release is not None:
                 self._on_release(self.id)
             return True
@@ -1202,6 +1212,36 @@ class LiveSession:
         record = self._events.by_key(self.id, f"{INTERNAL_EVENT_KEY_PREFIX}:user:{client_turn_id}")
         return str(record.payload.get("text") or "") if record is not None else None
 
+    async def release_product_turn(self, client_turn_id: str) -> bool:
+        """Release model provenance only after the native thread tree is quiescent."""
+
+        if not client_turn_id or self.active_product_turn_id != client_turn_id:
+            return False
+        session = self.runtime_session
+        if session is None:
+            self.active_product_turn_id = ""
+            return True
+        try:
+            activity = await session.activity()
+        except Exception:
+            warning = getattr(self._logger, "warning", None)
+            if warning is not None:
+                warning(
+                    "product_turn_release_inspection_failed session_id=%s",
+                    self.id,
+                    exc_info=True,
+                )
+            return False
+        if not activity.idle:
+            self.trace_resource(
+                "product_turn_retained",
+                client_turn_id=client_turn_id,
+                blockers=list(activity.blockers),
+            )
+            return False
+        self.active_product_turn_id = ""
+        return True
+
     async def record_user_history(
         self,
         text: str,
@@ -1324,6 +1364,9 @@ class LiveSession:
             item_id=str(row.get("item_id") or ""),
             idempotency_key=f"{event_key}:model",
         )
+
+    def trace_completion(self, fields: Mapping[str, Any]) -> None:
+        self._trace.completion(fields)
 
     def observe_model(self, client_turn_id: str, actual_model: str) -> None:
         """A late HTTP response must never change another execution's identity."""
@@ -1547,31 +1590,41 @@ class LiveSession:
         self.active_task_lease = None
         self.active_task_type = ""
 
-    def register_local_input_file(self, path: Path) -> str:
-        """Authorize one exact user-selected file for this product session."""
+    def register_local_input_path(self, path: Path, kind: InputKind) -> str:
+        """Authorize one exact user-selected file or directory for this session."""
 
-        canonical = path.expanduser().resolve()
-        existing = self._local_input_file_ids.get(canonical)
-        if existing:
+        canonical = path.expanduser()
+        existing = self._local_input_path_ids.get(canonical)
+        if existing and self._local_input_paths[existing][1] == kind:
             return existing
         reference_id = uuid.uuid4().hex
-        self._local_input_files[reference_id] = canonical
-        self._local_input_file_ids[canonical] = reference_id
+        self._local_input_paths[reference_id] = (canonical, kind)
+        self._local_input_path_ids[canonical] = reference_id
         return reference_id
 
-    def resolve_local_input_file(self, reference_id: str) -> Path | None:
-        """Resolve only opaque ids previously authorized in this session."""
+    def resolve_local_input_path(self, reference_id: str, kind: InputKind) -> Path | None:
+        """Resolve only opaque ids with the registered path kind."""
 
-        return self._local_input_files.get(reference_id.strip())
+        registered = self._local_input_paths.get(reference_id.strip())
+        if registered is None:
+            return None
+        path, registered_kind = registered
+        if registered_kind == kind or (
+            registered_kind == InputKind.FILE and kind == InputKind.LOCAL_IMAGE
+        ):
+            return path
+        return None
 
     def authorized_local_input_file(self, path: Path) -> Path | None:
         """Return an exact authorized path for in-product preview, never a parent root."""
 
         canonical = path.expanduser().resolve()
-        return canonical if canonical in self._local_input_file_ids else None
+        reference_id = self._local_input_path_ids.get(canonical)
+        registered = self._local_input_paths.get(reference_id or "")
+        return canonical if registered is not None and registered[1] == InputKind.FILE else None
 
-    def _restore_local_input_files(self) -> None:
-        """Rehydrate sent local-file references from the durable product event log."""
+    def _restore_local_input_paths(self) -> None:
+        """Rehydrate sent local path references from the durable product event log."""
 
         for event in self._events.replay(self.id):
             if event.kind != PRODUCT_EVENT_USER_MESSAGE:
@@ -1582,15 +1635,24 @@ class LiveSession:
             for raw in references:
                 if not isinstance(raw, Mapping):
                     continue
-                if raw.get("origin") != PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE:
+                origin = raw.get("origin")
+                if origin not in (
+                    PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
+                    PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
+                ):
                     continue
                 reference_id = str(raw.get("reference_id") or "").strip()
                 raw_path = str(raw.get("path") or "").strip()
                 if not reference_id or not raw_path:
                     continue
-                canonical = Path(raw_path).expanduser().resolve()
-                self._local_input_files[reference_id] = canonical
-                self._local_input_file_ids[canonical] = reference_id
+                canonical = Path(raw_path).expanduser()
+                kind = (
+                    InputKind.DIRECTORY
+                    if origin == PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY
+                    else InputKind.FILE
+                )
+                self._local_input_paths[reference_id] = (canonical, kind)
+                self._local_input_path_ids[canonical] = reference_id
 
     async def write_plan(self, command: PlanWrite) -> ProductEventRecord:
         async with self._projection_lock:
@@ -1625,6 +1687,14 @@ class LiveSession:
         idempotency_key: str = "",
     ) -> ProductEventRecord:
         key = idempotency_key or f"{INTERNAL_EVENT_KEY_PREFIX}:{uuid.uuid4().hex}"
+        if turn_id and (
+            kind in COLLABORATION_CLOSURE_STATUS
+            or (
+                kind in COLLABORATION_EVENT_KINDS
+                and data.get("activity_type") == COLLABORATION_ACTIVITY_TYPE
+            )
+        ):
+            return self._publish_collaboration_lifecycle(kind, data, turn_id, item_id, key)
         record = self._events.append(
             session_id=self.id,
             runtime_id=self.runtime_id,
@@ -1636,6 +1706,94 @@ class LiveSession:
             idempotency_key=key,
         )
         self._broadcast_product_event(record)
+        return record
+
+    def _publish_collaboration_lifecycle(
+        self, kind: str, data: Mapping[str, Any], turn_id: str, item_id: str, key: str
+    ) -> ProductEventRecord:
+        published = []
+        with self._events.transaction() as connection:
+            records = self._events.turn_records(
+                self.id,
+                turn_id,
+                turn_id,
+                kinds=COLLABORATION_LIFECYCLE_KINDS,
+                connection=connection,
+            )
+            pending = {}
+            completed = {}
+            terminal_kind = ""
+            for previous in records:
+                if (previous.runtime_id, previous.vendor_thread_id) != (
+                    self.runtime_id,
+                    self.vendor_thread_id,
+                ):
+                    continue
+                if previous.kind in COLLABORATION_CLOSURE_STATUS:
+                    terminal_kind = previous.kind
+                if previous.payload.get("activity_type") != COLLABORATION_ACTIVITY_TYPE:
+                    continue
+                identity = previous.vendor_item_id
+                if previous.kind == PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED:
+                    pending.pop(identity, None)
+                    completed[identity] = previous
+                elif identity not in completed:
+                    pending[identity] = previous.payload
+            if kind in COLLABORATION_EVENT_KINDS and item_id in completed:
+                return completed[item_id]
+            envelope = {
+                "session_id": self.id,
+                "runtime_id": self.runtime_id,
+                "vendor_thread_id": self.vendor_thread_id,
+                "vendor_turn_id": turn_id,
+                "connection": connection,
+            }
+            if kind in COLLABORATION_EVENT_KINDS:
+                record = self._events.append(
+                    **envelope,
+                    vendor_item_id=item_id or None,
+                    kind=kind,
+                    payload=dict(data),
+                    idempotency_key=key,
+                )
+                published.append(record)
+                if kind == PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED:
+                    pending[item_id] = dict(data)
+                else:
+                    pending.pop(item_id, None)
+            else:
+                terminal_kind = kind
+            if terminal_kind:
+                for identity, activity in pending.items():
+                    details = dict(activity.get("details") or {})
+                    details[COLLABORATION_CLOSURE_REASON] = terminal_kind
+                    closed = self._events.append(
+                        **envelope,
+                        vendor_item_id=identity,
+                        kind=PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+                        payload={
+                            **activity,
+                            "status": COLLABORATION_CLOSURE_STATUS[terminal_kind],
+                            "success": False,
+                            "details": details,
+                        },
+                        idempotency_key=(
+                            f"{INTERNAL_EVENT_KEY_PREFIX}:collaboration-closure:"
+                            f"{self.id}:{self.vendor_thread_id}:{turn_id}:{identity}"
+                        ),
+                    )
+                    published.append(closed)
+            if kind not in COLLABORATION_EVENT_KINDS:
+                record = self._events.append(
+                    **envelope,
+                    vendor_item_id=item_id or None,
+                    kind=kind,
+                    payload=dict(data),
+                    idempotency_key=key,
+                )
+                published.append(record)
+        for published_record in published:
+            self._broadcast_product_event(published_record)
         return record
 
     def _broadcast_product_event(self, record: ProductEventRecord) -> None:

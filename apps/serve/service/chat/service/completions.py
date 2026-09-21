@@ -23,6 +23,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.types import Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
+from service.chat.service.streams import CompletionDiagnostic, StreamEnd, metadata_token
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
 from service.inference.reasoning import (
     ThinkingParameters,
@@ -33,6 +34,8 @@ from service.inference.source import SOURCE_UNAVAILABLE, accepts_source, attach_
 
 MODEL_BRIDGE_ROUTE_PREFIX = "/api/internal/model-bridge/"
 BRIDGE_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/responses"
+BRIDGE_MODELS_ROUTE = f"{MODEL_BRIDGE_ROUTE_PREFIX}{{bridge_id}}/v1/models"
+MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
 LOOPBACK_HOSTS = frozenset(("127.0.0.1", "::1", "localhost", "testclient"))
 UPSTREAM_CONNECT_TIMEOUT_SECONDS = 15.0
 UPSTREAM_READ_TIMEOUT_SECONDS = 600.0
@@ -62,6 +65,12 @@ MODEL_FIELD = "model"
 RESPONSE_FIELD = "response"
 SSE_DATA_PREFIX = b"data:"
 SSE_DONE = b"[DONE]"
+ADDITIONAL_TOOLS_ITEM_TYPE = "additional_tools"
+DEVELOPER_ROLE = "developer"
+ITEM_REFERENCE_TYPE = "item_reference"
+MODEL_BRIDGE_INVALID_TOOL_INPUT = "model_bridge_invalid_tool_input"
+MODEL_BRIDGE_CREDENTIAL_REQUIRED = "model_bridge_credential_required"
+MODEL_UPSTREAM_STREAM_ERROR = "model_upstream_stream_error"
 
 # 账号腿脱敏分支把上游 >=400 一律折成该码：上游体内可能带厂商内部信息或凭据片段，
 # 不能进 Codex 子进程与 renderer。
@@ -105,6 +114,7 @@ class CompletionCall:
     loop: asyncio.AbstractEventLoop
     task: asyncio.Task | None
     on_closed: Callable[[CompletionCall], None]
+    diagnostic: CompletionDiagnostic
     client: httpx.AsyncClient | None = None
     response: httpx.Response | None = None
     streaming: bool = False
@@ -153,10 +163,42 @@ class CompletionStream(StreamingResponse):
         self.call = call
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        reason = StreamEnd.EOF.value
+
+        async def observed_send(message: dict) -> None:
+            await send(message)
+            if message["type"] == "http.response.body":
+                self.call.diagnostic.downstream.feed(message.get("body", b""))
+
         try:
-            await super().__call__(scope, receive, send)
+            await super().__call__(scope, receive, observed_send)
+        except asyncio.CancelledError:
+            reason = StreamEnd.CANCELLED.value
+            raise
+        except Exception as error:
+            reason = StreamEnd.BRIDGE_ERROR.value
+            if not self.call.diagnostic.failure_type:
+                self.call.diagnostic.failure_type = type(error).__name__
+            raise
         finally:
-            await self.call.close()
+            if self.call.revoked:
+                reason = StreamEnd.REVOKED.value
+            elif self.call.diagnostic.upstream_end == StreamEnd.NOT_STARTED.value:
+                reason = StreamEnd.CONSUMER_CLOSED.value
+            elif self.call.diagnostic.upstream_end in (
+                StreamEnd.TRANSPORT_ERROR.value,
+                StreamEnd.PROVIDER_ERROR.value,
+            ):
+                reason = self.call.diagnostic.upstream_end
+            elif (
+                reason == StreamEnd.EOF.value
+                and self.call.diagnostic.upstream_end == StreamEnd.CANCELLED.value
+            ):
+                reason = StreamEnd.CONSUMER_CLOSED.value
+            try:
+                await self.call.close()
+            finally:
+                self.call.diagnostic.finish(reason)
 
 
 @dataclass
@@ -211,6 +253,9 @@ class CompletionUpstream:
         default=None, repr=False
     )
     request_policy: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None
+    catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = field(
+        default=None, repr=False
+    )
     trust_env: bool = False
     reasoning_effort: str | None = None
     thinking: ModelThinking | None = None
@@ -312,15 +357,20 @@ class CompletionBridge:
         internal_base_url: str,
         *,
         on_model: Callable[[str, str, str], None] | None = None,
+        on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         source_text: Callable[[str, str], str | None] | None = None,
         source_endpoints: Sequence[str] = (),
+        shared_ownership: bool = False,
     ) -> None:
         self._on_model = on_model
+        self._on_diagnostic = on_diagnostic
         self._turn_ids = turn_ids
         self._source_text = source_text
         self._source_endpoints = tuple(source_endpoints)
         self._internal_base_url = internal_base_url.rstrip("/")
+        # machine 轴下订阅桥归这台机器所有, 切账号不该把它拆掉(见 rebind_owner)。
+        self._shared_ownership = bool(shared_ownership)
         self._upstreams: dict[str, CompletionUpstream] = {}
         self._calls: set[CompletionCall] = set()
         self._closed = False
@@ -345,6 +395,7 @@ class CompletionBridge:
         connection_id: str = "",
         credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
         request_policy: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+        catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
         trust_env: bool = False,
         reasoning_effort: str | None = None,
         thinking: ModelThinking | None = None,
@@ -389,6 +440,7 @@ class CompletionBridge:
             connection_id=connection_id,
             credential_resolver=credential_resolver,
             request_policy=request_policy,
+            catalog_resolver=catalog_resolver,
             trust_env=trust_env,
             reasoning_effort=reasoning_effort,
             thinking=thinking,
@@ -424,8 +476,12 @@ class CompletionBridge:
                 and upstream.credential_resolver is not None
                 and upstream.owner_id != actor
             ):
-                self._invalidate(key)
-                moved += 1
+                # 共享归属下订阅桥归这台机器(注册 owner 是机器级 principal), 与当前驱动的
+                # 账号天然不同值, 而它的凭据按 connection_id 解析、与账号无关: 按账号失效
+                # 只会把正在跑的 Codex 子进程脚下的桥抽掉(后续每次调用 404)。
+                if not self._shared_ownership:
+                    self._invalidate(key)
+                    moved += 1
                 continue
             if (
                 upstream.session_id == owner
@@ -509,6 +565,28 @@ class CompletionBridge:
             logger.info("model_bridge_registrations_evicted count=%d", len(stale))
         return len(stale)
 
+    async def catalog(self, bridge_id: str) -> Response:
+        if self._closed:
+            return JSONResponse({"error": {"code": MODEL_BRIDGE_CLOSED}}, status_code=503)
+        self._evict_expired()
+        upstream = self._upstreams.get(bridge_id)
+        if upstream is None or not upstream.active or upstream.catalog_resolver is None:
+            return JSONResponse({"error": {"code": MODEL_CATALOG_UNAVAILABLE}}, status_code=404)
+        upstream.last_used_at = time.monotonic()
+        owner_id = upstream.owner_id
+        try:
+            payload = await upstream.catalog_resolver(owner_id, upstream.connection_id)
+        except Exception as error:
+            logger.warning(
+                "model_catalog_failed session_id=%s error_class=%s",
+                upstream.session_id,
+                type(error).__name__,
+            )
+            return JSONResponse({"error": {"code": MODEL_CATALOG_UNAVAILABLE}}, status_code=502)
+        if not upstream.active or self._closed or upstream.owner_id != owner_id:
+            return JSONResponse({"error": {"code": MODEL_CATALOG_UNAVAILABLE}}, status_code=410)
+        return JSONResponse(payload)
+
     async def forward(self, bridge_id: str, payload: Mapping[str, Any]) -> Response:
         if self._closed:
             return JSONResponse({"error": {"code": MODEL_BRIDGE_CLOSED}}, status_code=503)
@@ -520,20 +598,52 @@ class CompletionBridge:
             upstream.calls.discard(call)
             self._calls.discard(call)
 
-        call = CompletionCall(asyncio.get_running_loop(), asyncio.current_task(), deregister)
+        diagnostic = CompletionDiagnostic(
+            upstream.session_id, str(payload.get(MODEL_FIELD) or ""), self._on_diagnostic
+        )
+        diagnostic.observe_input(payload)
+        diagnostic.turn_id = upstream.turn_id()
+        if not diagnostic.turn_id and self._turn_ids is not None and upstream.session_id:
+            diagnostic.turn_id = str(self._turn_ids(upstream.session_id) or "").strip()
+        diagnostic.emit("started")
+        call = CompletionCall(
+            asyncio.get_running_loop(), asyncio.current_task(), deregister, diagnostic
+        )
         upstream.calls.add(call)
         self._calls.add(call)
+        reason = StreamEnd.EOF.value
         try:
-            return await self._forward(upstream, payload, call)
+            result = await self._forward(upstream, payload, call)
+            if result.status_code >= 400:
+                reason = StreamEnd.HTTP_ERROR.value
+            return result
+        except asyncio.CancelledError:
+            reason = StreamEnd.REVOKED.value if call.revoked else StreamEnd.CANCELLED.value
+            raise
+        except Exception as error:
+            reason = StreamEnd.BRIDGE_ERROR.value
+            diagnostic.failure_type = type(error).__name__
+            raise
         finally:
             call.task = None
             if not call.streaming:
-                await call.close()
+                try:
+                    await call.close()
+                finally:
+                    diagnostic.finish(reason)
 
     async def _forward(
         self, upstream: CompletionUpstream, payload: Mapping[str, Any], call: CompletionCall
     ) -> Response:
         upstream.last_used_at = time.monotonic()
+        if upstream.wire_protocol is not ModelWireProtocol.RESPONSES:
+            try:
+                payload, converted_items = normalize_response_input(payload)
+            except ValueError:
+                return JSONResponse(
+                    {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
+                )
+            call.diagnostic.converted_input_items = converted_items
         native_tool_types = sorted(
             {
                 str(tool.get("type") or "")
@@ -556,7 +666,10 @@ class CompletionBridge:
         native_response = upstream.wire_protocol == ModelWireProtocol.RESPONSES or bool(
             native_tool_types
         )
-        chat_request = dict(payload) if native_response else responses_to_chat_request(payload)
+        if native_response:
+            chat_request = dict(payload)
+        else:
+            chat_request = responses_to_chat_request(payload)
         protocol = (
             ModelWireProtocol.RESPONSES if native_response else ModelWireProtocol.CHAT_COMPLETIONS
         )
@@ -601,6 +714,8 @@ class CompletionBridge:
             except ValueError:
                 return JSONResponse({"error": {"code": "model_request_invalid"}}, status_code=400)
         chat_request["model"] = upstream.route_model(chat_request.get("model"))
+        call.diagnostic.routed_model = str(chat_request["model"])
+        call.diagnostic.wire_protocol = protocol.value
         logger.info(
             "model_bridge_reasoning session_id=%s model=%s effort=%s wire=%s",
             upstream.session_id,
@@ -672,20 +787,27 @@ class CompletionBridge:
                     upstream.owner_id, upstream.connection_id
                 )
             except CompletionCredentialError as error:
+                call.diagnostic.status_code = 401
+                call.diagnostic.failure_type = str(error)
                 return JSONResponse({"error": {"code": str(error)}}, status_code=401)
             headers.update(material.headers)
             if material.api_key:
                 headers["Authorization"] = f"Bearer {material.api_key}"
         else:
             bearer = upstream.bearer()
+            if upstream.token_provider is not None and not bearer:
+                call.diagnostic.status_code = 401
+                call.diagnostic.failure_type = MODEL_BRIDGE_CREDENTIAL_REQUIRED
+                return JSONResponse(
+                    {"error": {"code": MODEL_BRIDGE_CREDENTIAL_REQUIRED}}, status_code=401
+                )
             if bearer:
                 headers["Authorization"] = f"Bearer {bearer}"
             headers.update(upstream.call_headers())
         if not upstream.active or call.revoked:
             return JSONResponse({"error": {"code": "model_connection_revoked"}}, status_code=410)
-        captured_turn_id = upstream.turn_id()
-        if not captured_turn_id and self._turn_ids is not None and upstream.session_id:
-            captured_turn_id = str(self._turn_ids(upstream.session_id) or "").strip()
+        captured_turn_id = call.diagnostic.turn_id
+        call.diagnostic.protect(headers)
 
         def observed_model(model: str) -> None:
             if self._on_model is not None and upstream.session_id and captured_turn_id:
@@ -733,10 +855,20 @@ class CompletionBridge:
         try:
             response = await client.send(request, stream=True)
             call.response = response
+            call.diagnostic.status_code = response.status_code
+            call.diagnostic.content_type = metadata_token(
+                response.headers.get("content-type", "").split(";", 1)[0].strip()
+            )
+            call.diagnostic.upstream_request_id = metadata_token(
+                response.headers.get("x-request-id", "")
+            )
+            call.diagnostic.emit("headers")
             if call.revoked:
                 await response.aclose()
                 raise asyncio.CancelledError()
         except Exception as exc:  # noqa: BLE001 - translate transport failure at HTTP boundary
+            call.diagnostic.upstream_end = StreamEnd.TRANSPORT_ERROR.value
+            call.diagnostic.failure_type = type(exc).__name__
             await call.close()
             diagnostics = _transport_diagnostics(exc)
             metrics = _chat_request_metrics(chat_request)
@@ -847,15 +979,60 @@ class CompletionBridge:
                     raise asyncio.CancelledError()
                 if native_response:
                     async for chunk in response.aiter_bytes():
+                        call.diagnostic.upstream.feed(chunk)
                         observation.feed(chunk)
                         yield chunk
+                        upstream_stream = call.diagnostic.upstream
+                        if upstream_stream.error_seen and not upstream_stream.terminal:
+                            yield _sse(
+                                {
+                                    "type": "response.failed",
+                                    "response": {
+                                        "status": COMPLETION_STATUS_FAILED,
+                                        "error": {
+                                            "code": upstream_stream.error_code
+                                            or MODEL_UPSTREAM_STREAM_ERROR,
+                                            "message": upstream_stream.error_message
+                                            or "Upstream returned a stream error.",
+                                            **(
+                                                {"type": upstream_stream.error_type}
+                                                if upstream_stream.error_type
+                                                else {}
+                                            ),
+                                        },
+                                    },
+                                }
+                            )
+                            call.diagnostic.upstream_end = StreamEnd.PROVIDER_ERROR.value
+                            return
+                    call.diagnostic.upstream_end = StreamEnd.EOF.value
                     return
                 async for chunk in chat_stream_to_responses(
                     response,
                     request_metrics=_chat_request_metrics(chat_request),
                     on_model=observation.observe,
+                    on_line=lambda line: call.diagnostic.upstream.feed(
+                        line.encode(JSON_ENCODING) + b"\n"
+                    ),
                 ):
                     yield chunk
+                call.diagnostic.upstream_end = StreamEnd.EOF.value
+            except asyncio.CancelledError:
+                call.diagnostic.upstream_end = (
+                    StreamEnd.REVOKED.value if call.revoked else StreamEnd.CANCELLED.value
+                )
+                raise
+            except GeneratorExit:
+                call.diagnostic.upstream_end = StreamEnd.CONSUMER_CLOSED.value
+                raise
+            except Exception as error:
+                call.diagnostic.upstream_end = (
+                    StreamEnd.TRANSPORT_ERROR.value
+                    if isinstance(error, httpx.TransportError)
+                    else StreamEnd.BRIDGE_ERROR.value
+                )
+                call.diagnostic.failure_type = type(error).__name__
+                raise
             finally:
                 try:
                     await call.close()
@@ -866,7 +1043,53 @@ class CompletionBridge:
         return CompletionStream(stream(), call)
 
 
+def normalize_response_input(payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+    """Project Responses Lite's tool prefix into the standard request tool field."""
+    result = dict(payload)
+    items = payload.get("input")
+    if not isinstance(items, list):
+        return result, {}
+    tool_items = [
+        item
+        for item in items
+        if isinstance(item, Mapping) and item.get("type") == ADDITIONAL_TOOLS_ITEM_TYPE
+    ]
+    if not tool_items:
+        return result, {}
+    if len(tool_items) != 1 or items[0] is not tool_items[0]:
+        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
+    tool_item = tool_items[0]
+    tools = tool_item.get("tools")
+    if (
+        tool_item.get("role") != DEVELOPER_ROLE
+        or not isinstance(tools, list)
+        or any(not isinstance(tool, Mapping) for tool in tools)
+        or (payload.get("tools") is not None and payload["tools"] != tools)
+    ):
+        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
+    references = {
+        item.get("id")
+        for item in items
+        if isinstance(item, Mapping)
+        and item.get("type") == ITEM_REFERENCE_TYPE
+        and isinstance(item.get("id"), str)
+    }
+    item_id = tool_item.get("id")
+    if isinstance(item_id, str) and item_id in references:
+        raise ValueError(MODEL_BRIDGE_INVALID_TOOL_INPUT)
+    result["input"] = items[1:]
+    result["tools"] = list(tools)
+    return result, {ADDITIONAL_TOOLS_ITEM_TYPE: 1}
+
+
 def mount_completion_bridge(app: FastAPI, bridge: CompletionBridge) -> None:
+    @app.get(BRIDGE_MODELS_ROUTE)
+    async def completion_models(bridge_id: str, request: Request) -> Response:
+        remote = request.client.host if request.client is not None else ""
+        if remote not in LOOPBACK_HOSTS:
+            return JSONResponse({"error": {"message": "loopback access required"}}, status_code=403)
+        return await bridge.catalog(bridge_id)
+
     @app.post(BRIDGE_ROUTE)
     async def completion_bridge(bridge_id: str, request: Request) -> Response:
         remote = request.client.host if request.client is not None else ""
@@ -1294,6 +1517,7 @@ async def chat_stream_to_responses(
     *,
     request_metrics: Mapping[str, int] | None = None,
     on_model: Callable[[Mapping[str, Any]], None] | None = None,
+    on_line: Callable[[str], None] | None = None,
 ) -> AsyncIterator[bytes]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_id = f"msg_{uuid.uuid4().hex}"
@@ -1306,6 +1530,8 @@ async def chat_stream_to_responses(
     possible_stream_error = True
     yield _sse({"type": "response.created", "response": {"id": response_id}})
     async for line in response.aiter_lines():
+        if on_line is not None:
+            on_line(line)
         if not line.startswith("data:"):
             continue
         data = line[5:].strip()

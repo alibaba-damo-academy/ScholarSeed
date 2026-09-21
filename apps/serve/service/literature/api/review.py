@@ -40,7 +40,7 @@ from service.platform.bridge import (
 )
 from service.platform.context import ProductTaskType
 
-REVIEW_ARTIFACT_ROLE = "supporting"
+RETRIEVAL_REFERENCE_ROLE = "supporting"
 
 logger = logging.getLogger(__name__)
 
@@ -123,24 +123,29 @@ def register_literature_review_routes(
                     command.workspace,
                     command.checkpoint,
                 )
-            references = []
-            for source in prepared.files:
-                require_turn()
-                artifact = await live.publish_artifact(
-                    source.path,
-                    REVIEW_ARTIFACT_ROLE,
-                    turn_id=turn_id,
-                    expected_sha256=source.digest,
-                )
-                require_turn()
-                references.append(
-                    {
-                        **{key: artifact.get(key) for key in ARTIFACT_REFERENCE_FIELDS},
-                        "title": source.title,
-                    }
-                )
-            require_turn()
             if command.checkpoint == "retrieval":
+                references = []
+                card_sources = {
+                    scoped_relative(command.workspace, name)
+                    for name in (METADATA, CORPUS, RETRIEVAL, FULLTEXT)
+                }
+                for source in prepared.files:
+                    if source.path not in card_sources:
+                        continue
+                    require_turn()
+                    artifact = await live.publish_artifact(
+                        source.path,
+                        RETRIEVAL_REFERENCE_ROLE,
+                        turn_id=turn_id,
+                        expected_sha256=source.digest,
+                    )
+                    require_turn()
+                    references.append(
+                        {
+                            **{key: artifact.get(key) for key in ARTIFACT_REFERENCE_FIELDS},
+                            "title": source.title,
+                        }
+                    )
 
                 def artifact(name: str) -> dict:
                     return next(
@@ -161,8 +166,9 @@ def register_literature_review_routes(
                 }
                 card_type = SEARCH_CARD
             else:
-                update = {"session_id": live.id, "artifacts": references}
+                update = {"session_id": live.id}
                 card_type = REVIEW_CARD
+            require_turn()
             content = prepared.card.model_copy(update=update).model_dump(mode="json")
             card = await live.display_card(
                 card_type, DisplayCardContent(data=content), turn_id=turn_id

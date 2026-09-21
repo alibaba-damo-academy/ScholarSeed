@@ -25,6 +25,7 @@ import recentIconWord from '../../assets/icon-word.png'
 import recentIconXls from '../../assets/icon-xls.png'
 import recentIconZip from '../../assets/icon-zip.png'
 import scholarseedLogoMark from '../../assets/logo.webp'
+import { catalogue } from '../literature/catalog'
 import type {
   LiteratureCounts,
   LiteratureSummary
@@ -93,6 +94,7 @@ import {
 import {
   inheritedZoteroSelection,
   updateZoteroSelection,
+  zoteroImportBlocked,
   zoteroNodeState,
   zoteroSelectionDirectives
 } from '../literature/zotero'
@@ -351,6 +353,9 @@ export function HomeOverview(): React.JSX.Element {
   const [zoteroOpen, setZoteroOpen] = React.useState(false)
   const [zoteroLoading, setZoteroLoading] = React.useState(false)
   const [zoteroImporting, setZoteroImporting] = React.useState(false)
+  // 一次「打开对话框 → 提交」共用一个受理幂等键: 提交响应丢失后重试也拿同一个 key,
+  // 服务端交回同一个任务, 而不是把同一批文献再导一遍 (文献是追加语义)。
+  const zoteroSubmitKey = React.useRef(crypto.randomUUID())
   const [zoteroPreview, setZoteroPreview] =
     React.useState<ZoteroPreview | null>(null)
   const [zoteroError, setZoteroError] =
@@ -465,6 +470,23 @@ export function HomeOverview(): React.JSX.Element {
     act.openWorkbenchView('literature')
   }, [act])
 
+  const openLiteratureStats = (recent: boolean): void => {
+    catalogue.scope(null)
+    catalogue.query({
+      project_id: undefined,
+      q: undefined,
+      collection_id: undefined,
+      tag_id: undefined,
+      without_collection: undefined,
+      without_project: undefined,
+      is_unread: undefined,
+      attachment: 'any',
+      recent: recent || undefined
+    })
+    openLiteratureOverview()
+    act.activateTab('literature')
+  }
+
   const projectErrorText = React.useCallback(
     (code: string): string =>
       Object.prototype.hasOwnProperty.call(PROJECT_ERROR_KEYS, code)
@@ -548,6 +570,7 @@ export function HomeOverview(): React.JSX.Element {
     setImportError(null)
     setZoteroOpen(true)
     setZoteroLoading(true)
+    zoteroSubmitKey.current = crypto.randomUUID()
     setZoteroPreview(null)
     setZoteroError(null)
     setZoteroSelection(new Map())
@@ -582,7 +605,7 @@ export function HomeOverview(): React.JSX.Element {
         include_unfiled: zoteroUnfiled,
         import_collections: zoteroCollections,
         preview_revision: zoteroPreview.revision
-      })
+      }, zoteroSubmitKey.current)
       const completed = await waitForImportTask(task.id)
       if (completed) {
         setZoteroOpen(false)
@@ -932,17 +955,12 @@ export function HomeOverview(): React.JSX.Element {
             </Button>
             <Button
               loading={zoteroImporting}
-              disabled={
-                !zoteroPreview ||
-                zoteroLoading ||
-                zoteroImporting ||
-                (zoteroNodeState(
-                  zoteroPreview.library,
-                  false,
-                  zoteroSelection
-                ) === false &&
-                  !zoteroUnfiled)
-              }
+              disabled={zoteroImportBlocked(
+                zoteroPreview,
+                zoteroUnfiled,
+                zoteroSelection,
+                zoteroLoading || zoteroImporting
+              )}
               onClick={() => void startZoteroImport()}
             >
               {t('home.importFlow.start')}
@@ -1122,17 +1140,17 @@ export function HomeOverview(): React.JSX.Element {
                     <span className="text-[var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]">
                       {t('home.allLiterature')}
                     </span>
-                    <strong className="text-[length:var(--vds-font-display-lv2)] leading-[var(--vds-lh-display-lv2)] font-[var(--vds-fw-medium)] tabular-nums text-[var(--vds-text-primary)]">
+                    <Button unstyled aria-label={t('home.allLiterature')} data-testid="home-all-literature" onClick={() => openLiteratureStats(false)} className="self-start cursor-pointer text-[length:var(--vds-font-display-lv2)] leading-[var(--vds-lh-display-lv2)] font-[var(--vds-fw-medium)] tabular-nums text-[var(--vds-text-primary)] focus-visible:outline-auto">
                       {literatureCount}
-                    </strong>
+                    </Button>
                   </div>
                   <div className="flex flex-col gap-[var(--vds-space-1)]">
                     <span className="text-[var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)]">
                       {t('home.recentLiterature')}
                     </span>
-                    <strong className="text-[length:var(--vds-font-display-lv2)] leading-[var(--vds-lh-display-lv2)] font-[var(--vds-fw-medium)] tabular-nums text-[var(--vds-text-primary)]">
+                    <Button unstyled aria-label={t('home.recentLiterature')} data-testid="home-recent-literature" onClick={() => openLiteratureStats(true)} className="self-start cursor-pointer text-[length:var(--vds-font-display-lv2)] leading-[var(--vds-lh-display-lv2)] font-[var(--vds-fw-medium)] tabular-nums text-[var(--vds-text-primary)] focus-visible:outline-auto">
                       {recentLiteratureCount}
-                    </strong>
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1177,7 +1195,7 @@ export function HomeOverview(): React.JSX.Element {
               <div key={project.id} className="vds-home-card group/home-card">
                 <Button
                   unstyled
-                  className="flex h-full w-full flex-col items-start gap-[12px] text-left"
+                  className="flex w-full min-w-0 flex-1 flex-col items-start gap-[var(--vds-space-3)] text-left"
                   data-testid={`home-project-${project.name}`}
                   onClick={() => {
                     act.selectProject(project.id)
@@ -1199,10 +1217,13 @@ export function HomeOverview(): React.JSX.Element {
                       </span>
                     </span>
                   </span>
-                  <span className="vds-home-card-desc">
+                  <EllipsisText
+                    wrapperClassName="w-full"
+                    className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
+                  >
                     {projectDescription(project.path)}
-                  </span>
-                  <span className="vds-home-card-counts">
+                  </EllipsisText>
+                  <span className="flex gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] tabular-nums text-[var(--vds-text-placeholder)]">
                     <span className="vds-home-card-count">
                       <Trans
                         t={projectText}

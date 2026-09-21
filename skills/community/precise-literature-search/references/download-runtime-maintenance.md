@@ -55,6 +55,22 @@ interactive prompts into resumable actions. Per-paper timeout is a hard limit
 (autodev caps it at 180 seconds); batch timeout separately limits the process
 group.
 
+## Optional user-installed translators
+
+The bundled downloader does not contain Zotero translator sources or generated
+adapters. Normal skill downloads leave translators disabled. If an operator
+explicitly chooses to enable trusted, separately obtained translators, convert
+them with `python -m paper_dl.translators.sync` and keep the resulting adapter
+directory outside the repository, skill installation and run directories.
+
+Set `browser.translators_dir` in the YAML selected by `PAPER_DL_CONFIG` to that
+absolute directory. The downloader validates its manifest and containment before
+loading adapters. Translator code executes in the active browser page and keeps
+its upstream license; never enable an unreviewed directory. The direct downloader
+CLI can use `--no-translators` to override YAML without changing the skill's
+tracked configuration. Zotero Desktop/Connector remains a separate integration
+and stays disabled by this skill.
+
 ## Inspect or abandon
 
 ```bash

@@ -98,6 +98,7 @@ import { createFormatters } from '../../../../localization/format'
 import {
   inheritedZoteroSelection,
   updateZoteroSelection,
+  zoteroImportBlocked,
   zoteroNodeState,
   zoteroSelectionDirectives
 } from './zotero'
@@ -107,6 +108,10 @@ import './literature.css'
 const SEARCH_DEBOUNCE_MS = 260
 const COLUMN_STORAGE_KEY = 'scholarseed.literature.columns.v1'
 const SORT_STORAGE_KEY = 'scholarseed.literature.sort.v1'
+// 曲别针列的排序键，与后端 ATTACHMENT_SORT_KEY 同名：有附件=0 排在无附件=1 之前，
+// 次级键是列表原始序。它不在 COLUMN_META 里 —— 这一列固定常驻在标题前，
+// 既是附件有无的标识，也是展开附件行的唯一入口，不能被隐藏或拖走。
+const ATTACHMENT_SORT: NonNullable<LiteratureQuery['sort']> = 'attachment'
 const EMPTY_CELL = '—'
 const CHIP_CELL_CLASS = 'flex items-center gap-1'
 // 芯片不参与压缩: 否则它们会先自己缩小并内部省略, 单元格就不再溢出, tooltip 也无法判定展示不全。
@@ -289,7 +294,7 @@ function Row({
         <strong>{item.title}</strong>
       </EllipsisText>
     ) : key === 'creator' ? (
-      <EllipsisText key={key} tooltipPortalled>
+      <EllipsisText key={key} tooltipPortalled tooltipContentClassName="[--vds-tooltip-max-height:var(--vds-literature-author-tooltip-max-height)]">
         {item.creators_display || EMPTY_CELL}
       </EllipsisText>
     ) : key === 'publication' ? (
@@ -608,6 +613,10 @@ export function LiteratureList(): React.JSX.Element {
       : null
   const [zoteroOpen, setZoteroOpen] = useState(false)
   const [zoteroLoading, setZoteroLoading] = useState(false)
+  const [zoteroSubmitting, setZoteroSubmitting] = useState(false)
+  // 一次「打开对话框 → 提交」共用一个受理幂等键: 连点、或提交响应丢失后的重试都拿
+  // 同一个 key 去受理, 服务端就交回同一个任务, 而不是再导一遍 (文献是追加语义)。
+  const zoteroSubmitKey = useRef(crypto.randomUUID())
   const [zoteroPreview, setZoteroPreview] = useState<ZoteroPreview | null>(null)
   const [zoteroError, setZoteroError] = useState<LiteratureErrorMessage | null>(
     null
@@ -648,6 +657,16 @@ export function LiteratureList(): React.JSX.Element {
   const saveColumns = (next: ColumnSetting[]): void => {
     setColumns(next)
     localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(next))
+  }
+  /**
+   * 所有列共用的排序切换：同一列再点一次反转方向，并持久化到 SORT_STORAGE_KEY，
+   * 下次挂载时恢复。曲别针列与普通列走同一条路径，因此反转手感和记忆都一致；
+   * 它自己不画升降指示器，表头只留一个曲别针。
+   */
+  const applySort = (sort: NonNullable<LiteratureQuery['sort']>): void => {
+    const order = query.sort === sort && query.order === 'asc' ? 'desc' : 'asc'
+    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ sort, order }))
+    catalogue.query({ sort, order })
   }
   const resizeColumn = (key: ColumnKey, event: React.PointerEvent): void => {
     event.preventDefault()
@@ -1070,6 +1089,7 @@ export function LiteratureList(): React.JSX.Element {
     if (source === 'zotero') {
       setZoteroOpen(true)
       setZoteroLoading(true)
+      zoteroSubmitKey.current = crypto.randomUUID()
       setZoteroPreview(null)
       setZoteroError(null)
       setZoteroSelection(new Map())
@@ -1121,6 +1141,10 @@ export function LiteratureList(): React.JSX.Element {
     void startImport(importRequest.source)
   }, [importRequest])
   const startZoteroImport = async (): Promise<void> => {
+    // 受理返回前对话框还开着, 这里必须自己闭锁: 连点会各起一个后台导入, 而文献库
+    // 是追加语义 (proposal 91), 两次点击就是两份条目。
+    if (zoteroSubmitting) return
+    setZoteroSubmitting(true)
     setZoteroError(null)
     try {
       if (!zoteroPreview) return
@@ -1133,7 +1157,7 @@ export function LiteratureList(): React.JSX.Element {
           include_unfiled: zoteroUnfiled,
           import_collections: zoteroCollections,
           preview_revision: zoteroPreview.revision
-        })
+        }, zoteroSubmitKey.current)
       )
       setZoteroOpen(false)
     } catch (reason) {
@@ -1146,6 +1170,8 @@ export function LiteratureList(): React.JSX.Element {
           'zotero.importFailed'
         )
       )
+    } finally {
+      setZoteroSubmitting(false)
     }
   }
   const toggleZoteroNode = (
@@ -1287,7 +1313,7 @@ export function LiteratureList(): React.JSX.Element {
           if (open || !importing) setPdfImportOpen(open)
         }}
       >
-        <DialogContent className="w-[min(720px,calc(100vw-48px))]">
+        <DialogContent className="w-[min(720px,calc(100vw-48px))] !gap-[var(--vds-space-2)]">
           <DialogHeader>
             <DialogTitle>{literature('panel.importPdf')}</DialogTitle>
             <DialogDescription>
@@ -1296,8 +1322,7 @@ export function LiteratureList(): React.JSX.Element {
           </DialogHeader>
           <ScrollArea
             className="max-h-[min(420px,55vh)]"
-            shadow
-            viewportClassName="space-y-[var(--vds-space-2)] py-[var(--vds-space-2)] pr-[var(--vds-space-2)]"
+            viewportClassName="space-y-[var(--vds-space-2)] pr-[var(--vds-space-2)]"
           >
             {pdfImports.map((record) => (
               <div
@@ -1306,8 +1331,12 @@ export function LiteratureList(): React.JSX.Element {
               >
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-[var(--vds-space-3)]">
                   <div className="min-w-0">
-                    <div className="flex min-w-0 items-center gap-[var(--vds-space-3)]">
-                      <Icon className="shrink-0 text-[var(--vds-icon-outline-default)]" name="pdf" size={15} />
+                    <div className="flex min-w-0 items-center gap-[calc(var(--vds-space-3)/2)]">
+                      {React.createElement(fileIconForName(record.name), {
+                        className: 'shrink-0 text-[var(--vds-icon-outline-default)]',
+                        size: 15,
+                        strokeWidth: 1.8
+                      })}
                       <strong
                         className="block min-w-0 truncate text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]"
                         title={record.name}
@@ -1315,23 +1344,25 @@ export function LiteratureList(): React.JSX.Element {
                         {record.name}
                       </strong>
                     </div>
-                    <span className="ml-[calc(15px+var(--vds-space-3))] mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
+                    {!['completed', 'failed'].includes(record.status) ? (
+                      <span className="ml-[calc(15px+var(--vds-space-3)/2)] mt-[var(--vds-space-1)] block text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
                       {record.status === 'pending'
                         ? literature('pdfImport.pending')
                         : record.status === 'uploading'
                           ? literature('pdfImport.uploading', {
                               progress: record.progress
                             })
-                          : record.status === 'parsing'
-                            ? literature('pdfImport.parsing')
-                            : record.status === 'completed'
-                              ? literature('pdfImport.completed')
-                              : literature('pdfImport.failed')}
-                    </span>
+                          : literature('pdfImport.parsing')}
+                      </span>
+                    ) : null}
                   </div>
-                  {!['completed', 'failed'].includes(record.status) ? (
+                  {record.status === 'completed' || record.status === 'failed' ? (
+                    <Tag tone={record.status === 'completed' ? 'success' : 'error'}>
+                      {literature(record.status === 'completed' ? 'pdfImport.completed' : 'pdfImport.failed')}
+                    </Tag>
+                  ) : (
                     <Spinner size="sm" />
-                  ) : null}
+                  )}
                 </div>
                 {record.status !== 'failed' ? (
                   <ProgressBar
@@ -1479,16 +1510,13 @@ export function LiteratureList(): React.JSX.Element {
               {literature('batch.cancel')}
             </Button>
             <Button
-              disabled={
-                !zoteroPreview ||
-                zoteroLoading ||
-                (zoteroNodeState(
-                  zoteroPreview.library,
-                  false,
-                  zoteroSelection
-                ) === false &&
-                  !zoteroUnfiled)
-              }
+              disabled={zoteroImportBlocked(
+                zoteroPreview,
+                zoteroUnfiled,
+                zoteroSelection,
+                zoteroLoading || zoteroSubmitting
+              )}
+              loading={zoteroSubmitting}
               onClick={() => void startZoteroImport()}
             >
               {literature('zotero.start')}
@@ -1496,7 +1524,7 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <header className="lit-toolbar">
+      <header className="lit-toolbar" data-workbench-divider>
         {returnProject ? (
           <Button
             data-testid="literature-return-project"
@@ -1667,7 +1695,15 @@ export function LiteratureList(): React.JSX.Element {
                     )
                   }
                 />
-                <span />
+                <span className="lit-pdf-cell">
+                  <IconButton
+                    label={literature('list.sortByAttachment')}
+                    variant="ghostIcon"
+                    size="sm"
+                    icon={<Icon name="clip" size={13} />}
+                    onClick={() => applySort(ATTACHMENT_SORT)}
+                  />
+                </span>
               </div>
               {visibleColumns.map((column) => (
                 <span
@@ -1698,15 +1734,7 @@ export function LiteratureList(): React.JSX.Element {
                     onClick={() => {
                       const sort = COLUMN_META[column.key].sort
                       if (!sort) return
-                      const order =
-                        query.sort === sort && query.order === 'asc'
-                          ? 'desc'
-                          : 'asc'
-                      localStorage.setItem(
-                        SORT_STORAGE_KEY,
-                        JSON.stringify({ sort, order })
-                      )
-                      catalogue.query({ sort, order })
+                      applySort(sort)
                     }}
                   >
                     <EllipsisText

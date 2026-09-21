@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -492,14 +492,19 @@ class ProductEventStore:
         vendor_turn_id: str | None,
         *,
         kinds: tuple[str, ...],
+        connection: sqlite3.Connection | None = None,
     ) -> tuple[ProductEventRecord, ...]:
         """Read both turn identities and conflicting client bindings in one snapshot."""
 
         if not kinds:
             return ()
+        if connection is not None:
+            validate_transaction(connection, self._database)
         placeholders = ",".join("?" for _ in kinds)
-        with closing(self._connect()) as connection, connection:
-            rows = connection.execute(
+        with (
+            nullcontext(connection) if connection is not None else closing(self._connect())
+        ) as read_connection:
+            rows = read_connection.execute(
                 f"""
                 SELECT * FROM {PRODUCT_EVENT_TABLE}
                 WHERE session_id = ? AND kind IN ({placeholders}) AND (

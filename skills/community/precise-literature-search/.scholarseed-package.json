@@ -14,8 +14,8 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "08fbdffbca43a49a421656991c0f5af4a682f03dcbc6cd00d01ce946994ceebb",
-      "size": 13232
+      "sha256": "ce3ff2752b03fd185cea8939a8a9fe189c246c79d35992092765c6e90dfb47c4",
+      "size": 15316
     },
     {
       "mode": 420,
@@ -44,8 +44,8 @@
     {
       "mode": 420,
       "path": "config/paid-download.env",
-      "sha256": "999d2c193e210e92c77572cebae59377ab1bff05250b8c4e1578c05f7bbb4adc",
-      "size": 2052
+      "sha256": "1fd243d6f5da437a0319a70f17eb58bb3c68d95a96dc001e2b066de4bb01a984",
+      "size": 2221
     },
     {
       "mode": 420,
@@ -98,8 +98,8 @@
     {
       "mode": 420,
       "path": "modules/paid-download/MODULE.md",
-      "sha256": "9b27f50e362e18b0e81c5810279c25b420c376f478ffefddd1d9ba8290c3e79b",
-      "size": 4612
+      "sha256": "6c619d916e41452d1b333c7c5681edfe4d39b546cfbcd7b5a16bb1570f608ce3",
+      "size": 4639
     },
     {
       "mode": 420,
@@ -128,14 +128,14 @@
     {
       "mode": 420,
       "path": "modules/search/BALANCE_AGENT.md",
-      "sha256": "f5c1447fa3522d761513d7214e05a474269b06b6dacc86cbf97b3a26d10f84cd",
-      "size": 8344
+      "sha256": "9e69d690cbcc642ba1e6fb19fd31f3c5316b8de3fdef5b3fd4d785fe6bd91afa",
+      "size": 8616
     },
     {
       "mode": 420,
       "path": "modules/search/DECISION_INPUTS.md",
-      "sha256": "aa1a4cf4ca622e94787eb2806cc723e000b862a399d4ea3603df488289a7dcba",
-      "size": 9983
+      "sha256": "552697af3a13f95643dfba25d085bde9e6eecd48e53a556cc059556e781660c2",
+      "size": 12620
     },
     {
       "mode": 420,
@@ -146,8 +146,8 @@
     {
       "mode": 420,
       "path": "modules/search/FULL_AGENT.md",
-      "sha256": "4f510d7adabad182d28ea4d39451e7ecca24dac16a155ea539c5367054a3097a",
-      "size": 22196
+      "sha256": "485ca64b7a7f73adf8b7e5206898235e6edda0cd90e7fa3496cd5f376a98dec4",
+      "size": 23322
     },
     {
       "mode": 420,
@@ -158,8 +158,8 @@
     {
       "mode": 420,
       "path": "modules/search/SEARCH_AGENT.md",
-      "sha256": "66a737d9becbda0fc7b30ef6f7a69afca1abea38999dd2dd91b726b88277adc9",
-      "size": 7512
+      "sha256": "761922f34426abfb7d0792670c372820fd30e96a3000040c632248c2fc0f5a60",
+      "size": 8539
     },
     {
       "mode": 420,
@@ -230,8 +230,8 @@
     {
       "mode": 420,
       "path": "modules/search/tools/paperhub.py",
-      "sha256": "7228b59394a3d3036876e5e6d3ec9af44a149bcc4c05dcecb9f193febb2ed2e2",
-      "size": 16247
+      "sha256": "a1190172582506049e2f152e0aaeabc41afcd83d5d7b1d35f8bc7a576d84004b",
+      "size": 16255
     },
     {
       "mode": 420,
@@ -290,8 +290,8 @@
     {
       "mode": 420,
       "path": "modules/search/worker_actions.py",
-      "sha256": "465429473147d722f8dd26d385108d80fffa507adc0c137516206279614a733a",
-      "size": 8890
+      "sha256": "71a53a4b4be29bee9b81bae00b4a13d80857e38bdf4fb4738808c0dd3357d686",
+      "size": 8883
     },
     {
       "mode": 420,
@@ -302,8 +302,8 @@
     {
       "mode": 420,
       "path": "references/download-runtime-maintenance.md",
-      "sha256": "b6a76420fe8560ddde624c53e632b3a952fb41f36fbfa8c478e817d48ab19737",
-      "size": 5260
+      "sha256": "90ed230ac6243e6bf4f4fae2eacc4dcb59369072e0f766b8d616cb2c9e1124c0",
+      "size": 6202
     },
     {
       "mode": 420,
@@ -488,8 +488,8 @@
     {
       "mode": 493,
       "path": "scripts/stage.py",
-      "sha256": "abcce5836e1c44218532a575b4fa892e817cd48ab78c7397a93ba17fb962ee59",
-      "size": 29061
+      "sha256": "4695f5138de86da8e32bafb99f854810d1763ce24fd204414a244826b3d84cc0",
+      "size": 30199
     },
     {
       "mode": 493,
@@ -518,20 +518,20 @@
     {
       "mode": 420,
       "path": "vendor/THIRD_PARTY_NOTICES.md",
-      "sha256": "d91b0cb7dbffd9aff8e2ef6f339a379bd9ce2fb6b3c38dc6d48863d61b893d1c",
-      "size": 1509
+      "sha256": "47042af1830b9617a7c1e2ced761acbf80d917f9c70338c241f849fddbe4e95e",
+      "size": 1773
     },
     {
       "mode": 420,
       "path": "vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl",
-      "sha256": "6c0fb096e7111e113afeea9a59c042728d9705127c340d12c7ff5b34373bb6ae",
-      "size": 2419305
+      "sha256": "73ab85123003ed1f5adc887a9277c00f982b628c7a02c547d86780bbfc32639c",
+      "size": 187690
     },
     {
       "mode": 420,
       "path": "vendor/provenance.json",
-      "sha256": "9759eb58d7564fa97979260ae61e06eab6bf54b63a47bfa7d2b2619dddf0cc98",
-      "size": 918
+      "sha256": "f9445cd09c11959ad084a5b46828f3134537412a518df0c952f4cd5c5ec1724a",
+      "size": 965
     }
   ],
   "name": "precise-literature-search",
@@ -539,6 +539,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "b87c1ca6ef6d9825760a7a3f13c7225d37c6d5055b08e51769dd7e7d5a3cdb14",
-  "version": "1.0.9"
+  "source_document_sha256": "ce3ff2752b03fd185cea8939a8a9fe189c246c79d35992092765c6e90dfb47c4",
+  "version": "1.0.10"
 }

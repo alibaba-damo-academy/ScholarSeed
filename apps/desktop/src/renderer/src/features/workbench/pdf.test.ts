@@ -32,12 +32,19 @@ test('PDF owns its toolbar so the Dock does not reserve an empty row', () => {
 test('PDF rail actions are icon-only and side panels can fill the PDF area', () => {
   const document = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('./pdf/Panel.tsx', import.meta.url), 'utf8')
   const floatingWindow = readFileSync(new URL('../../components/primitive/FloatingWindow.tsx', import.meta.url), 'utf8')
   assert.match(document, /data-testid="pdf-annotation-toggle"[^>]*label=\{t\('pdfAnnotation\.records'\)\}/)
   assert.match(document, /<nav aria-label=\{t\('pdfToolbar\.toolbar'\)\}[^>]*items-center/)
-  assert.match(document, /data-testid=\{`document-panel-toggle-\$\{panel\.id\}`\}[\s\S]*label=\{String\(panel\.title\)\}/)
-  assert.match(reading, /data-testid="pdf-reading-panel-toggle-size"/)
-  assert.match(reading, /vds-pdf-side-panel[\s\S]*is-expanded/)
+  assert.match(document, /const label = panel\.label\(i18n\)/)
+  assert.match(document, /<Tooltip key=\{panel\.id\} portalled content=\{label\} side="left">[\s\S]*data-testid=\{`document-panel-toggle-\$\{panel\.id\}`\}[\s\S]*label=\{label\}[\s\S]*title=\{undefined\}/)
+  assert.match(document, /<Tooltip portalled content=\{t\('pdfAnnotation\.records'\)\} side="left">/)
+  assert.match(reading, /<Tooltip portalled content=\{LABELS\.document_translation\} side="left">[\s\S]*data-testid="pdf-document-translation"[^>]*title=\{undefined\}/)
+  assert.match(reading, /<Tooltip portalled content=\{LABELS\.interpretation\} side="left">[\s\S]*data-testid="pdf-interpretation"[^>]*title=\{undefined\}/)
+  assert.match(reading, /<PdfPanel[\s\S]*testId="pdf-reading-panel"/)
+  assert.match(document, /<PdfPanel[\s\S]*testId=\{`document-panel-\$\{activeDocumentPanel\.id\}`\}/)
+  assert.match(panel, /className="flex min-h-12 items-center justify-between gap-2[^"\n]*px-3 py-2"/)
+  assert.match(panel, /icon=\{<Icon name="close" size=\{14\} \/>\}/)
   assert.match(floatingWindow, /data-testid="floating-window-toggle-size"/)
 })
 
@@ -140,7 +147,7 @@ test('AI interpretation opens idle and starts only from the summary action', () 
   assert.match(source, /data-testid="pdf-generate-summary"[\s\S]*run\('interpretation'\)/)
   assert.doesNotMatch(source, /reading\.documentScope/)
   assert.match(source, /: !isBusy\('interpretation'\) && <div className="grid gap-5 p-5">/)
-  assert.match(source, /panel === 'interpretation' && <footer/)
+  assert.match(source, /footer=\{panel === 'interpretation' \? <footer/)
 })
 
 test('the Electron PDF adapter uses the legacy-compatible PDF.js entry and matching worker', () => {
@@ -173,10 +180,21 @@ test('PDF selection is tab-scoped and clears the shared selection when the DOM s
   const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
   const feature = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
   const page = readFileSync(new URL('./pdf/Page.tsx', import.meta.url), 'utf8')
-  assert.match(feature, /<PdfDocumentHost sessionId=\{documentSessionId\} tabId=\{tabId\}/)
+  assert.match(feature, /<PdfDocumentHost[^>]*sessionId=\{documentSessionId\}[^>]*tabId=\{tabId\}/)
   assert.match(source, /controller\.setSelection\(tabId, null\)/)
   assert.match(source, /persistedSelectionViewport\(/)
   assert.match(page, /data-pdf-selection-highlight/)
+})
+
+test('PDF selection pins its drag anchor page and releases the native range before virtualization', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const page = readFileSync(new URL('./pdf/Page.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /setSelectionDragPage\(element \? Number\(element\.dataset\.page\) : null\)/)
+  assert.match(source, /keepRendered=\{selectionDragPage === page\.pageNumber\}/)
+  assert.match(source, /if \(selections\.length && selectionDragPage === null\) window\.getSelection\(\)\?\.removeAllRanges\(\)/)
+  assert.match(page, /const renderable = near \|\| keepRendered/)
+  assert.match(page, /\{renderable && <canvas/)
 })
 
 test('PDF annotation rendering and hit testing share the newest-first overlap projection', () => {
@@ -243,9 +261,10 @@ test('PDF preserves selection mark actions and owns a literature-only annotation
   assert.match(source, /<CopyButton/)
   assert.match(source, /<PdfAnnotations/)
   assert.doesNotMatch(source, /写入笔记|添加到笔记/)
-  assert.match(annotations, /data-testid="pdf-annotation-list"/)
+  assert.match(annotations, /bodyTestId="pdf-annotation-list"/)
   assert.match(annotations, /filterMarks/)
-  assert.match(annotations, /SegmentedControl/)
+  assert.match(annotations, /<Tabs value=\{filter\}/)
+  assert.match(annotations, /<TabsTrigger key=\{category\} value=\{category\}/)
   assert.match(annotations, /groupMarksByPage/)
   assert.match(page, /<Popover/)
   assert.match(page, /renderAnnotation/)
@@ -306,38 +325,50 @@ test('saved PDF annotation AI actions keep their own immutable selection snapsho
   assert.doesNotMatch(reading, /if \(selection\.length \|\| !selectionResult\) return[\s\S]*setFloating\(null\)/)
 })
 
-test('PDF explanations collect a focused instruction before submitting the immutable selection', () => {
+test('PDF explanations accept optional instructions and link to prompt settings', () => {
   const annotation = readFileSync(new URL('./pdf/Annotation.tsx', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const guide = readFileSync(new URL('../../components/business/PromptSettingsGuide.tsx', import.meta.url), 'utf8')
 
   assert.match(annotation, /<Textarea[^>]*autoFocus[^>]*pdfAnnotation\.explainPrompt/)
   assert.match(annotation, /onExplain\(explanationDraft\.trim\(\)\)/)
+  assert.doesNotMatch(annotation, /if \(!explanationDraft\.trim\(\)\) return/)
+  assert.doesNotMatch(annotation, /disabled=\{!explanationDraft\.trim\(\) \|\| analyzing\}/)
+  assert.match(annotation, /<PromptSettingsGuide[^>]*prefix=\{t\('pdfAnnotation\.promptGuide'\)\}[^>]*linkPrefix=\{t\('pdfAnnotation\.promptGuideLinkPrefix'\)\}/)
   assert.match(reading, /selectionExplanationOpen/)
   assert.match(reading, /selectionExplanationSnapshot/)
   assert.match(reading, /<Textarea[^>]*autoFocus[^>]*reading\.explanationPrompt/)
   assert.match(reading, /selectionInstruction\(state\.selectionPrompts, 'explain', selectionExplanationDraft\)/)
+  assert.doesNotMatch(reading, /if \(!requirement \|\| !selectionExplanationSnapshot\.length\) return/)
+  assert.doesNotMatch(reading, /disabled=\{!selectionExplanationDraft\.trim\(\)\}/)
+  assert.match(reading, /<PromptSettingsGuide[^>]*prefix=\{t\('reading\.explanationPromptGuide'\)\}[^>]*linkPrefix=\{t\('reading\.promptGuideLinkPrefix'\)\}/)
+  assert.match(reading, /floating === 'selection_translation'[\s\S]*PromptSettingsGuide/)
   assert.match(reading, /expanded: selectionExplanationOpen/)
+  assert.match(guide, /linkPrefix\?: ReactNode/)
+  assert.match(guide, /whitespace-nowrap/)
 })
 
-test('PDF annotation panel reuses the right split resizer with bounded width', () => {
+test('PDF side panels share a fixed-width drawer without a resizer', () => {
   const annotations = readFileSync(new URL('./pdf/Annotations.tsx', import.meta.url), 'utf8')
+  const document = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+  const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('./pdf/Panel.tsx', import.meta.url), 'utf8')
 
-  assert.match(annotations, /<ResizablePanel/)
-  assert.match(annotations, /PDF_ANNOTATION_PANEL_DEFAULT_WIDTH_PX = 420/)
-  assert.match(annotations, /PDF_ANNOTATION_PANEL_MIN_WIDTH_PX = 400/)
-  assert.match(annotations, /PDF_ANNOTATION_PANEL_MAX_WIDTH_PERCENT = 60/)
-  assert.match(annotations, /defaultRightWidth=/)
-  assert.match(annotations, /minRightWidth=\{PDF_ANNOTATION_PANEL_MIN_WIDTH_PX\}/)
-  assert.match(annotations, /maxRightWidth=\{PDF_ANNOTATION_PANEL_MAX_WIDTH_PERCENT\}/)
-  assert.match(annotations, /minLeftWidth=\{PDF_ANNOTATION_PANEL_MIN_WIDTH_PX\}/)
-  assert.match(annotations, /data-testid="pdf-annotations-resizable"/)
+  assert.doesNotMatch(panel, /ResizablePanel|panelWidth|setPanelWidth/)
+  assert.match(panel, /w-\[var\(--vds-layout-pdf-panel-width\)\]/)
+  assert.match(panel, /max-w-\[calc\(100%-var\(--vds-layout-pdf-rail-width\)\)\]/)
+  assert.match(panel, /expanded \? ' left-0 max-w-none'/)
+  assert.match(panel, /onClick=\{onToggleExpanded\}/)
+  assert.match(annotations, /<PdfPanel[\s\S]*testId="pdf-annotations"/)
+  assert.match(document, /<PdfPanel[\s\S]*testId=\{`document-panel-/)
+  assert.match(reading, /<PdfPanel[\s\S]*testId="pdf-reading-panel"/)
 })
 
 test('PDF annotation list copies source text and each comment independently', () => {
   const annotations = readFileSync(new URL('./pdf/Annotations.tsx', import.meta.url), 'utf8')
 
   assert.match(annotations, /value=\{mark\.text\}[\s\S]*pdfAnnotation\.copySource/)
-  assert.match(annotations, /className="mt-2 flex items-center gap-1">[\s\S]*markComments\.map\(\(comment\) => <CopyButton[\s\S]*value=\{comment\.body\}[\s\S]*pdfAnnotation\.copyComment[\s\S]*value=\{mark\.text\}/)
+  assert.match(annotations, /className="mt-2 flex flex-wrap items-center gap-1">[\s\S]*markComments\.map\(\(comment\) => <CopyButton[\s\S]*value=\{comment\.body\}[\s\S]*pdfAnnotation\.copyComment[\s\S]*value=\{mark\.text\}/)
   assert.doesNotMatch(annotations, /markComments[\s\S]*\.join\(/)
 })
 
@@ -413,7 +444,7 @@ test('selection explanation and translation follow-ups enter chat as self-contai
   assert.match(source, /actions\.askAiFromPanel\(t\('reading\.selectionDraft'/)
   assert.match(source, /source: floatingResult\.selected_text/)
   assert.match(source, /result: floatingResult\.text/)
-  assert.match(source, /floating !== 'figure_explanation' && <Button[^>]*onClick=\{quote\}/)
+  assert.match(source, /floating !== 'figure_explanation' && <Button disabled=\{!floatingResult\}[\s\S]*?onClick=\{quote\}/)
   assert.match(source, /focusComposer\(\)/)
   assert.doesNotMatch(source, /ingress\.addContext|useAssistantIngress/)
   for (const draft of [zh.reading.selectionDraft, en.reading.selectionDraft]) {
@@ -428,6 +459,7 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
   const outline = readFileSync(new URL('./pdf/Outline.tsx', import.meta.url), 'utf8')
   const annotations = readFileSync(new URL('./pdf/Annotations.tsx', import.meta.url), 'utf8')
   const reading = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const panel = readFileSync(new URL('./pdf/Panel.tsx', import.meta.url), 'utf8')
   const layout = readFileSync(new URL('../../design/layout.css', import.meta.url), 'utf8')
   const icons = readFileSync(new URL('../../icons.tsx', import.meta.url), 'utf8')
 
@@ -460,12 +492,13 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
   assert.match(source, /absolute inset-y-0 left-0/)
   assert.match(source, /overflow-x-hidden/)
   assert.match(source, /bg-\[var\(--vds-bg-white-default\)\]!/)
-  assert.match(source, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)
-  assert.match(annotations, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)
-  assert.match(reading, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)
-  for (const panel of [source, annotations, reading]) {
-    assert.match(panel, /bg-\[var\(--vds-bg-white-default\)\]/)
-    assert.doesNotMatch(panel, /backdrop-opacity|bg-opacity|opacity-\d/)
+  assert.match(panel, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)
+  assert.match(panel, /expanded \? ' left-0 max-w-none'/)
+  assert.match(annotations, /<PdfPanel/)
+  assert.match(reading, /<PdfPanel/)
+  for (const panelSource of [source, panel]) {
+    assert.match(panelSource, /bg-\[var\(--vds-bg-white-default\)\]/)
+    assert.doesNotMatch(panelSource, /backdrop-opacity|bg-opacity|opacity-\d/)
   }
   assert.match(source, /className="w-full min-w-0 justify-start text-left whitespace-normal! \[overflow-wrap:anywhere\]"/)
   assert.match(source, /<mark className="rounded-\[var\(--vds-radius-2\)\] bg-\[var\(--vds-brand-bg-light\)\] px-0\.5 text-inherit"/)
@@ -521,7 +554,7 @@ test('literature PDF opening preserves attachment identity and record ownership'
   assert.match(store, /recordTarget: attachment\.record_target/)
   assert.match(store, /\.\.\.\(page \? \{ page \} : \{\}\)/)
   assert.match(detail, /act\.openLiteratureAttachment\(item\.id, attachment\.id\)/)
-  assert.match(detail, /act\.openLiteratureAttachment\(\s*item\.id,\s*item\.primary_attachment\?\.id\s*\)/)
+  assert.match(detail, /act\.openLiteratureAttachment\(currentItem\.id, attachment\.id\)/)
   assert.match(detail, /<AttachmentMarks\s+source=\{attachmentSource\}/)
 })
 

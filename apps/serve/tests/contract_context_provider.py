@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-import pymupdf
 from openpyxl import Workbook
 
+from apps.serve.tests import pdf as pdf_fixture
 from scholarseed_runtime.contract.history import HistoryEntry
 from service.assistant.persistence.store import AssistantStore
 from service.assistant.service.context import AssistantService
@@ -375,18 +375,68 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertEqual(current.state, ContextResolutionState.READY)
         self.assertEqual(current.source_revision, first.source_revision)
 
-    def test_stale_and_missing_are_explicit_failures(self) -> None:
+    def test_changed_file_uses_latest_content_and_missing_still_fails(self) -> None:
         self.content.write_text(self.project.id, "changing.md", "new bytes")
 
-        stale = self.resolve(
+        current = self.resolve(
             self.provider,
             self.ref(ContextRefKind.FILE, "changing.md", revision="old-revision"),
         )
         missing = self.resolve(self.provider, self.ref(ContextRefKind.FILE, "missing.md"))
 
+        self.assertEqual(current.state, ContextResolutionState.READY)
+        self.assertEqual(current.items[0].text, "new bytes")
+        self.assertEqual(current.source_revision, _selection_hash("new bytes"))
+        self.assertEqual(missing.state, ContextResolutionState.MISSING)
+
+    def test_changed_anchored_file_remains_stale(self) -> None:
+        self.content.write_text(self.project.id, "changing.md", "new bytes")
+        reference = replace(
+            self.ref(ContextRefKind.FILE, "changing.md", revision="old-revision"),
+            anchor=SelectionAnchor(locator={"kind": "pdf"}, selected_text_hash="old-hash"),
+        )
+
+        stale = self.resolve(self.provider, reference)
+
         self.assertEqual(stale.state, ContextResolutionState.STALE)
         self.assertEqual(stale.issues[0].code, "source_revision_changed")
-        self.assertEqual(missing.state, ContextResolutionState.MISSING)
+
+    def test_changed_file_freezes_latest_revision_for_turn(self) -> None:
+        self.content.write_text(self.project.id, "changing.md", "before")
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(
+                self.ref(ContextRefKind.FILE, "changing.md", revision=_selection_hash("before")),
+            ),
+        )
+        self.content.write_text(self.project.id, "changing.md", "after")
+
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="changed-file-turn",
+            expected_revision=selection.revision,
+            question="What changed?",
+        )
+
+        self.assertIsNone(result.failure)
+        assert result.context is not None
+        item = result.context.snapshot.items[0]
+        self.assertEqual(item.excerpt_text, "after")
+        self.assertEqual(item.ref.source_revision, _selection_hash("after"))
+        self.assertEqual(self.assistant.selection(SESSION_ID), selection)
+        self.content.write_text(self.project.id, "changing.md", "after again")
+        self.assertEqual(
+            self.assistant.freeze(
+                session_id=SESSION_ID,
+                client_turn_id="changed-file-turn",
+                expected_revision=selection.revision,
+                question="What changed?",
+            ).context,
+            result.context,
+        )
 
     def test_directory_does_not_decode_unrequested_binary_children(self) -> None:
         directory = Path(self.project.root) / "mixed"
@@ -622,12 +672,12 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertNotIn("nonce-literature-abstract", frozen.context.model_context)
 
     def test_literature_pdf_selection_resolves_exact_text_as_material(self) -> None:
-        primary_document = pymupdf.open()
+        primary_document = pdf_fixture.open()
         primary_page = primary_document.new_page()
         primary_page.insert_text((72, 72), "primary attachment text")
         primary_payload = primary_document.tobytes()
         primary_document.close()
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         page.insert_text((72, 72), "alpha chosen omega")
         selected = "chosen"
@@ -759,7 +809,7 @@ class ContentContextProviderContract(unittest.TestCase):
             self.assertEqual(failure.issues[0].label, ref.label)
 
     def test_literature_pdf_selection_uses_supplementary_attachment_without_primary(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         selected = "supplementary only"
         page.insert_text((72, 72), selected)
@@ -815,7 +865,7 @@ class ContentContextProviderContract(unittest.TestCase):
     def test_literature_pdf_selection_accepts_verified_cjk_shape_from_other_extractor(
         self,
     ) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         authoritative = "人口老龄化 2026"
         browser_aliases = "⼈⼜⽼龄化 2026"

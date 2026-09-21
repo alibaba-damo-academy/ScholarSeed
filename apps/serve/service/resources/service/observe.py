@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from hashlib import sha256
@@ -102,6 +103,7 @@ class ResourceVersionSupervisor:
         self._discover: set[str] = set()
         self._reconcile: set[str] = set()
         self._eligible_cache: dict[str, set[str]] = {}
+        self._import_eligible: dict[str, set[str]] = {}
         self._scan_outcomes: dict[str, ScanOutcome] = {}
         self._scanning: set[str] = set()
         self._preparation: ResourceProjectPreparation | None = None
@@ -426,18 +428,23 @@ class ResourceVersionSupervisor:
         )
 
     def capability_states(
-        self, project_id: str, paths: tuple[str, ...]
+        self,
+        project_id: str,
+        paths: tuple[str, ...],
+        *,
+        repositories: dict[str, str | None] | None = None,
     ) -> dict[str, ResourceCapability]:
-        """Batch-project tree state with one policy enumeration and no byte reads."""
+        """Project tree state for selected paths without a repository-wide scan."""
 
         selected = tuple(dict.fromkeys(paths))
         if not selected:
             return {}
-        entries = self._entries(project_id)
+        entries = self._content.resource_entries(project_id, selected)
         by_path = {entry.path: entry for entry in entries}
         resource_root = self._content.root(project_id, RootKind.RESOURCES).path
-        repositories = self._content.repository_roots(project_id, selected)
+        repository_states = repositories or self._content.repository_roots(project_id, selected)
         persisted = self._versions.capability_states(project_id, selected)
+        manual_states = self._versions.manual_admitted_states(project_id, selected)
         projected: dict[str, ResourceCapability] = {}
         for path in selected:
             base = persisted.get(
@@ -454,11 +461,17 @@ class ResourceVersionSupervisor:
             )
             entry = by_path.get(path)
             state = (
-                self._classify(project_id, entry, resource_root, repositories)
+                self._classify(
+                    project_id,
+                    entry,
+                    resource_root,
+                    repository_states,
+                    manual_admitted=manual_states.get(path, False),
+                )
                 if entry is not None
                 else ManagementState.MANAGED if base.managed else ManagementState.UNAVAILABLE
             )
-            if repositories[path] is not None:
+            if repository_states[path] is not None:
                 state = ManagementState.GIT
             projected[path] = replace(
                 base,
@@ -467,7 +480,7 @@ class ResourceVersionSupervisor:
                 management_state=state,
                 pending=None if state is ManagementState.GIT else base.pending,
                 drifted=False if state is ManagementState.GIT else base.drifted,
-                manual_admitted=self._versions.manual_admitted(project_id, path),
+                manual_admitted=manual_states.get(path, False),
             )
         return projected
 
@@ -610,6 +623,15 @@ class ResourceVersionSupervisor:
         absence through Content before recording a deletion.
         """
 
+        cached = self._import_eligible.get(project_id)
+        if cached is not None:
+            if not include_missing:
+                return tuple(cached)
+            additions, _ignored, _oversized, _unsupported = self._eligible(
+                project_id,
+                tuple(ResourceEntry(path=path, size=0) for path in include_missing),
+            )
+            return tuple(cached | set(additions))
         entries = self._entries(project_id)
         present = {entry.path for entry in entries}
         entries = (
@@ -618,6 +640,19 @@ class ResourceVersionSupervisor:
         )
         eligible, _ignored, _oversized, _unsupported = self._eligible(project_id, entries)
         return eligible
+
+    @contextmanager
+    def import_scope(self, project_id: str):
+        """Reuse one eligibility scan for the lifetime of a COPY import batch."""
+
+        if project_id in self._import_eligible:
+            yield
+            return
+        self._import_eligible[project_id] = set(self.eligible_paths(project_id))
+        try:
+            yield
+        finally:
+            self._import_eligible.pop(project_id, None)
 
     def is_eligible(self, project_id: str, path: str) -> bool:
         """Check one current path against the authoritative scan policy."""
@@ -782,6 +817,8 @@ class ResourceVersionSupervisor:
         entry: ResourceEntry,
         resource_root: str,
         repositories: dict[str, str | None] | None = None,
+        *,
+        manual_admitted: bool | None = None,
     ) -> ManagementState:
         roots = (
             repositories
@@ -791,7 +828,11 @@ class ResourceVersionSupervisor:
         if roots[entry.path] is not None:
             return ManagementState.GIT
         relative = self._relative_to_root(entry.path, resource_root)
-        manual = self._versions.manual_admitted(project_id, entry.path)
+        manual = (
+            self._versions.manual_admitted(project_id, entry.path)
+            if manual_admitted is None
+            else manual_admitted
+        )
         if entry.size > self.max_size_bytes():
             return ManagementState.OVERSIZED
         if self._settings.version_migration_required():

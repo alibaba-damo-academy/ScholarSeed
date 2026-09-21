@@ -49,7 +49,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
 from service.chat.persistence.events import ProductEventStore  # noqa: E402
 from service.chat.runtime.evidence import SessionTrace  # noqa: E402
 from service.chat.runtime.live import LiveSession  # noqa: E402
-from service.chat.service.models import ModelService  # noqa: E402
+from service.chat.service.models import ModelService, _runtime_capabilities  # noqa: E402
 from service.inference.reasoning import (  # noqa: E402
     MINIMUM_APPLIED,
     MINIMUM_CLAMPED,
@@ -433,6 +433,10 @@ def test_connection_level_declaration_still_counts() -> None:
         [{"id": "legacy-model", "label": ""}], image_input=True, context_window=64_000
     )
     check("the connection's vision flag is honoured", row.get("image_input") is True)
+    check(
+        "the runtime catalog receives the same connection image declaration",
+        _runtime_capabilities(row).input_modalities == ("text", "image"),
+    )
     check("the connection's window is honoured", row.get("context_window") == 64_000)
     check(
         "a model without its own modalities is still marked unverified",

@@ -1,9 +1,8 @@
-"""Contract for bounded HTML pages entering the project resource library."""
+"""Contract for URL references and site icons entering the project resource library."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import socket
 import tempfile
 import unittest
@@ -26,19 +25,14 @@ from service.resources.persistence.catalog import (
 from service.resources.service.activation import ResourceActivation
 from service.resources.service.delivery import ResourceDeliveryService, TurnOutcome
 from service.resources.service.fetcher import (
-    WEB_CONTENT_UNAVAILABLE,
-    WEB_FETCH_TIMEOUT,
     WEB_HTTP_STATUS,
-    WEB_IMAGE_REFERENCE_PREFIX,
     WEB_UNSAFE_URL,
     FetchedImage,
-    FetchedPage,
     HtmlFetcher,
     PageFetchError,
     _FetchPolicy,
     _Response,
     _Target,
-    extract_html,
 )
 from service.resources.service.history import ResourceVersionService
 from service.resources.service.importer import WebImporter
@@ -51,16 +45,9 @@ from service.workbench.domain.model import WorkbenchFormatPolicy
 from service.workbench.service.records import PdfRecordStore
 
 SUCCESS_URL = "https://public.example/article"
-FAILURE_URL = "https://slow.example/article"
-UNEXPECTED_FAILURE_URL = "https://broken.example/article"
-IMAGE_URL = "https://public.example/images/chart.png"
-IMAGE_REFERENCE = "scholarseed-web-image:fixture"
 SITE_ICON_URL = "https://public.example/favicon.ico"
 SITE_ICON_FALLBACK_URL = (
     "https://www.google.com/s2/favicons?domain_url=https%3A%2F%2Fpublic.example%2F&sz=64"
-)
-IMAGE_BYTES = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 SEARCH_QUERY = "perovskite stability"
 CONTRACT_TIMESTAMP = 1_700_000_000.0
@@ -86,84 +73,6 @@ class WebImportSettings:
         return None
 
 
-class FixtureFetcher:
-    """Deterministic contract fixture; real acceptance uses `HtmlFetcher`."""
-
-    def __init__(self) -> None:
-        self.calls: list[str] = []
-
-    def fetch(self, url: str) -> FetchedPage:
-        self.calls.append(url)
-        if url == FAILURE_URL:
-            raise PageFetchError(WEB_FETCH_TIMEOUT)
-        if url == UNEXPECTED_FAILURE_URL:
-            raise ValueError("unexpected parser failure")
-        return FetchedPage(
-            source_url=url,
-            final_url="https://public.example/final",
-            title="Windows: compatible? title",
-            markdown=(
-                "Complete article body with evidence and references.\n\n"
-                f"![Chart]({IMAGE_REFERENCE})\n"
-            ),
-            images=(
-                FetchedImage(
-                    reference=IMAGE_REFERENCE,
-                    source_url=IMAGE_URL,
-                    final_url=IMAGE_URL,
-                    media_type="image/png",
-                    content=IMAGE_BYTES,
-                ),
-            ),
-        )
-
-
-class NetworkFixtureFetcher(HtmlFetcher):
-    """Exercise HtmlFetcher orchestration without opening a real socket."""
-
-    def __init__(self, image_error: bool = False) -> None:
-        self.calls: list[tuple[str, str]] = []
-        self.image_error = image_error
-
-    def _request(
-        self,
-        target: _Target,
-        policy: _FetchPolicy,
-        *,
-        referer: str = "",
-    ) -> _Response:
-        self.calls.append((target.url, referer))
-        if target.url == SUCCESS_URL:
-            return _Response(
-                status=200,
-                headers={},
-                payload=b"""
-                    <html><head><title>Image article</title></head><body><main>
-                    <h1>Image article</h1>
-                    <p>A complete article with enough readable content to verify that its
-                    referenced raster image is fetched through the same bounded public-network
-                    policy before the page is handed to the resource importer.</p>
-                    <img alt="Chart" src="/images/chart.png">
-                    </main></body></html>
-                """,
-                media_type="text/html",
-            )
-        self.assert_image_policy(policy, referer)
-        if self.image_error:
-            raise PageFetchError(WEB_FETCH_TIMEOUT)
-        return _Response(
-            status=200,
-            headers={},
-            payload=IMAGE_BYTES,
-            media_type="image/png",
-        )
-
-    @staticmethod
-    def assert_image_policy(policy: _FetchPolicy, referer: str) -> None:
-        if "image/png" not in policy.allowed_content_types or referer != SUCCESS_URL:
-            raise AssertionError("image request did not preserve its bounded policy and referer")
-
-
 class SiteIconFixtureFetcher(HtmlFetcher):
     """Exercise the favicon policy without opening a real socket."""
 
@@ -185,7 +94,7 @@ class SiteIconFixtureFetcher(HtmlFetcher):
         return _Response(
             status=200,
             headers={},
-            payload=IMAGE_BYTES,
+            payload=b"icon",
             media_type="image/png",
         )
 
@@ -210,7 +119,7 @@ class SiteIconFallbackFixtureFetcher(SiteIconFixtureFetcher):
         return _Response(
             status=200,
             headers={},
-            payload=IMAGE_BYTES,
+            payload=b"icon",
             media_type="image/png",
         )
 
@@ -232,7 +141,6 @@ class WebImportContract(unittest.TestCase):
         registry = ProjectRegistry(str(workspace), catalog)
         self.project = registry.create("Web Import")
         self.content = ContentService(registry, catalog)
-        self.fetcher = FixtureFetcher()
         self.web_sources = ResourceWebSourceCatalog(self.content)
         settings = WebImportSettings()
         retention = ResourceRetentionService(self.content, settings)
@@ -275,7 +183,6 @@ class WebImportContract(unittest.TestCase):
         app.state.resource_web_sources = self.web_sources
         app.state.web_importer = WebImporter(
             ResourceWriter(self.content),
-            self.fetcher,
             self.content,
             self.web_sources,
         )
@@ -287,141 +194,9 @@ class WebImportContract(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_html_extraction_prefers_main_content_and_removes_page_noise(self) -> None:
-        title, markdown = extract_html(b"""
-            <html><head><title>Full page</title><style>hidden style</style></head>
-            <body>
-              <nav>Navigation links and section overview</nav>
-              <main><h1>Research article</h1><p>Body with a quoted reference and enough
-                readable content to pass the minimum content threshold for a useful static
-                HTML page.</p></main>
-              <footer>Copyright and citation footer</footer>
-              <script>secret script payload</script><noscript>fallback noise</noscript>
-              <template>template noise</template><svg><text>vector noise</text></svg>
-            </body></html>
-            """)
-
-        self.assertEqual(title, "Full page")
-        self.assertIn("# Research article", markdown)
-        self.assertIn("Body with a quoted reference", markdown)
-        self.assertNotIn("Navigation links", markdown)
-        self.assertNotIn("citation footer", markdown)
-        self.assertNotIn("secret script", markdown)
-        self.assertNotIn("fallback noise", markdown)
-        self.assertNotIn("template noise", markdown)
-        self.assertNotIn("vector noise", markdown)
-        self.assertNotIn("<main>", markdown)
-
-    def test_html_extraction_preserves_inline_text_and_markdown_structure(self) -> None:
-        _, markdown = extract_html(
-            b"""
-            <html><head><title>Structured page</title></head><body><main>
-              <h2>Equipment</h2>
-              <p>A <span>piece</span> of <a href="/equipment">equipment</a>
-                with <strong>straps</strong> and enough supporting prose to make this a useful
-                article rather than an empty dynamic page.</p>
-              <ul><li>First item</li><li>Second item</li></ul>
-              <img alt="Equipment diagram" src="../images/equipment.png">
-              <pre><code>x = 1\n\ny = 2</code></pre>
-            </main></body></html>
-            """,
-            base_url="https://example.com/articles/structured",
-        )
-
-        self.assertIn("## Equipment", markdown)
-        self.assertIn(
-            "A piece of [equipment](https://example.com/equipment) with **straps**",
-            markdown,
-        )
-        self.assertIn("* First item", markdown)
-        self.assertIn(
-            "![Equipment diagram](https://example.com/images/equipment.png)",
-            markdown,
-        )
-        self.assertIn("```\nx = 1\n\ny = 2\n```", markdown)
-        self.assertNotIn("A\n\npiece", markdown)
-
-    def test_html_fetcher_collects_bounded_remote_images_for_localization(self) -> None:
-        address = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("8.8.8.8", 443))
-        fetcher = NetworkFixtureFetcher()
-
-        with patch(
-            "service.resources.service.fetcher.socket.getaddrinfo",
-            return_value=[address],
-        ):
-            page = fetcher.fetch(SUCCESS_URL)
-
-        self.assertEqual(page.title, "Image article")
-        self.assertEqual(len(page.images), 1)
-        self.assertEqual(page.images[0].source_url, IMAGE_URL)
-        self.assertEqual(page.images[0].content, IMAGE_BYTES)
-        self.assertIn(page.images[0].reference, page.markdown)
-        self.assertEqual(
-            fetcher.calls,
-            [(SUCCESS_URL, ""), (IMAGE_URL, SUCCESS_URL)],
-        )
-
-    def test_html_fetcher_restores_remote_url_when_image_fetch_fails(self) -> None:
-        address = (
-            socket.AF_INET,
-            socket.SOCK_STREAM,
-            socket.IPPROTO_TCP,
-            "",
-            ("8.8.8.8", 443),
-        )
-        fetcher = NetworkFixtureFetcher(image_error=True)
-
-        with patch(
-            "service.resources.service.fetcher.socket.getaddrinfo",
-            return_value=[address],
-        ):
-            page = fetcher.fetch(SUCCESS_URL)
-
-        self.assertEqual(page.images, ())
-        self.assertIn(f"![Chart]({IMAGE_URL})", page.markdown)
-        self.assertNotIn(WEB_IMAGE_REFERENCE_PREFIX, page.markdown)
-
-    def test_html_extraction_recovers_streamed_h1_fragment_from_empty_main(self) -> None:
-        _, markdown = extract_html(b"""
-            <html><body>
-              <main id="streaming-shell"></main>
-              <div hidden id="streamed-content"><div>
-                <h1>Streamed article heading</h1>
-                <p>The streamed article paragraph contains enough readable content to select
-                  this cohesive fragment even before client JavaScript moves it into main.</p>
-              </div></div>
-              <div><p>Unrelated recommendations contain enough text to be mistaken for the
-                article when the whole body is flattened without structural selection.</p></div>
-            </body></html>
-            """)
-
-        self.assertTrue(markdown.startswith("# Streamed article heading\n\n"))
-        self.assertIn("The streamed article paragraph", markdown)
-        self.assertNotIn("Unrelated recommendations", markdown)
-
-    def test_html_extraction_falls_back_to_body_without_semantic_content(self) -> None:
-        _, markdown = extract_html(b"""
-            <html><body>
-              <main id="streaming-shell"></main>
-              <p>A complete body-only article with enough readable text to remain importable
-                when a legacy website does not expose main, article, or role-main elements.</p>
-              <p>The second paragraph remains separate and readable after conversion.</p>
-            </body></html>
-            """)
-
-        self.assertIn("A complete body-only article", markdown)
-        self.assertIn("\n\nThe second paragraph", markdown)
-
-    def test_html_extraction_rejects_dynamic_shell_without_useful_text(self) -> None:
-        with self.assertRaises(PageFetchError) as raised:
-            extract_html(
-                b"<html><body><div id='app'>Loading</div><script>render()</script></body></html>"
-            )
-        self.assertEqual(raised.exception.code, WEB_CONTENT_UNAVAILABLE)
-
     def test_literal_private_address_is_rejected_before_http(self) -> None:
         with self.assertRaises(PageFetchError) as raised:
-            HtmlFetcher().fetch("http://127.0.0.1/private")
+            HtmlFetcher().fetch_site_icon("http://127.0.0.1/private")
         self.assertEqual(raised.exception.code, WEB_UNSAFE_URL)
 
     def test_site_icon_is_proxied_through_the_bounded_public_network_fetcher(self) -> None:
@@ -442,7 +217,7 @@ class WebImportContract(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.content, IMAGE_BYTES)
+        self.assertEqual(response.content, b"icon")
         self.assertEqual(response.headers["content-type"], "image/png")
         self.assertEqual(response.headers["cache-control"], "private, max-age=86400")
         self.assertEqual(response.headers["cross-origin-resource-policy"], "cross-origin")
@@ -480,7 +255,7 @@ class WebImportContract(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.content, IMAGE_BYTES)
+        self.assertEqual(response.content, b"icon")
         self.assertEqual(fallback.calls, [SITE_ICON_URL, SITE_ICON_FALLBACK_URL])
 
     def test_default_import_writes_title_and_url_reference_without_fetch(self) -> None:
@@ -499,7 +274,6 @@ class WebImportContract(unittest.TestCase):
         self.assertEqual(body["failed"], 0)
         self.assertEqual(body["items"][0]["status"], "success")
         # 轻路径不出站抓取，snippet/正文/图片都不落盘，正文只剩标题与可点击的 URL 链接。
-        self.assertEqual(self.fetcher.calls, [])
 
         path = Path(self.project.root) / body["items"][0]["node"]["path"]
         self.assertEqual(path.name, "First.md")
@@ -547,78 +321,12 @@ class WebImportContract(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body["succeeded"], 1)
-        self.assertEqual(self.fetcher.calls, [])
 
         path = Path(self.project.root) / body["items"][0]["node"]["path"]
         saved = path.read_text(encoding="utf-8")
         self.assertEqual(saved, f"# Perovskite\n\n[{url}](<{url}>)\n")
         # 整条带括号 URL 原样保留, 未在 `)` 处被截断。
         self.assertIn(url, saved)
-
-    def test_full_page_batch_keeps_success_when_another_page_fails(self) -> None:
-        # 备用整页抓取路径：逐页失败隔离仍由该路径承担，置开关后复验。
-        with patch("service.resources.service.importer.WEB_IMPORT_FETCH_FULL_PAGE", True):
-            response = self.client.post(
-                "/api/resource/web-import",
-                json={
-                    "project": self.project.id,
-                    "query": SEARCH_QUERY,
-                    "candidates": [
-                        {"title": "First", "url": SUCCESS_URL, "snippet": "one"},
-                        {"title": "Second", "url": FAILURE_URL, "snippet": "two"},
-                    ],
-                },
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(body["succeeded"], 1)
-        self.assertEqual(body["failed"], 1)
-        self.assertEqual(body["items"][0]["status"], "success")
-        self.assertEqual(body["items"][1]["status"], "failed")
-        self.assertEqual(body["items"][1]["error"], WEB_FETCH_TIMEOUT)
-
-        path = Path(self.project.root) / body["items"][0]["node"]["path"]
-        self.assertEqual(path.name, "Windows_ compatible_ title.md")
-        saved = path.read_text(encoding="utf-8")
-        self.assertTrue(saved.startswith("# Windows: compatible? title\n\n"))
-        self.assertNotIn("scholarseed_schema", saved)
-        self.assertNotIn(SUCCESS_URL, saved)
-        self.assertNotIn("## 来源", saved)
-        self.assertNotIn("## 网页全文", saved)
-        self.assertIn("Complete article body", saved)
-        image_line = next(line for line in saved.splitlines() if line.startswith("![Chart]("))
-        relative_image = image_line.removeprefix("![Chart](").removesuffix(")")
-        self.assertTrue(relative_image.startswith(".web-assets/"))
-        self.assertNotIn(IMAGE_URL, saved)
-        self.assertEqual((path.parent / relative_image).read_bytes(), IMAGE_BYTES)
-
-        resource_path = body["items"][0]["node"]["path"]
-        origin = self.web_sources.get(self.project.id, resource_path)
-        self.assertIsNotNone(origin)
-        assert origin is not None
-        self.assertEqual(
-            origin.resource_revision,
-            self.content.snapshot(self.project.id, resource_path).revision,
-        )
-        self.assertEqual(origin.source_title, "Windows: compatible? title")
-        self.assertEqual(origin.source_url, SUCCESS_URL)
-        self.assertEqual(origin.final_url, "https://public.example/final")
-        self.assertEqual(origin.search_query, SEARCH_QUERY)
-        self.assertIsNotNone(origin.fetched_at)
-        self.assertEqual(origin.schema_version, WEB_SOURCE_SCHEMA_VERSION)
-        capability = self.versions.capability(self.project.id, resource_path)
-        self.assertIs(capability.snapshot_state, SnapshotState.SAVED)
-        self.assertIsNone(capability.pending)
-        self.assertEqual(len(self.versions.history(self.project.id, resource_path)), 1)
-
-        response = self.client.get(
-            "/api/resource/web-origin",
-            params={"project": self.project.id, "path": resource_path},
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["source_url"], SUCCESS_URL)
-        self.assertEqual(response.json()["search_query"], SEARCH_QUERY)
 
     def test_web_import_during_agent_turn_remains_saved_when_bytes_are_unchanged(self) -> None:
         asyncio.run(self.deliveries.begin_turn("session", "turn", self.project.root))
@@ -722,7 +430,6 @@ class WebImportContract(unittest.TestCase):
         failing = FailingWebSourceCatalog(self.content)
         self.client.app.state.web_importer = WebImporter(
             ResourceWriter(self.content),
-            self.fetcher,
             self.content,
             failing,
         )
@@ -789,35 +496,6 @@ class WebImportContract(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(response.json()["detail"], "parent_not_found")
-        self.assertEqual(self.fetcher.calls, [])
-
-    def test_unexpected_item_failure_is_logged_and_does_not_abort_later_pages(self) -> None:
-        # 逐项隔离的未预期异常路径在备用整页抓取下复验：抓取器抛出非 PageFetchError。
-        with (
-            patch("service.resources.service.importer.WEB_IMPORT_FETCH_FULL_PAGE", True),
-            self.assertLogs(
-                "service.resources.service.importer",
-                level="ERROR",
-            ),
-        ):
-            response = self.client.post(
-                "/api/resource/web-import",
-                json={
-                    "project": self.project.id,
-                    "query": SEARCH_QUERY,
-                    "candidates": [
-                        {"title": "Broken", "url": UNEXPECTED_FAILURE_URL},
-                        {"title": "Healthy", "url": SUCCESS_URL},
-                    ],
-                },
-            )
-
-        self.assertEqual(response.status_code, 200, response.text)
-        body = response.json()
-        self.assertEqual(body["succeeded"], 1)
-        self.assertEqual(body["failed"], 1)
-        self.assertEqual(body["items"][0]["error"], "web_import_failed")
-        self.assertEqual(body["items"][1]["status"], "success")
 
     def test_request_limit_and_project_validation_happen_before_fetch(self) -> None:
         candidates = [
@@ -842,7 +520,6 @@ class WebImportContract(unittest.TestCase):
         self.assertIsInstance(detail, list)
         self.assertIn("candidates", detail[0]["loc"])
         self.assertEqual(unknown.status_code, 404)
-        self.assertEqual(self.fetcher.calls, [])
 
 
 if __name__ == "__main__":

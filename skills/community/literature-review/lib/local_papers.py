@@ -6,6 +6,9 @@ import re
 import shutil
 import unicodedata
 
+import pypdfium2
+from pypdf import PasswordType, PdfReader
+
 LOCAL_FILE_FIELDS = {'path','title','authors','year','doi','abstract'}
 
 def validate_files(files):
@@ -48,7 +51,6 @@ def source_directory(workspace,pid):
 
 def import_pdfs(workspace,request=None):
     from task_contract import read_request,configure,atomic_json,digest
-    import pymupdf as fitz
     ws=Path(workspace).resolve();task=read_request(ws);request=request or {}
     if not isinstance(request,dict) or set(request)-{'files'}:raise ValueError('import-local request accepts files only; repeated imports append or update paths')
     supplied=validate_files(request.get('files',[]))
@@ -65,9 +67,16 @@ def import_pdfs(workspace,request=None):
     for entry in expanded.values():
         source=Path(entry['path'])
         if source.suffix.lower()!='.pdf' or not source.is_file():raise ValueError('local PDF is missing or not a PDF path: '+str(source))
-        with fitz.open(source) as doc:
-            if not doc.is_pdf or doc.needs_pass or not doc.page_count:raise ValueError('PDF is encrypted, empty or invalid: '+str(source))
-            metadata=doc.metadata or {}
+        try:
+            reader=PdfReader(source,strict=False)
+            if reader.is_encrypted and reader.decrypt('') is PasswordType.NOT_DECRYPTED:
+                raise ValueError('PDF is encrypted, empty or invalid: '+str(source))
+            with pypdfium2.PdfDocument(source,password='') as document:
+                if not len(document):raise ValueError('PDF is encrypted, empty or invalid: '+str(source))
+            raw_metadata=reader.metadata or {}
+            metadata={'title':str(raw_metadata.get('/Title') or '').strip(),'author':str(raw_metadata.get('/Author') or '').strip()}
+        except ValueError:raise
+        except Exception as exc:raise ValueError('PDF is encrypted, empty or invalid: '+str(source)) from exc
         sha=file_hash(source);pid='local_'+sha[:24]
         if pid in records:
             existing=records[pid]

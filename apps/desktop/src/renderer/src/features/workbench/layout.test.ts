@@ -4,6 +4,7 @@ import {
   adjacentLeaf,
   adjacentLeaves,
   firstLeaf,
+  hasHorizontalSplit,
   initialLayout,
   moveTargets,
   placeTab,
@@ -34,6 +35,16 @@ function split(
 ): DockNode {
   return { kind: 'split', id, direction, ratio: 0.5, first, second }
 }
+
+test('horizontal split detection follows visible columns across dock areas', () => {
+  assert.equal(hasHorizontalSplit(layoutOf(leaf('single'))), false)
+  assert.equal(hasHorizontalSplit(layoutOf(split('rows', 'vertical', leaf('top'), leaf('bottom')))), false)
+  assert.equal(hasHorizontalSplit(layoutOf(split('columns', 'horizontal', leaf('left'), leaf('right')))), true)
+
+  const crossArea = layoutOf(leaf('left'))
+  crossArea.areas.secondary = leaf('right')
+  assert.equal(hasHorizontalSplit(crossArea), true)
+})
 
 test('splits are limited to two rows and columns and reject without losing tabs', () => {
   let layout = placeTab(initialLayout(), 'a', 'primary')

@@ -37,6 +37,7 @@ import {
 } from './classes'
 import { cx } from './utils'
 import { inFocusScope, useFocusScope, visibleContent } from './focus'
+import { menuPositionStyle, type MenuPosition } from './placement'
 
 interface MenuContextValue {
   contentId: string
@@ -48,10 +49,6 @@ interface MenuContextValue {
   setOpen: (open: boolean) => void
   triggerRef: RefObject<HTMLElement>
 }
-
-type MenuPosition =
-  | { kind: 'point'; x: number; y: number }
-  | { bottom: number; kind: 'anchor'; left: number; right: number; top: number; width: number }
 
 const MenuContext = createContext<MenuContextValue | null>(null)
 
@@ -76,8 +73,6 @@ export interface MenuItemProps extends Omit<ButtonHTMLAttributes<HTMLButtonEleme
 
 const MENU_ITEM_SELECTOR = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]'
 const MENU_OPEN_EVENT = 'vds-menu-open'
-const MENU_OFFSET = 8
-const MENU_VIEWPORT_PADDING = 8
 
 export function MenuRoot({
   children,
@@ -229,6 +224,7 @@ export function ContextMenuTrigger({
 }
 
 export interface MenuContentProps extends HTMLAttributes<HTMLDivElement> {
+  position?: MenuPosition
   /** Hover-driven submenus can leave focus on their trigger until keyboard entry. */
   autoFocus?: boolean
   /** anchor 定位下菜单相对触发器的水平对齐；point（右键）定位不受影响。 */
@@ -237,8 +233,9 @@ export interface MenuContentProps extends HTMLAttributes<HTMLDivElement> {
   side?: 'bottom' | 'right'
 }
 
-export function MenuContent({ autoFocus = true, align = 'start', className, side = 'bottom', style, onKeyDown, ...props }: MenuContentProps): JSX.Element | null {
-  const { contentId, contentRef, open, position } = useMenuContext('MenuContent')
+export function MenuContent({ autoFocus = true, align = 'start', className, side = 'bottom', style, position: controlledPosition, onKeyDown, ...props }: MenuContentProps): JSX.Element | null {
+  const { contentId, contentRef, open, position: triggerPosition } = useMenuContext('MenuContent')
+  const position = controlledPosition ?? triggerPosition
   const [floatingStyle, setFloatingStyle] = useState<CSSProperties | undefined>(undefined)
 
   useLayoutEffect(() => {
@@ -250,45 +247,7 @@ export function MenuContent({ autoFocus = true, align = 'start', className, side
     const reposition = (): void => {
       if (!contentRef.current) return
       const contentRect = contentRef.current.getBoundingClientRect()
-      const viewportWidth = window.innerWidth
-      const viewportHeight = window.innerHeight
-      const maxLeft = Math.max(MENU_VIEWPORT_PADDING, viewportWidth - contentRect.width - MENU_VIEWPORT_PADDING)
-      const rawLeft = position.kind === 'anchor'
-        ? align === 'end'
-          ? position.right - contentRect.width
-          : align === 'center'
-            ? position.left + (position.width - contentRect.width) / 2
-            : position.left
-        : position.x
-      const left = Math.min(Math.max(rawLeft, MENU_VIEWPORT_PADDING), maxLeft)
-
-      if (position.kind === 'point') {
-        const maxTop = Math.max(MENU_VIEWPORT_PADDING, viewportHeight - contentRect.height - MENU_VIEWPORT_PADDING)
-        setFloatingStyle({ left, position: 'fixed', top: Math.min(Math.max(position.y, MENU_VIEWPORT_PADDING), maxTop) })
-        return
-      }
-
-      if (side === 'right') {
-        const rightLeft = position.right + MENU_OFFSET
-        const leftLeft = position.left - contentRect.width - MENU_OFFSET
-        const fitsRight = rightLeft + contentRect.width <= viewportWidth - MENU_VIEWPORT_PADDING
-        const fitsLeft = leftLeft >= MENU_VIEWPORT_PADDING
-        const submenuLeft = fitsRight || !fitsLeft ? rightLeft : leftLeft
-        const maxTop = Math.max(MENU_VIEWPORT_PADDING, viewportHeight - contentRect.height - MENU_VIEWPORT_PADDING)
-        setFloatingStyle({
-          left: Math.min(Math.max(submenuLeft, MENU_VIEWPORT_PADDING), maxLeft),
-          position: 'fixed',
-          top: Math.min(Math.max(position.top, MENU_VIEWPORT_PADDING), maxTop)
-        })
-        return
-      }
-
-      const belowTop = position.bottom + MENU_OFFSET
-      const aboveTop = position.top - contentRect.height - MENU_OFFSET
-      const fitsBelow = belowTop + contentRect.height <= viewportHeight - MENU_VIEWPORT_PADDING
-      const fitsAbove = aboveTop >= MENU_VIEWPORT_PADDING
-      const top = fitsBelow || !fitsAbove ? belowTop : aboveTop
-      setFloatingStyle({ left, position: 'fixed', top: Math.min(Math.max(MENU_VIEWPORT_PADDING, top), Math.max(MENU_VIEWPORT_PADDING, viewportHeight - contentRect.height - MENU_VIEWPORT_PADDING)) })
+      setFloatingStyle(menuPositionStyle(position, contentRect, { width: window.innerWidth, height: window.innerHeight }, side, align))
     }
     reposition()
     const observer = new ResizeObserver(reposition)

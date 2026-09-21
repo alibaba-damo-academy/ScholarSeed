@@ -21,64 +21,76 @@ from writing_prompt_guidance import OUTLINE_WRITING_GUIDANCE, TASK_GUIDANCE as S
 
 from chapter_plan import GUIDANCE as ANALYTICAL_PLANNING_GUIDANCE
 
-OUTLINE_PROTOCOL = '''Return one JSON object with survey_title (string; may be empty
-for a component), topic (string), description (task description), outline_tree (array).
-Each node has section_id (unique numeric string), title and a brief description,
-and optional subsections (one level, IDs such as 1.1). These are content
-choices, not a required section list. No paper quotas, word budgets or claim lists.
-Every top-level section object has language: default, chinese or english. Use
-default unless the user explicitly requests a different language for that chapter.
-Never assign English to an abstract merely because academic abstracts are often
-English. A subsection must NOT contain a language field; it always inherits the
-language of its top-level parent chapter.
-An unsectioned component may have outline_tree=[] and a nonempty description.
-Plan figures AND tables in this same outline response wherever supported assets
-help the section's argument. Respect requested counts and explicit exclusions;
-there is no default asset quota. Every asset in a sectioned document is nested
-under its exact owning section/subsection, with one globally unique F/T ID.
-Shared planning fields: purpose (why the asset helps this section), content_plan
-(the objects/relations or candidate rows and comparison scope), caption_draft
-(short reader-facing prose), paper_ids (supporting source IDs), and optional
-qualifications (assumptions, comparability limits, illustrative boundaries).
-Figure-only visual_guidance holds style, language, palette or metaphor requests;
-keep drawing instructions out of purpose, scientific content and caption_draft.
-Tables additionally require row_unit and comparison_dimensions. The final table
-columns will be [row_unit, *comparison_dimensions], so choose clear column labels
-now, including relevant assumptions/metric definitions among the dimensions.
-Do not write final table rows/cells or an image prompt in the outline.
-Ownership example (structure only; not an asset quota):
+from figure_caption import CAPTION_CONTENT_GUIDANCE
+
+OUTLINE_PROTOCOL = r'''Plan the requested document and return one JSON object.
+
+DOCUMENT AND CHAPTER STRUCTURE
+The root has survey_title (may be empty for a component), topic, description,
+outline_tree, review_thesis, organizing_axis and prerequisites. An unsectioned
+component may use outline_tree=[] with a nonempty description; do not manufacture
+a chapter. Optional warnings contains concrete unresolved issues.
+Required_outline_nodes and structure_contract are binding: include a required
+abstract as section_id "0" in this response and omit forbidden sections.
+
+Use two distinct node shapes, not one recursive chapter template:
+- L1 chapter: section_id (unique numeric string), title, description, language,
+  role, paper_ids, requires, analysis_tasks; optional depends_on, subsections,
+  figures and tables. language is default|chinese|english, normally default.
+  An explicit user chapter exception alone justifies chinese or english; academic
+  convention does not make an abstract English.
+- L2 subsection: section_id (parent.child, e.g. "2.1"), title, description;
+  optional paper_ids, figures and tables. Its language is inherited from L1;
+  omit the language key entirely, including null, default or the parent's value.
+  There is no third outline level.
+Section choices follow the task, with no paper quotas, word budgets or claim lists.
+
+ASSET PLANNING
+Plan supported figures and tables where they help the owning section's argument.
+Respect requested counts and exclusions; there is no default asset quota. Nest
+an asset under its exact L1 or L2 owner once, with a globally unique F/T ID.
+A sectioned document has no root figures/tables, even with section_id fields.
+For an unsectioned table-only component, root tables is allowed with null ownership;
+root figures is not supported. Assets are referenced within their owning chapter.
+
+Each asset has purpose (why needed), content_plan (objects/relations or candidate
+rows and comparison scope), caption_draft (reader-facing content), paper_ids
+(supporting IDs), optional qualifications (assumptions/comparability/illustration).
+Figures have figure_id and optional visual_guidance for style, label language,
+palette or metaphor; this drawing guidance stays separate from scientific content.
+Tables have table_id, row_unit and comparison_dimensions; the final columns are
+[row_unit, *comparison_dimensions]. Choose clear labels and relevant conditions.
+Use real paper IDs; [] leaves the selected corpus eligible, never invented evidence.
+Final table rows/cells and image prompts belong to later authoring.
+''' + '\n' + CAPTION_CONTENT_GUIDANCE + r'''
+
+STRUCTURAL EXAMPLE
+The example illustrates field placement, not required content or an asset quota.
+Replace its content and IDs with the actual task and evidence.
 {"survey_title":"Review","topic":"Methods","description":"Review the methods",
+ "review_thesis":"Which conditions distinguish the methods?",
+ "organizing_axis":"Mechanisms and conditions","prerequisites":[],
  "outline_tree":[{"section_id":"2","title":"Mechanisms","description":"Compare mechanisms","language":"default",
+   "role":"analysis","paper_ids":["p1"],"requires":[],
+   "analysis_tasks":[{"task_id":"A1","kind":"compare","question":"Which conditions distinguish the mechanisms?","completion":"Explain supported differences and limits."}],
    "figures":[{"figure_id":"F1","purpose":"Explain the relationship",
-     "content_plan":"Show the supported objects and directed relationship",
+     "content_plan":"Show supported objects and their directed relationship",
      "caption_draft":"The objects form a conditional relationship.",
      "visual_guidance":"Use the requested visual style","paper_ids":[]}],
    "subsections":[{"section_id":"2.1","title":"Conditions","description":"Compare conditions",
      "tables":[{"table_id":"T1","purpose":"Compare methods under their assumptions",
-       "content_plan":"Rows represent methods and their applicable assumptions",
+       "content_plan":"Rows represent methods and applicable assumptions",
        "caption_draft":"Methods differ in mechanism and assumptions.",
        "row_unit":"Method","comparison_dimensions":["Assumptions"],"paper_ids":[]}]}]}]}
-In this example only section 2 has language. Subsection 2.1 deliberately has no
-language field and inherits default through its parent.
-The parent node establishes ownership. Every figure/table belongs to one chapter;
-do not design cross-chapter asset references. Root asset arrays in a sectioned
-review are invalid, even if a root asset names a section_id.
-Invalid sectioned shape (never return this):
-{"outline_tree":[{"section_id":"2","title":"Mechanisms"}],
- "figures":[{"figure_id":"F1","section_id":"2"}],"tables":[]}
-The same asset must instead be inside the owning outline_tree node, as in the
-valid ownership example above. Before returning JSON, inspect the root keys: if
-outline_tree is nonempty, root `figures` and root `tables` must both be absent;
-then inspect every planned F/T ID and confirm it occurs exactly once under its
-owning section or subsection.
-Use real paper IDs when evidence is specific; an empty list explicitly leaves the
-selected corpus as the eligible evidence pool. This is not permission to invent.
-For an unsectioned table-only component, root tables is allowed and ownership is
-null; do not manufacture a chapter. Otherwise do not put root asset arrays.
-Required_outline_nodes and structure_contract are binding: include a required
-abstract as section_id "0" in this first response; never output a forbidden section.
-Optional warnings is an array of concrete unresolved issues.
-''' + '\n' + OUTLINE_WRITING_GUIDANCE + '\n' + ANALYTICAL_PLANNING_GUIDANCE
+''' + '\n' + OUTLINE_WRITING_GUIDANCE + '\n' + ANALYTICAL_PLANNING_GUIDANCE + r'''
+
+FINAL STRUCTURE CHECK
+Before returning, check L1 and L2 separately: only L1 contains language; L2 has no
+language key. For a nonempty outline_tree, root figures/tables are absent and each
+F/T ID occurs once beneath its exact owner. Captions start with their subject,
+without a figure/table number. Check required nodes and real paper IDs against
+this task rather than copying the example.
+'''
 
 def parse_response(text):
     text = text.strip()

@@ -15,6 +15,7 @@ import {
   type ShortcutScope
 } from '../../shortcuts'
 import { useApp } from '../../store'
+import { SettingsPage } from './Settings'
 import {
   Button,
   Card,
@@ -25,9 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
   EmptyState,
-  Page,
   PageBody,
-  PageHeader,
   PageSection,
   SearchBox
 } from '../ui'
@@ -97,12 +96,12 @@ export function Shortcuts(): React.JSX.Element {
   }), [normalizedQuery, platform, state.shortcutOverrides, t])
 
   return (
-    <Page
-      className={`${SETTINGS_CONTENT_CLASS_NAME} py-[var(--vds-layout-page-padding)]`}
+    <SettingsPage
+      className={SETTINGS_CONTENT_CLASS_NAME}
       data-testid="account-settings-shortcuts"
-      padding="none"
+      title={t('title')}
+      description={t('description')}
     >
-      <PageHeader title={t('title')} description={t('description')} />
       <SearchBox
         aria-label={t('searchLabel')}
         data-testid="shortcut-search"
@@ -217,6 +216,6 @@ export function Shortcuts(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Page>
+    </SettingsPage>
   )
 }

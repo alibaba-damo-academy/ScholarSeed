@@ -23,6 +23,7 @@ from service.chat.service.completions import (
     BRIDGE_REGISTRATION_TTL_SECONDS,
     CHAT_COMPLETIONS_REQUEST_TARGET_BYTES,
     INLINE_JPEG_DATA_PREFIX,
+    MODEL_BRIDGE_CREDENTIAL_REQUIRED,
     MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED,
     MODEL_BRIDGE_ROUTE_PREFIX,
     CompletionBridge,
@@ -73,6 +74,9 @@ def forward_contract(
     source_endpoints: tuple[str, ...] = (),
     send_exc: BaseException | None = None,
     source_text: str = "用户原文",
+    api_key: str = "contract-key",
+    token_provider: Callable[[str], str] | None = None,
+    owner_id: str = "",
 ):
     """Exercise the public bridge route against a deterministic upstream transport."""
     captured: list[httpx.Request] = []
@@ -92,7 +96,7 @@ def forward_contract(
     registration = bridge.register(
         endpoint=CHAT_ENDPOINT,
         responses_endpoint=responses_endpoint,
-        api_key="contract-key",
+        api_key=api_key,
         model_routes={"alias": "selected-model"},
         session_id="search-contract",
         headers={CONV_MESSAGE_ID_HEADER: "search-contract"},
@@ -103,6 +107,8 @@ def forward_contract(
         provider="openai",
         wire_protocol=wire_protocol,
         turn_id_provider=turn_id_provider,
+        token_provider=token_provider,
+        owner_id=owner_id,
     )
     mount_completion_bridge(app, bridge)
     client_type = httpx.AsyncClient
@@ -913,6 +919,22 @@ def main() -> int:
         empty_source_response.json()["error"]["code"] == SOURCE_UNAVAILABLE,
     )
     check("empty source never reaches gateway", not empty_source_requests)
+    missing_credential_response, missing_credential_requests = forward_contract(
+        source_payload,
+        b"{}",
+        api_key="",
+        token_provider=lambda _owner: "",
+        owner_id="account-user",
+    )
+    check(
+        "missing dynamic credential is rejected locally",
+        missing_credential_response.status_code == 401,
+    )
+    check(
+        "missing dynamic credential has a stable safe code",
+        missing_credential_response.json()["error"]["code"] == MODEL_BRIDGE_CREDENTIAL_REQUIRED,
+    )
+    check("missing dynamic credential never reaches upstream", not missing_credential_requests)
     print("completion bridge request fitting contract")
     reasoning_input = {
         "model": "alias",

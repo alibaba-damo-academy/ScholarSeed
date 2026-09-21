@@ -46,16 +46,18 @@ REQUIRED_PRODUCT_DEPENDENCIES = frozenset(
         "httpx",
         "lxml",
         "patchright",
-        "pikepdf",
         "playwright",
         "pydantic",
-        "pymupdf",
+        "pypdfium2",
+        "pdfplumber",
+        "pypdf",
         "pyyaml",
         "rich",
         "tenacity",
         "typer",
     }
 )
+FORBIDDEN_PRODUCT_DEPENDENCIES = frozenset({"fpdf2", "pikepdf", "questionary", "tqdm"})
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -81,6 +83,8 @@ def _product_dependencies_are_declared() -> None:
     }
     missing = REQUIRED_PRODUCT_DEPENDENCIES - declared
     check("预装技能传递依赖属于根产品依赖", not missing, str(sorted(missing)))
+    forbidden = FORBIDDEN_PRODUCT_DEPENDENCIES & declared
+    check("产品不声明未使用的许可证风险依赖", not forbidden, str(sorted(forbidden)))
 
 
 def _registry_and_package_manifests_agree() -> None:

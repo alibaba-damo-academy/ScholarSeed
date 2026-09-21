@@ -1013,7 +1013,8 @@ export async function fetchResourceTree(
   const query = params.toString()
   try {
     const response = await fetch(`${base()}/api/resource/tree${query ? `?${query}` : ''}`, {
-      credentials: 'include'
+      credentials: 'include',
+      cache: 'no-store'
     })
     if (!response.ok) return null
     const payload = (await response.json()) as ResourceTreePayload

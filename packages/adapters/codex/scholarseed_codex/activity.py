@@ -520,8 +520,31 @@ def collaboration_activity_payload(
     details = dict(raw_details) if isinstance(raw_details, Mapping) else {}
     details["receiver_thread_ids"] = [agent_thread_id]
     details["agent_thread_id"] = agent_thread_id
+    states = item.get("agentsStates")
+    state = states.get(agent_thread_id) if isinstance(states, Mapping) else None
+    if isinstance(state, Mapping) and state.get("status"):
+        details["agent_status"] = _bounded_activity_value(state["status"])
     payload["details"] = details
     return payload
+
+
+def subagent_lifecycle_payload(
+    *,
+    agent_thread_id: str,
+    agent_path: str,
+    status: str,
+    completed: bool,
+) -> Mapping[str, JsonValue]:
+    return native_activity_payload(
+        {
+            "type": "subAgentActivity",
+            "kind": status,
+            "status": status,
+            "agentThreadId": agent_thread_id,
+            "agentPath": agent_path,
+        },
+        completed=completed,
+    )
 
 
 def _bounded_activity_value(value: Any) -> JsonValue:

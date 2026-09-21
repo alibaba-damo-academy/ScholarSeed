@@ -22,7 +22,6 @@ const diffSource = readFileSync(new URL('../workbench/ReviewDiff.tsx', import.me
 const sharedDiffSource = readFileSync(new URL('../workbench/Diff.tsx', import.meta.url), 'utf8')
 const liveSource = readFileSync(new URL('../../live.ts', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('../../components/business/Composer.tsx', import.meta.url), 'utf8')
-const admissionSource = readFileSync(new URL('./Admission.tsx', import.meta.url), 'utf8')
 const resourcePanelSource = readFileSync(new URL('./ResourcePanel.tsx', import.meta.url), 'utf8')
 
 test('review tab keeps project and batch identities without collisions', () => {
@@ -175,15 +174,13 @@ test('review UI stages editable decisions and commits only after all files are d
   assert.doesNotMatch(`${batchSource}\n${barSource}\n${diffSource}`, /<(?:button|input|select|textarea|table)\b/)
 })
 
-test('a new turn asks the user to resolve review batches instead of auto-accepting', () => {
+test('a new turn accepts unfinished review batches without interrupting the user', () => {
   assert.match(composerSource, /unfinishedReviewBatches/)
-  assert.match(composerSource, /<ReviewAdmission/)
+  assert.match(composerSource, /acceptReviewBatches/)
   assert.match(composerSource, /fetchReviewMemberCurrent/)
-  assert.match(composerSource, /member\.state === 'completed' \? member\.action/)
-  assertLocalized(admissionSource, "resources", "admission.acceptAll", ["接受全部", "Accept all"])
-  assertLocalized(admissionSource, "resources", "admission.rejectAll", ["拒绝全部", "Reject all"])
-  assertLocalized(admissionSource, "resources", "admission.review", ["前往审阅", "Go to review"])
-  assertLocalized(admissionSource, "resources", "cancel", ["取消", "Cancel"])
+  assert.match(composerSource, /member\.action \?\? 'accept'/)
+  assert.match(composerSource, /: 'accept'/)
+  assert.doesNotMatch(composerSource, /ReviewAdmission/)
   assert.doesNotMatch(composerSource, /acceptOpen|accept_open/)
 })
 

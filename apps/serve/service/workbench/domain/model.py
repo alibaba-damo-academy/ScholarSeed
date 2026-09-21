@@ -43,6 +43,7 @@ class FormatRegistration:
     viewer: ViewerKind
     versionable: bool = False
     readonly: bool = False
+    artifact_editable: bool = False
 
 
 class ContentKind(str, Enum):
@@ -102,7 +103,12 @@ FORMAT_BY_SUFFIX: dict[str, FormatRegistration] = {
     ".doc": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
     ".docx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
     ".xls": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
-    ".xlsx": FormatRegistration(ViewerKind.SPREADSHEET, versionable=True, readonly=True),
+    ".xlsx": FormatRegistration(
+        ViewerKind.SPREADSHEET,
+        versionable=True,
+        readonly=True,
+        artifact_editable=True,
+    ),
     ".ppt": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
     ".pptx": FormatRegistration(ViewerKind.OFFICE, versionable=True, readonly=True),
 }
@@ -280,9 +286,17 @@ class WorkbenchFormatPolicy(ResourceFormatPolicy):
     def project(self, path: str, payload: bytes) -> DocumentFormatProjection:
         """Project any source bytes through the one Workbench format registry."""
 
+        registration = format_for(path)
         viewer = viewer_for(path, payload)
         capabilities = capabilities_for(path, payload)
         processor = processor_for(path)
+        artifact_editable = bool(
+            registration
+            and registration.artifact_editable
+            and processor is not None
+            and processor.inspect is not None
+            and processor.inspect(payload).editable
+        )
         return DocumentFormatProjection(
             viewer=viewer.value,
             processor=processor.kind.value if processor is not None else None,
@@ -292,6 +306,7 @@ class WorkbenchFormatPolicy(ResourceFormatPolicy):
             can_select=capabilities.can_select,
             can_annotate=capabilities.can_annotate,
             can_save=capabilities.can_save,
+            can_edit_artifact=artifact_editable,
             pending=capabilities.pending,
         )
 

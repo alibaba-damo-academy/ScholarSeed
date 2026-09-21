@@ -9,9 +9,11 @@ import re
 import stat
 import uuid
 from pathlib import Path
+from threading import Lock
 
 from service.content.domain.model import ContentError
-from service.content.service.native import publish_descriptor, sync_published_descriptor
+from service.content.persistence import snapshots
+from service.content.service.native import copy_descriptor_exclusive, creation_marker
 from service.content.service.utils import directory
 from service.platform.content import ArtifactScope, ArtifactStorageLocation, VerifiedArtifactContent
 from service.platform.storage import NOFOLLOW, NONBLOCK, DirectoryHandle, preserve_mode
@@ -28,17 +30,27 @@ INTEGRITY_MISMATCH = "artifact_snapshot_integrity_mismatch"
 TOO_LARGE = "artifact_snapshot_too_large"
 UNAVAILABLE = "artifact_snapshot_unavailable"
 TEMP_PREFIX = ".capture-"
+_COPY_LOCKS_GUARD = Lock()
+_COPY_LOCKS: dict[tuple[str, str, str, str], Lock] = {}
 
 
 def _signature(value: os.stat_result) -> tuple[int, ...]:
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
 
 
-def _read_object(directory: DirectoryHandle, digest: str) -> bytes:
+def _copy_lock(location: ArtifactStorageLocation, scope: ArtifactScope, digest: str) -> Lock:
+    key = (location.database, scope.kind.value, scope.id, digest)
+    with _COPY_LOCKS_GUARD:
+        return _COPY_LOCKS.setdefault(key, Lock())
+
+
+def _read_object(directory: DirectoryHandle, digest: str, marker: str = "") -> bytes:
     descriptor = directory.open(digest, os.O_RDONLY | NOFOLLOW | NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
         before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or (
+            marker and creation_marker(stream.fileno()) != marker
+        ):
             raise ContentError(PATH_INVALID)
         if before.st_size > MAX_ARTIFACT_BYTES:
             raise ContentError(TOO_LARGE)
@@ -50,6 +62,67 @@ def _read_object(directory: DirectoryHandle, digest: str) -> bytes:
         if hashlib.sha256(payload).hexdigest() != digest:
             raise ContentError(INTEGRITY_MISMATCH)
     return payload
+
+
+def _recover_prepared_object(
+    objects: DirectoryHandle,
+    digest: str,
+    claim: snapshots.SnapshotClaim,
+) -> bool:
+    try:
+        _read_object(objects, digest, claim.marker)
+    except FileNotFoundError:
+        return False
+    except ContentError:
+        descriptor = objects.open(digest, os.O_RDONLY | NOFOLLOW | NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            if creation_marker(stream.fileno()) != claim.marker:
+                raise ContentError(INTEGRITY_MISMATCH)
+            identity = os.fstat(stream.fileno())
+        current = objects.stat(digest)
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            raise ContentError(INTEGRITY_MISMATCH)
+        objects.unlink(digest)
+        return False
+    return True
+
+
+def _publish_object(
+    location: ArtifactStorageLocation,
+    scope: ArtifactScope,
+    objects: DirectoryHandle,
+    source: int,
+    digest: str,
+    size: int,
+) -> None:
+    with _copy_lock(location, scope, digest):
+        claim = snapshots.get(location.database, scope, digest)
+        if claim is None:
+            try:
+                _read_object(objects, digest)
+                return
+            except FileNotFoundError:
+                claim = snapshots.prepare(location.database, scope, digest, size)
+        if claim.size != size:
+            raise ContentError(INTEGRITY_MISMATCH)
+        if claim.status is snapshots.SnapshotClaimStatus.COMPLETED:
+            try:
+                _read_object(objects, digest, claim.marker)
+            except FileNotFoundError as error:
+                raise ContentError(INTEGRITY_MISMATCH) from error
+            return
+        if _recover_prepared_object(objects, digest, claim):
+            snapshots.complete(location.database, scope, digest, claim.marker)
+            return
+        copy_descriptor_exclusive(
+            source,
+            objects,
+            digest,
+            OBJECT_MODE,
+            marker=claim.marker,
+        )
+        _read_object(objects, digest, claim.marker)
+        snapshots.complete(location.database, scope, digest, claim.marker)
 
 
 def capture(
@@ -105,16 +178,7 @@ def capture(
                         value = digest.hexdigest()
                         if expected_sha256 and expected_sha256 != value:
                             raise ContentError(SOURCE_CHANGED)
-                        try:
-                            publish_descriptor(output, objects, value)
-                        except FileExistsError:
-                            pass
-                        else:
-                            sync_published_descriptor(output, objects, value)
-                        # Newly published and pre-existing objects share the same check;
-                        # never repair a corrupted revision from the working source.
-                        _read_object(objects, value)
-                        objects.sync()
+                        _publish_object(location, scope, objects, output, value, size)
                     finally:
                         try:
                             current = objects.stat(temporary)
@@ -145,7 +209,10 @@ def read(location: ArtifactStorageLocation, content: VerifiedArtifactContent) ->
         with directory(
             Path(location.storage_root), Path(location.objects_relative).parts
         ) as objects:
-            payload = _read_object(objects, content.sha256)
+            claim = snapshots.get(location.database, content.scope, content.sha256)
+            if claim is not None and claim.status is not snapshots.SnapshotClaimStatus.COMPLETED:
+                raise ContentError(UNAVAILABLE)
+            payload = _read_object(objects, content.sha256, claim.marker if claim else "")
     except OSError as exc:
         raise ContentError(UNAVAILABLE) from exc
     if len(payload) != content.size:

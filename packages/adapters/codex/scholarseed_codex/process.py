@@ -13,13 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from scholarseed_codex.activity import NativeActivity
+from scholarseed_codex.activity import NativeActivity, subagent_lifecycle_payload
 from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.executable import _resolve_launch_arguments
 from scholarseed_codex.history import (
     history_entries,
     resume_turn_snapshots,
+    terminal_turn_status,
 )
 from scholarseed_codex.interaction import hil_payload, hil_response
 from scholarseed_codex.protocol.mcp import JsonValue
@@ -78,7 +79,7 @@ from scholarseed_codex.protocol.state import (
     logger,
     normalized_roots,
 )
-from scholarseed_codex.router import ThreadRouter
+from scholarseed_codex.router import AgentRoute, ThreadRouter
 from scholarseed_codex.rpc import JsonLineWriter, PendingRequests, read_messages
 from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_codex.watch import WorkspaceWatch
@@ -1257,8 +1258,20 @@ class CodexProcessHost:
             if await self._handle_mcp_notification(thread_id, method, params):
                 return
         state = self._threads.get(thread_id)
+        agent_route = None if state is not None else self._router.agent(thread_id)
+        if agent_route is not None:
+            state = self._threads.get(agent_route.owner_thread_id)
         if state is None:
             self._protocol_errors.append(f"unroutable:{method}")
+            return
+        if agent_route is not None:
+            await self._handle_agent_notification(
+                state,
+                agent_route,
+                thread_id,
+                method,
+                params,
+            )
             return
         turn_id = notification_turn_id
         item_id = str(params.get("itemId") or "")
@@ -1321,8 +1334,55 @@ class CodexProcessHost:
             return
         raw_item = params.get("item")
         if isinstance(raw_item, Mapping):
-            self._router.register_agents(thread_id, raw_item, self._threads.keys())
+            self._router.register_agents(
+                thread_id,
+                turn_id,
+                raw_item,
+                self._threads.keys(),
+            )
         await state.turn.notification(method, params, generation=message_generation)
+
+    async def _handle_agent_notification(
+        self,
+        state: ThreadAttachment,
+        route: AgentRoute,
+        agent_thread_id: str,
+        method: str,
+        params: Mapping[str, Any],
+    ) -> None:
+        raw_turn = params.get("turn")
+        turn = dict(raw_turn) if isinstance(raw_turn, Mapping) else {}
+        status = str(turn.get("status") or "")
+        if method == "turn/started":
+            status = "started"
+            completed = False
+        elif method == "turn/completed":
+            terminal = terminal_turn_status(status)
+            if terminal is None:
+                self._protocol_errors.append("invalid_agent_terminal_status")
+                return
+            status = terminal.value
+            completed = True
+        else:
+            return
+        if not self._router.update_agent_status(agent_thread_id, status):
+            return
+        await self._emitter.emit(
+            state,
+            (
+                CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED
+                if completed
+                else CodexSessionEventKind.NATIVE_ACTIVITY_STARTED
+            ),
+            turn_id=route.owner_turn_id,
+            item_id=agent_thread_id,
+            payload=subagent_lifecycle_payload(
+                agent_thread_id=agent_thread_id,
+                agent_path=route.agent_path,
+                status=status,
+                completed=completed,
+            ),
+        )
 
     async def _handle_mcp_notification(
         self,

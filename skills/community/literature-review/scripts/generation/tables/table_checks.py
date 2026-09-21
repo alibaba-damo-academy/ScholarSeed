@@ -5,6 +5,7 @@ additional gates on current chapter_delta manuscript responses."""
 from __future__ import annotations
 
 import re
+from figure_caption import has_numbering_prefix
 
 
 # ============================================================================
@@ -78,8 +79,6 @@ _BARE_PERCENT_RE = re.compile(r"(?<!\\)%")
 # "表 1. 表1:电力系统…". Nothing downstream can see this: the PDF text layer
 # flattens it to one string, and it is not a LaTeX error, so it shipped in a
 # finished survey and was caught only by a human reading page images.
-_CAPTION_SELF_LABEL_RE = re.compile(
-    r"^\s*(?:表|图|Table|Figure|Fig|Tab)\s*\.?\s*\d+\s*[.:：、．]", re.I)
 # Column-prefix groups (>{...} <{...} @{...} !{...}) to strip before reading
 # column letters; tolerates one level of brace nesting (e.g. @{\extracolsep{\fill}}).
 _COL_PREFIX_RE = re.compile(r"[<>@!]\{(?:[^{}]|\{[^{}]*\})*\}")
@@ -588,7 +587,7 @@ def collect_problems(text: str, expected_label: str = "",
         problems.append("missing_caption")
     else:
         caption = _read_balanced_braces(text, text.index("\\caption{") + len("\\caption"))
-        if caption and _CAPTION_SELF_LABEL_RE.match(caption[0]):
+        if caption and has_numbering_prefix(caption[0]):
             problems.append(
                 "caption_repeats_its_own_label:\\caption_already_prints_"
                 "'表 N.'/'Table N.'_so_drop_the_prefix_from_the_text")

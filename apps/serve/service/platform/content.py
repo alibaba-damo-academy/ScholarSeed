@@ -756,6 +756,12 @@ class ContentPort(Protocol):
         """Scan every resource once and report each newly discovered logical file."""
         ...
 
+    def resource_entries(
+        self, project_id: str, paths: tuple[str, ...]
+    ) -> tuple[ResourceEntry, ...]:
+        """Inspect the requested resource files without recursively scanning the roots."""
+        ...
+
     def root(self, project_id: str, root: RootKind) -> FileAssetRef:
         """按种类取根节点本身 (相对项目根的位置)。
 

@@ -48,7 +48,7 @@ main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格
 | 英文 PDF | `pdflatex`、`bibtex` | 选择 Markdown，或在最终发布时无法编译 PDF |
 | 中文 PDF | `xelatex`、`bibtex`、CTeX/中文字体 | 选择 Markdown，或中文 PDF 无法编译 |
 | 数据图 | `matplotlib` | 报告技术失败；不能静默删除必需图表 |
-| PDF 全文解析与页面核验 | `PyMuPDF` | 全文：无法解析的论文自动回退到可信摘要；页面核验：报告 render_error，人工页面检查未完成 |
+| PDF 全文解析与页面核验 | `pypdfium2` + `pdfplumber` + `pypdf` | 全文：无法解析的论文自动回退到可信摘要；页面核验：报告 render_error，人工页面检查未完成 |
 
 TeX 建议安装 MacTeX 或 BasicTeX 后补齐 `bibtex`、CTeX 和所需字体。Debian/Ubuntu 通常需要 `texlive-xetex`、`texlive-latex-extra`、`texlive-lang-chinese`、`texlive-pictures` 和常用字体包。
 
@@ -116,6 +116,8 @@ Web-only、摘要缺失、检索数量不足和追踪缺失会显式报告降级
 安装或更新 skill 后，下一轮即可调用；若当前任务未刷新发现列表，可新建任务。
 
 ## 五分钟离线冒烟测试
+
+PDF 回归测试使用 ReportLab 生成真实测试文件，先运行 `./.venv/bin/python -m pip install -r requirements-test.txt`；运行时不需要 ReportLab。
 
 这个测试不调用 PaperHub、模型或图片接口，用于确认压缩包、Python 环境、CLI、引用资产和 workspace 初始化正常：
 
@@ -328,7 +330,7 @@ shasum -a 256 -c PACKAGE-MANIFEST.sha256
   SLR 不提供内置检索回退。
 - 检索端 PaperHub unreachable：由 AS 按自己的规则降级到公共网页检索；
   若已降级，不重复请求 PaperHub 或索要 token。SLR 不持有检索配置。
-- 没有 PDF 工具链：先选择 Markdown 测试完整语义流程；需要 PDF 时再安装 TeX 和 Poppler。
+- 没有 PDF 工具链：先选择 Markdown 测试完整语义流程；需要 PDF 时再安装 TeX 和 `requirements.txt` 中的 PDF 依赖。
 - 新检索论文缺摘要、作者或年份：从候选/SLR语料中排除并报告；本地用户PDF按独立导入契约保留。
 - 图片生成很慢：图片按大纲计划提前启动，并与全文写作并行；已成功或已失败的请求不会在 publish 阶段重复发送。
 

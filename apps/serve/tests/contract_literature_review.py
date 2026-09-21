@@ -35,6 +35,7 @@ from service.literature.service.review import (
     RETRIEVAL,
     REVIEW_CARD,
     SUMMARY,
+    WRITING_REQUEST,
     prepare_review,
     prepare_review_search,
     review_retrieval_run,
@@ -58,13 +59,48 @@ LITERATURE_PUBLICATION_SCRIPT = (
 class LiteratureReviewContract(unittest.TestCase):
     def test_product_prompt_preserves_slr_intake_and_output_decision_order(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
-        no_intake = "Do not run an intent, scope, lens, length, publication-window"
-        after_outline = "Only after the outline has been rendered"
-        output_question = "Use the exact headers `综述输出格式` and `综述引用格式`"
+        intake = "After init, use `writing configure --request`"
+        after_outline = "After the outline review packet is available"
+        output_question = "ask for citation format and template together"
 
-        self.assertIn(no_intake, prompt)
+        self.assertIn(intake, prompt)
         self.assertIn(after_outline, prompt)
         self.assertLess(prompt.index(after_outline), prompt.index(output_question))
+
+    def test_review_checkpoint_does_not_replace_explicit_artifact_publication(self) -> None:
+        prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
+        self.assertIn("it does not publish user-facing file cards", prompt)
+        self.assertIn("After the final write of each independent user-facing deliverable", prompt)
+
+    def test_authoritative_writing_request_drives_review_scope(self) -> None:
+        self.write(
+            WRITING_REQUEST,
+            {
+                "intent": "原始综述意图",
+                "effective_requirements": "聚焦方法比较",
+                "retrieval": {
+                    "time_range": {"start_year": 2022, "end_year": 2026},
+                    "temporal_policy": "soft_preference",
+                    "dimensions": {"analysis": ["方法演进"]},
+                },
+                "publication": {"format": "markdown", "citation_style": "author_year"},
+                "constraints": [
+                    {
+                        "id": "paper",
+                        "kind": "must_include_paper",
+                        "value": {"title": "指定论文"},
+                        "verbatim": "指定论文",
+                    }
+                ],
+            },
+        )
+        card = prepare_review(self.root, "survey", "outline").card
+        self.assertEqual(card.intent, "原始综述意图")
+        self.assertEqual(card.scope.topic, "聚焦方法比较")
+        self.assertEqual(card.scope.time_range, "2022–2026；允许早期基础文献")
+        self.assertEqual(card.scope.requested_materials, ["指定论文"])
+        self.assertEqual(card.output.format, "markdown")
+        self.assertEqual(card.output.citation_style, "author_year")
 
     def test_retrieval_waits_on_the_blocking_checkpoint_in_the_same_turn(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
@@ -538,9 +574,21 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(client.post(LITERATURE_REVIEW_ROUTE, json=payload).status_code, 403)
             response = client.post(LITERATURE_REVIEW_ROUTE, json=payload, headers=headers)
             self.assertEqual(response.status_code, 200, response.text)
-            self.assertTrue(all(item[1]["expected_sha256"] for item in published))
+            self.assertEqual(published, [])
             self.assertEqual(cards[0][0], REVIEW_CARD)
             self.assertEqual(cards[0][1]["session_id"], "session")
+            self.assertEqual(cards[0][1]["artifacts"], [])
+            self.write("06_output/survey.md", "# Finished review")
+            self.write(GENERATION, {"final_status": "SUCCESS"})
+            response = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": "survey", "checkpoint": "result"},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(cards[-1][1]["artifacts"], [])
+            self.assertEqual(published, [])
+            cards.pop()
             self.write(
                 METADATA,
                 {
@@ -585,6 +633,11 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(cards[1][0], SEARCH_CARD)
             self.assertEqual(cards[1][1]["origin"], "literature-review")
             self.assertTrue(cards[1][1]["selection"]["artifact_id"])
+            self.assertEqual(
+                {path for path, _ in published},
+                {f"survey/{name}" for name in (METADATA, CORPUS, RETRIEVAL)},
+            )
+            self.assertTrue(all(item[1]["expected_sha256"] for item in published))
             authorization = response.json()["authorization"]
             self.assertEqual(authorization["authorization_type"], "literature_review_fulltext")
             self.assertEqual(
@@ -627,7 +680,11 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(prepare_authorization.call_count, 2)
             lease(ProductTaskType.LITERATURE_REVIEW, derived_run)
             switch_turn = True
-            response = client.post(LITERATURE_REVIEW_ROUTE, json=payload, headers=headers)
+            response = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": "survey", "checkpoint": "retrieval"},
+                headers=headers,
+            )
             self.assertEqual(response.status_code, 403)
             self.assertEqual(len(cards), 2)
 

@@ -27,7 +27,7 @@ function DestinationRows({ nodes, parent, choose, create }: {
         <DestinationRows nodes={node.children} parent={node.collectionId ? undefined : node} choose={choose} create={create} />
       </DropdownMenuSubContent>
     </DropdownMenuSub>)}
-    {parent && <><DropdownMenuSeparator /><DropdownMenuItem onPointerEnter={() => setActive('')} onSelect={() => create(parent)}>{t('join.newCollection')}</DropdownMenuItem></>}
+    {parent && <>{nodes.length > 0 && <DropdownMenuSeparator />}<DropdownMenuItem onPointerEnter={() => setActive('')} onSelect={() => create(parent)}>{t('join.newCollection')}</DropdownMenuItem></>}
   </>
 }
 export function JoinedLabel(): React.JSX.Element {
@@ -73,7 +73,7 @@ export function JoinLibraryMenu({ papers, onJoined, className, size = 'sm' }: {
   const admit = async (destination: JoinDestination): Promise<void> => {
     const items = targets.current
     await pushLibItem(items, destination, projectId)
-    recordJoined(items.map(paper => paperJoinKey(paper, projectId)), destination)
+    recordJoined(items.flatMap(paper => [paperJoinKey(paper), paperJoinKey(paper, destination.projectId)]), destination)
     onJoined?.(items, destination)
     toast({ title: t('join.success', { count: items.length }), tone: 'success' })
   }

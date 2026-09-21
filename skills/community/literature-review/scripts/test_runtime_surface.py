@@ -2,12 +2,14 @@
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -16,9 +18,45 @@ sys.path[:0] = [str(ROOT / 'scripts'), str(ROOT / 'lib')]
 import preflight
 import slr
 import package_skill
+import workspace_entry
 
 
 class CurrentSurfaceTest(unittest.TestCase):
+    def test_bound_launcher_activates_the_current_product_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / 'survey'
+            workspace.mkdir()
+            skill = root / 'skills/literature-review'
+            bridge = root / 'scholarseed-bridge'
+            context = {'SCHOLARSEED_BRIDGE_TOKEN': 'token',
+                       'SCHOLARSEED_BRIDGE_SESSION': 'session',
+                       'SCHOLARSEED_BRIDGE_SOCKET': 'socket'}
+            with patch.dict(os.environ, context), \
+                 patch('workspace_entry.Path.cwd', return_value=root), \
+                 patch('workspace_entry.shutil.which', return_value=str(bridge)), \
+                 patch('workspace_entry.subprocess.run', return_value=SimpleNamespace(returncode=0)) as command:
+                workspace_entry._activate(workspace, {'skill': str(skill), 'version': '1.2.0'}, skill, '1.2.0')
+            args = command.call_args.args[0]
+            self.assertEqual(args[:4], [str(bridge), 'task', 'activate', '--json'])
+            payload = json.loads(args[4])
+            self.assertEqual(payload['task_type'], 'literature_review')
+            self.assertEqual(payload['workspace'], 'survey')
+            self.assertTrue(payload['run_id'].startswith('slr-'))
+
+    def test_bound_launcher_activates_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / 'survey'
+            workspace.mkdir()
+            binding = {'skill': str(ROOT), 'version': (ROOT / 'VERSION').read_text().strip()}
+            (workspace / '.slr-binding.json').write_text(json.dumps(binding))
+            with patch('workspace_entry.sys.argv', ['workspace_entry.py', str(workspace), 'info']), \
+                 patch('workspace_entry._activate') as activate, \
+                 patch('workspace_entry.os.execv') as dispatch:
+                workspace_entry.main()
+            activate.assert_called_once_with(workspace.resolve(), binding, ROOT, binding['version'])
+            dispatch.assert_called_once()
+
     def cli(self, *args):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/slr.py'), *args],
                                 capture_output=True, text=True)
@@ -74,7 +112,9 @@ class CurrentSurfaceTest(unittest.TestCase):
             preflight.check_binaries(report)
         names = {r['name'] for r in report.items}
         self.assertTrue(any('pysbd' in name for name in names))
-        self.assertFalse({'jieba', 'pdftotext', 'pdfinfo', 'pdftoppm'} & names)
+        self.assertTrue({'pypdfium2', 'pdfplumber', 'pypdf'} <= names)
+        self.assertNotIn('pdftoppm', names)
+        self.assertFalse({'jieba', 'pdftotext', 'pdfinfo'} & names)
 
     def test_download_outage_is_not_a_blocker_for_local_or_abstract_evidence(self):
         report = preflight.Report()

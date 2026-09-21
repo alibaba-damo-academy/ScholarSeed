@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "reviewed": "2026-09-20",
+  "documents": ["README.md", "PILLOW.md"],
+  "supplements": [
+    {
+      "name": "liblzma",
+      "version": "5.8.3",
+      "license": "0BSD",
+      "url": "https://raw.githubusercontent.com/tukaani-project/xz/v5.8.3/COPYING.0BSD",
+      "licenseFile": "xz-0bsd.txt",
+      "noticeSha256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+    }
+  ],
+  "scope": "certifi, tqdm, pypdf, pycparser, lightningcss and Pillow CPython 3.12 desktop wheels; not a complete product SBOM",
+  "components": [
+    {
+      "name": "certifi",
+      "version": "2026.6.17",
+      "ecosystem": "pypi",
+      "license": "MPL-2.0",
+      "role": "runtime",
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/c9/c7/424b75da314c1045981bd9777432fad05a9e0c69daa4ed7e308bbaffe405/certifi-2026.6.17.tar.gz",
+        "sha256": "024c88eeec92ca068db80f02b8b07c9cef7b9fe261d1d535abfd5abd6f6af432"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "certifi-2026.6.17-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/ef/2f/c5464532e965badff2f4c4c1a3a83f5697f0d7c407ed0cda44aaa99bb451/certifi-2026.6.17-py3-none-any.whl",
+          "sha256": "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db",
+          "licenseMember": "certifi-2026.6.17.dist-info/licenses/LICENSE",
+          "licenseFile": "certifi.txt",
+          "licenseSha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7",
+          "nativeFiles": [],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+        }
+      ]
+    },
+    {
+      "name": "tqdm",
+      "version": "4.68.4",
+      "ecosystem": "pypi",
+      "license": "MPL-2.0 AND MIT",
+      "role": "runtime",
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/ae/5f/57ff8b434839e70dab45601284ea413e947a63799891b7553e5960a793a8/tqdm-4.68.4.tar.gz",
+        "sha256": "19829c9673638f2a0b8617da4cdcb927e831cd88bcfcb6e78d42a4d1af131520"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "tqdm-4.68.4-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/22/2a/5e5e750890ada51017d18d0d4c30da696e5b5bd3180947729927628fc3cb/tqdm-4.68.4-py3-none-any.whl",
+          "sha256": "5168118b2368f48c561afda8020fd79195b1bdb0bdf8086b88442c267a315dc2",
+          "licenseMember": "tqdm-4.68.4.dist-info/licenses/LICENCE",
+          "licenseFile": "tqdm.txt",
+          "licenseSha256": "fcff87c3a47ce8028a8512aa182d4fcf0ad1c90544ee75cf9b343684cac194de",
+          "nativeFiles": [],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "fcff87c3a47ce8028a8512aa182d4fcf0ad1c90544ee75cf9b343684cac194de"
+        }
+      ]
+    },
+    {
+      "name": "pypdf",
+      "version": "6.15.0",
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "role": "runtime",
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/17/17/ee75a92718ec7212de831e71454d702225aa5e474a805cce169806044453/pypdf-6.15.0.tar.gz",
+        "sha256": "d39c4d955a76409284a905e2d65b40076d77ab76129e0faaeeb6612403ecfc79"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "pypdf-6.15.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/af/72/ce3067ac31e214a66388159f8462ddb8c13dd00170f24d555a1f1ae8ee91/pypdf-6.15.0-py3-none-any.whl",
+          "sha256": "14e001d6504822cb1ca9c7ed9a69bccb320f59b320730f55af804361abe4d5ee",
+          "licenseMember": "pypdf-6.15.0.dist-info/licenses/LICENSE",
+          "licenseFile": "pypdf.txt",
+          "licenseSha256": "a97ac230e5f33ef10a5367a850eb01f91f1a0b064e34742c7794d2294557f524",
+          "nativeFiles": [],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "a97ac230e5f33ef10a5367a850eb01f91f1a0b064e34742c7794d2294557f524"
+        }
+      ]
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "ecosystem": "pypi",
+      "license": "BSD-3-Clause",
+      "role": "runtime",
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/1b/7d/92392ff7815c21062bea51aa7b87d45576f649f16458d78b7cf94b9ab2e6/pycparser-3.0.tar.gz",
+        "sha256": "600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "pycparser-3.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/0c/c3/44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/pycparser-3.0-py3-none-any.whl",
+          "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+          "licenseMember": "pycparser-3.0.dist-info/licenses/LICENSE",
+          "licenseFile": "pycparser.txt",
+          "licenseSha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1",
+          "nativeFiles": [],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1"
+        }
+      ]
+    },
+    {
+      "name": "pillow",
+      "version": "12.3.0",
+      "ecosystem": "pypi",
+      "license": "MIT-CMU",
+      "role": "runtime",
+      "source": {
+        "url": "https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz",
+        "sha256": "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce"
+      },
+      "artifacts": [
+        {
+          "platform": "darwin-arm64",
+          "filename": "pillow-12.3.0-cp312-cp312-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/d8/66/9a386a92561f402389a4fc70c18838bf6d35eb5eb5c6850b4b2dc64f5048/pillow-12.3.0-cp312-cp312-macosx_11_0_arm64.whl",
+          "sha256": "ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7",
+          "licenseMember": "pillow-12.3.0.dist-info/licenses/LICENSE",
+          "licenseFile": "pillow-darwin-arm64.txt",
+          "licenseSha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce",
+          "nativeFiles": [
+            "PIL/_webp.cpython-312-darwin.so",
+            "PIL/_imagingcms.cpython-312-darwin.so",
+            "PIL/_imagingft.cpython-312-darwin.so",
+            "PIL/_imagingmath.cpython-312-darwin.so",
+            "PIL/_imaging.cpython-312-darwin.so",
+            "PIL/_imagingmorph.cpython-312-darwin.so",
+            "PIL/_imagingtk.cpython-312-darwin.so",
+            "PIL/_avif.cpython-312-darwin.so",
+            "PIL/.dylibs/libbrotlicommon.1.2.0.dylib",
+            "PIL/.dylibs/libbrotlidec.1.2.0.dylib",
+            "PIL/.dylibs/liblcms2.2.dylib",
+            "PIL/.dylibs/libpng16.16.dylib",
+            "PIL/.dylibs/libxcb.1.1.0.dylib",
+            "PIL/.dylibs/libjpeg.62.4.0.dylib",
+            "PIL/.dylibs/libfreetype.6.dylib",
+            "PIL/.dylibs/libharfbuzz.0.dylib",
+            "PIL/.dylibs/libsharpyuv.0.dylib",
+            "PIL/.dylibs/libopenjp2.2.5.4.dylib",
+            "PIL/.dylibs/libavif.16.4.2.dylib",
+            "PIL/.dylibs/libz.1.3.1.zlib-ng.dylib",
+            "PIL/.dylibs/libwebp.7.dylib",
+            "PIL/.dylibs/libXau.6.dylib",
+            "PIL/.dylibs/libwebpmux.3.dylib",
+            "PIL/.dylibs/libwebpdemux.2.dylib",
+            "PIL/.dylibs/liblzma.5.dylib",
+            "PIL/.dylibs/libtiff.6.dylib"
+          ],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce"
+        },
+        {
+          "platform": "darwin-x86_64",
+          "filename": "pillow-12.3.0-cp312-cp312-macosx_10_13_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/37/bf/fb3ebff8ddcb76aac5a01389251bbbb9519922a9b520d8247c1ca864a25d/pillow-12.3.0-cp312-cp312-macosx_10_13_x86_64.whl",
+          "sha256": "ba09209fbe443b4acccebe845d8a138b89a8f4fbaeedd44953490b5315d5e965",
+          "licenseMember": "pillow-12.3.0.dist-info/licenses/LICENSE",
+          "licenseFile": "pillow-darwin-x86_64.txt",
+          "licenseSha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce",
+          "nativeFiles": [
+            "PIL/_webp.cpython-312-darwin.so",
+            "PIL/_imagingcms.cpython-312-darwin.so",
+            "PIL/_imagingft.cpython-312-darwin.so",
+            "PIL/_imagingmath.cpython-312-darwin.so",
+            "PIL/_imaging.cpython-312-darwin.so",
+            "PIL/_imagingmorph.cpython-312-darwin.so",
+            "PIL/_imagingtk.cpython-312-darwin.so",
+            "PIL/_avif.cpython-312-darwin.so",
+            "PIL/.dylibs/libbrotlicommon.1.2.0.dylib",
+            "PIL/.dylibs/libbrotlidec.1.2.0.dylib",
+            "PIL/.dylibs/liblcms2.2.dylib",
+            "PIL/.dylibs/libpng16.16.dylib",
+            "PIL/.dylibs/libxcb.1.1.0.dylib",
+            "PIL/.dylibs/libjpeg.62.4.0.dylib",
+            "PIL/.dylibs/libfreetype.6.dylib",
+            "PIL/.dylibs/libharfbuzz.0.dylib",
+            "PIL/.dylibs/libsharpyuv.0.dylib",
+            "PIL/.dylibs/libopenjp2.2.5.4.dylib",
+            "PIL/.dylibs/libavif.16.4.2.dylib",
+            "PIL/.dylibs/libz.1.3.1.zlib-ng.dylib",
+            "PIL/.dylibs/libwebp.7.dylib",
+            "PIL/.dylibs/libXau.6.dylib",
+            "PIL/.dylibs/libwebpmux.3.dylib",
+            "PIL/.dylibs/libwebpdemux.2.dylib",
+            "PIL/.dylibs/liblzma.5.dylib",
+            "PIL/.dylibs/libtiff.6.dylib"
+          ],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce"
+        },
+        {
+          "platform": "win32-x86_64",
+          "filename": "pillow-12.3.0-cp312-cp312-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/45/89/da2f7971a317f83d807fdd4065c0af40208e59e692cc43d315a71a0e96d1/pillow-12.3.0-cp312-cp312-win_amd64.whl",
+          "sha256": "a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09",
+          "licenseMember": "pillow-12.3.0.dist-info/licenses/LICENSE",
+          "licenseFile": "pillow-win32-x86_64.txt",
+          "licenseSha256": "4f7866a74802c6326f81faff59a56546b6aec2b10b91973e0e9308de95e79857",
+          "nativeFiles": [
+            "PIL/_avif.cp312-win_amd64.pyd",
+            "PIL/_imaging.cp312-win_amd64.pyd",
+            "PIL/_imagingcms.cp312-win_amd64.pyd",
+            "PIL/_imagingft.cp312-win_amd64.pyd",
+            "PIL/_imagingmath.cp312-win_amd64.pyd",
+            "PIL/_imagingmorph.cp312-win_amd64.pyd",
+            "PIL/_imagingtk.cp312-win_amd64.pyd",
+            "PIL/_webp.cp312-win_amd64.pyd"
+          ],
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "51ed379cf673c9676b7fa7e1bedbfc5d4ad63caac4f6f99eeec5ccab50c3e0ef"
+        }
+      ]
+    },
+    {
+      "name": "lightningcss",
+      "version": "1.32.0",
+      "ecosystem": "npm",
+      "license": "MPL-2.0",
+      "role": "build",
+      "source": {
+        "url": "https://codeload.github.com/parcel-bundler/lightningcss/tar.gz/7f8a861bdee476fe90c89a8badeb3fd33a99c51a",
+        "sha256": "b9451f8a7bb1a9cf0cd905af3a23db2e963a6c3171a9272633e5fd03f2842198",
+        "commit": "7f8a861bdee476fe90c89a8badeb3fd33a99c51a"
+      },
+      "artifacts": [
+        {
+          "platform": "any",
+          "filename": "lightningcss-1.32.0.tgz",
+          "url": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.32.0.tgz",
+          "sha256": "c83e81ea213c9e419c5877460a6788f0d0931d58a4aa9fea92fac1a99a1550e8",
+          "integrity": "sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==",
+          "licenseMember": "package/LICENSE",
+          "licenseFile": "lightningcss.txt",
+          "licenseSha256": "5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e",
+          "noticeNormalization": "CRLF-to-LF",
+          "noticeSha256": "5eba353fe5076ac3432177f8ab1cf75e3afcd0584251e37c3bfead5f447d040e"
+        }
+      ]
+    }
+  ]
+}

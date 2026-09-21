@@ -11,10 +11,15 @@ const run = promisify(execFile)
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'codex')
 const MANIFEST_NAME = 'manifest.json'
 const CACHE_DIRECTORY = 'node_modules/.cache/scholarseed/codex'
+const CACHE_RECEIPT = 'resolve-receipt.json'
 const PROBE_TIMEOUT_MS = 15_000
 const PROBE_BOOTSTRAP_TIMEOUT_MS = 60_000
 const METADATA_LIMIT = 8 * 1024 * 1024
 const RUNTIME_FILE_MODE = 0o755
+const WINDOWS_PLATFORM = 'win32'
+const WINDOWS_PUBLISH_RETRY_DELAYS_MS = Object.freeze([250, 500, 1000, 2000, 4000, 8000])
+const WINDOWS_TRANSIENT_FILESYSTEM_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const WINDOWS_CLEANUP_RETRY_DELAY_MS = 1000
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const INTEGRITY_PATTERN = /^sha512-[A-Za-z0-9+/]+={0,2}$/
 
@@ -50,6 +55,26 @@ async function extractBinary(archive, member, destination) {
   }
 }
 
+async function publishRuntime(source, destination, options = {}) {
+  const platform = options.platform || process.platform
+  const rename = options.rename || fs.renameSync
+  const delay = options.delay || (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)))
+  let retryIndex = 0
+  while (true) {
+    try {
+      rename(source, destination)
+      return
+    } catch (error) {
+      const retryable = platform === WINDOWS_PLATFORM
+        && WINDOWS_TRANSIENT_FILESYSTEM_ERRORS.has(error.code)
+        && retryIndex < WINDOWS_PUBLISH_RETRY_DELAYS_MS.length
+      if (!retryable) throw error
+      await delay(WINDOWS_PUBLISH_RETRY_DELAYS_MS[retryIndex])
+      retryIndex += 1
+    }
+  }
+}
+
 function vendorRoot(desktopRoot) {
   return path.resolve(desktopRoot, '..', '..', VENDOR_RELATIVE)
 }
@@ -71,6 +96,62 @@ function artifact(desktopRoot, platform, arch) {
   return { ...selected, archive, key, root, sha256: sidecar[0], version: manifest.version }
 }
 
+async function probeVersion(executable, version) {
+  const stdout = await new Promise((resolve, reject) => {
+    const child = spawn(executable, ['--version'], {
+      timeout: PROBE_BOOTSTRAP_TIMEOUT_MS,
+      env: { ...process.env, TMPDIR: os.tmpdir() }
+    })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', chunk => { out += chunk })
+    child.stderr.on('data', chunk => { err += chunk })
+    child.once('error', error => reject(new Error(`Codex runtime probe failed: ${error.message}`)))
+    child.once('close', (code, signal) => (code === 0
+      ? resolve(out)
+      : reject(new Error(`Codex runtime probe failed: ${err || signal || code}`))))
+  })
+  const reported = stdout.trim()
+  if (reported !== `codex-cli ${version}`) {
+    throw new Error(`Codex version mismatch: expected codex-cli ${version}, got ${reported}`)
+  }
+}
+
+function sourceRecord(selected) {
+  return { package: '@openai/codex', distribution: 'git-lfs',
+    archive_sha256: selected.sha256, integrity: selected.integrity }
+}
+
+// A cache directory is only published by a fully verified resolve (extraction +
+// per-file digests + version probe) and its name embeds the archive checksum,
+// so a matching receipt plus a passing probe is the same guarantee re-hashing
+// every cached file on each launch used to buy.
+function cachedRuntime(directory, selected) {
+  let receipt
+  try {
+    receipt = JSON.parse(fs.readFileSync(path.join(directory, CACHE_RECEIPT), 'utf8'))
+  } catch (error) {
+    return null
+  }
+  if (receipt.archive_sha256 !== selected.sha256 ||
+      receipt.reported_version !== selected.version ||
+      typeof receipt.entrypoint !== 'string' ||
+      !Array.isArray(receipt.files) ||
+      !receipt.files.every(file => file && typeof file.path === 'string' &&
+        typeof file.sha256 === 'string' && typeof file.mode === 'number') ||
+      !receipt.files.some(file => file.path === receipt.entrypoint)) {
+    return null
+  }
+  for (const file of receipt.files) {
+    if (!fs.existsSync(path.join(directory, file.path))) return null
+  }
+  return {
+    executable: path.join(directory, receipt.entrypoint),
+    entrypoint: receipt.entrypoint,
+    files: receipt.files
+  }
+}
+
 async function resolveVendoredCodex(
   desktopRoot,
   platform = process.platform,
@@ -78,13 +159,36 @@ async function resolveVendoredCodex(
   log = () => {}
 ) {
   const selected = artifact(desktopRoot, platform, arch)
+  const cache = path.join(desktopRoot, CACHE_DIRECTORY)
+  fs.mkdirSync(cache, { recursive: true })
+  const directory = path.join(cache, `${selected.version}-${selected.key}-${selected.sha256}`)
+  const cached = cachedRuntime(directory, selected)
+  if (cached) {
+    try {
+      await probeVersion(cached.executable, selected.version)
+      for (const file of cached.files) {
+        fs.chmodSync(path.join(directory, file.path), file.mode)
+      }
+      log(`Vendored Codex ${selected.version} (cached): ${cached.executable}`)
+      return {
+        path: cached.executable,
+        root: directory,
+        files: cached.files,
+        reported_version: selected.version,
+        sha256: cached.files.find(file => file.path === cached.entrypoint).sha256,
+        source: sourceRecord(selected)
+      }
+    } catch {
+      // Untrusted cache (failed probe or mode repair): fall through and rebuild.
+    }
+  }
   if (await digest(selected.archive, 'sha256', 'hex') !== selected.sha256) {
     throw new Error('Vendored Codex archive SHA-256 mismatch')
   }
   await verifyArchive(selected.archive, selected.integrity)
-  const cache = path.join(desktopRoot, CACHE_DIRECTORY)
-  fs.mkdirSync(cache, { recursive: true })
-  const directory = path.join(cache, `${selected.version}-${selected.key}-${selected.sha256}`)
+  if (fs.existsSync(directory)) {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
   const stage = fs.mkdtempSync(path.join(cache, 'resolve-'))
   try {
     const prefix = `package/vendor/${selected.target}/`
@@ -109,7 +213,15 @@ async function resolveVendoredCodex(
     if (packageManifest.target !== selected.target || typeof packageManifest.entrypoint !== 'string') {
       throw new Error('Codex runtime package manifest differs from its target')
     }
-    const executable = path.join(runtime, packageManifest.entrypoint)
+    if (!fs.existsSync(directory)) await publishRuntime(runtime, directory, { platform })
+    for (const file of files) {
+      const cached = path.join(directory, file.path)
+      if (await digest(cached, 'sha256', 'hex') !== file.sha256) {
+        throw new Error(`Cached Codex runtime was modified: ${file.path}`)
+      }
+      fs.chmodSync(cached, file.mode)
+    }
+    const executable = path.join(directory, packageManifest.entrypoint)
     const probe = spawnSync(executable, ['--version'], {
       timeout: PROBE_BOOTSTRAP_TIMEOUT_MS,
       encoding: 'utf8',
@@ -122,14 +234,12 @@ async function resolveVendoredCodex(
     if (reported !== `codex-cli ${selected.version}`) {
       throw new Error(`Codex version mismatch: expected ${selected.version}, got ${reported}`)
     }
-    if (!fs.existsSync(directory)) fs.renameSync(runtime, directory)
-    for (const file of files) {
-      const cached = path.join(directory, file.path)
-      if (await digest(cached, 'sha256', 'hex') !== file.sha256) {
-        throw new Error(`Cached Codex runtime was modified: ${file.path}`)
-      }
-      fs.chmodSync(cached, file.mode)
-    }
+    fs.writeFileSync(path.join(directory, CACHE_RECEIPT), JSON.stringify({
+      archive_sha256: selected.sha256,
+      reported_version: selected.version,
+      entrypoint: packageManifest.entrypoint,
+      files
+    }), { flag: 'wx' })
     const destination = path.join(directory, packageManifest.entrypoint)
     log(`Vendored Codex ${selected.version}: ${destination}`)
     return {
@@ -137,12 +247,16 @@ async function resolveVendoredCodex(
       root: directory,
       files,
       reported_version: selected.version,
-      sha256: await digest(destination, 'sha256', 'hex'),
-      source: { package: '@openai/codex', distribution: 'git-lfs',
-        archive_sha256: selected.sha256, integrity: selected.integrity }
+      sha256: files.find(file => file.path === packageManifest.entrypoint).sha256,
+      source: sourceRecord(selected)
     }
+  } catch (error) {
+    log(`Vendored Codex resolution failed before cleanup: ${error.stack || error}`)
+    throw error
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true })
+    fs.rmSync(stage, { recursive: true, force: true,
+      maxRetries: platform === WINDOWS_PLATFORM ? WINDOWS_PUBLISH_RETRY_DELAYS_MS.length : 0,
+      retryDelay: WINDOWS_CLEANUP_RETRY_DELAY_MS })
   }
 }
 
@@ -153,4 +267,4 @@ function bundledCodex(resourcesRoot, platform = process.platform) {
   return executable
 }
 
-module.exports = { artifact, bundledCodex, resolveVendoredCodex, verifyArchive }
+module.exports = { artifact, bundledCodex, publishRuntime, resolveVendoredCodex, verifyArchive }

@@ -361,6 +361,7 @@ SUITES = [
 # that repository's own gate. Keep this runner scoped to ScholarSeed-owned service and business-work
 # contracts. The explicit list also makes accidental ownership drift visible in review.
 PRODUCT_ROOT_SUITES = (
+    "tests.release.contract_lint",
     "tests.release.contract_dependencies",
     "tests.contract_codex_adapter",
     "tests.contract_artifact_directives",

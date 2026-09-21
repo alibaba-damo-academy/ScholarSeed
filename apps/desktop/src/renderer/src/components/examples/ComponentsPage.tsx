@@ -1,7 +1,9 @@
 import { useTranslation } from 'react-i18next'
 import { type ReactNode, useEffect, useLayoutEffect, useState } from 'react'
+import { Copy } from 'lucide-react'
 
 import componentsPageSource from './ComponentsPage.tsx?raw'
+import aiThinking from '../../assets/ai-thinking.gif'
 import { accountBase, setAccountBase } from '../../account'
 import type { ConvItem, SessionNode, Theme, Thread } from '../../model'
 import { FILE_REF_KIND } from '../../reference'
@@ -1643,10 +1645,11 @@ function ExampleAreaChart(): JSX.Element {
   )
 }
 
-function ToastExampleMessage({ kind }: { kind: 'description' | 'title' | 'success' | 'error' | 'warning' | 'action' }): JSX.Element {
+function ToastExampleMessage({ kind }: { kind: 'description' | 'longDescription' | 'title' | 'success' | 'error' | 'warning' | 'action' }): JSX.Element {
   const { t } = useTranslation('examples')
   const messages = {
     description: { messageKey: 'toast.description' },
+    longDescription: { messageKey: 'toast.longDescription' },
     title: { messageKey: 'toast.title' },
     success: { messageKey: 'alert.success' },
     error: { messageKey: 'alert.error' },
@@ -1667,6 +1670,19 @@ function ToastExampleControls(): JSX.Element {
   const showDefaultToast = (): void => {
     toast({
       description: <ToastExampleMessage kind="description" />,
+      title: <ToastExampleMessage kind="title" />,
+      tone: 'info'
+    })
+  }
+  const showTitleOnlyToast = (): void => {
+    toast({
+      title: <ToastExampleMessage kind="title" />,
+      tone: 'info'
+    })
+  }
+  const showLongDescriptionToast = (): void => {
+    toast({
+      description: <ToastExampleMessage kind="longDescription" />,
       title: <ToastExampleMessage kind="title" />,
       tone: 'info'
     })
@@ -1705,6 +1721,12 @@ function ToastExampleControls(): JSX.Element {
     <div className="flex flex-wrap items-center gap-[var(--vds-space-2)]">
       <Button variant="outline" onClick={showDefaultToast}>
         {t('toast.default')}
+      </Button>
+      <Button variant="outline" onClick={showTitleOnlyToast}>
+        {t('toast.titleOnly')}
+      </Button>
+      <Button variant="outline" onClick={showLongDescriptionToast}>
+        {t('toast.longDescriptionLabel')}
       </Button>
       <Button onClick={showSuccessToast}>{t('toast.success')}</Button>
       <Button variant="destructive" onClick={showErrorToast}>
@@ -2234,6 +2256,7 @@ export function ComponentsPage(): JSX.Element {
           />
           <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
             <CopyButton value="DeepRD">{t('copy.name')}</CopyButton>
+            <CopyButton iconOnly icon={<Copy size={14} />} size="xs" className="![--vds-icon-button-glyph:var(--vds-icon-7)]" variant="ghost" value="DeepRD" />
             <CopyButton disabled value="DeepRD">{t('copy.disabled')}</CopyButton>
           </div>
         </section>
@@ -3732,6 +3755,7 @@ export function ComponentsPage(): JSX.Element {
             <Spinner size="sm" />
             <Spinner />
             <Spinner size="lg" />
+            <Spinner imageSrc={aiThinking} size="sm" />
           </div>
           <div className="grid gap-[var(--vds-space-3)]">
             <Skeleton width="80%" />

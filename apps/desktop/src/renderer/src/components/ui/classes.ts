@@ -423,7 +423,9 @@ const PAGINATION_ITEM_ACTIVE_CLASS_NAME =
   'border-[var(--vds-brand-bg-default)] bg-[var(--vds-brand-bg-default)] [font-weight:var(--vds-fw-medium)] text-[var(--vds-static-white)] shadow-none'
 const PAGINATION_ELLIPSIS_CLASS_NAME =
   'inline-grid h-[var(--vds-pagination-item-size)] min-w-[var(--vds-pagination-item-size)] select-none place-items-center text-[var(--vds-text-tertiary)]'
-const COLLAPSIBLE_BASE_CLASS_NAME = 'grid min-w-0 gap-[var(--vds-space-2)]'
+/* 单列轨道必须 minmax(0,1fr)：隐式 auto 轨道取最宽子项 max-content，
+   会让 w-fit 触发按钮等内容把 Collapsible 撑出父容器（对话区横向滚动条）。 */
+const COLLAPSIBLE_BASE_CLASS_NAME = 'grid min-w-0 grid-cols-[minmax(0,1fr)] gap-[var(--vds-space-2)]'
 const COLLAPSIBLE_TRIGGER_CLASS_NAME =
   'inline-flex items-center justify-between gap-[var(--vds-space-2)] [font:inherit] cursor-pointer focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&:not(.vds-button)]:min-h-[var(--vds-control-height-md)] [&:not(.vds-button)]:rounded-[var(--vds-control-radius)] [&:not(.vds-button)]:border [&:not(.vds-button)]:border-solid [&:not(.vds-button)]:border-[var(--vds-control-border)] [&:not(.vds-button)]:bg-[var(--vds-surface-raised)] [&:not(.vds-button)]:[padding:var(--vds-control-padding-md)] [&:not(.vds-button)]:text-[var(--vds-text-primary)] [&:not(.vds-button):hover:not(:disabled)]:border-[var(--vds-control-border-hover)] [&:not(.vds-button):hover:not(:disabled)]:bg-[var(--vds-surface-hover)]'
 const COLLAPSIBLE_CONTENT_CLASS_NAME =
@@ -486,12 +488,12 @@ const MENUBAR_TRIGGER_CLASS_NAME =
 const MENU_CONTENT_CLASS_NAME =
   'absolute z-[var(--vds-z-inline-flyout)] grid w-max min-w-48 rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-1)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-center)]'
 const MENU_ITEM_CLASS_NAME =
-  'flex h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent px-[var(--vds-space-2)] py-[6px] text-left text-[var(--vds-text-primary)] [font:inherit] cursor-pointer hover:bg-[rgba(0,0,0,0.03)] focus-visible:bg-[rgba(0,0,0,0.03)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&>svg:first-child]:size-4 [&>svg:first-child]:text-[var(--vds-text-tertiary)] [&>.vds-icon:first-child]:size-4 [&>.vds-icon:first-child]:text-[var(--vds-text-tertiary)] [&>.iconfont:first-child]:inline-flex [&>.iconfont:first-child]:size-4 [&>.iconfont:first-child]:items-center [&>.iconfont:first-child]:justify-center [&>.iconfont:first-child]:text-[length:16px] [&>.iconfont:first-child]:text-[var(--vds-text-tertiary)]'
+  'flex h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-transparent px-[var(--vds-space-2)] py-[6px] text-left text-[var(--vds-text-primary)] [font:inherit] cursor-pointer hover:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&>svg:first-child]:size-4 [&>svg:first-child]:text-[var(--vds-text-tertiary)] [&>.vds-icon:first-child]:size-4 [&>.vds-icon:first-child]:text-[var(--vds-text-tertiary)] [&>.iconfont:first-child]:inline-flex [&>.iconfont:first-child]:size-4 [&>.iconfont:first-child]:items-center [&>.iconfont:first-child]:justify-center [&>.iconfont:first-child]:text-[length:16px] [&>.iconfont:first-child]:text-[var(--vds-text-tertiary)]'
 // 破坏性动作 (删除、归档这类会收走/移除用户可见对象的操作) 用错误色整行警示:
 // 与常规项同几何, 只换色, 避免「点错才发现是危险操作」。整类替换而非追加,
 // 防止与常规项的 hover 背景在 Tailwind 同优先级下互相覆盖。
 const MENU_ITEM_DESTRUCTIVE_CLASS_NAME =
-  'flex h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-[var(--vds-error-light-bg-default)] px-[var(--vds-space-2)] py-[6px] text-left text-[var(--vds-error-text-primary)] [font:inherit] cursor-pointer hover:bg-[var(--vds-error-light-bg-hover)] focus-visible:bg-[var(--vds-error-light-bg-hover)] active:bg-[var(--vds-error-light-bg-active)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&>svg:first-child]:size-4 [&>svg:first-child]:text-[var(--vds-error-text-primary)] [&>.vds-icon:first-child]:size-4 [&>.vds-icon:first-child]:text-[var(--vds-error-text-primary)] [&>.iconfont:first-child]:inline-flex [&>.iconfont:first-child]:size-4 [&>.iconfont:first-child]:items-center [&>.iconfont:first-child]:justify-center [&>.iconfont:first-child]:text-[length:16px] [&>.iconfont:first-child]:text-[var(--vds-error-text-primary)]'
+  'flex h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border-0 bg-[var(--vds-error-light-bg-default)] px-[var(--vds-space-2)] py-[6px] text-left text-[var(--vds-error-text-primary)] [font:inherit] cursor-pointer hover:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:bg-[var(--vds-bg-white-hover-transparent)] active:bg-[var(--vds-error-light-bg-active)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] [&>svg:first-child]:size-4 [&>svg:first-child]:text-[var(--vds-error-text-primary)] [&>.vds-icon:first-child]:size-4 [&>.vds-icon:first-child]:text-[var(--vds-error-text-primary)] [&>.iconfont:first-child]:inline-flex [&>.iconfont:first-child]:size-4 [&>.iconfont:first-child]:items-center [&>.iconfont:first-child]:justify-center [&>.iconfont:first-child]:text-[length:16px] [&>.iconfont:first-child]:text-[var(--vds-error-text-primary)]'
 const MENU_CHEVRON_CLASS_NAME =
   'ml-auto text-lg leading-none text-[var(--vds-text-tertiary)]'
 const NAVIGATION_MENU_TRIGGER_CLASS_NAME =
@@ -900,11 +902,13 @@ export function spinnerClassName({
 }
 
 export function spinnerStyleClassName({
+  image = false,
   size = 'md'
 }: {
+  image?: boolean
   size?: ComponentSize
 }): string {
-  return cx(SPINNER_BASE_CLASS_NAME, SPINNER_SIZE_CLASS_NAMES[size])
+  return cx(image ? 'inline-block shrink-0 align-middle' : SPINNER_BASE_CLASS_NAME, SPINNER_SIZE_CLASS_NAMES[size])
 }
 
 export function switchClassName({
@@ -1572,7 +1576,7 @@ export const menuItemCheckableClassName =
   'vds-menu__item--checkable relative pl-[var(--vds-space-8)]'
 export const menuSubTriggerClassName = cx(
   'vds-menu__sub-trigger',
-  'aria-expanded:bg-[rgba(0,0,0,0.03)]'
+  'aria-expanded:bg-[var(--vds-bg-white-hover-transparent)]'
 )
 export const menuChevronClassName = cx(
   'vds-menu__chevron',

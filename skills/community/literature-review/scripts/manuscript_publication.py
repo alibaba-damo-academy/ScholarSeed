@@ -12,7 +12,7 @@ import time
 import unicodedata
 import uuid
 
-import pymupdf
+import pypdfium2
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'lib'),str(ROOT/'scripts')]
@@ -22,8 +22,6 @@ from evidence import read,save
 from publication_files import dependencies,source_bundle
 
 PAGE_RENDER_LIMIT=3
-# Long edge in pixels, matching the reviewer's reading size; the short edge follows
-# the page aspect ratio.
 PAGE_RENDER_LONG_EDGE=1400
 
 
@@ -132,11 +130,11 @@ def render_pages(ws,pdf=None):
     folder=ws/'07_verifier/postcheck/pages';folder.mkdir(parents=True,exist_ok=True)
     prefix=folder/('page-'+uuid.uuid4().hex[:12])
     try:
-        with pymupdf.open(pdf) as document:
-            for index in range(min(PAGE_RENDER_LIMIT,document.page_count)):
-                rect=document[index].rect
-                zoom=PAGE_RENDER_LONG_EDGE/max(rect.width,rect.height)
-                document[index].get_pixmap(matrix=pymupdf.Matrix(zoom,zoom)).save(
+        with pypdfium2.PdfDocument(pdf) as document:
+            for index in range(min(PAGE_RENDER_LIMIT,len(document))):
+                width,height=document[index].get_size()
+                zoom=PAGE_RENDER_LONG_EDGE/max(width,height)
+                document[index].render(scale=zoom).to_pil().save(
                     f'{prefix}-{index+1:02d}.png')
     except (RuntimeError,OSError,ValueError) as exc:
         return [],str(exc)[-2000:]

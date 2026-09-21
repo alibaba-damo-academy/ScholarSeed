@@ -42,11 +42,13 @@ from scholarseed_runtime.contract.interaction import (
     RuntimeCallbackResponse,
 )
 from scholarseed_runtime.contract.model import (
+    ModelCapabilities,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
     ModelIntent,
     ModelThinking,
+    ModelToolProtocol,
     ModelTransport,
     ModelWireProtocol,
 )
@@ -85,6 +87,8 @@ __all__ = [
     "LaunchSecretIntent",
     "InventoryRequest",
     "ModelConnectionMode",
+    "ModelCapabilities",
+    "ModelToolProtocol",
     "ModelCredential",
     "ModelCredentialPort",
     "ModelIntent",

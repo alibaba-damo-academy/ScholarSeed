@@ -11,11 +11,11 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
-import pymupdf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.api.citations import register_citation_bridge
 from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
@@ -173,7 +173,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
 
     @staticmethod
     def _pdf(prefix: str) -> bytes:
-        with pymupdf.open() as pdf:
+        with pdf_fixture.open() as pdf:
             for page_number in range(1, 4):
                 page = pdf.new_page(width=600, height=800)
                 page.insert_text((72, 72), f"{prefix} page {page_number} unique text.")

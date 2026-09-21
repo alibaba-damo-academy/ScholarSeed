@@ -207,6 +207,66 @@ class NativeTest(unittest.TestCase):
         report=json.loads((self.ws/'05_generation/_status/table_layout_precheck.json').read_text())
         self.assertEqual(report['status'],'SUCCESS',report)
 
+    def test_asset_warnings_feed_single_refinement_preserving_raw_chapters(self):
+        self.outline['outline_tree'][1]['tables']=[{
+            'table_id':'T1','purpose':'Compare mechanisms.','content_plan':'One row per mechanism.',
+            'caption_draft':'Mechanism comparison.','row_unit':'Mechanism',
+            'comparison_dimensions':['Guarantee'],'paper_ids':['p1']}]
+        atomic_json(self.ws/'04_outline/outline.json',self.outline)
+        from test_native_asset_checks import table
+        planned=table(caption='表1总结了现有方法。')
+        extra=table('tab:extra','Additional supported comparison.')
+        class RepairAssets(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text='Supported mechanisms. '+planned+extra
+                elif 'sources' in packet:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text=json.dumps({'edits':[
+                        {'target':'main','before':r'\caption{表1总结了现有方法。}',
+                         'after':r'\caption{现有方法的比较。}','reason':'Remove self-numbering'},
+                        {'target':'main','before':extra,
+                         'after':r'Additional supported comparison in prose. \citep{Keyp1}.',
+                         'reason':'Retain evidence as prose, not an unplanned table'}], 'issues':[]})
+                else:return await super().chat_stream(messages,**kwargs)
+                kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                return text
+        model=RepairAssets();out=self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual(sum('sources' in p for p in model.calls),1)
+        codes={i['code'] for i in model.calls[-1]['asset_contract_warnings']}
+        self.assertTrue({'asset_unplanned','caption_numbering_prefix'} <= codes)
+        self.assertEqual(out['asset_contract']['status'],'SUCCESS',out['asset_contract'])
+        gen=self.ws/'05_generation'
+        self.assertIn(extra,(gen/'chapters/1.tex').read_text())
+        self.assertIn(extra,(gen/'full_draft_v1.tex').read_text())
+        self.assertNotIn(extra,(gen/'full_draft_v2.tex').read_text())
+        self.assertIn('Additional supported comparison in prose.',(gen/'full_draft_v2.tex').read_text())
+        self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)  # Existing v2 never launches another model.
+
+    def test_unresolved_asset_warnings_return_to_main_without_new_gate(self):
+        from test_native_asset_checks import table
+        class ExtraTable(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text=table('tab:extra','表1总结了方法。')
+                    kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                    return text
+                return await super().chat_stream(messages,**kwargs)
+        model=ExtraTable();out=self.run_pipeline(model)
+        self.assertEqual(out['status'],'SUCCESS')
+        self.assertEqual(out['state'],'main_editable')
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual(out['asset_contract']['status'],'WARNING')
+        self.assertIn('asset_unplanned',str(out['asset_contract']))
+        from main_view import compact
+        self.assertEqual(compact(out)['asset_contract'],out['asset_contract'])
+
     def test_markdown_chapter_opening_not_repeated_by_assembly(self):
         configure(self.ws,{'publication':{'format':'markdown'}})
         self.run_pipeline(Model());gen=self.ws/'05_generation'

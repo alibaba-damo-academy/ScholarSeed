@@ -10,7 +10,7 @@ import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from '../../shell/ProjectM
 import { hasProjectScope, selectedProject, useApp } from '../../store'
 import { DocumentDock } from './Dock'
 import { FIXED_TAB_BY_VIEW, OVERVIEW_TAB, tabMatchesProject, viewerForPath } from './tabs'
-import { useDocumentWorkspace } from './workspace'
+import { documentNavigationView, useDocumentWorkspace } from './workspace'
 
 /**
  * 中央工作区：按当前激活标签渲染对应视图。
@@ -27,7 +27,12 @@ export function Workbench(): React.JSX.Element {
   const { state, set } = useApp()
   const documents = useDocumentWorkspace()
   const activeTab = state.tabs.find((entry) => entry.id === state.activeTab && tabMatchesProject(entry, state.homeSelectedProjectId))
-  const focusedDocument = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : undefined
+  const focusedTab = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : undefined
+  const focusedSession = focusedTab ? documents.sessions[focusedTab.sessionId] : undefined
+  const focusedDocument = focusedTab && focusedSession
+    && documentNavigationView(focusedTab, focusedSession) === state.mainView
+      ? focusedTab
+      : undefined
   const fallbackTabId = focusedDocument?.id
     ?? FIXED_TAB_BY_VIEW[state.mainView]?.id
     ?? OVERVIEW_TAB.id
@@ -114,8 +119,9 @@ function Overview(): React.JSX.Element {
                 data-testid="overview-import-literature"
                 icon={<BookOpenText size={14} strokeWidth={1.6} />}
                 onClick={() => {
-                  // 复用文献库已有的导入流程: 先切到文献视图（会带出模块面板），再展开它的导入菜单。
-                  act.openWorkbenchView('literature')
+                  // 复用文献库已有的导入流程: 切到文献视图并保留当前项目作用域，
+                  // 落在本项目的「文献库」而不是清空作用域跳到全局「文献总览」，再展开导入菜单。
+                  act.openWorkbenchView('literature', { preserveProject: true })
                   act.patchLiterature({ importMenuOpen: true })
                 }}
                 variant="outline"

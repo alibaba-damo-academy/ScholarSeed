@@ -72,6 +72,7 @@ class SessionLedger:
         self._logger = logger
         self.lock = lock
         self._turn_outcomes: dict[str, tuple[str, int]] = {}
+        self._terminal_waiters: dict[str, set[asyncio.Future[str]]] = {}
         self._unknown_admission: dict[str, tuple[int, str]] = {}
         self._active_vendor_turn_id = ""
         self._runtime_incidents: dict[str, RuntimeIncident] = {}
@@ -138,6 +139,32 @@ class SessionLedger:
             turn_id=turn_id,
             turn_status=PRODUCT_SESSION_STATE_RUNNING,
         )
+
+    async def wait_terminal(self, turn_id: str) -> str:
+        """Wait until one exact vendor turn has completed all product terminal effects."""
+
+        identity = turn_id.strip()
+        if not identity:
+            raise ValueError("terminal wait requires a turn identity")
+        existing = self._turn_outcomes.get(identity)
+        if existing is not None:
+            return existing[0]
+        waiter = asyncio.get_running_loop().create_future()
+        waiting = self._terminal_waiters.setdefault(identity, set())
+        waiting.add(waiter)
+        try:
+            return await waiter
+        finally:
+            current = self._terminal_waiters.get(identity)
+            if current is not None:
+                current.discard(waiter)
+                if not current:
+                    self._terminal_waiters.pop(identity, None)
+
+    def _release_terminal_waiters(self, turn_id: str, outcome: str) -> None:
+        for waiter in self._terminal_waiters.pop(turn_id, set()):
+            if not waiter.done():
+                waiter.set_result(outcome)
 
     async def started(self, event: RuntimeEvent) -> None:
         await self._publish_resolved_incidents(event, self._release_resolved_unknown(event))
@@ -323,6 +350,7 @@ class SessionLedger:
         else:
             self._unknown_admission.pop(turn_id, None)
             self._active_vendor_turn_id = ""
+        self._release_terminal_waiters(turn_id, outcome)
 
     def _release_resolved_unknown(self, event: RuntimeEvent) -> tuple[str, ...]:
         payload = event.payload if isinstance(event.payload, Mapping) else {}
@@ -452,6 +480,15 @@ class SessionLedger:
                 turn_id=turn_id,
                 turn_status=PRODUCT_TURN_OUTCOME_UNKNOWN,
             )
+            if self._active_vendor_turn_id == turn_id:
+                self._active_vendor_turn_id = ""
+            await self.broadcast_expired_hil(reason=PRODUCT_TURN_OUTCOME_UNKNOWN)
+            await self.publish(
+                PRODUCT_EVENT_TURN_UNKNOWN,
+                {"status": PRODUCT_TURN_OUTCOME_UNKNOWN, "message": safe_error},
+                turn_id=turn_id,
+                idempotency_key=f"{INTERNAL_EVENT_KEY_PREFIX}:submission-unknown:{turn_id}",
+            )
             self._turn_outcomes[turn_id] = (
                 PRODUCT_TURN_OUTCOME_UNKNOWN,
                 current.process_generation,
@@ -460,14 +497,7 @@ class SessionLedger:
                 current.process_generation,
                 current.incident_id or "",
             )
-            if self._active_vendor_turn_id == turn_id:
-                self._active_vendor_turn_id = ""
-            await self.publish(
-                PRODUCT_EVENT_TURN_UNKNOWN,
-                {"status": PRODUCT_TURN_OUTCOME_UNKNOWN, "message": safe_error},
-                turn_id=turn_id,
-                idempotency_key=f"{INTERNAL_EVENT_KEY_PREFIX}:submission-unknown:{turn_id}",
-            )
+            self._release_terminal_waiters(turn_id, PRODUCT_TURN_OUTCOME_UNKNOWN)
             return True
 
     async def record_turn_failure(self, turn_id: str, *, code: str, message: str) -> bool:
@@ -476,16 +506,8 @@ class SessionLedger:
         async with self.lock:
             if turn_id.strip() and turn_id in self._turn_outcomes:
                 return False
-            self._catalog.update_status(
-                self.id,
-                SessionStatus.ERROR,
-                turn_id=turn_id,
-                turn_status=PRODUCT_TURN_OUTCOME_FAILED,
-            )
-            if turn_id.strip():
-                self._turn_outcomes[turn_id] = (PRODUCT_TURN_OUTCOME_FAILED, 0)
-                if self._active_vendor_turn_id == turn_id:
-                    self._active_vendor_turn_id = ""
+            if self._active_vendor_turn_id == turn_id:
+                self._active_vendor_turn_id = ""
             await self.publish(
                 PRODUCT_EVENT_TURN_FAILED,
                 {"code": code, "message": message},
@@ -495,6 +517,15 @@ class SessionLedger:
                     f"{turn_id}:{PRODUCT_EVENT_TURN_FAILED}"
                 ),
             )
+            self._catalog.update_status(
+                self.id,
+                SessionStatus.ERROR,
+                turn_id=turn_id,
+                turn_status=PRODUCT_TURN_OUTCOME_FAILED,
+            )
+            if turn_id.strip():
+                self._turn_outcomes[turn_id] = (PRODUCT_TURN_OUTCOME_FAILED, 0)
+                self._release_terminal_waiters(turn_id, PRODUCT_TURN_OUTCOME_FAILED)
             return True
 
     @staticmethod
@@ -622,15 +653,8 @@ class SessionLedger:
                 finish_messages(turn_id)
             resolved = self._release_resolved_unknown(event)
             await self._publish_resolved_incidents(event, resolved)
-            self._remember_terminal(event, outcome)
             if outcome in {PRODUCT_TURN_OUTCOME_INTERRUPTED, PRODUCT_TURN_OUTCOME_UNKNOWN}:
                 await self.broadcast_expired_hil(reason=outcome)
-            self._catalog.update_status(
-                self.id,
-                status,
-                turn_id=turn_id or event.correlation_id,
-                turn_status=outcome,
-            )
             await self.publish(
                 product_kind,
                 {
@@ -653,6 +677,13 @@ class SessionLedger:
                 item_id=item_id,
                 idempotency_key=key,
             )
+            self._catalog.update_status(
+                self.id,
+                status,
+                turn_id=turn_id or event.correlation_id,
+                turn_status=outcome,
+            )
+            self._remember_terminal(event, outcome)
             self._active_vendor_turn_id = ""
             return True
         return False

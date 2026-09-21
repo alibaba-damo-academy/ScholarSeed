@@ -37,7 +37,7 @@ from service.resources.persistence.jobs import ImportJobStore
 IMPORT_POLL_SECONDS = 0.1
 IMPORT_IDLE_SECONDS = 0.25
 IMPORT_LEASE_SECONDS = 30.0
-IMPORT_PROGRESS_FLUSH_SECONDS = 0.1
+IMPORT_PROGRESS_FLUSH_SECONDS = 2.0
 LOCAL_SOURCE_FALLBACK = "本地来源"
 RESOURCE_IMPORT_PARTIAL = "resource_import_partial"
 RESOURCE_IMPORT_FAILED = "resource_import_failed"

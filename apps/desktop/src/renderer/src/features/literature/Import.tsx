@@ -2,9 +2,10 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { DestinationTree, type DestinationNode } from '../../components/business/Destination'
+import { fileIconForName } from '../../components/primitive'
 import {
   Alert, AlertTitle, Button, Checkbox, Dialog, DialogContent, DialogDescription, DialogFooter,
-  DialogHeader, DialogTitle, DialogPortal, Input, ScrollArea, Select,
+  DialogHeader, DialogTitle, DialogPortal, EllipsisText, Input, ScrollArea, Select,
   SelectContent, SelectItem, SelectTrigger, SelectValue, Spinner,
   Tabs, TabsList, TabsTrigger, useToast
 } from '../../components/ui'
@@ -17,6 +18,7 @@ import {
   importLiteratureAttachment, LiteratureApiError, previewAttachmentImport,
   type AttachmentImportOptions, type AttachmentImportPreview
 } from './api'
+import { claimSubmission } from './submission'
 
 const ACTION = { create: 'create', replace: 'replace' } as const
 type ImportFailure = { kind: 'operation' | 'partial' | 'tree' | 'folder'; code?: string; path?: string }
@@ -45,11 +47,6 @@ const ERROR_KEYS = {
 function fileSuffix(name: string): string {
   const offset = name.lastIndexOf('.')
   return offset > 0 ? name.slice(offset).toLowerCase() : ''
-}
-
-function attachmentType(name: string, mediaType: string): string {
-  const suffix = fileSuffix(name)
-  return suffix ? suffix.slice(1).toUpperCase() : mediaType
 }
 
 function mergeChildren(nodes: DestinationNode[], path: string, children: DestinationNode[]): DestinationNode[] {
@@ -85,6 +82,7 @@ export function AttachmentImportDialog({
   const [remaining, setRemaining] = useState<Record<string, number>>({})
   const [offsets, setOffsets] = useState<Record<string, number>>({})
   const supportsRecords = attachment.media_type === PDF_MEDIA_TYPE
+  const AttachmentIcon = fileIconForName(attachment.name)
   const sourceSuffix = fileSuffix(attachment.name)
   const [copyRecords, setCopyRecords] = useState(supportsRecords)
   const [confirmedRecords, setConfirmedRecords] = useState(false)
@@ -94,6 +92,7 @@ export function AttachmentImportDialog({
   const [preparing, setPreparing] = useState(false)
   const [preview, setPreview] = useState<AttachmentImportPreview | null>(null)
   const key = useRef(crypto.randomUUID())
+  const submitting = useRef(false)
   const generation = useRef(0)
   const replacing = action === ACTION.replace
   // 附件导入只有"拷贝进项目"这一种取向: 文献附件是文献自己独占的文件, 把它链接
@@ -192,13 +191,17 @@ export function AttachmentImportDialog({
   }
   const submit = async (): Promise<void> => {
     if (newFolder || !preview || preview.conflict && !replacing || busy || treeBusy) return
+    if (!claimSubmission(submitting)) return
     setBusy(true)
     try {
       const receipt = await importLiteratureAttachment(itemId, attachment.id, options, preview, key.current)
       toast({ title: <ImportToastMessage name={name.trim()} />, tone: 'success' })
       onOpenChange(false)
       if (selectedProject(state)?.id === receipt.project) void act.reloadResourceTree()
-    } catch (reason) { showFailure(reason) } finally { setBusy(false) }
+    } catch (reason) { showFailure(reason) } finally {
+      submitting.current = false
+      setBusy(false)
+    }
   }
   const beginFolder = async (): Promise<void> => {
     const current = generation.current
@@ -231,10 +234,10 @@ export function AttachmentImportDialog({
           <DialogDescription id={descriptionId}>{t('import.description')}</DialogDescription>
         </DialogHeader>
         <ScrollArea orientation="both" className="min-h-0 min-w-0 flex-1 flex flex-col overflow-hidden" viewportClassName="!min-h-0 !max-h-none min-w-0 flex-1 w-full pb-[var(--vds-space-1)] [scrollbar-gutter:stable] ![scrollbar-width:auto] ![scrollbar-color:auto]" viewportProps={{ 'data-testid': 'literature-import-scroll' }}>
-          <div className="grid min-w-0 gap-[var(--vds-space-3)]">
-            <div className="flex min-w-0 items-center gap-[var(--vds-space-3)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] p-[var(--vds-space-3)]">
-              <Icon name="doc" size={24} />
-              <div className="min-w-0"><div className="break-all font-medium">{attachment.name}</div><div className="text-[var(--vds-text-secondary)]">{t('import.attachmentType', { type: attachmentType(attachment.name, attachment.media_type) })}</div></div>
+          <div className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-3)]">
+            <div className="flex min-w-0 items-center gap-[calc(var(--vds-space-3)/2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] p-[var(--vds-space-3)]">
+              <AttachmentIcon size={16} className="shrink-0" aria-hidden="true" />
+              <div className="min-w-0 break-all font-medium">{attachment.name}</div>
             </div>
             <Select aria-label={t('attachment.targetProject')} value={project} onValueChange={setProject} disabled={busy} data-testid="literature-copy-project">
               <span className="block mb-[var(--vds-space-1)]">{t('attachment.targetProject')}</span>
@@ -258,7 +261,7 @@ export function AttachmentImportDialog({
           </div>
         </ScrollArea>
         <DialogFooter className="min-w-0 shrink-0 flex-wrap">
-          <div className="min-w-0 flex-1 break-all text-[var(--vds-text-secondary)]">{preview?.path ?? ''}</div>
+          <EllipsisText wrapperClassName="flex-1" className="text-[var(--vds-text-secondary)]" tooltipPortalled>{preview?.path ?? ''}</EllipsisText>
           <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>{t('import.cancel')}</Button>
           <Button data-testid="literature-import-submit" loading={busy || preparing} disabled={newFolder !== null || !preview || treeBusy || (preview.conflict && !replacing) || (replacing && !preview.can_replace)} onClick={() => void submit()}>{t(replacing ? 'import.submitReplace' : 'import.submitCopy')}</Button>
         </DialogFooter>

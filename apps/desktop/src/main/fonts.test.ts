@@ -37,21 +37,28 @@ test('the renderer can explicitly prepare default font access', async () => {
   assert.equal(await requestAccess(), true)
 })
 
-test('clipboard read and sanitized write are allowed only for the exact embedded Office frame', async () => {
+test('clipboard permissions stay scoped to the Office frame and the renderer main frame', async () => {
   const { contents, check, request } = fixture()
   const details = { embeddingOrigin: 'http://127.0.0.1:8765', requestingUrl: 'about:srcdoc', isMainFrame: false }
+  const mainFrame = { requestingUrl: 'http://127.0.0.1:8765/', isMainFrame: true }
 
   for (const permission of ['clipboard-read', 'clipboard-sanitized-write']) {
     assert.equal(check(contents, permission, 'http://127.0.0.1:8765', details), true)
     assert.equal(await new Promise((done) => request(contents, permission, done, details)), true)
     assert.equal(check({}, permission, 'http://127.0.0.1:8765', details), false)
     assert.equal(check(contents, permission, 'https://example.com', details), false)
-    assert.equal(check(contents, permission, 'http://127.0.0.1:8765', { ...details, isMainFrame: true }), false)
     assert.equal(await new Promise((done) => request(contents, permission, done, {
       ...details,
       embeddingOrigin: 'https://example.com'
     })), false)
   }
+  // Clipboard write is a Chromium main-frame default the installed handler must preserve.
+  assert.equal(check(contents, 'clipboard-sanitized-write', 'http://127.0.0.1:8765', mainFrame), true)
+  assert.equal(await new Promise((done) => request(contents, 'clipboard-sanitized-write', done, mainFrame)), true)
+  assert.equal(check(contents, 'clipboard-read', 'http://127.0.0.1:8765', mainFrame), false)
+  assert.equal(check({}, 'clipboard-sanitized-write', 'http://127.0.0.1:8765', mainFrame), false)
+  assert.equal(check(contents, 'clipboard-sanitized-write', 'https://example.com', mainFrame), false)
+  assert.equal(check(contents, 'clipboard-sanitized-write', 'http://127.0.0.1:8765', { ...mainFrame, isMainFrame: false }), false)
 })
 
 test('Office permissions never escape the exact window, origin, iframe, or allowlist', async () => {

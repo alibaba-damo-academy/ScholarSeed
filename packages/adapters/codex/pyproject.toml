@@ -15,7 +15,7 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = ["scholarseed-runtime==0.2.0"]
+dependencies = ["scholarseed-runtime==0.2.0", "httpx>=0.28,<1"]
 
 [project.entry-points."scholarseed_runtime.providers"]
 codex = "scholarseed_codex.provider:provider"

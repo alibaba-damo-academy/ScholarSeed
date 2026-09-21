@@ -5,10 +5,10 @@ from __future__ import annotations
 import math
 from io import BytesIO
 
-import pymupdf
 from PIL import Image, ImageDraw
 
 from service.platform.citations import CitationDocument, CitationPage
+from service.platform.pdf import pdf_page_layout, render_pdf_page
 
 REGION_DPI = 168
 PAGE_DPI = 96
@@ -54,14 +54,10 @@ class PdfPreviewService:
     def render(
         self, document: CitationDocument, citation_page: CitationPage, *, precise: bool
     ) -> bytes:
-        with pymupdf.open(stream=document.payload, filetype="pdf") as pdf:
-            if citation_page.page < 1 or citation_page.page > len(pdf):
-                raise ValueError("citation_page_invalid")
-            page = pdf[citation_page.page - 1]
-            displayed = page.rect
-            scale = _scale(displayed.width, displayed.height, REGION_DPI if precise else PAGE_DPI)
-            pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-        image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+        layout = pdf_page_layout(document.payload, citation_page.page)
+        scale = _scale(layout.width, layout.height, REGION_DPI if precise else PAGE_DPI)
+        image = render_pdf_page(document.payload, citation_page.page, scale=scale)
+        rendered_width, rendered_height = image.size
         if precise:
             if not citation_page.quads:
                 raise ValueError("citation_region_unavailable")
@@ -84,7 +80,7 @@ class PdfPreviewService:
             draw = ImageDraw.Draw(image)
             for quad in citation_page.quads:
                 draw.rectangle(
-                    _highlight_rect(quad, pixmap.width, pixmap.height, crop),
+                    _highlight_rect(quad, rendered_width, rendered_height, crop),
                     outline=HIGHLIGHT_COLOR,
                     width=HIGHLIGHT_WIDTH,
                 )

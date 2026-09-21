@@ -22,7 +22,7 @@ import {
 } from '../../store'
 import { assistantSourceAvailable } from '../../features/assistant/candidates'
 import type { SessionSurface } from '../../store'
-import { selectedSessionModelKey } from '../../catalog'
+import { hasSelectableModel, selectedSessionModelKey } from '../../catalog'
 import {
   CLOUD_PAGE_ANCHORS,
   cloudPageUrl,
@@ -44,7 +44,7 @@ import {
   postTurn,
   reconcileQueuedMessage,
   requestFailureFeedback,
-  registerLocalFiles,
+  registerLocalPaths,
   setMode,
   setGlobalPermissionMode,
   sendQueuedMessage,
@@ -56,7 +56,6 @@ import {
 } from '../../api'
 import { COMPOSER_FOCUS_EVENT } from '../../reference'
 import { ModelMenu } from './ModelMenu'
-import { Effort } from './Effort'
 import { reasoningPreference } from '../../reasoning'
 import { ContextOption } from './Context'
 import { ReferencePicker } from './References'
@@ -82,6 +81,7 @@ import type { AssistantContextCandidate, AssistantSourceFilter } from '../../con
 import { promptSessionTitle } from '../../model'
 import type { ConvItem, MessageReference, QueuedMessage } from '../../model'
 import { hasDraggedFiles } from '../../drag'
+import { IMPORT_PICKER_TARGET, supportsImportPickerTarget, type ImportPickerTarget } from '../../../../picker'
 import { ComposerSkillRefs } from './SkillRefs'
 import { ComposerAttachments } from '../primitive/Attachments'
 import {
@@ -90,8 +90,7 @@ import {
   projectAssistantContextRefs,
   removeOptimisticUserMessage
 } from '../../transcript'
-import { InlineProgress } from '../primitive/Progress'
-import { permissionModeFeedback } from '../../runtime'
+import { effectiveReadiness, permissionModeFeedback, readinessAdmission } from '../../runtime'
 import {
   canCancelQueuedMessage,
   QUEUED_MESSAGE_SAFE_ERRORS,
@@ -126,12 +125,9 @@ import {
   fetchResourceReviewBatches,
   fetchReviewMemberCurrent,
   hasDirtyReviewEditor,
-  type ResourceReviewAction,
   type ResourceReviewBatch
 } from '../../contracts/resources'
 import { resourceEditorHasChanges } from '../../contracts/workbench'
-import { ReviewAdmission } from '../../features/resources/Admission'
-import { openReviewTab, reviewTab } from '../../features/workbench/tabs'
 import {
   ANSWER_ANNOTATION_LOCATION,
   locateAnswerAnnotation
@@ -148,12 +144,14 @@ import {
   Popover,
   PopoverContent,
   PopoverTrigger,
+  Spinner,
   Textarea,
   Tooltip,
   TooltipContent,
   TooltipTrigger
 } from '../ui'
 import { IconFont } from '../primitive'
+import aiThinking from '../../assets/ai-thinking.gif'
 
 const AT_CANDIDATE_LIMIT = 200
 const AT_CONTEXT_SEARCH_DELAY_MS = 150
@@ -161,6 +159,7 @@ const CREDITS_EXHAUSTED_NOTICE_ID = 'composer-credits-exhausted-notice'
 // Sentinel root-row kind: unlike the other rows it never becomes `atKind` text —
 // selecting it triggers the native file picker immediately instead of a sub-search.
 const AT_LOCAL_FILE_KIND = 'local-file'
+const AT_LOCAL_DIRECTORY_KIND = 'local-directory'
 const PLUS_MENU_SOURCE_ICONS: Partial<Record<IconName, LucideIcon>> = {
   folder: Folder,
   books: BookOpenText,
@@ -231,6 +230,8 @@ const DEFAULT_MODE = 'ask'
 const HOME_COMPOSER_MIN_HEIGHT_PX = 105
 const HOME_COMPOSER_MAX_HEIGHT_PX = 105
 const COMPOSER_MAX_HEIGHT_PX = 132
+/* assistant 面 pt-12 与 TodoPanel compact 的 -mb-8 相抵，使执行计划与输入框容器间距为 4px，
+   与 HIL dock 的 pb-4 一致（AI 面板三个容器间距统一 4px）。 */
 const composerRootPaddingClass = (
   home: boolean,
   surface: SessionSurface
@@ -238,8 +239,8 @@ const composerRootPaddingClass = (
   home
     ? 'px-[var(--conversation-inline-gutter)] pb-[var(--vds-space-0)] pt-[var(--vds-space-2)]'
     : surface === 'assistant'
-      ? 'px-[13px] pb-[var(--vds-space-0)] pt-[var(--vds-space-3)]'
-      : 'px-[var(--conversation-inline-gutter)] pb-[var(--vds-space-4)] pt-[var(--vds-space-3)]'
+      ? 'px-[var(--vds-conversation-inline-gutter)] pb-[var(--vds-space-0)] pt-[var(--vds-space-3)]'
+      : 'px-[var(--vds-conversation-inline-gutter)] pb-[var(--vds-space-4)] pt-[var(--vds-space-3)]'
 const composerDropZoneClass = (
   home: boolean,
   draggingFiles: boolean,
@@ -267,13 +268,12 @@ const composerToolbarClass = (home: boolean, surface: SessionSurface): string =>
       : 'mt-[10px] gap-[7px] pt-[10px]',
     home ? '-ml-[18px] -mr-[17px] flex-nowrap px-[18px] pr-[17px]' : 'flex-nowrap'
   ].join(' ')
-const readingColumnClass = (home: boolean, surface?: SessionSurface): string =>
+const readingColumnClass = (home: boolean): string =>
   [
     'relative box-border mx-auto',
-    // assistant 面板的会话框跟随面板宽度，与上方内容对齐；其余表面保留阅读列宽。
-    home || surface === 'assistant'
+    home
       ? 'w-full'
-      : 'w-[min(100%,clamp(var(--conversation-reading-min),var(--conversation-reading-width),var(--conversation-reading-max)))]'
+      : 'w-full min-w-0 max-w-[var(--vds-conversation-content-width)]'
   ].join(' ')
 const popoverClass = [
   'absolute z-[60] rounded-[var(--radius)] border border-[var(--border)] bg-[var(--bg-2)]',
@@ -325,8 +325,6 @@ const atRowClass = (
 const atLoadingClass = 'p-[var(--vds-space-3)]'
 const atLoadingCopyClass =
   'flex items-center gap-[9px] px-[var(--vds-space-1)] pb-[10px] pt-[var(--vds-space-1)] text-[11.5px] font-[var(--vds-fw-medium)] text-[var(--brand-ink)]'
-const atSpinnerClass =
-  'box-border size-[13px] animate-spin rounded-full border-2 border-[color-mix(in_srgb,var(--brand-ink)_20%,transparent)] border-t-[var(--brand-ink)]'
 const atSkeletonRowClass = [
   'relative grid min-h-[41px] grid-cols-[27px_minmax(0,1fr)_46px] items-center gap-[10px] overflow-hidden rounded-[9px]',
   'bg-[color-mix(in_srgb,var(--bg-3)_78%,transparent)] px-[9px]',
@@ -408,6 +406,11 @@ const sendButtonClass = (
           ? 'cursor-pointer'
           : 'cursor-not-allowed'
     ].join(' ')
+// 无可用模型提示行: 小圆点与两条下划线出口与正文同基线, 钉在输入卡片上方。
+const NO_MODEL_HINT_CLASS =
+  'mb-[var(--vds-space-3)] flex flex-wrap items-center gap-x-[var(--vds-space-2)] gap-y-[var(--vds-space-1)] px-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]'
+const NO_MODEL_HINT_LINK_CLASS =
+  'border-0 bg-transparent p-0 text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-brand-text-primary)] underline underline-offset-[3px]'
 // 会话尚未创建时（首页首条消息才 openSession）的本地待选清单。
 const PRE_SESSION_MODES: GlobalPermissionMode[] = [
   'ask',
@@ -458,11 +461,23 @@ export function Composer({
   const AT_SKILL_LOADING_LABEL = t('composer.loadingSkills')
   const AT_SKILL_EMPTY_LABEL = t('composer.emptySkills')
   const AT_ROOT_LABEL = t('composer.references')
+  const unifiedLocalPicker = supportsImportPickerTarget(
+    window.scholarseed?.platform,
+    IMPORT_PICKER_TARGET.RESOURCE
+  )
   const AT_LOCAL_FILE_ROOT_ROW = Object.freeze({
     kind: AT_LOCAL_FILE_KIND,
     label: t('composer.addLocal'),
-    description: t('composer.addLocalDescription'),
+    description: t(unifiedLocalPicker
+      ? 'composer.addLocalCombinedDescription'
+      : 'composer.addLocalDescription'),
     icon: 'clip' as const
+  })
+  const AT_LOCAL_DIRECTORY_ROOT_ROW = Object.freeze({
+    kind: AT_LOCAL_DIRECTORY_KIND,
+    label: t('composer.addLocalFolder'),
+    description: t('composer.addLocalFolderDescription'),
+    icon: 'folder' as const
   })
   const AT_SKILL_ROOT_ROW = Object.freeze({
     kind: COMPOSER_SKILL_KIND,
@@ -530,17 +545,6 @@ export function Composer({
   const [queuedActionId, setQueuedActionId] = React.useState<string | null>(
     null
   )
-  const [reviewAdmission, setReviewAdmission] = React.useState<{
-    projectId: string
-    batches: ResourceReviewBatch[]
-    intent:
-    | { kind: 'submit'; message: string; references: ComposerReference[] }
-    | { kind: 'queued'; queuedMessageId: string }
-  } | null>(null)
-  const [reviewAdmissionBusy, setReviewAdmissionBusy] = React.useState(false)
-  const [reviewAdmissionError, setReviewAdmissionError] = React.useState<
-    { code: 'undoFailed' | 'readFailed' | 'submitFailed'; path?: string; detail?: string } | null
-  >(null)
   const [expandedQueuedMessages, setExpandedQueuedMessages] = React.useState<
     Set<string>
   >(() => new Set())
@@ -842,7 +846,11 @@ export function Composer({
   const pendingRefs = state.composerRefs
   const hasComposerReferenceCards = pendingRefs.length > 0
   // 运行中发送会进入产品持久队列；插话必须由用户对指定队列项显式触发。
-  const runtimeReady = state.runtimeReadiness?.ready === true
+  const runtimeAdmission = readinessAdmission(thread, state.runtimeReadiness)
+  // starting/recovering 只在已有会话时放行: 草稿先落持久队列, 运行时恢复后自动执行。新建会话
+  // 没有队列兜底, 未知态（readiness 尚未加载）同样必须闭门。
+  const runtimeReady = runtimeAdmission === 'ready'
+    || (runtimeAdmission === 'transient' && Boolean(sidNow))
   const selectedModelKey = selectedSessionModelKey(
     state.model,
     state.activeSession,
@@ -852,9 +860,13 @@ export function Composer({
     (model) => model.key === selectedModelKey
   )
   const creditBlocked = creditsBlockBuiltInModel(state.credits, selectedModel)
+  // 目录里一个可选模型都没有（未登录且未配置自有连接时内置/订阅行全被置灰）: 草稿发出去
+  // 只会在执行面被拒, 所以发送在这里就闭门, 并在卡片上方给出两条出路。
+  const modelAvailable = hasSelectableModel(state.catalog.models)
   const canSend = canSubmitComposer({
     runtimeReady: runtimeReady && activeThread(state).terminated !== true,
     creditsAvailable: !creditBlocked,
+    modelAvailable,
     launching,
     running,
     interrupting,
@@ -961,28 +973,20 @@ export function Composer({
     if (pendingMode !== null) setPendingMode(null)
     return opened.session_id
   }
-  const attachLocalFiles = async (files: FileList | null): Promise<void> => {
-    const picked = Array.from(files ?? [])
-    if (!picked.length || attaching) return
+  const attachLocalSources = async (selected: Array<{ file?: File; path: string }>): Promise<void> => {
+    if (!selected.length || attaching) return
     setAttaching(true)
     try {
       const attachmentSessionId = await ensureAttachmentSession()
       if (!attachmentSessionId) return
-      const selected = picked.map((file) => {
-        try {
-          return { file, path: window.scholarseed?.pathForFile?.(file) || '' }
-        } catch {
-          return { file, path: '' }
-        }
-      })
       const localPaths = selected.map((item) => item.path).filter(Boolean)
       const registered = localPaths.length
-        ? await registerLocalFiles(attachmentSessionId, localPaths)
+        ? await registerLocalPaths(attachmentSessionId, localPaths)
         : []
       // Browser mode and Playwright's synthetic in-memory File have no OS path.
       // Keep the existing upload as an honest fallback; real Electron files never copy.
       const fallbackFiles = selected
-        .filter((item) => !item.path)
+        .filter((item): item is { file: File; path: string } => !item.path && Boolean(item.file))
         .map((item) => item.file)
       const uploaded = await Promise.all(
         fallbackFiles.map((file) =>
@@ -993,7 +997,13 @@ export function Composer({
         Boolean(item?.path)
       )
       const directRefs: ComposerReference[] = (registered ?? []).map(
-        (item) => ({
+        (item): ComposerReference => item.kind === 'directory' ? ({
+          type: 'directory',
+          id: item.reference_id,
+          referenceId: item.reference_id,
+          path: item.path,
+          title: item.name || item.path
+        }) : ({
           type: 'file',
           id: item.reference_id,
           referenceId: item.reference_id,
@@ -1030,7 +1040,7 @@ export function Composer({
           if (
             !next.some(
               (reference) =>
-                reference.type === 'file' && reference.id === item.id
+                reference.type === item.type && reference.id === item.id
             )
           )
             next.push(item)
@@ -1041,6 +1051,22 @@ export function Composer({
       setAttaching(false)
       if (attachmentInputRef.current) attachmentInputRef.current.value = ''
     }
+  }
+  const attachLocalFiles = (files: FileList | null): Promise<void> =>
+    attachLocalSources(Array.from(files ?? []).map((file) => {
+      try {
+        return { file, path: window.scholarseed?.pathForFile?.(file) || '' }
+      } catch {
+        return { file, path: '' }
+      }
+    }))
+  const pickLocalSources = async (target: ImportPickerTarget): Promise<void> => {
+    const pick = window.scholarseed?.pickImport
+    if (!pick) {
+      if (target === IMPORT_PICKER_TARGET.FILE) attachmentInputRef.current?.click()
+      return
+    }
+    await attachLocalSources((await pick(target)).map((path) => ({ path })))
   }
   const onComposerDragEnter = (
     event: React.DragEvent<HTMLDivElement>
@@ -1074,6 +1100,9 @@ export function Composer({
   }
   const atRootRows = [
     AT_LOCAL_FILE_ROOT_ROW,
+    ...(!unifiedLocalPicker && window.scholarseed?.pickImport
+      ? [AT_LOCAL_DIRECTORY_ROOT_ROW]
+      : []),
     ...availableContextSources.map((source) => ({
       kind: source.id,
       label: source.label,
@@ -1279,7 +1308,16 @@ export function Composer({
         clearAtTrigger()
         setDismissed(true)
         setSelIdx(0)
-        attachmentInputRef.current?.click()
+        void pickLocalSources(unifiedLocalPicker
+          ? IMPORT_PICKER_TARGET.RESOURCE
+          : IMPORT_PICKER_TARGET.FILE)
+        return
+      }
+      if (row.kind === AT_LOCAL_DIRECTORY_KIND) {
+        clearAtTrigger()
+        setDismissed(true)
+        setSelIdx(0)
+        void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
         return
       }
       replaceAtTrigger(`@${row.kind}:`)
@@ -1328,25 +1366,112 @@ export function Composer({
       : null
   }
 
+  const acceptReviewBatches = async (
+    projectId: string,
+    batches: ResourceReviewBatch[]
+  ): Promise<boolean> => {
+    for (const batch of batches) {
+      for (const member of batch.members) {
+        const session = Object.values(workspace.getSnapshot().sessions).find(
+          (candidate) =>
+            candidate.source.kind === 'project' &&
+            candidate.source.project === projectId &&
+            candidate.source.path === member.path
+        )
+        if (session?.dirty && !(await workspace.discardMemory(session.id))) {
+          set({
+            foregroundError: reviewText('admissionFailure.undoFailed', {
+              path: member.path
+            })
+          })
+          return false
+        }
+      }
+      const decisions = await Promise.all(
+        batch.members.map(async (member) => {
+          const action = member.state === 'completed'
+            ? member.action ?? 'accept'
+            : 'accept'
+          if (member.state === 'completed') {
+            return {
+              file_id: member.file_id,
+              review_id: member.review_id,
+              pending_revision: member.pending_revision,
+              action,
+              expected_disk_revision: member.candidate_revision
+            }
+          }
+          const current = await fetchReviewMemberCurrent(
+            projectId,
+            batch.id,
+            member.file_id
+          )
+          if (!current) throw new ReviewDiskReadError(member.path)
+          return {
+            file_id: member.file_id,
+            review_id: member.review_id,
+            pending_revision: member.pending_revision,
+            action,
+            expected_disk_revision: current.revision
+          }
+        })
+      ).catch((cause: unknown) => {
+        set({
+          foregroundError: reviewText('admissionFailure.readFailed', {
+            path: cause instanceof ReviewDiskReadError ? cause.path : '',
+            detail:
+              cause instanceof ReviewDiskReadError
+                ? ''
+                : cause instanceof Error
+                  ? cause.message
+                  : String(cause)
+          })
+        })
+        return null
+      })
+      if (!decisions) return false
+      const result = await decideResourceReviewBatch(
+        projectId,
+        batch.id,
+        decisions,
+        crypto.randomUUID()
+      )
+      if (!result.ok || result.batch?.state !== 'completed') {
+        set({
+          foregroundError: reviewText('admissionFailure.submitFailed', {
+            detail: result.error ?? ''
+          })
+        })
+        return false
+      }
+    }
+    act.invalidateResources()
+    return true
+  }
+
   const submit = async (
     message = text,
-    references = pendingRefs,
-    reviewResolved = false
+    references = pendingRefs
   ): Promise<boolean> => {
     // Fail closed at the action boundary as well as through disabled UI.  This
     // also covers Enter and the desktop driver during a live/authorization turn.
-    if (state.turnLaunch || interrupting || creditBlocked) return false
+    if (state.turnLaunch || interrupting || creditBlocked || !modelAvailable)
+      return false
     const v = message.trim()
     if (!v && !references.length) return false
     if (activeThread(state).terminated) {
       set({ foregroundError: feedback('components', 'composer.terminated') })
       return false
     }
-    if (!state.runtimeReadiness?.ready) {
-      set({
-        foregroundError:
-          state.runtimeReadiness?.message || feedback('components', 'composer.runtimePreflight')
-      })
+    if (!runtimeReady) {
+      // 未知态没有可展示的结论: 保留草稿并靠禁用态表达, 不要把空错误弹给用户。
+      if (runtimeAdmission !== 'unknown') {
+        set({
+          foregroundError:
+            effectiveReadiness(thread, state.runtimeReadiness)?.message
+            || feedback('components', 'composer.runtimePreflight')
+        })
+      }
       return false
     }
     const activeThreadId = state.activeSession
@@ -1475,21 +1600,18 @@ export function Composer({
     const reviewProjectId = state.projects.find(
       (project) => project.path === reviewProject
     )?.id
-    if (!reviewResolved && reviewProjectId) {
+    if (reviewProjectId) {
       const batches = await unfinishedReviewBatches(reviewProjectId)
       if (!batches) {
         if (presentAsUserMessage) rollbackImmediatePresentation()
         set({ foregroundError: feedback('shell', 'foreground.reviewUnknown') })
         return false
       }
-      if (batches.length > 0) {
+      if (
+        batches.length > 0 &&
+        !(await acceptReviewBatches(reviewProjectId, batches))
+      ) {
         if (presentAsUserMessage) rollbackImmediatePresentation()
-        setReviewAdmission({
-          projectId: reviewProjectId,
-          batches,
-          intent: { kind: 'submit', message, references: [...references] }
-        })
-        setReviewAdmissionError(null)
         return false
       }
     }
@@ -1609,24 +1731,27 @@ export function Composer({
     }
     let submittedReferences = references
     const registrations = references.filter(
-      (reference) => reference.type === 'file' && reference.registrationRequired
+      (reference) => (reference.type === 'file' || reference.type === 'directory') && reference.registrationRequired
     )
     if (registrations.length > 0) {
-      const registered = await registerLocalFiles(
+      const registered = await registerLocalPaths(
         targetSessionId,
         registrations.map((reference) => reference.path)
       )
       const byPath = new Map(
         (registered ?? []).map((reference) => [reference.path, reference])
       )
-      if (registrations.some((reference) => !byPath.has(reference.path))) {
+      if (registrations.some((reference) => {
+        const matched = byPath.get(reference.path)
+        return !matched || (matched.kind ?? 'file') !== reference.type
+      })) {
         if (presentAsUserMessage) rollbackImmediatePresentation()
         else restoreDraft()
         set({ foregroundError: feedback('components', 'composer.filesFailed') })
         return false
       }
       submittedReferences = references.map((reference) => {
-        if (reference.type !== 'file' || !reference.registrationRequired) return reference
+        if ((reference.type !== 'file' && reference.type !== 'directory') || !reference.registrationRequired) return reference
         const registeredReference = byPath.get(reference.path)
         if (!registeredReference) return reference
         return {
@@ -1636,8 +1761,10 @@ export function Composer({
           registrationRequired: false,
           path: registeredReference.path,
           title: reference.title || registeredReference.name,
-          mediaType: registeredReference.media_type || reference.mediaType,
-          size: registeredReference.size
+          ...(reference.type === 'file' ? {
+            mediaType: registeredReference.media_type || reference.mediaType,
+            size: registeredReference.size
+          } : {})
         }
       })
     }
@@ -1891,10 +2018,7 @@ export function Composer({
     set({ foregroundError: feedback('components', 'composer.withdrawFailed') })
   }
 
-  const sendQueued = async (
-    queuedMessageId: string,
-    reviewResolved = false
-  ): Promise<void> => {
+  const sendQueued = async (queuedMessageId: string): Promise<void> => {
     const sessionId = sidNow ?? ''
     if (!sessionId || queuedActionId || creditBlocked) return
     const queued = (activeThread(state).queuedMessages ?? []).find(
@@ -1909,20 +2033,18 @@ export function Composer({
     const reviewProjectId = state.projects.find(
       (project) => project.path === reviewProject
     )?.id
-    if (!reviewResolved && !running && reviewProjectId) {
+    if (!running && reviewProjectId) {
       const batches = await unfinishedReviewBatches(reviewProjectId)
       if (!batches) {
         set({ foregroundError: feedback('shell', 'foreground.reviewUnknown') })
         return
       }
       if (batches.length > 0) {
-        setReviewAdmission({
-          projectId: reviewProjectId,
-          batches,
-          intent: { kind: 'queued', queuedMessageId }
-        })
-        setReviewAdmissionError(null)
-        return
+        setQueuedActionId(queuedMessageId)
+        if (!(await acceptReviewBatches(reviewProjectId, batches))) {
+          setQueuedActionId(null)
+          return
+        }
       }
     }
     if (
@@ -1935,6 +2057,7 @@ export function Composer({
         resourceEditorHasChanges
       ))
     ) {
+      setQueuedActionId(null)
       set({
         foregroundError:
           feedback('shell', 'foreground.reviewUnsaved')
@@ -2070,110 +2193,6 @@ export function Composer({
     setQueuedActionId(null)
   }
 
-  const openAdmissionReview = (): void => {
-    const admission = reviewAdmission
-    const batch = admission?.batches[0]
-    if (!admission || !batch) return
-    const tab = reviewTab(admission.projectId, batch.id, batch.members.length)
-    set({
-      mainView: 'resource',
-      modulePanelOpen: true,
-      tabs: openReviewTab(
-        state.tabs,
-        admission.projectId,
-        batch.id,
-        batch.members.length
-      ),
-      activeTab: tab.id
-    })
-    setReviewAdmission(null)
-  }
-
-  const resolveReviewAdmission = async (
-    action: ResourceReviewAction
-  ): Promise<void> => {
-    const admission = reviewAdmission
-    if (!admission || (action !== 'accept' && action !== 'reject')) return
-    setReviewAdmissionBusy(true)
-    setReviewAdmissionError(null)
-    for (const batch of admission.batches) {
-      for (const member of batch.members) {
-        const session = Object.values(workspace.getSnapshot().sessions).find(
-          (candidate) =>
-            candidate.source.kind === 'project' &&
-            candidate.source.project === admission.projectId &&
-            candidate.source.path === member.path
-        )
-        if (session?.dirty && !(await workspace.discardMemory(session.id))) {
-          setReviewAdmissionBusy(false)
-          setReviewAdmissionError({ code: 'undoFailed', path: member.path })
-          return
-        }
-      }
-      const decisions = await Promise.all(
-        batch.members.map(async (member) => {
-          const resolvedAction =
-            member.state === 'completed' ? member.action : action
-          if (member.state === 'completed') {
-            return {
-              file_id: member.file_id,
-              review_id: member.review_id,
-              pending_revision: member.pending_revision,
-              action: resolvedAction ?? action,
-              expected_disk_revision: member.candidate_revision
-            }
-          }
-          const current = await fetchReviewMemberCurrent(
-            admission.projectId,
-            batch.id,
-            member.file_id
-          )
-          if (!current)
-            throw new ReviewDiskReadError(member.path)
-          return {
-            file_id: member.file_id,
-            review_id: member.review_id,
-            pending_revision: member.pending_revision,
-            action: resolvedAction ?? action,
-            expected_disk_revision: current.revision
-          }
-        })
-      ).catch((cause: unknown) => {
-        setReviewAdmissionError({
-          code: 'readFailed',
-          path: cause instanceof ReviewDiskReadError ? cause.path : undefined,
-          detail: cause instanceof ReviewDiskReadError
-            ? undefined
-            : cause instanceof Error ? cause.message : String(cause)
-        })
-        return null
-      })
-      if (!decisions) {
-        setReviewAdmissionBusy(false)
-        return
-      }
-      const result = await decideResourceReviewBatch(
-        admission.projectId,
-        batch.id,
-        decisions,
-        crypto.randomUUID()
-      )
-      if (!result.ok || result.batch?.state !== 'completed') {
-        setReviewAdmissionBusy(false)
-        setReviewAdmissionError({ code: 'submitFailed', detail: result.error })
-        return
-      }
-    }
-    act.invalidateResources()
-    setReviewAdmissionBusy(false)
-    setReviewAdmission(null)
-    if (admission.intent.kind === 'submit') {
-      await submit(admission.intent.message, admission.intent.references, true)
-    } else {
-      await sendQueued(admission.intent.queuedMessageId, true)
-    }
-  }
-
   const openCreditsPage = async (): Promise<void> => {
     const url = cloudPageUrl('credits', CLOUD_PAGE_ANCHORS.creditsMore)
     if (!url || !window.scholarseed?.openExternal) {
@@ -2191,7 +2210,7 @@ export function Composer({
     <div
       className={`relative z-20 isolate flex-none border-t-0 bg-transparent ${composerRootPaddingClass(home, surface)}`}
     >
-      <div className={readingColumnClass(home, surface)}>
+      <div className={readingColumnClass(home)}>
         {/* Live Status Strip (proposal 65 v10): 真实 live 态 (运行 / 记忆命中 / 约束 / 成本) */}
         <StatusStrip />
 
@@ -2224,6 +2243,37 @@ export function Composer({
               {t('composer.creditsMore')}
             </Button>
           </Card>
+        )}
+
+        {!modelAvailable && (
+          <div className={NO_MODEL_HINT_CLASS} data-testid="composer-no-model-hint">
+            <span
+              className="size-[var(--vds-space-1)] flex-none rounded-full bg-[var(--vds-warning-bg-default)]"
+              aria-hidden="true"
+            />
+            <span>{t('composer.noModelLead')}</span>
+            <Button
+              type="button"
+              size="content"
+              unstyled
+              className={NO_MODEL_HINT_LINK_CLASS}
+              data-testid="composer-no-model-configure"
+              onClick={() => act.openSettings('models')}
+            >
+              {t('composer.noModelConfigure')}
+            </Button>
+            <span>{t('composer.noModelOr')}</span>
+            <Button
+              type="button"
+              size="content"
+              unstyled
+              className={NO_MODEL_HINT_LINK_CLASS}
+              data-testid="composer-no-model-login"
+              onClick={() => set({ loginOpen: true })}
+            >
+              {t('composer.noModelLogin')}
+            </Button>
+          </div>
         )}
 
         <div className={composerInputShellClass(surface)}>
@@ -2468,6 +2518,8 @@ export function Composer({
                                       kind:
                                         item.type === 'local_image'
                                           ? t('composer.image')
+                                          : item.type === 'directory'
+                                            ? t('composer.folder')
                                           : t('composer.file'),
                                       name: item.name || t('composer.unnamed')
                                     })
@@ -2604,7 +2656,7 @@ export function Composer({
                   aria-live="polite"
                 >
                   <div className={atLoadingCopyClass}>
-                    <span className={atSpinnerClass} aria-hidden="true" />
+                    <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
                     <span>{AT_SKILL_LOADING_LABEL}</span>
                   </div>
                   <div className="grid gap-[7px]" aria-hidden="true">
@@ -2624,7 +2676,7 @@ export function Composer({
                   aria-live="polite"
                 >
                   <div className={atLoadingCopyClass}>
-                    <span className={atSpinnerClass} aria-hidden="true" />
+                    <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
                     <span>
                       {t('composer.loadingSource', {
                         source: atContextSource?.label ?? ''
@@ -2944,13 +2996,33 @@ export function Composer({
                           clearAtTrigger()
                           setPlusMenuOpen(false)
                           act.closeAiContextPicker()
-                          attachmentInputRef.current?.click()
+                          void pickLocalSources(unifiedLocalPicker
+                            ? IMPORT_PICKER_TARGET.RESOURCE
+                            : IMPORT_PICKER_TARGET.FILE)
                         }}
                       >
                         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
                           {t('composer.addLocal')}
                         </span>
                       </Button>
+                      {!unifiedLocalPicker && window.scholarseed?.pickImport && (
+                        <Button
+                          data-testid="composer-add-folder"
+                          variant="ghost"
+                          size="sm"
+                          className={plusNavButtonClass()}
+                          unstyled
+                          icon={<Folder size={15} />}
+                          onClick={() => {
+                            setPlusMenuOpen(false)
+                            void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
+                          }}
+                        >
+                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                            {t('composer.addLocalFolder')}
+                          </span>
+                        </Button>
+                      )}
                       {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
                             本轮 typed attachment，两种语义不能合并成一套假状态。 */}
                       {availableContextSources.map((source) => (
@@ -3237,10 +3309,10 @@ export function Composer({
                 </PopoverTrigger>
                 {/* 权限模式菜单: 内容照设计稿, 图标 + 档位名 + 描述; 位置由 Popover 自动上翻。 */}
                 <PopoverContent
-                  className="no-drag z-[var(--vds-z-popover)] !w-[320px] max-w-[calc(100vw-32px)] rounded-[var(--vds-radius-4)]"
+                  className="no-drag z-[var(--vds-z-popover)] !w-[320px] max-w-[calc(100vw-32px)] gap-0 rounded-[var(--vds-radius-4)]"
                   data-testid="mode-menu"
                 >
-                  <div className="pt-[10px] px-2 text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-6)]">
+                  <div className="mb-[var(--vds-space-2)] pt-[10px] px-2 text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-6)]">
                     {t('composer.modeMenuTitle')}
                   </div>
                   {permissionModeList.map((m) => {
@@ -3404,8 +3476,6 @@ export function Composer({
                     </PopoverContent>
                   </Popover>
                 )}
-              {surface === 'assistant' && <Effort />}
-              {surface !== 'assistant' && <Effort />}
               <span className="flex-1" />
               {surface === 'assistant' && <ModelMenu compact />}
               {surface !== 'assistant' && <ModelMenu />}
@@ -3436,6 +3506,8 @@ export function Composer({
                       ? RUNNING_SEND_HINT_TITLE
                       : creditBlocked
                         ? t('composer.creditsExhaustedTitle')
+                      : !modelAvailable
+                        ? t('composer.noModelSendTitle')
                       : !runtimeReady
                         ? t('composer.runtimeNotReady')
                         : launching
@@ -3444,7 +3516,7 @@ export function Composer({
                   }
                 >
                   {launching ? (
-                    <InlineProgress />
+                    <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
                   ) : (
                     <Icon name="send" size={16} sw={2} color="currentColor" />
                   )}
@@ -3486,36 +3558,6 @@ export function Composer({
           }}
         />
       )}
-      <ReviewAdmission
-        open={reviewAdmission !== null}
-        fileCount={
-          reviewAdmission?.batches.reduce(
-            (total, batch) => total + batch.members.length,
-            0
-          ) ?? 0
-        }
-        busy={reviewAdmissionBusy}
-        error={reviewAdmissionError ? {
-          undoFailed: reviewText('admissionFailure.undoFailed', {
-            path: reviewAdmissionError.path ?? ''
-          }),
-          readFailed: reviewText('admissionFailure.readFailed', {
-            path: reviewAdmissionError.path ?? '',
-            detail: reviewAdmissionError.detail ?? ''
-          }),
-          submitFailed: reviewText('admissionFailure.submitFailed', {
-            detail: reviewAdmissionError.detail ?? ''
-          })
-        }[reviewAdmissionError.code] : null}
-        onAccept={() => {
-          void resolveReviewAdmission('accept')
-        }}
-        onReject={() => {
-          void resolveReviewAdmission('reject')
-        }}
-        onReview={openAdmissionReview}
-        onCancel={() => setReviewAdmission(null)}
-      />
     </div>
   )
 }

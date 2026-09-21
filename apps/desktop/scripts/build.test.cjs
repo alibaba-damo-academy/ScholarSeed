@@ -9,6 +9,7 @@ const { spawnSync } = require('node:child_process')
 const { runInNewContext } = require('node:vm')
 const ts = require('typescript')
 const { TARGETS } = require('./target.cjs')
+const { verifyInputs, verifyNotices, stageNotices } = require('./notices.cjs')
 const PACKAGE = require('../package.json')
 const {
   options,
@@ -20,6 +21,7 @@ const {
   freezeFile,
   frozenProductConfiguration,
   installerArtifacts,
+  localDmgbuild,
   writeBuilderConfiguration
 } = require('./build.cjs')
 const {
@@ -36,7 +38,8 @@ const {
   artifactTemporaryRoot,
   DARWIN_UNIX_SOCKET_PATH_BYTES,
   productPath,
-  RUNTIME_PROBE_SCRIPT
+  RUNTIME_PROBE_SCRIPT,
+  unsignedPackageCheck
 } = require('./verify.cjs')
 const { sha256, sha512, executableDigest } = require('./digest.cjs')
 const { OFFICE_BUILD_DIRECTORY, verifyOfficeAssets } = require('./office-assets.cjs')
@@ -82,6 +85,10 @@ test('repository skill locks include manifests matching the reviewed dependency 
     assert.equal(manifest.version, skill.version)
     assert.deepEqual(manifest.dependencies, registry.dependencies[skill.slug])
   }
+  const publicationOracle = 'scripts/smoke_publication.py'
+  const literatureReview = lock.skills.find(skill => skill.slug === 'literature-review')
+  assert.ok(literatureReview.files.some(file => file.path === publicationOracle))
+  assert.ok(fs.statSync(path.join(sourceRoot, 'literature-review', publicationOracle)).size > 0)
 })
 test('macOS development protocol registration uses a stable checkout-specific bundle identity', () => {
   const calls = []
@@ -111,6 +118,7 @@ const VERIFY_SOURCE = fs.readFileSync(path.join(__dirname, 'verify.cjs'), 'utf8'
 const BUILD_SOURCE = fs.readFileSync(path.join(__dirname, 'build.cjs'), 'utf8')
 const DESKTOP_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'backend.ts'), 'utf8')
 const UPDATER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'updater.ts'), 'utf8')
+const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'installer.nsh'), 'utf8')
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
 const UPDATE_FEATURE_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'updates', 'state.ts'), 'utf8')
@@ -124,6 +132,119 @@ const REVIEWED_BINARIES = {
       archive_sha256: 'b'.repeat(64), integrity: 'sha512-fixture' }
   }
 }
+
+function noticesFixture(context) {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-notices-'))
+  context.after(() => fs.rmSync(repo, { recursive: true, force: true }))
+  const original = path.resolve(__dirname, '../../..')
+  const desktop = path.join(repo, 'apps', 'desktop')
+  fs.mkdirSync(desktop, { recursive: true })
+  fs.copyFileSync(path.join(original, 'uv.lock'), path.join(repo, 'uv.lock'))
+  fs.copyFileSync(path.join(original, 'apps', 'desktop', 'package-lock.json'), path.join(desktop, 'package-lock.json'))
+  const notices = path.join(desktop, 'resources', 'notices')
+  fs.cpSync(path.join(original, 'apps', 'desktop', 'resources', 'notices'), notices, { recursive: true })
+  return { repo, desktop, notices, resources: path.join(repo, 'staged') }
+}
+
+test('reviewed notices match locked Python and build dependencies and stage without network', context => {
+  const fixture = noticesFixture(context)
+  const expected = verifyInputs(fixture.repo)
+  assert.deepEqual(stageNotices(fixture.repo, fixture.resources), expected)
+  assert.deepEqual(verifyNotices(fixture.resources, expected), expected)
+  assert.ok(expected.some(file => file.path === 'README.md'))
+  const manifest = JSON.parse(fs.readFileSync(path.join(fixture.notices, 'manifest.json')))
+  const pillow = manifest.components.find(component => component.name === 'pillow')
+  assert.deepEqual(pillow.artifacts.map(artifact => artifact.platform).sort(), Object.keys(TARGETS).sort())
+  for (const name of ['pypdf', 'pycparser']) {
+    const component = manifest.components.find(item => item.name === name)
+    assert.equal(component.license, 'BSD-3-Clause')
+    assert.equal(component.artifacts[0].platform, 'any')
+    const license = fs.readFileSync(path.join(fixture.notices, component.artifacts[0].licenseFile), 'utf8')
+    assert.match(license, /Redistribution and use in source and binary forms/)
+    assert.match(license, /ANY EXPRESS OR IMPLIED WARRANTIES/)
+  }
+  assert.ok(PACKAGE.build.extraResources.some(entry => entry.from === 'resources/notices' && entry.to === 'notices'))
+})
+
+test('notice input verification rejects Python version drift with CRLF lockfiles', context => {
+  const fixture = noticesFixture(context)
+  const filename = path.join(fixture.repo, 'uv.lock')
+  const text = fs.readFileSync(filename, 'utf8')
+  fs.writeFileSync(filename, text.replaceAll('\n', '\r\n'))
+  assert.doesNotThrow(() => verifyInputs(fixture.repo))
+  fs.writeFileSync(filename, text.replace('name = "certifi"\nversion = "2026.6.17"', 'name = "certifi"\nversion = "0.0.0"'))
+  assert.throws(() => verifyInputs(fixture.repo), /notice version differs from lock: certifi/)
+})
+
+test('notice input verification rejects npm version and integrity drift', context => {
+  const fixture = noticesFixture(context)
+  const filename = path.join(fixture.desktop, 'package-lock.json')
+  const lock = JSON.parse(fs.readFileSync(filename))
+  const original = lock.packages['node_modules/lightningcss'].version
+  lock.packages['node_modules/lightningcss'].version = '0.0.0'
+  fs.writeFileSync(filename, JSON.stringify(lock))
+  assert.throws(() => verifyInputs(fixture.repo), /notice version differs from lock: lightningcss/)
+  lock.packages['node_modules/lightningcss'].version = original
+  lock.packages['node_modules/lightningcss'].integrity = 'sha512-changed'
+  fs.writeFileSync(filename, JSON.stringify(lock))
+  assert.throws(() => verifyInputs(fixture.repo), /notice artifact differs from lock/)
+})
+
+test('notice input verification rejects missing license and source evidence', context => {
+  const fixture = noticesFixture(context)
+  const filename = path.join(fixture.notices, 'manifest.json')
+  const manifest = JSON.parse(fs.readFileSync(filename))
+  const original = JSON.stringify(manifest)
+  manifest.components[0].source.sha256 = ''
+  fs.writeFileSync(filename, JSON.stringify(manifest))
+  assert.throws(() => verifyInputs(fixture.repo), /notice requires versioned source evidence/)
+  fs.writeFileSync(filename, original)
+  fs.unlinkSync(path.join(fixture.notices, manifest.components[0].artifacts[0].licenseFile))
+  assert.throws(() => verifyInputs(fixture.repo), /notice license missing or changed/)
+})
+
+test('notice artifact verification rejects missing, changed and extra files on either platform layout', context => {
+  const fixture = noticesFixture(context)
+  for (const resources of [path.join(fixture.repo, 'Application.app', 'Contents', 'Resources'),
+    path.join(fixture.repo, 'windows-unpacked', 'resources')]) {
+    const expected = stageNotices(fixture.repo, resources)
+    const filename = path.join(resources, 'notices', 'README.md')
+    const original = fs.readFileSync(filename)
+    fs.writeFileSync(filename, 'changed')
+    assert.throws(() => verifyNotices(resources, expected), /packaged notices differ/)
+    fs.unlinkSync(filename)
+    assert.throws(() => verifyNotices(resources, expected), /packaged notices differ/)
+    fs.writeFileSync(filename, original)
+    fs.writeFileSync(path.join(resources, 'notices', 'extra.txt'), 'unexpected')
+    assert.throws(() => verifyNotices(resources, expected), /packaged notices differ/)
+  }
+  assert.throws(() => verifyNotices(fixture.resources), /missing frozen notices inventory/)
+})
+
+test('notice input verification requires the source guide and the liblzma correction', context => {
+  const fixture = noticesFixture(context)
+  const guide = path.join(fixture.notices, 'README.md')
+  const original = fs.readFileSync(guide)
+  fs.unlinkSync(guide)
+  assert.throws(() => verifyInputs(fixture.repo), /notice document missing/)
+  fs.writeFileSync(guide, original)
+  fs.unlinkSync(path.join(fixture.notices, 'xz-0bsd.txt'))
+  assert.throws(() => verifyInputs(fixture.repo), /notice supplement missing or changed/)
+})
+
+test('notice input verification rejects Python source and artifact hash drift', context => {
+  const fixture = noticesFixture(context)
+  const filename = path.join(fixture.notices, 'manifest.json')
+  const manifest = JSON.parse(fs.readFileSync(filename))
+  const sourceHash = manifest.components[0].source.sha256
+  manifest.components[0].source.sha256 = 'a'.repeat(64)
+  fs.writeFileSync(filename, JSON.stringify(manifest))
+  assert.throws(() => verifyInputs(fixture.repo), /notice source differs from lock/)
+  manifest.components[0].source.sha256 = sourceHash
+  manifest.components[0].artifacts[0].sha256 = 'a'.repeat(64)
+  fs.writeFileSync(filename, JSON.stringify(manifest))
+  assert.throws(() => verifyInputs(fixture.repo), /notice artifact differs from lock/)
+})
 
 test('product version identifiers are retained and no Skillhub baseline is required', () => {
   // 开源版技能源码随仓库开源: 不再需要 --previous/--initial 声明交付基线。
@@ -216,30 +337,93 @@ test('Windows signer changes only ScholarSeed-owned executables', () => {
   assert.equal(ownedExecutable('C:/app/resources/backend/python/Scripts/scholarseed.exe'), false)
   assert.equal(ownedExecutable('C:/app/resources/backend/python/python.exe'), false)
 })
-test('Windows updater verifies Authenticode before launching NSIS without a shell', () => {
-  assert.match(UPDATER_SOURCE, /Get-AuthenticodeSignature/)
-  assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENTS = \['--updated', '\/S', '--force-run'\]/)
-  assert.match(UPDATER_SOURCE, /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher\)/)
-  assert.match(UPDATER_SOURCE, /spawn\(installer, WINDOWS_UPDATE_ARGUMENTS/)
-  assert.doesNotMatch(UPDATER_SOURCE, /spawn\(installer,[\s\S]{0,160}shell:/)
-})
-test('Windows updater command parses as PowerShell before signature verification', {
-  skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser'
-}, () => {
-  // Read the actual command expression so this catches script assembly regressions.
-  // This is a syntax gate, not packaged application/update acceptance.
+// 抽出 verifyWindowsInstaller 真正发给 PowerShell 的脚本字面量。CLM 安全断言必须针对这段脚本、
+// 而不是整个 updater.ts 源码：后者的 JSDoc 会点名 Add-Type / [PSCustomObject] / [Console]:: 这些被禁
+// 构造来解释「为什么不用」，对整文件 doesNotMatch 会被注释误触发（上一轮就踩过同名陷阱）。
+function windowsVerifyScript() {
   const source = ts.createSourceFile('updater.ts', UPDATER_SOURCE, ts.ScriptTarget.Latest, true)
   const verifier = source.statements.find(statement =>
     ts.isFunctionDeclaration(statement) && statement.name?.text === 'verifyWindowsInstaller')
-  assert.ok(verifier)
+  assert.ok(verifier, 'verifyWindowsInstaller not found')
   const declaration = verifier.body.statements
     .filter(ts.isVariableStatement)
     .flatMap(statement => [...statement.declarationList.declarations])
     .find(declaration => declaration.name.getText(source) === 'script')
-  assert.ok(declaration?.initializer)
-  const script = runInNewContext(declaration.initializer.getText(source), {
-    WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_TEST_INSTALLER'
+  assert.ok(declaration?.initializer, 'script literal not found')
+  return runInNewContext(declaration.initializer.getText(source), {
+    WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_UPDATE_INSTALLER'
   })
+}
+test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdlet, no shell', () => {
+  // bug 87042987：受限语言模式（WDAC/AppLocker 企业终端管控）下 Add-Type、[PSCustomObject] 类型转换、
+  // [Console]::OutputEncoding 静态属性赋值全部被禁，内联 WinVerifyTrust 脚本必然非零退出 → 校验
+  // fail-closed 永久阻断安装。改用内置 cmdlet Get-AuthenticodeSignature（受限模式允许运行）+ 属性 get。
+  const script = windowsVerifyScript()
+  assert.match(script, /Get-AuthenticodeSignature/)
+  assert.match(script, /\.SignerCertificate\.Subject/)
+  // 被禁构造一个都不能出现在真正下发的脚本里（只查抽出的 script，注释里点名不算）。
+  assert.doesNotMatch(script, /Add-Type/)
+  assert.doesNotMatch(script, /\[Console\]::/)
+  assert.doesNotMatch(script, /\[PSCustomObject\]/)
+  assert.doesNotMatch(script, /WinVerifyTrust/)
+  assert.doesNotMatch(script, /\[Convert\]::|\[uint32\]/)
+  // 输出纯 ASCII 的 STATUS=/SUBJECT= 两行，Node 侧按行解析（ASCII 在任何 Windows 代码页下字节一致）。
+  assert.match(script, /Write-Output \('STATUS='/)
+  assert.match(script, /Write-Output \('SUBJECT='/)
+  // fail-closed：仅 Valid 放行，且发布者必须与打包策略一致。
+  assert.match(UPDATER_SOURCE, /WINDOWS_AUTHENTICODE_VALID = 'Valid'/)
+  assert.match(UPDATER_SOURCE, /status !== WINDOWS_AUTHENTICODE_VALID/)
+  assert.match(UPDATER_SOURCE, /subject !== expectedPublisher/)
+  // 启动 NSIS 仍不经 shell、参数固定。
+  assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENTS = \['--updated', '\/S', '--force-run'\]/)
+  assert.match(UPDATER_SOURCE, /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/)
+  assert.match(UPDATER_SOURCE, /spawn\(installer, WINDOWS_UPDATE_ARGUMENTS/)
+  assert.doesNotMatch(UPDATER_SOURCE, /spawn\(installer,[\s\S]{0,160}shell:/)
+})
+test('Windows subprocess output is decoded by console code page, not blindly as UTF-8', () => {
+  // bug 87042987 次生缺陷：中文 Windows 的 powershell.exe 按 GBK(936) 输出，无条件 toString('utf8')
+  // 会把错误原文解成乱码。改为探测活动代码页（chcp.com 是原生 exe、不经 PowerShell，不受 CLM 影响）
+  // 后用 TextDecoder 按对应标签解码；并收齐字节再整体解码，避免逐块 toString 截断跨块多字节字符。
+  assert.match(UPDATER_SOURCE, /chcp\.com/)
+  assert.match(UPDATER_SOURCE, /new TextDecoder\(/)
+  assert.match(UPDATER_SOURCE, /WINDOWS_CODE_PAGE_ENCODINGS/)
+  assert.match(UPDATER_SOURCE, /'936': 'gbk'/)
+  assert.doesNotMatch(UPDATER_SOURCE, /chunk\.toString\('utf8'\)/)
+})
+test('Windows install failures are classified and never surface raw stderr to the user', () => {
+  // bug 87042987：区分「校验环境不可用」与「签名不可信」，原始诊断只落 update.log，界面给结构化本地化
+  // 文案（手动安装引导 / 安全拦截），不再把可能乱码的 PowerShell stderr 插值进用户可见串。
+  assert.match(UPDATER_SOURCE, /install_verify_unavailable/)
+  assert.match(UPDATER_SOURCE, /install_signature_untrusted/)
+  assert.match(UPDATER_SOURCE, /class WindowsVerifyError extends Error/)
+  assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: windowsInstallFallback\(error\) \}/)
+})
+test('the updater never blocks the main process with a synchronous spawn', () => {
+  // Electron 主进程与 macOS AppKit 主线程是同一个：任何 spawnSync 都会冻住事件循环，期间原生
+  // 窗口控件（红绿灯）点不动。Windows 签名校验联网吊销卡住、macOS 安装链 ditto + codesign/spctl/
+  // stapler 十几秒，都曾让客户端在安装期无响应（最小化/关闭失灵）。所有子进程一律走异步 runCommandAsync。
+  assert.match(UPDATER_SOURCE, /runCommandAsync/)
+  assert.doesNotMatch(UPDATER_SOURCE, /spawnSync\s*\(/)
+  // 安全校验必须 await：漏掉会让安装先于签名校验完成（fail-open 安全洞），比卡住更糟。
+  assert.match(UPDATER_SOURCE, /await requireCommandAsync\('codesign', \['--verify', '--deep', '--strict'/)
+  assert.match(UPDATER_SOURCE, /await verifyMountedApplication\(stage, meta, config\)/)
+})
+test('Windows update recreates a missing desktop shortcut (customInstall safety net)', () => {
+  // 更新时 electron-builder 的 addDesktopLink 在 $keepShortcuts=="true" 下只把旧名快捷方式 Rename 成
+  // 新名；旧卸载器已删、或改名致旧路径对不上时既不 Rename 也不 Create（RECREATE 分支被
+  // ${ifNot} ${isUpdated} 挡死，createDesktopShortcut:"always" 也无效）→ 桌面快捷方式永久丢失。
+  // resources/installer.nsh 的 customInstall 必须无条件补建缺失的快捷方式。真机踩过，钉死。
+  assert.match(INSTALLER_NSH, /!macro customInstall/)
+  assert.match(INSTALLER_NSH, /\$\{ifNot\} \$\{FileExists\} "\$newDesktopLink"/)
+  assert.match(INSTALLER_NSH, /CreateShortCut "\$newDesktopLink"/)
+  assert.match(INSTALLER_NSH, /CreateShortCut "\$newStartMenuLink"/)
+})
+test('Windows updater command parses as PowerShell before signature verification', {
+  skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser'
+}, () => {
+  // Syntax gate on the actual command expression (shared extractor catches script assembly
+  // regressions), not packaged application/update acceptance.
+  const script = windowsVerifyScript()
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', [
     '$tokens = $null;',
     '$errors = $null;',
@@ -263,6 +447,37 @@ test('the shell never discards the staged package before the install result is k
   // 的新旧比较：装成了就连记录带包体一起回收，没装成就都留着可直接重试。
   assert.doesNotMatch(SHELL_SOURCE, /clearReadyState/)
   assert.match(UPDATER_SOURCE, /export function clearReadyState/)
+})
+
+test('a staged package never pins the client to a superseded build', () => {
+  // 「已就绪」是等用户挑时间重启的**等待**态，不是下载/安装那种进行中态：等待期间线上还会
+  // 继续发布，检查发现更新的构建必须能推进过去。把 ready 当成进行中，界面就被钉死在当初
+  // 暂存的那一个包上 —— 用户装完还不是最新，只能一级一级升（Aone 87009973）。
+  const inFlight = /const UPDATE_IN_FLIGHT_PHASES = new Set<UpdatePhase>\(\[([\s\S]*?)\]\)/
+    .exec(SHELL_SOURCE)
+  assert.ok(inFlight, 'UPDATE_IN_FLIGHT_PHASES not found')
+  // 断言集合本体而不是子串：注释里点名 'ready' 解释「为什么不在其中」不该让断言通过。
+  const phases = [...inFlight[1].matchAll(/'([a-z-]+)'/g)].map(match => match[1]).sort()
+  assert.deepEqual(phases, ['downloading', 'installing', 'manual', 'restarting', 'verifying'])
+
+  // 推进判定只此一份：启动期检查、周期复查、手动「检查更新」三个入口共用，才不会一个能
+  // 推进另一个不能。
+  assert.match(SHELL_SOURCE, /function publishUpdateCheckResult\(result: UpdateCheckResult\)/)
+  assert.match(SHELL_SOURCE, /const result = await updater\.checkForUpdate\(pushLog\)\n      return publishUpdateCheckResult\(result\)/)
+  assert.match(SHELL_SOURCE, /void updater\.checkForUpdate\(pushLog\)\.then\(\(result\) => \{\n    publishUpdateCheckResult\(result\)/)
+
+  // 只有线上候选**严格**新于暂存包才推进；排不出先后（身份串不合契约，isNewerRelease 回 null）
+  // 一律不动，已经下好并校验过的那一个继续有效。
+  assert.match(UPDATER_SOURCE, /export function supersedeStagedUpdate\(/)
+  assert.match(UPDATER_SOURCE, /if \(newer !== true\) return false/)
+  // 取代时记录与包体一起回收：只清记录会让几百 MB 一直躺在磁盘上，只删包体会让下一次启动
+  // 因为记录还在而重新认领它。
+  assert.match(UPDATER_SOURCE, /function dropStagedUpdate\(staged: ReadyState, log: LogSink\): void \{\n  clearReadyState\(\)\n  removeStaleInstaller\(staged\.path, log\)/)
+  assert.match(UPDATER_SOURCE, /dropStagedUpdate\(staged, log\)\n  return true/)
+
+  // 安装失败把相位留在 ready 并带上错误（bug 86968393）：那是唯一的结果表面，检查不得用
+  // 「发现新版本」把它悄悄换掉。
+  assert.match(SHELL_SOURCE, /if \(snapshot\.error \|\| snapshot\.errorFallback\) return snapshot/)
 })
 
 test('the renderer holds no cross-restart update state', () => {
@@ -290,7 +505,7 @@ test('progress publication clears the previous failure so a retry is not shown a
   // failure.ts:updateInstallFailure 与 updater.ts 的回滚快照给出，failure.test.ts 直接钉住。
   assert.match(SHELL_SOURCE, /errorOrigin: 'check'/)
   assert.match(SHELL_SOURCE, /errorOrigin: 'download'/)
-  assert.match(SHELL_SOURCE, /updateInstallFailure\(result\.error\)/)
+  assert.match(SHELL_SOURCE, /updateInstallFailure\(result\)/)
   assert.match(UPDATER_SOURCE, /errorOrigin: 'install'/)
 })
 
@@ -300,6 +515,19 @@ test('macOS candidates do not require signing credentials', () => {
   assert.equal(parsed.signed, false)
   assert.equal(parsed.candidate, true)
 })
+
+test('macOS candidate dir checks stop before codesigning', () => {
+  assert.equal(unsignedPackageCheck({
+    platform: 'darwin', stage: 'dir', candidate: true, signingRequired: false
+  }), true)
+  assert.equal(unsignedPackageCheck({
+    platform: 'darwin', stage: 'dmg', candidate: true, signingRequired: false
+  }), false)
+  assert.equal(unsignedPackageCheck({
+    platform: 'win32', stage: 'dir', candidate: true, signingRequired: false
+  }), false)
+})
+
 test('distribution inputs require only an update URL', () => {
   const base = [
     '--type', 'release', '--candidate', '--update-base-url', 'https://updates.example.test'
@@ -318,6 +546,24 @@ test('credentials do not reach offline child builds', () => {
   assert.deepEqual(credentialFreeEnv(source), { PATH: '/bin', SCHOLARSEED_HOME: '/runtime' })
   assert.equal(source.SCHOLARSEED_SKILLHUB_TOKEN, 'fixture')
   assert.equal(source.SCHOLARSEED_WINDOWS_SIGN_KEY, 'signing-secret')
+})
+test('DMG builds require the locked local executable and never fall back to a download', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-dmgbuild-'))
+  const executable = path.join(directory, 'dmgbuild')
+  try {
+    assert.throws(() => localDmgbuild(directory, '1.6.7'), /ENOENT/)
+    fs.writeFileSync(executable, '')
+    if (process.platform !== 'win32') fs.chmodSync(executable, 0o755)
+    assert.throws(() => localDmgbuild(directory, '1.6.6'), /not the locked/)
+    assert.equal(localDmgbuild(directory, '1.6.7'), executable)
+  } finally { fs.rmSync(directory, { recursive: true }) }
+})
+test('Electron Builder template rendering remains compatible with the EJS override', () => {
+  const { compile } = require('ejs')
+  const builder = path.dirname(require.resolve('app-builder-lib/package.json'))
+  const source = fs.readFileSync(path.join(builder, 'templates', 'msi', 'template.xml'), 'utf8')
+  const template = source.replace(/{{/g, '<%').replace(/}}/g, '%>').replace(/\${([^}]+)}/g, '<%=$1%>')
+  assert.equal(typeof compile(template), 'function')
 })
 test('installed dependency probes receive only product and system executable roots', () => {
   if (process.platform === 'win32') {
@@ -561,6 +807,8 @@ test('electron-builder receives one frozen resource set instead of merging packa
     const backend = config.extraResources.filter((entry) => entry.to === 'backend')
     assert.equal(backend.length, 1)
     assert.equal(backend[0].from, path.join(directory, 'resources', 'backend'))
+    assert.equal(config.extraResources.find(entry => entry.to === 'notices').from,
+      path.join(directory, 'resources', 'notices'))
     assert.equal(config.directories.output, path.join(directory, 'artifacts'))
     assert.equal(config.productName, 'ScholarSeed')
     assert.equal(config.artifactName, 'scholarseed-0.1.1-darwin-arm64.${ext}')

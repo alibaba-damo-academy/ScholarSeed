@@ -1,6 +1,7 @@
 import { previewReferenceLabel, referenceLabel } from './text'
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import aiThinking from '../../assets/ai-thinking.gif'
 
 import { Button, Popover, PopoverContent, PopoverTrigger, ScrollArea, Spinner } from '../../components/ui'
 import { Icon } from '../../icons'
@@ -89,7 +90,7 @@ export function SessionReference({
                 <div className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-[var(--vds-text-primary)]">{message.text}</div>
               </div>
             ))}
-            {loading ? <div className="flex justify-center py-3"><Spinner aria-label={t('sessionReference.referenceLoading')} size="sm" /></div> : null}
+            {loading ? <div className="flex justify-center py-3"><Spinner imageSrc={aiThinking} aria-label={t('sessionReference.referenceLoading')} size="sm" /></div> : null}
             {error ? <div className="py-3 text-sm text-[var(--vds-error-text-primary)]">{(Object.prototype.hasOwnProperty.call(errorLabels, error.code) ? errorLabels[error.code] : undefined) ?? <>{t('sessionReference.failed')}{error.detail && <p>{error.detail}</p>}</>}</div> : null}
             {!loading && !error && preview && messages.length === 0 ? (
               <div className="py-3 text-sm text-[var(--vds-text-tertiary)]">{t('sessionReference.referenceEmpty')}</div>

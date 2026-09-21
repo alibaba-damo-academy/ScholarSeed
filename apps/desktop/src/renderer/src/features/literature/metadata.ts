@@ -1,60 +1,42 @@
 /**
- * 题录元数据同步 (PaperHub 单条代理的渲染层语义)。
+ * 题录元数据同步 (`POST /api/literature/papermeta` 的渲染层语义)。
  *
- * serve 侧公开 DOI/arXiv BibTeX 返回更新字段；标题搜索原样透出 PaperHub 命中项。
- * 本模块负责查询维度、按钮可用性、标题匹配确认与 PaperHub 字段映射:
+ * serve 侧三条腿 (doi.org BibTeX / arXiv BibTeX / OpenAlex 标题检索) 全部匿名, 且同形
+ * 返回 `{ success, fields, bib_type? }`。本模块只负责查询维度、按钮可用性、标题匹配
+ * 确认与更新体裁剪, 不再认识任何上游形状:
  *
  * 1. **维度选择**: doi > arxiv > title, 与 serve 侧 `QUERY_PRECEDENCE` 同序。
- * 2. **稀疏判据**: 只有「非空题录字段落在 title/author/arxiv/doi 子集内」的记录才需要
- *    补全 —— 这类记录通常来自检索结果或资料标记, 只带标识符, 缺摘要、期刊、年份。
- * 3. **确认策略**: doi/arxiv 是标识符解析, 命中即唯一, 直接落库; title 是模糊匹配,
- *    命中也要人确认是不是同一篇, 不能替用户认。
- * 4. **字段映射**: 上游形状 → `LiteratureUpdate.fields`。只写上游真的给了值的字段,
- *    绝不拿空值覆盖已有数据。
+ * 2. **可用性**: 只要能选出一个维度就给入口, 不看题录是否已经填全 —— 上游会勘误、
+ *    会补摘要, 同步过的记录也允许再同步一次。三个标识符全空时不给入口, 因为点了
+ *    只会报错。
+ * 3. **确认策略**: doi/arxiv 是标识符解析, 命中即唯一, 直接落库; title 是模糊匹配
+ *    (OpenAlex 的 `title.search` 是分词 AND, 整条标题也可能命中多条), 命中也要人确认
+ *    是不是同一篇, 不能替用户认。确认与否只看维度, 不看响应形状。
+ * 4. **免登录**: 三条腿都不需要账号, 所以按钮可用性里没有登录判据。
  */
 
 import type { LiteratureDetail, LiteratureUpdate } from '../../contracts/literature'
 
-/** 上游 papersearch 单条命中项的原始形状; 代理不改名, 所以这里就是上游的键。 */
-export interface PaperMetaRecord {
-  abstract?: string | null
-  authors?: string[] | null
-  externalids?: { ArXiv?: string | null; DOI?: string | null } | null
-  id?: string | null
-  journalname?: string | null
-  journalpages?: string | null
-  journalvolume?: string | null
-  publicationdate?: string | null
-  title?: string | null
-  url?: string | null
-  venue?: string | null
+/** 一次同步产出的更新体; 键恒落在 serve 侧 `EDITABLE_FIELDS` 内。 */
+export type PaperMetaFields = NonNullable<LiteratureUpdate['fields']>
+
+/** 代理透出的完整响应体: 三条腿同形, 渲染层不必认识任何上游形状。 */
+export interface PaperMetaPayload {
+  bib_type?: string
+  fields?: PaperMetaFields | null
+  success?: boolean
 }
 
-/** 代理透出的完整响应体。 */
-export interface PaperMetaPayload {
-  data?: PaperMetaRecord[] | null
-  success?: boolean
-  fields?: NonNullable<LiteratureUpdate['fields']>
-  bib_type?: string
+/** 待用户确认的命中项: 更新体 + 可选的文献类型。 */
+export interface PaperMetaMatch {
+  bibType?: string
+  fields: PaperMetaFields
 }
 
 export type PaperMetaDimension = 'doi' | 'arxiv' | 'title'
 
 /** 一次同步查询: 维度 + 该维度上的值, 不带其他维度。 */
 export type PaperMetaQuery = { dimension: PaperMetaDimension; value: string }
-
-/** 确认对话框需要的展示投影; 渲染层不必认识上游形状。 */
-export interface PaperMetaPreview {
-  abstract: string
-  arxiv: string
-  authors: string
-  doi: string
-  publication: string
-  publishedDate: string
-  title: string
-  url: string
-  year: number | null
-}
 
 export type PaperMetaFailureKind = 'quota' | 'network' | 'missing' | 'failed'
 
@@ -77,49 +59,17 @@ export type PaperMetaDescriptionKey =
   | 'detail.sync.byArxiv'
   | 'detail.sync.byTitle'
 
-/**
- * 参与稀疏判据的题录字段。
- *
- * 不含 `citation_key` / `item_type` / `bib_type`: 它们是库内派生值 (citation_key 可留空、
- * 另两个恒有默认), 算进来会让判据恒假, 按钮永远不出现。`issn` 当前投影恒为 null。
- */
-const BIBLIOGRAPHIC_FIELDS: ReadonlyArray<keyof LiteratureDetail> = [
-  'title',
-  'creators_display',
-  'publication_display',
-  'subtitle',
-  'year',
-  'published_date',
-  'abstract',
-  'doi',
-  'arxiv',
-  'isbn',
-  'url',
-  'volume',
-  'number',
-  'pages',
-  'publisher',
-  'address'
-]
-
-/** 只有标识符与作者的记录才需要同步; 非空字段必须全部落在这个子集里。 */
-const IDENTIFIER_ONLY_FIELDS: ReadonlySet<keyof LiteratureDetail> = new Set([
-  'title',
-  'creators_display',
-  'arxiv',
-  'doi'
-])
+/** 横幅标题文案键: 一句话点明这次会去哪个站点取元数据。 */
+export type PaperMetaTitleKey =
+  | 'detail.sync.bannerByDoi'
+  | 'detail.sync.bannerByArxiv'
+  | 'detail.sync.bannerByTitle'
 
 /** 与 serve 侧 `QUOTA_EXHAUSTED` 同一对判据: 状态码或 code 任一命中即算配额。 */
 const QUOTA_EXHAUSTED_STATUS = 429
 const QUOTA_EXHAUSTED_CODE = 'PAPER_META_QUOTA_EXHAUSTED'
 const NETWORK_FAILED_CODE = 'PAPER_META_NETWORK_FAILED'
 const NOT_FOUND_CODE = 'PAPER_META_NOT_FOUND'
-
-/** 作者分隔符, 与 serve 侧 `service/literature/service/metadata.py:AUTHOR_SEPARATOR` 一致。 */
-const AUTHOR_SEPARATOR = ', '
-const YEAR_PATTERN = /^\s*(\d{4})/
-const YEAR_RADIX = 10
 
 /** 结构性失败描述; `LiteratureApiError['failure']` 天然满足, 不必反向依赖 api.ts。 */
 export interface PaperMetaFailureLike {
@@ -138,10 +88,6 @@ function text(value: unknown): string {
   return value === null || value === undefined ? '' : String(value).trim()
 }
 
-function firstFilled(...values: Array<string | null | undefined>): string {
-  return text(values.find((value) => filled(value)) ?? '')
-}
-
 /**
  * 按 doi > arxiv > title 选出唯一同步维度; 三者皆空时返回 null。
  *
@@ -158,18 +104,13 @@ export function selectPaperMetaQuery(
 }
 
 /**
- * 这条文献是否需要补全题录: 非空题录字段全部落在 title/author/arxiv/doi 之内,
- * 且至少能选出一个同步维度。
+ * 这条文献能不能同步: 有 doi / arxiv / title 任一个就能, 与题录是否已经填全无关。
+ *
+ * 同步过的记录同样可以再同步 —— 上游可能勘误或补了摘要, 是不是要覆盖由确认框里
+ * 逐字段勾选决定, 不在这里替用户拦。
  */
-export function needsMetadataSync(item: LiteratureDetail): boolean {
-  if (!selectPaperMetaQuery(item)) return false
-  const present = BIBLIOGRAPHIC_FIELDS.filter((field) => filled(item[field]))
-  return present.every((field) => IDENTIFIER_ONLY_FIELDS.has(field))
-}
-
-export function canSyncMetadata(item: LiteratureDetail, loggedIn: boolean): boolean {
-  const query = selectPaperMetaQuery(item)
-  return query !== null && (query.dimension !== 'title' || (loggedIn && needsMetadataSync(item)))
+export function canSyncMetadata(item: LiteratureDetail): boolean {
+  return selectPaperMetaQuery(item) !== null
 }
 
 export function requiresConfirmation(dimension: PaperMetaDimension): boolean {
@@ -185,7 +126,14 @@ export function paperMetaDescriptionKey(
   return 'detail.sync.byTitle'
 }
 
-/** 配额用尽要单独提示 (用户能行动), 其余失败一律「同步元数据失败」。 */
+/** 维度 → 标题文案键; 与说明文案同源穷尽, 新增维度必须在这里补一条。 */
+export function paperMetaTitleKey(dimension: PaperMetaDimension): PaperMetaTitleKey {
+  if (dimension === 'doi') return 'detail.sync.bannerByDoi'
+  if (dimension === 'arxiv') return 'detail.sync.bannerByArxiv'
+  return 'detail.sync.bannerByTitle'
+}
+
+/** 上游限流 (429) 要单独提示 (用户能行动: 稍后重试), 其余失败一律「同步元数据失败」。 */
 export function classifyPaperMetaFailure(
   failure: PaperMetaFailureLike | null
 ): PaperMetaFailureKind {
@@ -197,58 +145,17 @@ export function classifyPaperMetaFailure(
     : 'failed'
 }
 
-/** 从代理响应里取出唯一命中项; 形状不对时返回 null, 由调用方按失败处理。 */
-export function paperMetaRecord(payload: PaperMetaPayload | null | undefined): PaperMetaRecord | null {
-  const data = payload?.data
-  if (!Array.isArray(data) || data.length !== 1) return null
-  const record = data[0]
-  return record && typeof record === 'object' ? record : null
-}
-
-function publicationYear(record: PaperMetaRecord): number | null {
-  const matched = YEAR_PATTERN.exec(text(record.publicationdate))
-  return matched ? Number.parseInt(matched[1], YEAR_RADIX) : null
-}
-
 /**
- * 上游命中项 → 文献更新字段。
+ * 取出这次同步的更新体; 形状不对或一个字段都没有时返回空对象, 由调用方按未命中处理。
  *
- * 只产出上游真的给了值的键, 空值不进更新体, 因此同步不会把已有数据抹成空。
+ * serve 侧只写真的有值的键, 所以空对象就等于「上游没给出任何可填字段」。
  */
-export function paperMetaFields(record: PaperMetaRecord): NonNullable<LiteratureUpdate['fields']> {
-  const candidates: Array<[string, string | number | null]> = [
-    ['title', text(record.title)],
-    ['authors', (record.authors ?? []).map((author) => text(author)).filter(Boolean).join(AUTHOR_SEPARATOR)],
-    ['publication', firstFilled(record.venue, record.journalname)],
-    ['published_date', text(record.publicationdate)],
-    ['year', publicationYear(record)],
-    ['abstract', text(record.abstract)],
-    ['url', text(record.url)],
-    ['doi', text(record.externalids?.DOI)],
-    ['arxiv', text(record.externalids?.ArXiv)],
-    ['volume', text(record.journalvolume)],
-    ['pages', text(record.journalpages)]
-  ]
-  const fields: Record<string, string | number | null> = {}
-  for (const [name, value] of candidates) {
-    if (value !== null && filled(value)) fields[name] = value
-  }
-  return fields
-}
-
-/** 确认对话框的展示投影。 */
-export function paperMetaPreview(record: PaperMetaRecord): PaperMetaPreview {
-  return {
-    abstract: text(record.abstract),
-    arxiv: text(record.externalids?.ArXiv),
-    authors: (record.authors ?? []).map((author) => text(author)).filter(Boolean).join(AUTHOR_SEPARATOR),
-    doi: text(record.externalids?.DOI),
-    publication: firstFilled(record.venue, record.journalname),
-    publishedDate: text(record.publicationdate),
-    title: text(record.title),
-    url: text(record.url),
-    year: publicationYear(record)
-  }
+export function paperMetaFields(payload: PaperMetaPayload | null | undefined): PaperMetaFields {
+  const fields = payload?.fields
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return {}
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => filled(value))
+  ) as PaperMetaFields
 }
 
 /** 确认对话框的逐字段新旧对比行; field 即 `LiteratureUpdate.fields` 的键。 */
@@ -268,6 +175,8 @@ function diffLabelKey(field: string): string {
       return 'columns.creator'
     case 'publication':
       return 'columns.publication'
+    case 'publisher':
+      return 'columns.publisher'
     case 'published_date':
       return 'columns.published_date'
     case 'year':
@@ -282,6 +191,8 @@ function diffLabelKey(field: string): string {
       return 'columns.arxiv'
     case 'volume':
       return 'columns.volume'
+    case 'number':
+      return 'columns.number'
     case 'pages':
       return 'columns.pages'
     default:
@@ -298,6 +209,8 @@ function diffCurrentField(field: string): keyof LiteratureDetail | undefined {
       return 'creators_display'
     case 'publication':
       return 'publication_display'
+    case 'publisher':
+      return 'publisher'
     case 'published_date':
       return 'published_date'
     case 'year':
@@ -312,6 +225,8 @@ function diffCurrentField(field: string): keyof LiteratureDetail | undefined {
       return 'arxiv'
     case 'volume':
       return 'volume'
+    case 'number':
+      return 'number'
     case 'pages':
       return 'pages'
     default:
@@ -320,16 +235,16 @@ function diffCurrentField(field: string): keyof LiteratureDetail | undefined {
 }
 
 /**
- * 命中项与当前文献的逐字段对比; 只列上游给了值的字段。
+ * 更新体与当前文献的逐字段对比; 只列上游给了值且详情页展示得出来的字段。
  *
  * 确认填充要让用户逐字段勾选, 所以对比行直接以更新体的键为主键, 当前值取文献上
  * 同义字段 (authors ↔ creators_display 等), 空值显示为空串由调用方渲染成「—」。
  */
 export function paperMetaDiff(
-  record: PaperMetaRecord,
+  fields: PaperMetaFields,
   item: LiteratureDetail
 ): PaperMetaDiffRow[] {
-  return Object.entries(paperMetaFields(record))
+  return Object.entries(fields)
     .filter(([field]) => diffCurrentField(field) !== undefined)
     .map(([field, value]) => ({
       field,
@@ -341,12 +256,12 @@ export function paperMetaDiff(
 
 /** 只把用户勾选的字段写进更新体; 未勾选的保持文献现值。 */
 export function paperMetaPickedFields(
-  record: PaperMetaRecord,
+  fields: PaperMetaFields,
   picked: ReadonlySet<string>
-): NonNullable<LiteratureUpdate['fields']> {
-  const fields: Record<string, string | number | null> = {}
-  for (const [name, value] of Object.entries(paperMetaFields(record))) {
-    if (picked.has(name)) fields[name] = value
+): PaperMetaFields {
+  const pickedFields: Record<string, string | number | null> = {}
+  for (const [name, value] of Object.entries(fields)) {
+    if (picked.has(name)) pickedFields[name] = value
   }
-  return fields
+  return pickedFields
 }

@@ -84,9 +84,12 @@ class LiteratureService:
                 self.repo.save(replace(item, tags=tuple(x for x in item.tags if x != tag)))
 
     def link_project(
-        self, ids: tuple[str, ...], project_id: str
+        self,
+        ids: tuple[str, ...],
+        project_id: str,
+        collection_ids: tuple[str, ...] = (),
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return self.repo.link_project(ids, project_id)
+        return self.repo.link_project(ids, project_id, collection_ids)
 
     def create_collection(self, name: str, parent: str = "", project_id: str = "") -> None:
         self.repo.create_collection(name, parent or None, project_id)

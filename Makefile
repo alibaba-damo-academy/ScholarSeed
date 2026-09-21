@@ -200,7 +200,7 @@ fmt-check: ## 只检查格式不改动 (CI 用)
 	@VENV=$(VENV) ./scripts/format.sh --check $(FMT_PATHS)
 
 LINT_PATHS ?= apps/serve/service packages/adapters scripts
-lint: ## Pylint 检查 ScholarSeed 自有 Python 代码
+lint: ## Ruff + Pyright 检查 ScholarSeed 自有 Python 代码
 	@$(PY) scripts/lint.py $(LINT_PATHS)
 
 typecheck: ## mypy 检查 ScholarSeed 自有 Python 代码

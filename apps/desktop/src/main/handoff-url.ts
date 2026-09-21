@@ -15,18 +15,40 @@ export interface ParsedCallback {
   state: string
 }
 
-export function parseCallbackUrl(url: string): ParsedCallback | null {
-  if (!url.startsWith(DESKTOP_AUTH_CALLBACK_PREFIX)) return null
+function isDesktopCallbackUrl(url: string): boolean {
   let parsed: URL
   try {
     parsed = new URL(url)
   } catch {
-    return null
+    return false
   }
+  return (
+    parsed.protocol.toLowerCase() === 'scholarseed:'
+    && parsed.hostname.toLowerCase() === 'auth'
+    && parsed.pathname === '/callback'
+  )
+}
+
+function unquoteArgument(value: string): string {
+  if (value.length < 2) return value
+  const first = value[0]
+  const last = value[value.length - 1]
+  return (first === '"' && last === '"') || (first === "'" && last === "'")
+    ? value.slice(1, -1)
+    : value
+}
+
+export function parseCallbackUrl(url: string): ParsedCallback | null {
+  if (!isDesktopCallbackUrl(url)) return null
+  const parsed = new URL(url)
   const code = parsed.searchParams.get('code') || ''
   const state = parsed.searchParams.get('state') || ''
   if (!code || !state) return null
   return { code, state }
+}
+
+export function findCallbackUrl(args: readonly string[]): string | null {
+  return args.map(unquoteArgument).find((arg) => isDesktopCallbackUrl(arg)) ?? null
 }
 
 export function newHandoffState(): string {

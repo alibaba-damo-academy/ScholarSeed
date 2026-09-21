@@ -11,12 +11,12 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile
 
-import pymupdf
 from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.persistence.store import AssistantStore
 from service.assistant.service.context import AssistantService
 from service.chat.active import RUNTIME_ID
@@ -187,12 +187,12 @@ class SelectionContextProviderContract(unittest.TestCase):
 
     def test_pdf_action_resolves_declared_historical_revision_before_current_bytes(self) -> None:
         original_text = "Original PDF selection"
-        original = pymupdf.open()
+        original = pdf_fixture.open()
         page = original.new_page(width=500, height=400)
         page.insert_text((40, 120), original_text, fontsize=12)
         original_payload = original.tobytes()
         original.close()
-        current = pymupdf.open()
+        current = pdf_fixture.open()
         page = current.new_page(width=500, height=400)
         page.insert_text((40, 120), "Changed PDF selection", fontsize=12)
         current_payload = current.tobytes()
@@ -317,7 +317,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.state, ContextResolutionState.UNSUPPORTED)
 
     def test_pdf_selection_resolves_normalized_page_quads(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         page.insert_text((72, 72), "alpha chosen omega")
         selected = "hose"
@@ -337,15 +337,15 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.items[0].text, selected)
 
     def test_pdf_selection_uses_visual_lines_across_text_fragments(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         page.insert_text((72, 72), "alpha")
         page.insert_text((160, 72), "chosen")
         page.insert_text((72, 90), "second row")
         selected = "alpha chosen\nsecond row"
         width, height = page.rect.width, page.rect.height
-        first_line = pymupdf.Rect(72, 60, 200, 76)
-        second_line = pymupdf.Rect(72, 78, 130, 94)
+        first_line = pdf_fixture.Rect(72, 60, 200, 76)
+        second_line = pdf_fixture.Rect(72, 78, 130, 94)
         locator = {
             "kind": "pdf",
             "page": 1,
@@ -373,7 +373,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.items[0].text, selected)
 
     def test_pdf_selection_respects_character_boundary_inside_pdf_word(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         page.insert_text((72, 72), "alpha chosen. omega")
         selected = "chosen"
@@ -393,7 +393,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.items[0].text, selected)
 
     def test_pdf_selection_accepts_cjk_shape_but_keeps_authoritative_text(self) -> None:
-        document = pymupdf.open()
+        document = pdf_fixture.open()
         page = document.new_page()
         authoritative = "人口老龄化 2026"
         browser_aliases = "⼈⼜⽼龄化 2026"

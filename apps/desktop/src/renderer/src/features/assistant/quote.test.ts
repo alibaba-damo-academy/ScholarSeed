@@ -62,5 +62,6 @@ test('Assistant selection references use an Assistant-owned composition of publi
   assert.match(stream, /act\.openResourceFile\(reference\.sourceId, project\.id\)/)
   assert.doesNotMatch(stream, />\{r\.status\}</)
   assert.match(stream, /data-testid="turn-regenerate"[\s\S]*variant="outline"/)
-  assert.doesNotMatch(stream, /data-testid="turn-regenerate"[\s\S]*size="sm"[\s\S]*variant="outline"/)
+  const regenerate = stream.slice(stream.indexOf('data-testid="turn-regenerate"'), stream.indexOf('</Button>', stream.indexOf('data-testid="turn-regenerate"')))
+  assert.doesNotMatch(regenerate.slice(0, regenerate.indexOf('loadingIcon=')), /size="sm"/)
 })

@@ -10,9 +10,9 @@ import {
   FolderPlus,
   FolderTree,
   ListCollapse,
+  MonitorDown,
   Plus,
-  RotateCw,
-  Upload
+  RotateCw
 } from 'lucide-react'
 
 import {
@@ -26,6 +26,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
   IconButton,
   Input,
@@ -391,17 +392,8 @@ function TreeRow({
                   })
                 }}
               >
-                <Upload />
+                <MonitorDown />
                 <span>{t('panel.importLocal')}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid={`tree-new-folder-${node.path}`}
-                onSelect={() => {
-                  act.requestResourceCreate('create_folder', node.path)
-                }}
-              >
-                <FolderPlus />
-                <span>{t('panel.newFolder')}</span>
               </DropdownMenuItem>
               <DropdownMenuItem
                 data-testid={`tree-new-doc-${node.path}`}
@@ -412,12 +404,22 @@ function TreeRow({
                 <FilePlus />
                 <span>{t('panel.newDocument')}</span>
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                data-testid={`tree-new-folder-${node.path}`}
+                onSelect={() => {
+                  act.requestResourceCreate('create_folder', node.path)
+                }}
+              >
+                <FolderPlus />
+                <span>{t('panel.newFolder')}</span>
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
         <IconButton
           aria-pressed={menuOpen}
-          className={`vds-tree-more${node.kind === 'file' ? ' !right-[var(--vds-space-1)]' : ''}`}
+          className={`vds-tree-more ${node.kind === 'file' ? '!right-[var(--vds-space-1)]' : '!right-[calc(var(--vds-space-1)+var(--vds-control-height-sm)+var(--vds-space-1)/2)]'}`}
           data-testid={`tree-more-${node.path}`}
           icon={<EllipsisVertical />}
           label={t('panel.more', { name: node.name })}
@@ -434,7 +436,8 @@ function TreeRow({
               origin: node.origin,
               linkRoot: node.linkRoot,
               x: rect.right,
-              y: rect.bottom
+              y: rect.bottom,
+              anchor: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top, width: rect.width }
             })
           }}
           onDoubleClick={(event) => event.stopPropagation()}
@@ -953,17 +956,8 @@ export function ResourcePanel(): React.JSX.Element {
                     })
                   }}
                 >
-                  <Upload />
+                  <MonitorDown />
                   <span>{t('panel.importLocal')}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  data-testid="resource-new-folder"
-                  onSelect={() => {
-                    act.requestResourceCreate('create_folder', '')
-                  }}
-                >
-                  <FolderPlus />
-                  <span>{t('panel.newFolder')}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   data-testid="resource-new-doc"
@@ -973,6 +967,16 @@ export function ResourcePanel(): React.JSX.Element {
                 >
                   <FilePlus />
                   <span>{t('panel.newDocument')}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  data-testid="resource-new-folder"
+                  onSelect={() => {
+                    act.requestResourceCreate('create_folder', '')
+                  }}
+                >
+                  <FolderPlus />
+                  <span>{t('panel.newFolder')}</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 from hashlib import sha256
 from pathlib import PurePosixPath
-from urllib.parse import quote
 
 from service.content.domain.model import ContentError
 from service.platform.content import (
@@ -49,7 +48,6 @@ from service.resources.persistence.imports import (
 from service.resources.persistence.imports import (
     ResourceImportConflict as ResourceImportCatalogConflict,
 )
-from service.resources.service.fetcher import FetchedPage, PageFetcher, PageFetchError
 from service.resources.service.history import ResourceVersionService
 from service.resources.service.observe import ResourceVersionSupervisor
 from service.resources.service.writer import ResourceWriter, ResourceWriterError
@@ -68,21 +66,7 @@ WEB_SOURCE_RESERVED_NAMES = frozenset(
         *(f"LPT{index}" for index in range(1, 10)),
     }
 )
-WEB_IMAGE_DIRECTORY = ".web-assets"
-WEB_IMAGE_EXTENSIONS = {
-    "image/avif": ".avif",
-    "image/bmp": ".bmp",
-    "image/gif": ".gif",
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/x-icon": ".ico",
-}
-WEB_IMAGE_EMPTY = b""
 WEB_IMPORT_FAILED = "web_import_failed"
-# 入库默认走「标题 + URL」轻路径，不再出站抓取整页正文。抓取链路（HtmlFetcher、
-# 图片本地化、整页 Markdown）整体保留为备用，置 True 即恢复原重路径。
-WEB_IMPORT_FETCH_FULL_PAGE = False
 IMPORT_COMPLETED = "completed"
 IMPORT_NEEDS_RESOLUTION = "needs_resolution"
 IMPORT_PLAN_STALE = "import_plan_stale"
@@ -653,14 +637,6 @@ class WebImportItem:
     error: str | None = None
 
 
-@dataclass(frozen=True)
-class _PersistedWebImage:
-    reference: str
-    relative_path: str
-    path: str
-    revision: str
-
-
 def _document_title(page_title: str, candidate_title: str) -> str:
     title = " ".join((page_title or candidate_title).split())
     return title or WEB_SOURCE_FALLBACK_NAME
@@ -708,105 +684,25 @@ def _markdown_link(url: str) -> str:
     return f"[{text}](<{url}>)"
 
 
-def _encoded_path(path: PurePosixPath) -> str:
-    return "/".join(quote(part, safe="") for part in path.parts)
-
-
 class WebImporter:
-    """逐个候选生成引用资料并通过资料库 Writer 独立落盘。
-
-    默认轻路径只写「标题 + 可点击的原始 URL 链接」，不出站抓取整页；抓取/图片
-    本地化重路径由 `WEB_IMPORT_FETCH_FULL_PAGE` 控制，整体保留为备用。
-    """
+    """逐个候选生成引用资料并通过资料库 Writer 独立落盘。"""
 
     def __init__(
         self,
         writer: ResourceWriter,
-        fetcher: PageFetcher,
         content: ContentPort,
         sources: ResourceWebSourceCatalog,
     ) -> None:
         self._writer = writer
-        self._fetcher = fetcher
         self._content = content
         self._sources = sources
-
-    def _persist_images(
-        self,
-        project_id: str,
-        parent: str,
-        page: FetchedPage,
-    ) -> tuple[_PersistedWebImage, ...]:
-        if not page.images:
-            return ()
-        parent_path = self._content.within_root(project_id, RootKind.RESOURCES, parent)
-        persisted: list[_PersistedWebImage] = []
-        try:
-            for image in page.images:
-                if image.reference not in page.markdown:
-                    continue
-                extension = WEB_IMAGE_EXTENSIONS.get(image.media_type)
-                if extension is None:
-                    continue
-                relative = PurePosixPath(
-                    WEB_IMAGE_DIRECTORY,
-                    f"{uuid.uuid4().hex}{extension}",
-                )
-                target = str(PurePosixPath(parent_path) / relative)
-                receipt = self._content.commit_optional_bytes(
-                    project_id,
-                    target,
-                    image.content,
-                    self._content.revision(WEB_IMAGE_EMPTY),
-                    WEB_IMAGE_EMPTY,
-                )
-                persisted.append(
-                    _PersistedWebImage(
-                        reference=image.reference,
-                        relative_path=_encoded_path(relative),
-                        path=receipt.path,
-                        revision=receipt.revision,
-                    )
-                )
-        except Exception:
-            self._discard_images(project_id, tuple(persisted))
-            raise
-        return tuple(persisted)
-
-    @staticmethod
-    def _localized_body(
-        page: FetchedPage,
-        persisted: tuple[_PersistedWebImage, ...],
-    ) -> str:
-        images = {image.reference: image for image in persisted}
-        body = page.markdown
-        for fetched in page.images:
-            stored = images.get(fetched.reference)
-            body = body.replace(
-                fetched.reference,
-                stored.relative_path if stored is not None else fetched.source_url,
-            )
-        return body
-
-    def _discard_images(
-        self,
-        project_id: str,
-        images: tuple[_PersistedWebImage, ...],
-    ) -> None:
-        for image in reversed(images):
-            try:
-                self._content.delete_bytes(project_id, image.path, image.revision)
-            except ContentError:
-                logger.exception("failed to discard a Web import image")
 
     def _discard_import(
         self,
         project_id: str,
         node: FileAssetRef | None,
         revision: str | None,
-        images: tuple[_PersistedWebImage, ...],
     ) -> None:
-        self._discard_images(project_id, images)
         if node is None or revision is None:
             return
         try:
@@ -827,11 +723,8 @@ class WebImporter:
         results: list[WebImportItem] = []
         for candidate in candidates:
             try:
-                if WEB_IMPORT_FETCH_FULL_PAGE:
-                    item = self._import_full_page(project_id, query, parent, candidate)
-                else:
-                    item = self._import_reference(project_id, query, parent, candidate)
-            except (PageFetchError, ResourceWriterError) as error:
+                item = self._import_reference(project_id, query, parent, candidate)
+            except ResourceWriterError as error:
                 results.append(
                     WebImportItem(
                         title=candidate.title,
@@ -894,66 +787,12 @@ class WebImporter:
                 ),
             )
         except Exception:
-            self._discard_import(project_id, node, revision, ())
+            self._discard_import(project_id, node, revision)
             raise
         return WebImportItem(
             title=title,
             url=candidate.url,
             status=WebImportStatus.SUCCESS,
-            node=node,
-        )
-
-    def _import_full_page(
-        self,
-        project_id: str,
-        query: str,
-        parent: str,
-        candidate: WebCandidate,
-    ) -> WebImportItem:
-        """备用重路径：抓取整页 HTML、本地化图片后落 Markdown（开关默认关闭）。"""
-
-        page = self._fetcher.fetch(candidate.url)
-        title = _document_title(page.title, candidate.title)
-        fetched_at = time.time()
-        persisted: tuple[_PersistedWebImage, ...] = ()
-        node: FileAssetRef | None = None
-        revision: str | None = None
-        try:
-            persisted = self._persist_images(project_id, parent, page)
-            document = _markdown(
-                title=title,
-                body=self._localized_body(page, persisted),
-            )
-            revision = self._content.revision(document.encode("utf-8"))
-            node = self._writer.write_markdown(
-                project_id,
-                ResourceLocationRef(parent=parent, name=_file_name(title)),
-                document,
-            )
-            self._sources.save(
-                project_id,
-                ResourceWebSource(
-                    web_source_id=str(uuid.uuid4()),
-                    resource_path=node.path,
-                    resource_revision=revision,
-                    source_title=title or None,
-                    source_url=page.source_url,
-                    final_url=page.final_url or None,
-                    search_query=query or None,
-                    fetched_at=fetched_at,
-                    schema_version=WEB_SOURCE_SCHEMA_VERSION,
-                    created_at=fetched_at,
-                    updated_at=fetched_at,
-                ),
-            )
-        except Exception:
-            self._discard_import(project_id, node, revision, persisted)
-            raise
-        return WebImportItem(
-            title=title,
-            url=candidate.url,
-            status=WebImportStatus.SUCCESS,
-            final_url=page.final_url,
             node=node,
         )
 

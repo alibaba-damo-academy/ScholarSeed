@@ -7,6 +7,7 @@ import type { ForegroundMessage } from '../../contracts/feedback'
  * 是上下文队列的权威状态；来源 Feature 只贡献候选并调用 AssistantIngress。
  */
 
+import { candidateLabelFallback } from '../../contracts/assistant.ts'
 import type {
   ArtifactLibraryLink,
   AssistantCapability,
@@ -151,9 +152,77 @@ export function contextRefMatchesCandidate(
   ) {
     return false
   }
+  if (candidate.kind === 'file' && candidate.origin === 'explicit' && ref.anchor == null) {
+    return true
+  }
   return (
     candidate.origin === 'current_document' && ref.origin === 'explicit'
   ) || ref.source_revision === (candidate.source_revision ?? null)
+}
+
+export function mergeContextCandidates(
+  refs: readonly AssistantContextRef[],
+  candidates: readonly AssistantContextCandidate[],
+  submittedRefIds: readonly string[],
+  createRefId: (candidate: AssistantContextCandidate) => string
+): { refs: AssistantContextRef[]; acceptedRefIds: string[]; changed: boolean } {
+  const submitted = new Set(submittedRefIds)
+  const acceptedRefIds: string[] = []
+  let nextRefs = [...refs]
+  let changed = false
+  for (const candidate of candidates) {
+    if (candidate.origin === 'current_document') {
+      const retained = replaceCurrentDocumentRefs(nextRefs, submittedRefIds)
+      changed ||= retained.length !== nextRefs.length
+      nextRefs = retained
+    }
+    const matches = nextRefs.filter((ref) =>
+      !submitted.has(ref.ref_id) && contextRefMatchesCandidate(ref, candidate)
+    )
+    if (matches.length > 0) {
+      const preferred = matches.find((ref) => ref.origin === 'explicit') ?? matches[0]
+      if (matches.length > 1) {
+        nextRefs = nextRefs.filter((ref) => ref === preferred || !matches.includes(ref))
+        changed = true
+      }
+      const updated = candidate.origin === 'explicit'
+        ? {
+            ...preferred,
+            origin: 'explicit' as const,
+            retention: candidate.retention ?? preferred.retention,
+            source_revision: candidate.kind === 'file'
+              ? candidate.source_revision ?? null
+              : preferred.source_revision
+          }
+        : preferred
+      if (
+        updated.origin !== preferred.origin
+        || updated.retention !== preferred.retention
+        || updated.source_revision !== preferred.source_revision
+      ) {
+        nextRefs = nextRefs.map((ref) => ref === preferred ? updated : ref)
+        changed = true
+      }
+      acceptedRefIds.push(preferred.ref_id)
+      continue
+    }
+    const labelFallback = candidateLabelFallback(candidate)
+    nextRefs.push({
+      ref_id: createRefId(candidate),
+      kind: candidate.kind,
+      source_id: candidate.source_id,
+      source_revision: candidate.source_revision ?? null,
+      label: candidate.label,
+      ...((candidate.kind === 'selection' || candidate.kind === 'literature') && candidate.anchor && typeof candidate.selection_source_label === 'string' ? { selection_source_label: candidate.selection_source_label } : {}),
+      ...(labelFallback ? { label_fallback: labelFallback } : {}),
+      anchor: candidate.anchor ?? null,
+      retention: candidate.retention ?? 'next_turn',
+      origin: candidate.origin
+    })
+    changed = true
+    acceptedRefIds.push(nextRefs[nextRefs.length - 1].ref_id)
+  }
+  return { refs: nextRefs, acceptedRefIds, changed }
 }
 
 const CONTEXT_FAILURE_KEYS = {

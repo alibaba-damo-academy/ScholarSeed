@@ -15,6 +15,7 @@ from typing import Any
 
 from scholarseed_codex.activity import NativeActivity
 from scholarseed_codex.capacity import HostRole
+from scholarseed_codex.catalog import model_catalog_argument
 from scholarseed_codex.directive import parse_declarations
 from scholarseed_codex.environment import (
     CODEX_HOME_ENV,
@@ -161,7 +162,9 @@ def _same_model_connection(current: ModelIntent, requested: ModelIntent) -> bool
 
 def _same_thread_preferences(current: ModelIntent, requested: ModelIntent) -> bool:
     return (
-        current.reasoning_effort == requested.reasoning_effort
+        current.model_ref == requested.model_ref
+        and current.capabilities == requested.capabilities
+        and current.reasoning_effort == requested.reasoning_effort
         and current.service_tier == requested.service_tier
         # ``model_context_window`` is written into the thread config at start; the
         # per-turn overrides do not carry it. Comparing it here is what turns a
@@ -494,6 +497,14 @@ class CodexRuntimeSession:
             )
 
     async def _apply_model_connection(self) -> None:
+        await self._configure_model_connection()
+        request = self._native.request
+        catalog_argument = await model_catalog_argument(self._request.model, request)
+        self._native.request = replace(
+            request, launch_arguments=(*request.launch_arguments, catalog_argument)
+        )
+
+    async def _configure_model_connection(self) -> None:
         intent = self._request.model
         request = self._native.request
         config = session_thread_config(self._required_capabilities)
@@ -917,9 +928,6 @@ class CodexRuntimeSession:
                     scope="session",
                 )
         if request.model is not None:
-            # App Server exposes a public turn/start.model override for this turn and
-            # subsequent turns. A provider/endpoint change is a different connection
-            # and cannot be represented by that field.
             if _same_model_connection(self._model, request.model) and _same_thread_preferences(
                 self._model, request.model
             ):

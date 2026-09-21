@@ -85,6 +85,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib import error, parse, request
 
+import pypdfium2
+
 RETRIEVAL_DIR = "02_retrieval"
 SELECTED_FILENAME = "selected_paper.json"
 OUTPUT_FILENAME = "paper_info.json"
@@ -339,7 +341,7 @@ def download_pdf(url: str, timeout: float, max_bytes: int = MAX_PDF_BYTES) -> by
 
     Validating the `%PDF` magic bytes is the whole point. The dominant failure
     mode is not a 404 — it is a publisher paywall or a robot check returning an
-    HTML page with HTTP 200, which PyMuPDF would reject with an opaque error
+    HTML page with HTTP 200, which the PDF parser would reject with an opaque error
     several steps later, or worse, parse into a page of navigation chrome that
     then gets extracted as if it were the paper.
     """
@@ -521,15 +523,11 @@ def number_sentences(sentences: list[str]) -> str:
 def extract_pdf_text(pdf_bytes: bytes) -> str:
     """PDF bytes -> the `#N `-numbered full text. Raises FetchError on failure."""
     try:
-        import fitz  # PyMuPDF
-    except ImportError as exc:  # pragma: no cover - dependency is declared
-        raise FetchError("extract_failed", f"PyMuPDF unavailable: {exc}", False) from exc
-
-    try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            if doc.is_encrypted and not doc.authenticate(""):
-                raise FetchError("extract_failed", "PDF is encrypted", False)
-            pages = [page.get_text("text") for page in doc]
+        with pypdfium2.PdfDocument(pdf_bytes, password="") as document:
+            pages = [
+                document[index].get_textpage().get_text_bounded()
+                for index in range(len(document))
+            ]
     except FetchError:
         raise
     except Exception as exc:

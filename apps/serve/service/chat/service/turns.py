@@ -33,7 +33,9 @@ from service.chat.constants import (
     PRODUCT_EVENT_SEND_NOW_OUTCOME_UNKNOWN,
     PRODUCT_EVENT_SEND_NOW_REJECTED,
     PRODUCT_EVENT_SEND_NOW_SUBMITTED,
+    PRODUCT_REFERENCE_DIRECTORY,
     PRODUCT_REFERENCE_FILE,
+    PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_REFERENCE_SKILL,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
@@ -375,7 +377,6 @@ class TurnService:
                 failed.native_turn_id or failed.queued_message_id,
                 safe_error=failed.safe_error,
             )
-            await live.ledger.broadcast_expired_hil(reason=PRODUCT_TURN_OUTCOME_UNKNOWN)
         await live.publish(
             (
                 PRODUCT_EVENT_SEND_NOW_OUTCOME_UNKNOWN
@@ -1191,29 +1192,43 @@ class TurnService:
                     }
                 )
             else:
+                if kind == InputKind.DIRECTORY and (not reference_id or path is not None):
+                    raise ValueError("directory input requires a registered reference id")
                 if reference_id:
                     if path is not None:
                         raise ValueError("file input accepts either path or reference id")
-                    path = live.resolve_local_input_file(reference_id)
+                    path = live.resolve_local_input_path(reference_id, kind)
                     if path is None:
-                        raise ValueError("local file reference is not authorized for this session")
-                    self._require_existing_file(path)
+                        raise ValueError("local path reference is not authorized for this session")
+                    if kind == InputKind.DIRECTORY:
+                        self._require_existing_directory(path)
+                    else:
+                        self._require_existing_file(path)
                 elif path is None:
                     raise ValueError(f"{kind.value} input requires path or reference id")
                 else:
                     self._require_allowed_file(live, path)
                 reference: MessageReferencePayload = {
-                    "type": PRODUCT_REFERENCE_FILE,
+                    "type": (
+                        PRODUCT_REFERENCE_DIRECTORY
+                        if kind == InputKind.DIRECTORY
+                        else PRODUCT_REFERENCE_FILE
+                    ),
                     "id": reference_id or str(path),
                     "title": name or path.name,
                     "path": str(path),
                     "media_type": str(raw.get("media_type") or ""),
                     "sha256": str(raw.get("sha256") or ""),
-                    "size": path.stat().st_size,
                 }
+                if kind != InputKind.DIRECTORY:
+                    reference["size"] = path.stat().st_size
                 if reference_id:
                     reference["reference_id"] = reference_id
-                    reference["origin"] = PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE
+                    reference["origin"] = (
+                        PRODUCT_REFERENCE_ORIGIN_LOCAL_DIRECTORY
+                        if kind == InputKind.DIRECTORY
+                        else PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE
+                    )
                 references.append(reference)
             items.append(InputItem(kind=kind, text=text, path=path, name=name))
         supplied_client_id = str(body.get("client_user_message_id") or "").strip()
@@ -1265,6 +1280,11 @@ class TurnService:
     def _require_existing_file(path: Path) -> None:
         if not path.exists() or not path.is_file():
             raise ValueError(f"input file does not exist: {path}")
+
+    @staticmethod
+    def _require_existing_directory(path: Path) -> None:
+        if path.is_symlink() or path.is_junction() or not path.is_dir():
+            raise ValueError(f"input directory does not exist: {path}")
 
     @staticmethod
     async def _require_allowed_skill(
@@ -1442,8 +1462,8 @@ class TurnService:
             live.active_assistant_snapshot_id = ""
             live.active_assistant_revision = None
             live.clear_task_lease()
-            live.active_product_turn_id = ""
             live.current_task = None
+            await live.release_product_turn(turn_input.client_user_message_id)
             if should_drain:
                 asyncio.create_task(self._drain_next(live))
 

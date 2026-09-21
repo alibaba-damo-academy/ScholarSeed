@@ -177,6 +177,7 @@ const bridge: BrowserBridge = {
   desktopAuthAdoptedAck: async () => ({ ok: true }),
   onDesktopAuth: unsubscribe,
   claimLanding: async () => false,
+  setLoginWindowVisible: async () => {},
   landingDismiss: async () => ({ ok: true }),
   onLandingReopen: unsubscribe,
   getUpdateState: async () => upToDate(),

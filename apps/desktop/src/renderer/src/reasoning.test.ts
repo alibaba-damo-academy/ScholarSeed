@@ -79,10 +79,12 @@ test('reasoning display localizes known values and preserves unknown provider va
   const t = i18n.getFixedT(null, 'conversation')
   assert.equal(reasoningLabel('', t), '模型默认')
   assert.equal(reasoningLabel('high', t), '高 (high)')
+  assert.equal(reasoningLabel('medium', t, true), '中')
   assert.equal(t('reasoning.fixed'), '思考 · 固定开启')
   await i18n.changeLanguage('en')
   assert.equal(reasoningLabel('', t), 'Model default')
   assert.equal(reasoningLabel('high', t), 'high')
+  assert.equal(reasoningLabel('medium', t, true), 'Medium')
   assert.equal(t('reasoning.fixed'), 'Thinking · Always on')
   for (const value of ['provider-defined', 'constructor', '用户原文']) {
     assert.equal(reasoningLabel(value, t), value)

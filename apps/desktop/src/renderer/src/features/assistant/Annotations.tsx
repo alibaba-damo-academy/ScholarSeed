@@ -1,6 +1,7 @@
 import { assistantFailureDetail } from './failure'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { MessageCirclePlus } from 'lucide-react'
 
 import type { ResourceLocationRef } from '../../contracts/resources'
 import { isCitationUrl } from '../../contracts/citations'
@@ -24,6 +25,7 @@ import { CitationLink, CitationSources, WebCitationLink } from './Citations'
 import { AnnotationBadgeNote, annotationDisplay } from './Notes'
 import { defaultExcerptName } from './names'
 import { shouldClosePointerToolbar } from './selection-toolbar'
+import { SessionFileLink } from './Links'
 
 const ANSWER_ID_PREFIX = 'answer:'
 const ITEM_ID_PREFIX = 'item:'
@@ -52,6 +54,7 @@ interface SelectionDraft {
   endUtf16: number
   previewText: string
   left: number
+  width: number
   top: number
   placement: 'above' | 'below'
   mode: 'actions' | 'comment'
@@ -341,6 +344,7 @@ export function AnnotatedAnswer({
       startUtf16: start,
       endUtf16: end,
       previewText,
+      width: toolbarWidth,
       left: Math.min(
         rootBounds.width - toolbarHalfWidth,
         Math.max(
@@ -586,6 +590,7 @@ export function AnnotatedAnswer({
         answerAnnotations={answerAnnotations}
         className={markdownClassName ?? "md-agent"}
         evidence={evidence}
+        renderSessionFileLink={thread.sessionId ? (path, children) => <SessionFileLink sessionId={thread.sessionId!} path={path} onOpen={() => act.openFilePreview({ sessionId: thread.sessionId!, path })}>{children}</SessionFileLink> : undefined}
         citationUrls={answerSources?.flatMap(source => source.citation_urls)}
         renderCitation={answerId && thread.sessionId && citationEnabled ? (range, children, href) => {
           const source = answerSources?.find(candidate => candidate.citation_urls.includes(href))
@@ -629,10 +634,10 @@ export function AnnotatedAnswer({
       {answerId && thread.sessionId && citationEnabled && <CitationSources sessionId={thread.sessionId} answerId={answerId} text={text} answerSources={answerSources} />}
       {draft ? (
         <div
-          className={`answer-selection-anchor -translate-x-1/2 ${draft.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
+          className={`answer-selection-anchor flex min-w-0 flex-col items-center -translate-x-1/2 ${draft.placement === 'above' ? '-translate-y-full pb-2' : 'pt-2'
             }`}
           ref={toolbarRef}
-          style={{ left: draft.left, top: draft.top }}
+          style={{ left: draft.left, top: draft.top, width: draft.width }}
           onMouseUp={(event) => event.stopPropagation()}
         >
           {draft.mode === 'actions' ? (
@@ -641,7 +646,7 @@ export function AnnotatedAnswer({
                 <div className="flex w-full flex-col">
                   <Button
                     className={SELECTION_ACTION_CLASS}
-                    icon={<Icon name="talk" size={14} />}
+                    icon={<MessageCirclePlus size={14} />}
                     onClick={() => setDraft({ ...draft, mode: 'comment' })}
                     size="sm"
                     variant="ghost"
@@ -660,11 +665,11 @@ export function AnnotatedAnswer({
                   </Button>
                 </div>
               )}
-              className="w-[190px] !rounded-[var(--vds-radius-5)]"
+              className="w-[190px] max-w-full !rounded-[var(--vds-radius-5)]"
               label={a('remaining.selectionActions')}
             />
           ) : (
-            <div className="flex w-[328px] max-w-[calc(100vw-32px)] flex-col gap-1">
+            <div className="flex w-[328px] max-w-full min-w-0 flex-col gap-1">
               <FloatingToolbar
                 actions={(
                   <>

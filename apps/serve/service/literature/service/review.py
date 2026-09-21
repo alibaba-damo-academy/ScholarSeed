@@ -38,6 +38,7 @@ REVIEW_CITATIONS = 100
 YEAR_RANGE = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[—–-]\s*((?:19|20)\d{2})(?!\d)")
 QUERY = "01_input/query.json"
 REQUIREMENTS = "01_input/requirements.json"
+WRITING_REQUEST = "01_input/writing_request.json"
 METADATA = "02_retrieval/metadata.json"
 CORPUS = "02_retrieval/selected_paper.json"
 RETRIEVAL = "02_retrieval/retrieval_report.json"
@@ -62,6 +63,7 @@ PAPER_CARDS = "03_process/paper_cards.json"
 SUMMARY = "03_process/corpus_summary.json"
 OUTLINE = "04_outline/outline.json"
 OUTPUT_SPEC = "04_outline/output_spec.json"
+APPROVAL = "04_outline/approval.json"
 GENERATION = "05_generation/generation_report.json"
 QUALITY = "05_generation/quality_report.json"
 CITATIONS = "05_generation/citations.bib"
@@ -70,6 +72,7 @@ FAST_AUDIT = "07_verifier/fast_audit/output/aggregated_issues.json"
 JSON_FILES = (
     QUERY,
     REQUIREMENTS,
+    WRITING_REQUEST,
     METADATA,
     CORPUS,
     RETRIEVAL,
@@ -78,6 +81,7 @@ JSON_FILES = (
     SUMMARY,
     OUTLINE,
     OUTPUT_SPEC,
+    APPROVAL,
     GENERATION,
     QUALITY,
     POSTCHECK,
@@ -86,6 +90,7 @@ JSON_FILES = (
 EVIDENCE_TITLES = {
     QUERY: "精确任务意图",
     REQUIREMENTS: "任务与材料范围",
+    WRITING_REQUEST: "综述任务要求",
     METADATA: "检索候选",
     CORPUS: "检索筛选文献",
     RETRIEVAL: "检索筛选报告",
@@ -94,6 +99,7 @@ EVIDENCE_TITLES = {
     SUMMARY: "材料处理统计",
     OUTLINE: "大纲数据",
     OUTPUT_SPEC: "输出与引用格式",
+    APPROVAL: "出版选择",
     GENERATION: "生成报告",
     QUALITY: "质量报告",
     POSTCHECK: "引用核对详情",
@@ -367,6 +373,61 @@ def _sections(outline: dict, corpus: dict | None) -> tuple[int, list[ReviewSecti
 
 
 def _scope(query: dict, requirements: dict, corpus: dict | None) -> ReviewScope:
+    if "intent" in requirements:
+        retrieval = requirements.get("retrieval", {})
+        if not isinstance(retrieval, dict):
+            retrieval = {}
+        window = retrieval.get("time_range", {})
+        if not isinstance(window, dict):
+            window = {}
+        start, end = window.get("start_year"), window.get("end_year")
+        time_range = f"{start or '不限'}–{end or '不限'}"
+        if retrieval.get("temporal_policy") == "soft_preference":
+            time_range += "；允许早期基础文献"
+        dimensions = retrieval.get("dimensions", {})
+        focus = []
+        if isinstance(dimensions, dict):
+            for value in dimensions.values():
+                focus.extend(_strings(value))
+        constraints = requirements.get("constraints", [])
+        if not isinstance(constraints, list):
+            constraints = []
+        focus.extend(
+            _text(row.get("verbatim"))
+            for row in constraints
+            if isinstance(row, dict) and row.get("kind") in {"angle", "required_section", "other"}
+        )
+        requested_materials = [
+            _text(row.get("value", {}).get("title"))
+            for row in constraints
+            if isinstance(row, dict)
+            and row.get("kind") == "must_include_paper"
+            and isinstance(row.get("value"), dict)
+        ]
+        project = external = 0
+        for paper in (corpus or {}).values():
+            if not isinstance(paper, dict):
+                continue
+            origin = _text(paper.get("source_kind") or paper.get("origin")).casefold()
+            if (
+                paper.get("literature_id")
+                or paper.get("project_id")
+                or origin in {"project", "library", "local"}
+            ):
+                project += 1
+            else:
+                external += 1
+        return ReviewScope(
+            topic=_text(requirements.get("effective_requirements"))
+            or _text(requirements.get("intent")),
+            time_range=time_range,
+            focus=list(dict.fromkeys(filter(None, focus)))[:REVIEW_CHILDREN],
+            requested_materials=list(dict.fromkeys(filter(None, requested_materials)))[
+                :REVIEW_CHILDREN
+            ],
+            project_materials=project if corpus is not None else None,
+            external_materials=external if corpus is not None else None,
+        )
     normal = requirements.get("req_normal", {})
     if not isinstance(normal, dict):
         normal = {}
@@ -612,7 +673,8 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     values, hashes, files = _load(workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES))
     query = values.get(QUERY, {})
     requirements = values.get(REQUIREMENTS, {})
-    intent = _text(query.get("query"))
+    writing_request = values.get(WRITING_REQUEST, {})
+    intent = _text(writing_request.get("intent")) or _text(query.get("query"))
     if not intent:
         raise ValueError("review_intent_missing")
     corpus = values.get(CORPUS)
@@ -699,7 +761,10 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         if issues or postcheck or values.get(FAST_AUDIT) or values.get(RETRIEVAL)
         else None
     )
-    output = values.get(OUTPUT_SPEC, {})
+    output = {
+        **values.get(OUTPUT_SPEC, {}),
+        **writing_request.get("publication", {}),
+    }
     card = ReviewSnapshot(
         workspace=workspace,
         checkpoint=checkpoint,
@@ -707,11 +772,11 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
         title=_text(outline.get("survey_title"), REVIEW_TITLE) or "文献综述",
         status=status,
         generation_status=final,
-        scope=_scope(query, requirements, corpus),
+        scope=_scope(query, writing_request or requirements, corpus),
         output=ReviewOutput(
             format=output.get("format"),
             citation_style=output.get("citation_style"),
-            decided_by=output.get("decided_by"),
+            decided_by=("user" if values.get(APPROVAL) else output.get("decided_by")),
         ),
         included=included,
         fulltext=fulltext,

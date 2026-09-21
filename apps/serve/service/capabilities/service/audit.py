@@ -100,7 +100,7 @@ def exact_int(value: Any) -> bool:
     这里校的是 schema 版本号与条目计数, 收下一个布尔值等于放过一份畸形报告。
     """
 
-    return type(value) is int  # pylint: disable=unidiomatic-typecheck
+    return type(value) is int  # noqa: SS003
 
 
 def scan_context(row: dict[str, Any]) -> dict[str, Any]:

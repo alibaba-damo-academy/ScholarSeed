@@ -45,11 +45,14 @@ from service.chat.constants import (
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_TURN_UNKNOWN,
+    PRODUCT_TURN_OUTCOME_FAILED,
+    PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
     TURN_OUTCOME_UNCONFIRMED,
 )
 from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.catalog import (
+    QueuedMessageState,
     SessionCatalogStore,
     SessionPrincipal,
     SessionStatus,
@@ -482,6 +485,62 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 202)
         self.assertTrue(result["ok"])
 
+    async def test_a_message_sent_during_process_recovery_is_durably_queued_first(self) -> None:
+        """AOne 86998131 的准入前提: 进程恢复窗口内的普通消息先落盘, 再等运行时。
+
+        前端之所以可以在 ``starting``/``recovering`` 期间放行已有会话的普通发送, 靠的就是这条
+        后端契约 —— ``post`` 不读 readiness, 入队发生在任何运行时交互之前, 因此瞬态窗口最坏
+        只是延迟执行, 不会丢消息。若后端改成按 readiness 拒收, 这条断言会先失败。
+        """
+
+        recovering = replace(
+            self.incident(RuntimeIncidentState.DETECTED, incident_id="process-recovering"),
+            scope=RuntimeIncidentScope.PROCESS,
+            kind=RuntimeIncidentKind.PROCESS_EXIT,
+            strategy=RuntimeRecoveryStrategy.AUTO_RESTART,
+        )
+        await self.emit(RuntimeEventKind.RUNTIME_INCIDENT, incident=recovering, turn_id="")
+        adapter = self.live.runtime_session
+        submitted = asyncio.Event()
+        released = asyncio.Event()
+        accept = adapter.submit
+
+        async def restarting(request):
+            submitted.set()
+            await released.wait()
+            return await accept(request)
+
+        adapter.submit = restarting
+        turns = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger)
+        payload, status = await turns.post(
+            PRODUCT_SESSION_ID,
+            {"input": [{"type": "text", "text": "恢复期间继续发送"}]},
+            side=False,
+        )
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["ok"])
+        task = self.live.resource_task
+        queued_id = str(payload["queued_message_id"])
+        stored = self.catalog.queued_message(PRODUCT_SESSION_ID, queued_id)
+        self.assertIsNotNone(stored)
+        await asyncio.wait_for(submitted.wait(), 2.0)
+        # 运行时还没接下这条消息, 但它已经在持久队列里 —— 这正是可以放行发送的理由。
+        self.assertIn(
+            self.catalog.queued_message(PRODUCT_SESSION_ID, queued_id).state,
+            (QueuedMessageState.QUEUED, QueuedMessageState.SUBMITTING),
+        )
+
+        self.assertIsNotNone(task)
+        released.set()
+        await asyncio.wait_for(asyncio.shield(task), 5.0)
+        self.assertEqual(tuple(self.catalog.queued_messages(PRODUCT_SESSION_ID)), ())
+        self.assertTrue(
+            any(
+                event.kind == PRODUCT_EVENT_TURN_COMPLETED
+                for event in self.events.replay(PRODUCT_SESSION_ID)
+            )
+        )
+
     async def test_unknown_correlation_survives_restart_and_exact_resume_is_authoritative(
         self,
     ) -> None:
@@ -684,11 +743,15 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         client_id = "unconfirmed-product-submission"
+        terminal_waiter = asyncio.create_task(self.live.ledger.wait_terminal(client_id))
+        await asyncio.sleep(0)
+        self.assertFalse(terminal_waiter.done())
         self.assertTrue(
             await self.live.ledger.record_unknown_submission(
                 client_id, safe_error=TURN_OUTCOME_UNCONFIRMED
             )
         )
+        self.assertEqual(await terminal_waiter, PRODUCT_TURN_OUTCOME_UNKNOWN)
         self.assertTrue(self.live.ledger.has_unknown_outcome)
         snapshot = self.live.ledger.uncertainty_snapshot()
         self.assertEqual(len(snapshot), 1)
@@ -766,6 +829,7 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_ledger_is_the_only_live_state_owner(self) -> None:
         for name in (
             "_turn_outcomes",
+            "_terminal_waiters",
             "_unknown_admission",
             "_active_vendor_turn_id",
             "_runtime_incidents",
@@ -786,6 +850,31 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual([row.kind for row in terminals], [PRODUCT_EVENT_TURN_COMPLETED])
         self.assertEqual(self.live.ledger.active_turn_id, "")
+
+    async def test_terminal_waiter_releases_after_native_and_service_terminal_paths(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_STARTED)
+        native_waiter = asyncio.create_task(self.live.ledger.wait_terminal(VENDOR_TURN_ID))
+        await asyncio.sleep(0)
+        self.assertFalse(native_waiter.done())
+        await self.emit(RuntimeEventKind.TURN_INTERRUPTED)
+        self.assertEqual(await native_waiter, PRODUCT_TURN_OUTCOME_INTERRUPTED)
+
+        failed_turn_id = "service-failed-turn"
+        service_waiter = asyncio.create_task(self.live.ledger.wait_terminal(failed_turn_id))
+        await asyncio.sleep(0)
+        self.assertFalse(service_waiter.done())
+        self.assertTrue(
+            await self.live.ledger.record_turn_failure(
+                failed_turn_id, code="service_failed", message="service failed"
+            )
+        )
+        self.assertEqual(await service_waiter, PRODUCT_TURN_OUTCOME_FAILED)
+        self.assertEqual(self.live.ledger._terminal_waiters, {})
+
+    async def test_terminal_waiter_returns_an_already_persisted_outcome(self) -> None:
+        await self.emit(RuntimeEventKind.TURN_COMPLETED)
+        self.assertEqual(await self.live.ledger.wait_terminal(VENDOR_TURN_ID), "completed")
+        self.assertEqual(self.live.ledger._terminal_waiters, {})
 
     async def test_terminal_does_not_create_a_second_review_ledger(self) -> None:
         await self.emit(RuntimeEventKind.TURN_COMPLETED)

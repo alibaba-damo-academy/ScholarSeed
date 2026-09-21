@@ -442,7 +442,12 @@ def register_resource_routes(app: FastAPI) -> None:
             if supervisor is not None:
                 await supervisor.activate_project(project or "")
             page = (
-                content.subtree(project or "", path, depth=depth, offset=offset)
+                content.subtree(
+                    project or "",
+                    _in_resources_root(content, project or "", path),
+                    depth=depth,
+                    offset=offset,
+                )
                 if path
                 else content.tree(project or "", depth=depth, offset=offset)
             )
@@ -450,13 +455,18 @@ def register_resource_routes(app: FastAPI) -> None:
             linked_roots = content.external_roots(project or "")
         except ContentError as exc:
             raise _fail(exc) from exc
-        capabilities = (
-            supervisor.capability_states(project or "", _tree_paths(page.children))
-            if supervisor is not None
-            else None
-        )
         repositories = content.repository_roots(
             project or "", _tree_paths(page.children, files_only=False)
+        )
+        capability_paths = _tree_paths(page.children)
+        capabilities = (
+            supervisor.capability_states(
+                project or "",
+                capability_paths,
+                repositories={path: repositories[path] for path in capability_paths},
+            )
+            if supervisor is not None
+            else None
         )
         return {
             "root": root,

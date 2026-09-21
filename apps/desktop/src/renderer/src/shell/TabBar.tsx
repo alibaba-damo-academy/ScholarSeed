@@ -19,10 +19,11 @@ import {
   workbenchTabTitle,
   type TabKind
 } from '../features/workbench/tabs'
-import { useDocumentWorkspace, useWorkspaceController } from '../features/workbench/workspace'
+import { documentNavigationView, useDocumentWorkspace, useWorkspaceController } from '../features/workbench/workspace'
 
 const NAVIGATION_AREAS_ID = 'navigation-areas'
-const TOPBAR_TRAILING_NAVIGATION_CLASS_NAME = 'vds-top-bar-navigation-trailing'
+const TOPBAR_TRAILING_NAVIGATION_CLASS_NAME =
+  'vds-top-bar-navigation-trailing box-border pe-[var(--vds-top-bar-actions-width,0px)]'
 
 /** 标签种类 → 图标，保证同类标签视觉一致。 */
 const TAB_ICONS: Record<Exclude<TabKind, 'overview' | 'literature'>, React.ComponentProps<typeof Icon>['name']> = {
@@ -49,7 +50,10 @@ export function TabBar(): React.JSX.Element {
   const workspace = useWorkspaceController()
   const documents = useDocumentWorkspace()
   const documentTabs: NavigationTabItem[] = state.mainView === 'resource' || state.mainView === 'literature'
-    ? Object.values(documents.tabs).filter(tab => (documents.sessions[tab.sessionId]?.source.kind === 'literature') === (state.mainView === 'literature')).map((tab) => {
+    ? Object.values(documents.tabs).filter(tab => {
+        const session = documents.sessions[tab.sessionId]
+        return session && documentNavigationView(tab, session) === state.mainView
+      }).map((tab) => {
         const source = documents.sessions[tab.sessionId]?.source
         const ResourceIcon = source?.kind === 'literature'
           ? fileIconForName(source.path)
@@ -107,7 +111,7 @@ export function TabBar(): React.JSX.Element {
       workspace.focusTab(id)
       const session = documents.sessions[documentTab.sessionId]
       if (session?.source.kind === 'project') act.selectResourceFile(session.source.path)
-      set((current) => ({ ...current, mainView: session?.source.kind === 'literature' ? 'literature' : 'resource', activeTab: id }))
+      set((current) => ({ ...current, mainView: session ? documentNavigationView(documentTab, session) : 'resource', activeTab: id }))
       return
     }
     act.activateTab(id)
@@ -126,7 +130,7 @@ export function TabBar(): React.JSX.Element {
     const session = documents.sessions[tab.sessionId]
     if (!session) return null
     const literature = session.source.kind === 'literature'
-    if (literature !== (state.mainView === 'literature')) return null
+    if (documentNavigationView(tab, session) !== state.mainView) return null
     const ResourceIcon = literature
       ? fileIconForName(session.source.path)
       : resourceFileIcon(tab.title)

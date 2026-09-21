@@ -20,6 +20,7 @@ import { useState, useSyncExternalStore } from 'react'
 import {
   updateCandidateKey,
   type UpdateErrorOrigin,
+  type UpdateInstallFallback,
   type UpdateSnapshot
 } from '../../../../updates.ts'
 
@@ -218,8 +219,12 @@ export function updatePanelStageOf(state: UpdateSnapshot | null): UpdatePanelSta
 export interface UpdateFailure {
   /** 失败来自哪一次动作；展示侧据此选文案，不从相位或 error 文本反推。 */
   origin: UpdateErrorOrigin | undefined
-  /** error 文本是主进程生成的占位串，不能直接给用户看，要换成本地化的通用说法。 */
-  fallback: boolean
+  /**
+   * 主进程标注的结构化失败分类；`undefined` = 不是分类失败（可能有 `message` 原文）。
+   * 带分类时**没有** `message`：原始诊断（Windows 控制台代码页下的中文 stderr）会乱码，只落
+   * update.log，界面按分类给本地化说法（bug 87042987）。
+   */
+  fallback?: UpdateInstallFallback
   /** 新版本已经装上又退了回来：这是独立结局，文案与「没装成」不同。 */
   rolledBack: boolean
   /** 协议级诊断原文。 */
@@ -229,15 +234,15 @@ export interface UpdateFailure {
 export function updateFailureOf(state: UpdateSnapshot | null): UpdateFailure | null {
   if (!state) return null
   const rolledBack = state.phase === 'rolled-back' || state.rollbackVersion !== undefined
-  if (state.errorFallback === 'install_failed') {
-    return { origin: state.errorOrigin, fallback: true, rolledBack }
+  if (state.errorFallback) {
+    return { origin: state.errorOrigin, fallback: state.errorFallback, rolledBack }
   }
   if (state.error) {
-    return { origin: state.errorOrigin, fallback: false, rolledBack, message: state.error }
+    return { origin: state.errorOrigin, rolledBack, message: state.error }
   }
   // 相位自己说失败了却没带原因（回滚记录被截断之类）：仍按失败呈现，不能装作一切正常。
   if (state.phase === 'failed' || rolledBack) {
-    return { origin: state.errorOrigin, fallback: false, rolledBack }
+    return { origin: state.errorOrigin, rolledBack }
   }
   return null
 }
@@ -259,7 +264,11 @@ export function updateFailureText(
   t: TFunction<'components'>,
   accountText: TFunction<'account'>
 ): string {
-  // 拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
+  // 结构化分类失败：按类别给可操作的本地化说法，绝不透出原始诊断（Windows 控制台代码页下会乱码，
+  // 见 bug 87042987）。校验环境不可用 → 引导手动下载重装；签名不可信 → 安全拦截、引导官方渠道重取。
+  if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
+  if (failure.fallback === 'install_signature_untrusted') return t('update.installSignatureUntrusted')
+  // 笼统 fallback 或拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
   if (failure.fallback || !failure.message) {
     return failure.origin === 'install'
       ? accountText('update.installFailed')

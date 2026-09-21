@@ -28,7 +28,7 @@ def describe_input(operation,workspace=None):
                  'citation_style':['numeric','author_year','ieee','acm']}
     asset={'required':['purpose','content_plan','caption_draft','paper_ids'],
            'purpose':'string: contribution to owning section','content_plan':'string: supported objects/relations or comparison scope',
-           'caption_draft':'string: reader-facing draft, no drawing instructions',
+           'caption_draft':'string: descriptive reader-facing content, no figure/table numbering prefix or drawing instructions',
            'paper_ids':'array of selected paper IDs; [] permits the selected corpus as eligible evidence',
            'qualifications':'optional array of assumption/limitation strings',
            'figures':{'figure_id':'unique F1-style ID','visual_guidance':'optional style/label-language instructions'},

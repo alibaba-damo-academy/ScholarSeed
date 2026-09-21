@@ -90,4 +90,5 @@ stale metadata. Existing `paid` manifests remain readable.
   only when diagnosing or maintaining that subsystem.
 - Native Windows execution: read [the Windows guide](../../references/windows.md).
 - Distribution version, SHA-256, public source, license and reproducible build:
-  `vendor/provenance.json`; translator notice: `vendor/THIRD_PARTY_NOTICES.md`.
+  `vendor/provenance.json`; dependency and optional-translator notices:
+  `vendor/THIRD_PARTY_NOTICES.md`.

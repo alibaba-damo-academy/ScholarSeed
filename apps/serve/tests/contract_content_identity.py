@@ -29,7 +29,12 @@ from service.content.domain.model import (
 )
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service import native
-from service.content.service.identity import ASSET_TABLE
+from service.content.service.identity import (
+    ASSET_TABLE,
+    FILE_IDENTITY_PREFIX,
+    _decode_file_identity,
+    _encode_file_identity,
+)
 from service.content.service.port import ContentService, ProjectRegistry
 from service.paths import PROJECT_DB_RELATIVE
 from service.persistence.project import transaction
@@ -38,6 +43,10 @@ from service.platform.content import AssetState, ContentPort, ProjectLayout, Roo
 
 PASS = 0
 FAIL = 0
+SQLITE_MAX_INTEGER = (1 << 63) - 1
+WINDOWS_MAX_DEVICE = (1 << 64) - 1
+WINDOWS_MAX_INODE = (1 << 128) - 1
+LEGACY_IDENTITY = 42
 
 
 def check(name: str, condition: bool, detail: str = "") -> None:
@@ -63,6 +72,38 @@ def main() -> int:
     registry.seed_legacy(((legacy, "旧项目"),))
     registry.seed_workspace()
     content = ContentService(registry, catalog)
+
+    identity_boundaries = (
+        SQLITE_MAX_INTEGER,
+        SQLITE_MAX_INTEGER + 1,
+        WINDOWS_MAX_DEVICE,
+        WINDOWS_MAX_INODE,
+    )
+    windows_inode = WINDOWS_MAX_INODE
+    encoded_inode = _encode_file_identity(windows_inode)
+    check(
+        "SQLite 与 Windows 文件身份边界均可无损编码",
+        encoded_inode.startswith(FILE_IDENTITY_PREFIX)
+        and all(
+            _decode_file_identity(_encode_file_identity(value)) == value
+            for value in identity_boundaries
+        ),
+    )
+    check(
+        "旧版 SQLite INTEGER 文件身份仍可读取",
+        _decode_file_identity(LEGACY_IDENTITY) == LEGACY_IDENTITY,
+    )
+    with transaction(root / "identity-affinity.sqlite3") as connection:
+        connection.execute("CREATE TABLE identity_value (value INTEGER NOT NULL)")
+        connection.execute("INSERT INTO identity_value VALUES (?)", (encoded_inode,))
+        stored_identity = connection.execute(
+            "SELECT value, typeof(value) AS storage FROM identity_value"
+        ).fetchone()
+    check(
+        "旧 INTEGER affinity 列不会把带前缀身份降级为 REAL",
+        stored_identity["storage"] == "text"
+        and _decode_file_identity(stored_identity["value"]) == windows_inode,
+    )
 
     check(
         "ContentService 结构性满足 ContentPort",

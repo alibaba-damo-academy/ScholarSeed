@@ -7,8 +7,10 @@ const crypto = require('node:crypto')
 const { execFileSync, spawnSync } = require('node:child_process')
 const { executableDigest } = require('./digest.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
-const { pythonRelease, verifyPythonArchive, verifyPython, nativeTar } = require('../../../scripts/python.cjs')
+const { pythonRelease, verifyPythonArchive, verifyPython, verifyDevelopmentPython,
+  developmentPython, nativeTar } = require('../../../scripts/python.cjs')
 const { checkToolchain, ensureNodeDependencies } = require('../../../scripts/toolchain.cjs')
+const { stageNotices } = require('./notices.cjs')
 let dependencies
 
 const DESKTOP = path.resolve(__dirname, '..')
@@ -38,6 +40,7 @@ const ELECTRON_CACHE_DIRECTORIES = [
   path.join(os.homedir(), '.cache', 'electron')
 ]
 const ARTIFACT_BASENAME = 'scholarseed'
+const DMGBUILD_VERSION = '1.6.7'
 const BUILD_TYPES = {
   dev: { channel: 'preview', lane: LOCAL_LANE, signed: false },
   preview: { channel: 'preview', lane: DISTRIBUTION_LANE, signed: true },
@@ -81,6 +84,24 @@ function resourcePath(root, relative) {
   return path.join(root, ...relative.split('/'))
 }
 
+function localDmgbuild(scriptsDirectory, installedVersion) {
+  if (installedVersion !== DMGBUILD_VERSION) {
+    throw new Error(`dmgbuild ${installedVersion} is not the locked ${DMGBUILD_VERSION}`)
+  }
+  const executable = path.join(scriptsDirectory, 'dmgbuild')
+  if (!fs.statSync(executable).isFile()) throw new Error(`dmgbuild is not a regular file: ${executable}`)
+  fs.accessSync(executable, fs.constants.X_OK)
+  return executable
+}
+
+function installedDmgbuild() {
+  const python = developmentPython(REPO, process.env.VENV)
+  const actual = verifyDevelopmentPython(REPO, python)
+  const installedVersion = command(python, ['-I', '-B', '-c',
+    'import importlib.metadata as metadata; print(metadata.version("dmgbuild"))'])
+  return localDmgbuild(actual.scripts, installedVersion)
+}
+
 function options(argv) {
   const { hostArch, target } = loadDependencies().targets
   const obsolete = Object.keys(process.env).filter(name =>
@@ -94,12 +115,11 @@ function options(argv) {
     platform: process.platform,
     arch: hostArch(),
     candidate: false,
-    install: false,
-    force: false
+    install: false
   }
   const keys = new Set([
     'stage', 'type', 'version', 'build-number', 'platform', 'arch', 'result',
-    'update-base-url', 'team-id', 'windows-publisher', 'install', 'force'
+    'update-base-url', 'team-id', 'windows-publisher', 'install'
   ])
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === CANDIDATE_FLAG) {
@@ -108,10 +128,6 @@ function options(argv) {
     }
     if (argv[index] === '--install') {
       result.install = true
-      continue
-    }
-    if (argv[index] === '--force') {
-      result.force = true
       continue
     }
     const key = argv[index].replace(/^--/, '')
@@ -235,7 +251,6 @@ function help() {
   --build-number YYYYMMDDHHMM   (default: HEAD commit time, Beijing)
   --candidate
   --install
-  --force
   --result NEW_PATH
 
 preview/release require --update-base-url.
@@ -248,21 +263,11 @@ function assertCleanWorktree() {
   }
 }
 
-function provenance(args) {
+function provenance() {
   const commit = command('git', ['rev-parse', 'HEAD'])
   const currentBranch = command('git', ['branch', '--show-current'])
   const branch = currentBranch || 'unknown'
   const remote = DEFAULT_REMOTE
-  if (args.lane === DISTRIBUTION_LANE) {
-    const message = command('git', ['log', '-1', '--pretty=%B'])
-    if (!message.includes('[cicd]')) {
-      if (args.force) {
-        console.log('[package] WARNING: commit message does not contain [cicd]; continuing because --force was used')
-      } else {
-        throw new Error('commit message must contain [cicd] for preview/release builds; use --force to force build')
-      }
-    }
-  }
   return { branch, commit, remote }
 }
 
@@ -414,7 +419,7 @@ function writeBuilderConfiguration(context, args) {
     }
   }
   const extraResources = PACKAGE.build.extraResources.map(entry =>
-    ['resources/backend', 'resources/defaults', 'resources/product.json'].includes(entry.from)
+    ['resources/backend', 'resources/defaults', 'resources/product.json', 'resources/notices'].includes(entry.from)
       ? { ...entry, from: path.join(context.resourceRoot, path.basename(entry.from)) }
       : entry)
   const filename = path.join(context.runDirectory, 'electron-builder.json')
@@ -490,7 +495,7 @@ async function main(argv = process.argv.slice(2)) {
     if (args.platform !== process.platform || args.target.arch !== hostArch()) {
       throw new Error('build on the matching native platform and architecture')
     }
-    const source = provenance(args)
+    const source = provenance()
     args.buildNumber = buildNumberOf(args, source.commit)
     const releaseRoot = path.join(DESKTOP, 'release')
     fs.mkdirSync(releaseRoot, { recursive: true })
@@ -502,6 +507,7 @@ async function main(argv = process.argv.slice(2)) {
       process.env.SCHOLARSEED_DESKTOP_CONFIG_SOURCE ||
       path.join(REPO, 'apps/serve/service/settings/default.json'))
     const resourceRoot = path.join(runDirectory, 'resources')
+    const notices = stageNotices(REPO, resourceRoot)
     const backend = path.join(resourceRoot, 'backend')
     fs.mkdirSync(backend, { recursive: true })
     run(nativeTar(), ['-xzf', runtime.archive, '-C', backend])
@@ -516,7 +522,7 @@ async function main(argv = process.argv.slice(2)) {
       appId: PACKAGE.build.appId, productName: PACKAGE.build.productName,
       icon: path.join(DESKTOP, args.target.icon), runtime, binaries,
       config: { path: configSource, sha256: await verify.sha256(configSource) },
-      resourceRoot, output: path.join(runDirectory, 'artifacts'),
+      resourceRoot, notices, output: path.join(runDirectory, 'artifacts'),
       lock: path.join(runDirectory, 'skills.lock.json'),
       dependencies: path.join(runDirectory, 'dependencies.json'),
       skillSource: path.join(REPO, 'skills', 'community'),
@@ -554,10 +560,16 @@ async function main(argv = process.argv.slice(2)) {
     // added to a preamble fails the build here instead of a user's survey.
     const oracleScript = path.join(context.skillSource, 'literature-review', 'scripts',
       'smoke_publication.py')
-    const oracleOutput = command(python, ['-I', '-B', oracleScript], {
+    const oracleResult = spawnSync(python, ['-I', '-B', oracleScript], {
+      cwd: REPO,
+      encoding: 'utf8',
       env: { ...environment,
         PATH: `${context.texlive.binDirectory}${path.delimiter}${environment.PATH}` }
     })
+    const oracleOutput = (oracleResult.stdout || '').trim()
+    if (oracleResult.error || oracleResult.status !== 0) {
+      throw new Error(`bundled TeX Live oracle failed: ${oracleOutput || oracleResult.stderr || oracleResult.error}`)
+    }
     const oracle = JSON.parse(oracleOutput)
     const foreignEngine = Object.entries(oracle.engines || {})
       .find(([, resolved]) => !String(resolved).startsWith(context.texlive.binDirectory))
@@ -581,6 +593,7 @@ async function main(argv = process.argv.slice(2)) {
       process.env[CONTEXT_ENV] = context.file
       context.builderConfig = writeBuilderConfiguration(context, args)
       verify.atomicJSON(context.file, context)
+      if (args.stage === 'dmg') process.env.CUSTOM_DMGBUILD_PATH = installedDmgbuild()
       await build({ projectDir: DESKTOP, publish: 'never',
         targets: args.target.builderPlatform.createTarget([args.stage], args.target.builderArch),
         config: context.builderConfig })
@@ -624,7 +637,7 @@ async function main(argv = process.argv.slice(2)) {
 
 module.exports = { BUILD_TYPES, buildNumberOf, buildRunDirectory, credentialFreeEnv, freezeFile,
   frozenProductConfiguration, acquireMutex, installerArtifacts, options, provenance,
-  writeBuilderConfiguration }
+  writeBuilderConfiguration, localDmgbuild }
 
 if (require.main === module) {
   main().catch(error => { console.error(`[package] ERROR ${error.message}`); process.exitCode = 1 })

@@ -7,18 +7,21 @@ import { cx } from './utils'
 export type SpinnerSize = ComponentSize
 
 export interface SpinnerProps extends HTMLAttributes<HTMLSpanElement> {
+  imageSrc?: string
   size?: SpinnerSize
 }
 
-export function Spinner({ className, size = 'md', ...props }: SpinnerProps): JSX.Element {
+export function Spinner({ children, className, imageSrc, size = 'md', ...props }: SpinnerProps): JSX.Element {
   const { t } = useTranslation('ui')
   return (
     <span
       aria-label={t('loading')}
-      className={cx(spinnerClassName({ className, size }), spinnerStyleClassName({ size }))}
+      className={cx(spinnerClassName({ className, size }), spinnerStyleClassName({ image: Boolean(imageSrc), size }))}
       role="status"
       {...props}
-    />
+    >
+      {imageSrc ? <img src={imageSrc} alt="" aria-hidden="true" className="block size-full object-contain" /> : children}
+    </span>
   )
 }
 

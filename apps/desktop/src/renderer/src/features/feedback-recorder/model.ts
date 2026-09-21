@@ -10,6 +10,7 @@ export const RECORDER_SCHEMA_VERSION = 1 as const
 export type RecorderPhase =
   | 'idle'
   | 'recording'
+  | 'paused'
   | 'annotating'
   | 'review'
   | 'submitting'

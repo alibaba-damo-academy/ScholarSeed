@@ -1,10 +1,11 @@
 import { MAX_SELECTION_REQUIREMENT_CHARS, selectionInstruction } from '../../../../prompts'
-import React, { useCallback, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import React, { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Alert, Button, CopyButton, FloatingToolbar, IconButton, ScrollArea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Spinner, Textarea } from '../../components/ui'
 import { Icon } from '../../icons'
 import { Markdown } from '../../components/primitive'
 import { writeClipboard } from '../../components/primitive/clipboard'
+import { PromptSettingsGuide } from '../../components/business/PromptSettingsGuide'
 import { selectedSessionModelKey } from '../../catalog'
 import { useApp } from '../../store'
 import { cancelResource, invokeResource, type ResourceAction, type ResourceInput, type ResourceRequest } from './ai'
@@ -13,8 +14,12 @@ import { resourceFailureDetail } from './error'
 
 const LABELS = { explain: 'suggestion.labelExplain', polish: 'suggestion.labelPolish', translate: 'suggestion.labelTranslate' } as const
 const PLACEHOLDERS = { explain: 'suggestion.placeholderExplain', polish: 'suggestion.placeholderPolish', translate: 'suggestion.placeholderTranslate' } as const
+const PROMPT_GUIDES = { explain: 'suggestion.promptGuideExplain', polish: 'suggestion.promptGuidePolish', translate: 'suggestion.promptGuideTranslate' } as const
 const FLOATING_MARGIN_PX = 12
 const KEYBOARD_MOVE_PX = 16
+const INPUT_WIDTH_PX = 390
+const RESULT_WIDTH_PX = 440
+const TRANSLATION_RESULT_WIDTH_PX = 520
 export const RESOURCE_AI_SUGGESTION_SELECTOR = '[data-resource-ai-suggestion]'
 const ERRORS = {
   annotation_failed: 'suggestion.errors.annotationFailed',
@@ -51,11 +56,10 @@ export interface SuggestionProps {
   pinned: boolean
   toolbarActions?: ReactNode
   toolbarLabel?: string
-  toolbarRef?: MutableRefObject<HTMLDivElement | null>
 }
 
 /** A resource suggestion owns only the request and preview; editors own mutation. */
-export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identity, selectedText, point, snapshot, onClose, onAnnotate, onApply, onPinnedChange, pinned, toolbarActions, toolbarLabel, toolbarRef }: SuggestionProps): React.JSX.Element {
+export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identity, selectedText, point, snapshot, onClose, onAnnotate, onApply, onPinnedChange, pinned, toolbarActions, toolbarLabel }: SuggestionProps): React.JSX.Element {
   const { state, act } = useApp()
   const { t } = useTranslation('resources')
   const { t: ui } = useTranslation('ui')
@@ -79,10 +83,6 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
   const mounted = useRef(true)
   const selectedModel = selectedSessionModelKey(state.model, state.activeSession, state.threads)
   const hasModel = state.catalog.models.some(item => item.key === selectedModel && !item.disabled)
-  const assignRoot = useCallback((node: HTMLDivElement | null): void => {
-    root.current = node
-    if (toolbarRef) toolbarRef.current = node
-  }, [toolbarRef])
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; stream.current?.abort() } }, [])
   useEffect(() => { setPosition(null); setAnnotated(false) }, [identity])
   useEffect(() => { if (!hasModel) setError({ key: ERRORS.resource_model_unavailable }) }, [hasModel])
@@ -157,7 +157,7 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
     }
   }
   // Position is derived from the captured selection, never from fixed document coordinates.
-  const width = submitted ? 440 : 390
+  const width = submitted ? action === 'translate' ? TRANSLATION_RESULT_WIDTH_PX : RESULT_WIDTH_PX : INPUT_WIDTH_PX
   const integratedInput = Boolean(toolbarActions && !submitted)
   const left = position?.left ?? (integratedInput ? anchorPosition?.left : undefined) ?? Math.max(FLOATING_MARGIN_PX, Math.min(point.x, window.innerWidth - width - FLOATING_MARGIN_PX))
   const top = position?.top ?? (integratedInput ? anchorPosition?.top : undefined) ?? Math.max(FLOATING_MARGIN_PX, Math.min(point.y + 8, window.innerHeight - (submitted ? 320 : 76)))
@@ -201,18 +201,19 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
     if (bounds) moveTo(bounds.left + offset.x, bounds.top + offset.y)
   }
   const moveHandle = <strong className={integratedInput ? 'cursor-move touch-none px-2' : 'flex-1 cursor-move touch-none px-2'} tabIndex={0} aria-label={ui('floatingWindow.move', { title: t(LABELS[action]) })} onKeyDown={moveByKeyboard} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>{integratedInput ? <Icon name="more-horizontal" size={14} /> : t(LABELS[action])}</strong>
-  const suggestionActions = <>{integratedInput ? toolbarActions : null}{moveHandle}{submitted && action === 'translate' && <Select size="sm" value={direction} onValueChange={value => { const target = value as TranslationTarget; setDirection(target); void run(false, target) }}><SelectTrigger aria-label={t('suggestion.direction')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="en">{t('suggestion.toEnglish')}</SelectItem><SelectItem value="zh">{t('suggestion.toChinese')}</SelectItem></SelectContent></Select>}{submitted && action !== 'polish' ? <IconButton aria-pressed={pinned} label={ui(pinned ? 'floatingWindow.unpin' : 'floatingWindow.pin')} icon={<Icon name="pin" size={14} />} onClick={() => onPinnedChange(!pinned)} variant={pinned ? 'secondary' : 'ghost'} /> : null}<IconButton label={t('suggestion.close')} icon={<Icon name="close" size={14} />} onClick={close} variant="ghost" /></>
+  const suggestionActions = <>{integratedInput ? toolbarActions : null}{moveHandle}{submitted && action === 'translate' && <Select size="sm" value={direction} onValueChange={value => { const target = value as TranslationTarget; setDirection(target); void run(false, target) }}><SelectTrigger aria-label={t('suggestion.direction')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="en">{t('suggestion.toEnglish')}</SelectItem><SelectItem value="zh">{t('suggestion.toChinese')}</SelectItem></SelectContent></Select>}{submitted && action === 'explain' ? <IconButton aria-pressed={pinned} label={ui(pinned ? 'floatingWindow.unpin' : 'floatingWindow.pin')} icon={<Icon name="pin" size={14} />} onClick={() => onPinnedChange(!pinned)} variant={pinned ? 'secondary' : 'ghost'} /> : null}<IconButton label={t('suggestion.close')} icon={<Icon name="close" size={14} />} onClick={close} variant="ghost" /></>
   return <FloatingToolbar key={identity} label={integratedInput ? toolbarLabel ?? t(LABELS[action]) : t(LABELS[action])} expanded
-    ref={assignRoot}
+    ref={root}
     data-resource-ai-suggestion
     data-testid="resource-ai-suggestion"
-    className={integratedInput ? 'fixed z-[var(--vds-z-popover)] max-w-[calc(100vw-24px)] overflow-hidden' : submitted ? 'fixed z-[var(--vds-z-popover)] w-[440px] max-w-[88vw] overflow-hidden' : 'fixed z-[var(--vds-z-popover)] w-[390px] max-w-[86vw] [&_[role=toolbar]]:gap-[var(--vds-space-2)] [&_[role=toolbar]>label]:flex-1'}
-    style={{ left, top, ...(integratedInput && anchorWidth ? { width: anchorWidth } : {}) }}
+    className={integratedInput ? 'fixed z-[var(--vds-z-popover)] max-w-[calc(100vw-24px)] overflow-hidden' : submitted ? 'fixed z-[var(--vds-z-popover)] max-w-[88vw] overflow-hidden' : 'fixed z-[var(--vds-z-popover)] max-w-[86vw] [&_[role=toolbar]]:gap-[var(--vds-space-2)] [&_[role=toolbar]>label]:flex-1'}
+    style={{ left, top, width: integratedInput && anchorWidth ? anchorWidth : width }}
     actions={suggestionActions}>
     {!submitted && <div className="vds-selection-action-result">
-      <Textarea autoFocus maxLength={MAX_SELECTION_REQUIREMENT_CHARS} aria-label={t(PLACEHOLDERS[action])} label={t(PLACEHOLDERS[action])} rows={3} value={instruction}
+      <Textarea autoFocus maxLength={MAX_SELECTION_REQUIREMENT_CHARS} aria-label={t('suggestion.optionalInstruction')} label={t('suggestion.optionalInstruction')} placeholder={t(PLACEHOLDERS[action])} rows={2} value={instruction}
         onChange={event => setInstruction(event.target.value)}
         onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void run() } if (event.key === 'Escape') close() }} />
+      <PromptSettingsGuide prefix={t(PROMPT_GUIDES[action])} linkLabel={t('suggestion.promptSettings')} suffix={action === 'translate' ? t('suggestion.promptGuideSuffix') : undefined} />
       <Button className="justify-self-start" size="sm" icon={<Icon name="sparkle" size={14} />} disabled={!hasModel || busy} onClick={() => void run()}>{t('suggestion.submit', { action: t(LABELS[action]) })}</Button>
     </div>}
     {submitted && (output || busy || action === 'translate') && <ScrollArea className="max-h-[320px]" viewportClassName="max-h-[320px] cursor-text select-text break-words text-sm leading-7 text-[var(--vds-text-primary)]">
@@ -221,6 +222,6 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
     </ScrollArea>}
     {busy && <div className="flex items-center justify-between px-4 py-2"><Spinner size="sm" /><Button size="sm" variant="ghost" onClick={() => void stop()}>{t('suggestion.stop')}</Button></div>}
     {error && <div className="p-3"><Alert tone="error" description={`${t(error.key)}${error.detail ? ` (${error.detail})` : ''}`} /><div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => act.openSettings('models')}>{t('suggestion.configure')}</Button>{submitted && !busy && <Button size="sm" onClick={() => void run(true)}>{t('suggestion.retry')}</Button>}</div></div>}
-    {submitted && <div className="flex items-center justify-between border-t border-[var(--vds-divider-default)] bg-[var(--vds-bg-component)] px-4 py-3"><span className="text-xs text-[var(--vds-text-tertiary)]">{action === 'polish' ? t('suggestion.pending') : action === 'translate' ? t('suggestion.directionHint') : t('suggestion.resultHint')}</span><div className="flex items-center gap-2">{onAnnotate && action !== 'polish' ? <Button size="sm" variant="outline" disabled={!complete || busy || annotating || annotated} loading={annotating} onClick={() => void annotate()}>{t(annotated ? 'suggestion.addedToAnnotation' : 'suggestion.addToAnnotation')}</Button> : null}{action === 'polish' && onApply ? <Button size="sm" variant="primary" disabled={!complete || busy || applying || !onApply} onClick={() => void apply()}>{t('suggestion.replace')}</Button> : <CopyButton size="sm" writeText={writeClipboard} value={output} disabled={!complete || busy} errorLabel={t('suggestion.copyFailed')} />}</div></div>}
+    {submitted && <div className="flex items-center justify-between gap-3 border-t border-[var(--vds-divider-default)] bg-[var(--vds-bg-component)] px-4 py-3">{action === 'translate' ? <PromptSettingsGuide className="min-w-0 flex-1" prefix={t(PROMPT_GUIDES.translate)} linkLabel={t('suggestion.promptSettings')} suffix={t('suggestion.promptGuideSuffix')} /> : <span className="text-xs text-[var(--vds-text-tertiary)]">{action === 'polish' ? t('suggestion.pending') : t('suggestion.resultHint')}</span>}<div className="flex shrink-0 items-center gap-2">{onAnnotate && action !== 'polish' ? <Button size="sm" variant="outline" disabled={!complete || busy || annotating || annotated} loading={annotating} onClick={() => void annotate()}>{t(annotated ? 'suggestion.addedToAnnotation' : 'suggestion.addToAnnotation')}</Button> : null}{action === 'polish' && onApply ? <Button size="sm" variant="primary" disabled={!complete || busy || applying || !onApply} onClick={() => void apply()}>{t('suggestion.replace')}</Button> : <CopyButton size="sm" writeText={writeClipboard} value={output} disabled={!complete || busy} errorLabel={t('suggestion.copyFailed')} />}</div></div>}
   </FloatingToolbar>
 }

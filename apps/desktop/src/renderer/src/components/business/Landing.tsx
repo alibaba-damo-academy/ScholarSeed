@@ -125,7 +125,7 @@ export function Landing({
   const startLogin = React.useCallback(async (): Promise<void> => {
     setStarting(true)
     setError(null)
-    const result = await window.scholarseed.desktopLoginStart()
+    const result = await window.scholarseed.desktopLoginStart(state.lang)
     setStarting(false)
     if (!result.ok) {
       setPhase('failed')
@@ -136,7 +136,7 @@ export function Landing({
         }
       )
     }
-  }, [])
+  }, [state.lang])
 
   const applySnapshot = React.useCallback(
     (snapshot: { phase: LandingPhase; error?: string }): void => {
