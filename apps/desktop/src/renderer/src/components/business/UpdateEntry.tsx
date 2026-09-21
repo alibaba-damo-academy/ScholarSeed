@@ -8,7 +8,7 @@ import {
   useUpdateAnnouncement,
   useUpdateState
 } from '../../features/updates/state'
-import { IconButton, Popover, PopoverContent, PopoverTrigger, Tooltip } from '../ui'
+import { IconButton, Popover, PopoverContent, PopoverTrigger, ProgressBar, Tooltip } from '../ui'
 import { UpdatePanel } from './UpdatePanel'
 
 // UpdateEntry.tsx — 活动栏底部的「更新」入口（PRD 第 1-7 条）。
@@ -17,10 +17,6 @@ import { UpdatePanel } from './UpdatePanel'
 // 「关于书深」手动检查。
 //
 // 表达方式与活动栏其它条目一致：一枚设计系统的 IconButton（lg 档 = 栏内 40px 命中区），
-// 图标位是火箭图片，由 IconButton 自己的图标槽做水平垂直居中。相位差异不再靠文字，
-// 全部走同一枚按钮上的三处提示：下载中在底边压一条进度线（PRD 第 5 条），已就绪加
-// 一个金色小点提示等待重启，失败换成告警色小点；确切相位与百分比在 tooltip 与
-// aria-label 里如实报出。
 //
 // 首次检测到新版本时弹窗与卡片一起打开（PRD 第 1 条的「右侧打开状态」+「更新内容」
 // 行的「默认先给弹窗」）；用户关掉弹窗后卡片留在原位，之后只剩这个常驻入口。
@@ -36,14 +32,10 @@ const ENTRY_POPOVER_CLASS_NAME = [
   'no-drag !z-[calc(var(--vds-z-tooltip)+1)]',
   '!max-w-none !gap-0 !p-0 !border-0 !bg-transparent !shadow-none'
 ].join(' ')
-// relative + overflow-hidden 是为了把进度线与小点定位在按钮上并裁在圆角内：
-// 图标槽本身不定位，绝对定位的提示因此以整枚按钮为参照。
 const ENTRY_BUTTON_CLASS_NAME = 'no-drag relative flex-none overflow-hidden'
 // 图片按图标槽尺寸铺满（槽位 = --vds-icon-button-glyph），槽位自带居中，
 // object-contain 保证非方形素材也不被拉变形。
 const ENTRY_GLYPH_CLASS_NAME = 'size-full object-contain'
-const ENTRY_PROGRESS_CLASS_NAME =
-  'absolute inset-x-0 bottom-0 h-[var(--vds-update-progress-line)] [background:var(--vds-brand-gold-gradient)]'
 const ENTRY_DOT_CLASS_NAME =
   'absolute right-[var(--vds-update-ready-dot-offset)] top-[var(--vds-update-ready-dot-offset)] size-[var(--vds-update-ready-dot-size)] rounded-[var(--vds-radius-circle)] border-[length:var(--vds-update-ready-dot-border)] border-solid border-[var(--vds-bg-white-default)] bg-[var(--vds-brand-gold-highlight)]'
 const ENTRY_DOT_ALERT_CLASS_NAME = 'bg-[var(--vds-error-bg-default)]'
@@ -96,14 +88,9 @@ export function UpdateEntry(): React.JSX.Element | null {
               data-testid="activity-update"
               icon={
                 <>
-                  <img alt="" className={ENTRY_GLYPH_CLASS_NAME} src={rocketGlyph} />
-                  {downloading && (
-                    // 宽度来自更新快照的 percent，是运行期动态几何值。
-                    <span
-                      className={ENTRY_PROGRESS_CLASS_NAME}
-                      style={{ width: `${percent}%` }}
-                    />
-                  )}
+                  {downloading
+                    ? <ProgressBar shape="circle" className="size-full" value={percent} label={label} />
+                    : <img alt="" className={ENTRY_GLYPH_CLASS_NAME} src={rocketGlyph} />}
                   {(phase === 'ready' || failed) && (
                     <span
                       className={

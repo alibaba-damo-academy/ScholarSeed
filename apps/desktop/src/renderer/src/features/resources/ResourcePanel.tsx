@@ -1,3 +1,4 @@
+import { IconFont } from '../../components/primitive'
 import React, { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -11,7 +12,6 @@ import {
   FolderTree,
   ListCollapse,
   MonitorDown,
-  Plus,
   RotateCw
 } from 'lucide-react'
 
@@ -368,7 +368,7 @@ function TreeRow({
                 aria-pressed={createOpen}
                 className="vds-tree-create"
                 data-testid={`tree-create-${node.path}`}
-                icon={<Plus size={14} strokeWidth={1.8} />}
+                icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                 label={t('panel.createIn', { name: node.name })}
                 size="sm"
                 type="button"
@@ -938,7 +938,7 @@ export function ResourcePanel(): React.JSX.Element {
                   title={t('panel.create')}
                   aria-pressed={resourceActionsOpen}
                   data-testid="resource-add"
-                  icon={<Plus size={14} strokeWidth={1.8} />}
+                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                 />
               </DropdownMenuTrigger>
               <DropdownMenuContent

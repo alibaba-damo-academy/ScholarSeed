@@ -121,6 +121,7 @@ const VERIFY_SOURCE = fs.readFileSync(path.join(__dirname, 'verify.cjs'), 'utf8'
 const BUILD_SOURCE = fs.readFileSync(path.join(__dirname, 'build.cjs'), 'utf8')
 const DESKTOP_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'backend.ts'), 'utf8')
 const UPDATER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'updater.ts'), 'utf8')
+const AUTHENTICODE_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'authenticode.ts'), 'utf8')
 const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'installer.nsh'), 'utf8')
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
 const UPDATE_FEATURE_SOURCE = fs.readFileSync(
@@ -382,10 +383,14 @@ test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdl
   // 输出纯 ASCII 的 STATUS=/SUBJECT= 两行，Node 侧按行解析（ASCII 在任何 Windows 代码页下字节一致）。
   assert.match(script, /Write-Output \('STATUS='/)
   assert.match(script, /Write-Output \('SUBJECT='/)
-  // fail-closed：仅 Valid 放行，且发布者必须与打包策略一致。
-  assert.match(UPDATER_SOURCE, /WINDOWS_AUTHENTICODE_VALID = 'Valid'/)
-  assert.match(UPDATER_SOURCE, /status !== WINDOWS_AUTHENTICODE_VALID/)
-  assert.match(UPDATER_SOURCE, /subject !== expectedPublisher/)
+  // fail-closed：仅 Valid 放行，且发布者必须与打包策略一致。三档判定与 DN 同发布者判定归
+  // authenticode.ts（纯函数、有单测），updater 只消费判定结果。
+  assert.match(AUTHENTICODE_SOURCE, /AUTHENTICODE_VALID = 'Valid'/)
+  assert.match(AUTHENTICODE_SOURCE, /export function classifyAuthenticodeStatus/)
+  assert.match(AUTHENTICODE_SOURCE, /export function publisherSubjectsMatch/)
+  assert.match(UPDATER_SOURCE, /classifyAuthenticodeStatus\(status\)/)
+  assert.match(UPDATER_SOURCE, /publisherSubjectsMatch\(subject, expectedPublisher\)/)
+  assert.doesNotMatch(UPDATER_SOURCE, /subject !== expectedPublisher/)
   // 启动 NSIS 仍不经 shell、参数固定。
   assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENTS = \['--updated', '\/S', '--force-run'\]/)
   assert.match(UPDATER_SOURCE, /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/)
@@ -407,6 +412,9 @@ test('Windows install failures are classified and never surface raw stderr to th
   // 文案（手动安装引导 / 安全拦截），不再把可能乱码的 PowerShell stderr 插值进用户可见串。
   assert.match(UPDATER_SOURCE, /install_verify_unavailable/)
   assert.match(UPDATER_SOURCE, /install_signature_untrusted/)
+  // 本机不可判定是独立分类：主进程标注、渲染层映射文案，两侧都要有，缺一侧就会退回笼统说法。
+  assert.match(UPDATER_SOURCE, /install_signature_indeterminate/)
+  assert.match(UPDATE_FEATURE_SOURCE, /install_signature_indeterminate/)
   assert.match(UPDATER_SOURCE, /class WindowsVerifyError extends Error/)
   assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: windowsInstallFallback\(error\) \}/)
 })

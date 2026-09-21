@@ -445,7 +445,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   },
   ProgressBar: {
     exports: ['Progress', 'ProgressBar'],
-    intents: ['进度条', '百分比', '上传进度', 'progress', 'percentage'],
+    intents: ['进度条', '圆环进度', '百分比', '上传进度', 'progress', 'percentage'],
     use: '确定性进度展示。`ProgressBar` 带 color, `Progress` 是去掉 color 的兼容名',
     replaces: ['div', 'progress'],
     avoid: '不确定时长用 Spinner; 不要用它做纯装饰长条'

@@ -11,6 +11,10 @@ import { cx } from './utils'
 
 const MIN_PROGRESS = 0
 const MAX_PROGRESS = 100
+const RING_SIZE = 100
+const RING_CENTER = RING_SIZE / 2
+const RING_RADIUS = 42
+const RING_STROKE_WIDTH = 1.3
 
 function normalizeProgressValue(value: number): number {
   return Math.min(MAX_PROGRESS, Math.max(MIN_PROGRESS, value))
@@ -20,6 +24,7 @@ export interface ProgressBarProps extends HTMLAttributes<HTMLDivElement> {
   indeterminate?: boolean
   label?: string
   value?: number
+  shape?: 'line' | 'circle'
 }
 
 export interface ProgressProps extends Omit<ProgressBarProps, 'color'> {
@@ -34,12 +39,48 @@ export interface ProgressProps extends Omit<ProgressBarProps, 'color'> {
 }
 
 export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
-  ({ className, indeterminate = false, label, style, value = MIN_PROGRESS, ...props }, ref) => {
+  ({ className, indeterminate = false, label, shape = 'line', style, value = MIN_PROGRESS, ...props }, ref) => {
     const labelId = useId()
     const normalizedValue = normalizeProgressValue(value)
     const rootStyle: CSSProperties | undefined = indeterminate
       ? style
       : { ...style, '--vds-progress-value': normalizedValue / MAX_PROGRESS } as CSSProperties
+
+    if (shape === 'circle') {
+      return (
+        <div
+          {...props}
+          ref={ref}
+          style={style}
+          className={cx('inline-flex aspect-square items-center justify-center', className)}
+          role="progressbar"
+          aria-label={label}
+          aria-valuemin={MIN_PROGRESS}
+          aria-valuemax={MAX_PROGRESS}
+          aria-valuenow={indeterminate ? undefined : normalizedValue}
+        >
+          <svg aria-hidden="true" viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} className={cx('size-full -rotate-90', indeterminate && 'animate-spin motion-reduce:animate-none')}>
+            <circle cx={RING_CENTER} cy={RING_CENTER} r={RING_RADIUS} fill="none" stroke="var(--vds-other-overlay-2)" strokeWidth={RING_STROKE_WIDTH} vectorEffect="non-scaling-stroke" />
+            {(indeterminate || normalizedValue > MIN_PROGRESS) && (
+              <circle
+                cx={RING_CENTER}
+                cy={RING_CENTER}
+                r={RING_RADIUS}
+                fill="none"
+                stroke="var(--vds-brand-bg-default)"
+                strokeWidth={RING_STROKE_WIDTH}
+                vectorEffect="non-scaling-stroke"
+                strokeLinecap="round"
+                pathLength={MAX_PROGRESS}
+                strokeDasharray={`${MAX_PROGRESS} ${MAX_PROGRESS}`}
+                strokeDashoffset={MAX_PROGRESS - (indeterminate ? MAX_PROGRESS / 4 : normalizedValue)}
+                className="transition-[stroke-dashoffset] duration-[var(--vds-duration-fast)] ease-linear motion-reduce:transition-none"
+              />
+            )}
+          </svg>
+        </div>
+      )
+    }
 
     return (
       <div

@@ -1375,6 +1375,7 @@
     "installFailedSub": "安装失败：{{error}}",
     "installVerifyUnavailable": "无法在此设备上完成更新校验，请前往官网手动下载最新版本安装。",
     "installSignatureUntrusted": "更新包签名校验未通过，为安全起见已阻止安装；请从官方渠道重新获取安装包。",
+    "installSignatureIndeterminate": "本机无法判定更新包签名是否可信（证书链或吊销信息不可用），已阻止自动安装；签名者与官方发布一致、包字节未被改动，重新下载不会改变该结果。请恢复网络或根证书可用后重试安装，或联系网络管理员。",
     "checkFailedSub": "检查更新失败：{{error}}",
     "installRetryHint": "安装包已就绪，重试的是安装这一步，不需要重新下载。",
     "summaryHint": "本次更新内容如下，欢迎体验新版本。"

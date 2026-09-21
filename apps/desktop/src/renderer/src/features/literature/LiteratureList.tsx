@@ -58,7 +58,7 @@ import {
 import emptyImage from '../../assets/empty_img.webp'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
-import { ArrowDownToLine, ArrowLeft, FileDown, Link, MonitorDown, Plus, Trash } from 'lucide-react'
+import { ArrowDownToLine, ArrowLeft, FileDown, Link, MonitorDown, Trash } from 'lucide-react'
 import { fileIconForName, IconFont } from '../../components/primitive'
 import { IMPORT_SOURCES } from './imports'
 import {
@@ -1549,7 +1549,7 @@ export function LiteratureList(): React.JSX.Element {
               <Button
                 size="md"
                 variant="secondary"
-                icon={<Plus size={14} />}
+                icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                 onClick={() => void openBatch('project')}
               >
                 {literature('linkProject.title')}
@@ -1558,7 +1558,7 @@ export function LiteratureList(): React.JSX.Element {
             <Button
               size="md"
               variant="secondary"
-              icon={<Plus size={14} />}
+              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
               onClick={() => void openBatch('collection')}
             >
               {projectId
@@ -1568,7 +1568,7 @@ export function LiteratureList(): React.JSX.Element {
             <Button
               size="md"
               variant="secondary"
-              icon={<Plus size={14} />}
+              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
               onClick={() => void openBatch('tag')}
             >
               {literature('batch.tag')}
@@ -1771,7 +1771,7 @@ export function LiteratureList(): React.JSX.Element {
                   action={
                     <DropdownMenu open={emptyImportOpen} onOpenChange={setEmptyImportOpen}>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="outline" icon={<Plus size={14} />}>
+                        <Button variant="outline" icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}>
                           {literature('panel.import')}
                         </Button>
                       </DropdownMenuTrigger>

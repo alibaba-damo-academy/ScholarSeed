@@ -351,7 +351,7 @@ function MarkdownHeader({
   }
   const savePending = Boolean(session?.dirty || externalPending)
   return (
-    <div className="vds-markdown-header flex min-h-12 min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-page)] px-[var(--vds-space-4)] py-[var(--vds-space-1)]" data-save-state={session?.saveState ?? 'clean'}>
+    <div className="vds-markdown-header flex min-h-12 min-w-0 flex-nowrap items-center gap-[var(--vds-space-2)] border-b border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] px-[var(--vds-space-4)] py-[var(--vds-space-1)]" data-save-state={session?.saveState ?? 'clean'}>
       <div className={`${viewKind === 'edit' ? 'vds-markdown-crepe ' : ''}flex min-w-0 flex-1 items-center overflow-hidden`}>
         <div className="flex min-w-0 flex-1 items-center overflow-hidden">
           <div
@@ -1351,7 +1351,7 @@ export function MarkdownDocument({
   }
 
   return (
-    <section className="vds-markdown-workbench grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-page)]">
+    <section className="vds-markdown-workbench grid size-full min-h-0 min-w-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-[var(--vds-bg-gray-default)]">
       <MarkdownHeader
         sessionId={sessionId}
         tabId={tabId}

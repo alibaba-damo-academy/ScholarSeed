@@ -6,11 +6,15 @@ const { spawnSync } = require('node:child_process')
 const repo = path.resolve(__dirname, '..')
 const desktop = path.join(repo, 'apps', 'desktop')
 const electronPackage = path.join(desktop, 'node_modules', 'electron', 'package.json')
+const commandProfiles = {
+  dev: { env: { SCHOLARSEED_DEVTOOLS: '1' } }
+}
 
-function run(args) {
+function run(args, env = process.env) {
   const result = spawnSync('npm', args, {
     cwd: repo,
     stdio: 'inherit',
+    env,
     shell: process.platform === 'win32'
   })
   if (result.error) throw result.error
@@ -30,4 +34,8 @@ if (!command) {
 }
 
 ensureDependencies()
-run(['--prefix', 'apps/desktop', 'run', command, '--', ...forwarded])
+const profile = Object.hasOwn(commandProfiles, command) ? commandProfiles[command] : undefined
+run(['--prefix', 'apps/desktop', 'run', command, '--', ...forwarded], {
+  ...profile?.env,
+  ...process.env
+})

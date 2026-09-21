@@ -230,6 +230,8 @@ test('failure wording follows the action that failed', () => {
     // bug 87042987：结构化分类各给一句可操作的本地化说法，且即便快照里残留 error 原文也不透出（走分类文案）。
     [snapshot('ready', { errorFallback: 'install_verify_unavailable', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installVerifyUnavailable'],
     [snapshot('ready', { error: 'STATUS=乱码', errorFallback: 'install_signature_untrusted', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureUntrusted'],
+    // 本机不可判定（链/吊销状态）是独立分类：文案引导修复环境后重试，而不是重新下载那条死路。
+    [snapshot('ready', { error: 'STATUS=NotTrusted', errorFallback: 'install_signature_indeterminate', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureIndeterminate'],
     [snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout', errorOrigin: 'install' }), 'c:update.rolledBack', 'c:update.installFailedSub:health confirmation timeout']
   ]
   for (const [state, title, text] of cases) {

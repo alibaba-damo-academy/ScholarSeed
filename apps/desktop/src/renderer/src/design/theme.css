@@ -15,6 +15,11 @@
   --vds-control-padding-md: 0 var(--vds-space-4);
   --vds-control-padding-lg: 0 var(--vds-space-5);
   --vds-control-radius: var(--vds-radius-4);
+  --vds-settings-prompt-radius: 13px;
+  --vds-settings-model-panel-radius: 13px;
+  --vds-settings-api-key-card-radius: 13px;
+  --vds-settings-files-card-radius: 13px;
+  --vds-settings-shortcut-card-radius: 13px;
   --vds-toolbar-icon-gap: 2px;
   --vds-toolbar-divider-margin: 7px;
   --vds-surface-raised: var(--vds-bg-white-default);

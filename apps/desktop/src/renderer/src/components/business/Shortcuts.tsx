@@ -110,7 +110,7 @@ export function Shortcuts(): React.JSX.Element {
       <PageBody>
         {groups.length ? groups.map(group => (
           <PageSection data-testid={`shortcut-group-${group.id}`} key={group.id} title={group.label}>
-            <Card padding="none">
+            <Card padding="none" className="!rounded-[var(--vds-settings-shortcut-card-radius)]">
               <ul className="m-0 list-none divide-y divide-[var(--vds-divider-default)] p-0">
                 {group.shortcuts.map(shortcut => {
                   const text = shortcutText(shortcut, t)

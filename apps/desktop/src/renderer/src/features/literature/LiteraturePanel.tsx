@@ -11,7 +11,6 @@ import {
   Link,
   MonitorDown,
   Pencil,
-  Plus,
   Search,
   Trash
 } from 'lucide-react'
@@ -363,7 +362,7 @@ export function LiteraturePanel(): React.JSX.Element {
               label={t('panel.newChild', { name: collection.name })}
               size="sm"
               variant="ghostIcon"
-              icon={<Plus size={14} />}
+              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
               onClick={(event) => {
                 event.stopPropagation()
                 openCreate({
@@ -382,7 +381,7 @@ export function LiteraturePanel(): React.JSX.Element {
             kind: 'collection', projectId: project?.id ?? projectId,
             parentId: collection.id, parentName: collection.name
           })}>
-            <Plus size={14} aria-hidden="true" />
+            <IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />
             {t('panel.createChild')}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setEditTarget({
@@ -676,7 +675,7 @@ export function LiteraturePanel(): React.JSX.Element {
                   size="sm"
                   variant="ghostIcon"
                   className="ml-auto"
-                  icon={<Plus size={14} />}
+                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                 />
               </DropdownMenuTrigger>
               <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-52">
@@ -785,7 +784,7 @@ export function LiteraturePanel(): React.JSX.Element {
                       }
                       size="sm"
                       variant="ghostIcon"
-                      icon={<Plus size={14} />}
+                      icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                       onClick={() =>
                         openCreate({ kind: 'collection', projectId })
                       }
@@ -902,7 +901,7 @@ export function LiteraturePanel(): React.JSX.Element {
                                   })}
                                   size="sm"
                                   variant="ghostIcon"
-                                  icon={<Plus size={14} />}
+                                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                                   onClick={() =>
                                     openCreate({
                                       kind: 'collection',
@@ -1057,7 +1056,7 @@ export function LiteraturePanel(): React.JSX.Element {
                         label={t('panel.newTag')}
                         size="xs"
                         variant="ghostIcon"
-                        icon={<Plus size={12} />}
+                        icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none" />}
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')
@@ -1077,7 +1076,7 @@ export function LiteraturePanel(): React.JSX.Element {
                         label={t('panel.newTag')}
                         size="xs"
                         variant="ghostIcon"
-                        icon={<Plus size={12} />}
+                        icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-6)] !text-[length:var(--vds-icon-6)] !leading-none" />}
                         onClick={() => {
                           setTagCreateOpen(true)
                           setTagCreateName('')

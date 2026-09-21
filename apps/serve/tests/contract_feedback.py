@@ -633,6 +633,12 @@ def test_bundle_budget_and_scope() -> None:
         # 实时后端日志: Electron 写到家目录 logs/backend.log, 必须被收走。
         backend_log = root / "backend.log"
         backend_log.write_text("serve started\n", encoding="utf-8")
+        # 更新链路诊断: 主进程落 logs/update.log (Authenticode STATUS/SUBJECT、计时、
+        # 失败分类)。自更新被拦截的工单里, 这是唯一能定论失败类别的证据。
+        update_log = root / "update.log"
+        update_log.write_text(
+            "[update] Windows Authenticode verdict input: status=NotTrusted\n", encoding="utf-8"
+        )
 
         # 两个会话各自一份 trace + 一份 rollout; 只有 "mine" 那一份得进包。
         (trace_dir / "scholarseed-codex-mine.jsonl").write_text(
@@ -655,12 +661,14 @@ def test_bundle_budget_and_scope() -> None:
             fb.TRACE_DIR,
             fb.SYSTEM_LOG,
             fb.BACKEND_LOG,
+            fb.UPDATE_LOG,
             fb.CODEX_SESSIONS_DIR,
         )
         fb.DIAGNOSTIC_SOURCES = (("app", app_dir),)
         fb.TRACE_DIR = trace_dir
         fb.SYSTEM_LOG = system_log
         fb.BACKEND_LOG = backend_log
+        fb.UPDATE_LOG = update_log
         fb.CODEX_SESSIONS_DIR = codex_sessions.parents[2]
         try:
             names = _bundle_names(fb.build_log_bundle(include_trace=False))
@@ -675,6 +683,11 @@ def test_bundle_budget_and_scope() -> None:
             check(
                 "live backend.log is in the default diagnostic bundle",
                 "backend/backend.log" in names,
+                str(names),
+            )
+            check(
+                "live update.log is in the default diagnostic bundle",
+                "update/update.log" in names,
                 str(names),
             )
             check(
@@ -740,6 +753,7 @@ def test_bundle_budget_and_scope() -> None:
                 fb.TRACE_DIR,
                 fb.SYSTEM_LOG,
                 fb.BACKEND_LOG,
+                fb.UPDATE_LOG,
                 fb.CODEX_SESSIONS_DIR,
             ) = original
 

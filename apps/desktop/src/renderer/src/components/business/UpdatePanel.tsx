@@ -1,4 +1,5 @@
 import React from 'react'
+import { X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import rocketGlyph from '../../assets/update-rocket.png'
@@ -46,22 +47,15 @@ import { UpdateMetadata } from './UpdateMetadata'
 type PanelView = 'failed' | 'notes' | 'summary'
 
 const PANEL_HERO_ICON_TYPE = 'fill-status-warning'
-const PANEL_CLOSE_ICON_TYPE = 'line-operation-close'
 
-// 浮窗自身的视觉：bg-white-hover 底 + 16 圆角 + elevation/3-center 投影；notes / failed
-// 两稿多一圈 divider-default 描边。宽度按版式切换（360 ↔ 480），定位由调用方的容器负责。
 const PANEL_BASE_CLASS_NAME = [
   'relative overflow-hidden rounded-[var(--vds-radius-8)]',
-  '[background:var(--vds-bg-white-hover)] shadow-[var(--vds-shadow-3-center)]'
+  '[background:var(--vds-bg-white-default)] shadow-[var(--vds-shadow-3-center)]'
 ].join(' ')
 const PANEL_SUMMARY_WIDTH_CLASS_NAME = 'w-[var(--vds-update-notes-width)]'
 const PANEL_NOTES_WIDTH_CLASS_NAME = 'w-[var(--vds-update-notes-expanded-width)]'
 const PANEL_BORDERED_CLASS_NAME =
   'border border-[var(--vds-divider-default)] [border-style:solid] [border-width:var(--vds-border-width-1)]'
-// 顶部装饰光晕（两稿的蒙版组）。稿子里还叠了一张被遮罩裁切的位图，体积过大未入库，
-// 这里只落地可精确取到的渐变层；纯装饰，不吃指针事件。
-const PANEL_SHEEN_CLASS_NAME =
-  'pointer-events-none absolute inset-x-0 top-0 h-[var(--vds-update-notes-sheen-height)] [background-image:var(--vds-update-notes-sheen)]'
 const PANEL_HEADER_CLASS_NAME =
   'relative flex items-start gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-4)] pt-[var(--vds-space-5)]'
 // 失败稿的头部四边等距 20（高 88），与 summary 稿的 20/20/16（高 84）不同。
@@ -73,23 +67,19 @@ const PANEL_HEADER_NOTES_CLASS_NAME =
 const PANEL_HERO_CLASS_NAME =
   'grid size-[var(--vds-update-notes-hero-size)] flex-none place-items-center rounded-[var(--vds-update-notes-hero-radius)] [background:var(--vds-bg-white-active-transparent)]'
 const PANEL_HERO_GLYPH_CLASS_NAME = 'size-[var(--vds-update-notes-hero-icon-size)] object-contain'
-// 失败稿的徽标位换成告警图标（iconfont 靠字号定尺寸，颜色取告警色）。
 const PANEL_HERO_ICON_CLASS_NAME =
-  'text-[length:var(--vds-update-notes-hero-icon-size)] text-[var(--vds-warning-bg-default)]'
+  'grid size-[var(--vds-update-notes-hero-icon-size)] place-items-center !text-[length:var(--vds-update-notes-hero-icon-size)] !leading-none text-[var(--vds-error-bg-default)]'
 const PANEL_HEADING_CLASS_NAME = 'relative grid min-w-0 flex-1 gap-[var(--vds-update-notes-gap)]'
 const PANEL_TITLE_CLASS_NAME =
-  'm-0 truncate text-[length:var(--vds-font-title)] font-[var(--vds-fw-regular)] leading-[var(--vds-lh-title)] text-[var(--vds-text-primary)]'
-// summary 稿把版本行标成 brand-bg-default(#2C5545)，但那是背景 token，暗色主题下是
-// #498e76，压在深底上对比不足；按仓库既有约定改用语义品牌文本 token（亮色 #234438，
-// 同为深品牌绿）。failed / notes 两稿本来就用 text-placeholder，照稿取。
+  'm-0 truncate text-[length:var(--vds-font-title)] !font-normal leading-[var(--vds-lh-title)] !text-[var(--vds-text-primary)]'
 const PANEL_VERSION_CLASS_NAME =
-  'truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-brand-text-primary)] tabular-nums'
+  'truncate text-[length:var(--vds-font-body-lv1)] font-normal leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
 const PANEL_VERSION_MUTED_CLASS_NAME =
   'truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
 const PANEL_CLOSE_CLASS_NAME = 'relative flex-none'
 // 分割线与进度条占同一条水平带（左右各 20px），下载中只换芯不换位。
 const PANEL_DIVIDER_CLASS_NAME =
-  'relative [--vds-divider-color:var(--vds-divider-default)] [--vds-divider-margin-horizontal:0_var(--vds-space-5)]'
+  'relative !w-[calc(100%_-_var(--vds-space-5)_*_2)] [--vds-divider-color:var(--vds-divider-default)] [--vds-divider-margin-horizontal:0_var(--vds-space-5)]'
 const PANEL_PROGRESS_CLASS_NAME = [
   'relative mx-[var(--vds-space-5)]',
   '[--vds-progress-height:var(--vds-update-notes-progress-height)]',
@@ -122,6 +112,7 @@ const PANEL_EMPTY_CLASS_NAME =
 // 正好与要点正文（6px 标记列 + 10px 间隔）对齐。
 const PANEL_MORE_CLASS_NAME = [
   'justify-self-start px-[var(--vds-space-4)]',
+  '!text-[var(--vds-brand-bg-default)]',
   '!text-[length:var(--vds-font-body-lv2)] !leading-[var(--vds-lh-body-lv2)]',
   '!no-underline hover:!underline'
 ].join(' ')
@@ -137,13 +128,11 @@ const PANEL_VERSION_ROW_TEXT_CLASS_NAME =
 const PANEL_TAG_CLASS_NAME = '![--vds-tag-border:var(--vds-brand-light-bg-hover)]'
 const PANEL_STATUS_CLASS_NAME =
   'grid gap-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]'
-// 失败稿的告警框：warning-light-bg-hover 底 + warning-light-border 描边 + 6 圆角 +
-// 6/8 内边距 + 4 行距，正文 14/22 用主要文字色（不是告警文字色）。
 const PANEL_ERROR_CLASS_NAME = [
   'grid gap-[var(--vds-space-1)] rounded-[var(--vds-radius-3)]',
   'border border-[var(--vds-warning-light-border)] [border-style:solid] [border-width:var(--vds-border-width-1)]',
   '[background:var(--vds-warning-light-bg-hover)] [padding:var(--vds-update-notes-error-padding)]',
-  'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]'
+  'text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-warning-bg-default)]'
 ].join(' ')
 const PANEL_ERROR_TEXT_CLASS_NAME = 'break-all'
 const PANEL_ACTIONS_CLASS_NAME = 'flex flex-row gap-[var(--vds-space-3)]'
@@ -256,7 +245,6 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
       data-view={view}
       role="group"
     >
-      {view !== 'summary' && <span aria-hidden className={PANEL_SHEEN_CLASS_NAME} />}
 
       <div
         className={
@@ -298,7 +286,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
         <IconButton
           className={PANEL_CLOSE_CLASS_NAME}
           data-testid="update-panel-close"
-          icon={<IconFont type={PANEL_CLOSE_ICON_TYPE} />}
+          icon={<X />}
           label={uiText('close')}
           onClick={onDismiss}
           size="md"
@@ -377,7 +365,6 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             </span>
           )}
 
-          <span className={PANEL_STATUS_CLASS_NAME}>{t('update.summaryHint')}</span>
           <div className={PANEL_LIST_NOTES_CLASS_NAME} data-testid="update-panel-list">
             {notes.length > 0 ? (
               noteItems
@@ -418,7 +405,6 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
       {view === 'summary' && (
         <div className={PANEL_BODY_CLASS_NAME}>
           <div className={PANEL_NOTES_GROUP_CLASS_NAME}>
-            <span className={PANEL_STATUS_CLASS_NAME}>{t('update.summaryHint')}</span>
             <div className={PANEL_LIST_CLASS_NAME} data-testid="update-panel-list">
               {notes.length > 0 ? (
                 noteItems

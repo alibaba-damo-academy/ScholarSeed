@@ -1,6 +1,6 @@
+import { IconFont } from '../../components/primitive'
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Plus } from 'lucide-react'
 
 import {
   Button,
@@ -187,7 +187,7 @@ export function WebImportDestination({
         ) : (
           <Button
             className="justify-self-start"
-            icon={<Plus size={14} />}
+            icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
             variant="secondary"
             onClick={() => setNewFolderOpen(true)}
           >

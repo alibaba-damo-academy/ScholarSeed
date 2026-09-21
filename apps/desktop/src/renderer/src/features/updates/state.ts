@@ -265,9 +265,11 @@ export function updateFailureText(
   accountText: TFunction<'account'>
 ): string {
   // 结构化分类失败：按类别给可操作的本地化说法，绝不透出原始诊断（Windows 控制台代码页下会乱码，
-  // 见 bug 87042987）。校验环境不可用 → 引导手动下载重装；签名不可信 → 安全拦截、引导官方渠道重取。
+  // 见 bug 87042987）。校验环境不可用 → 引导手动下载重装；签名不可信 → 安全拦截、引导官方渠道重取；
+  // 本机不可判定 → 包字节与签名者都对、缺的是本机链/吊销状态，引导修复环境后重试而非重新下载。
   if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
   if (failure.fallback === 'install_signature_untrusted') return t('update.installSignatureUntrusted')
+  if (failure.fallback === 'install_signature_indeterminate') return t('update.installSignatureIndeterminate')
   // 笼统 fallback 或拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
   if (failure.fallback || !failure.message) {
     return failure.origin === 'install'

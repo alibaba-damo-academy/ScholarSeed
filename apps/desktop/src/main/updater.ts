@@ -22,6 +22,7 @@ import {
 } from 'fs'
 import { basename, dirname, join } from 'path'
 
+import { classifyAuthenticodeStatus, publisherSubjectsMatch } from './authenticode.ts'
 import { desktopHome, LOGS_DIRNAME, resolveProductConfig } from './backend'
 import { systemCacheDir } from './cachedir.ts'
 import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
@@ -65,11 +66,9 @@ const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_POWERSHELL = 'powershell.exe'
 const WINDOWS_UPDATE_ARGUMENTS = ['--updated', '/S', '--force-run']
 const WINDOWS_INSTALLER_ENV = 'SCHOLARSEED_UPDATE_INSTALLER'
-// Get-AuthenticodeSignature 的 SignatureStatus 枚举里唯一表示「签名有效且证书链可信」的值；
-// 其余（NotSigned / HashMismatch / NotTrusted / SignatureOrFileCorrupt / UnknownError …）一律
-// 按不可信处理（fail-closed）。用内置 cmdlet 而非内联 WinVerifyTrust，是因为后者依赖
+// Status 的三档语义（valid / 确证坏 / 本机不可判定）与发布者 DN 的同发布者判定在
+// authenticode.ts：纯判定、可单测。用内置 cmdlet 而非内联 WinVerifyTrust，是因为后者依赖
 // Add-Type / [PSCustomObject] / 静态属性赋值，在 PowerShell 受限语言模式下全部被禁（bug 87042987）。
-const WINDOWS_AUTHENTICODE_VALID = 'Valid'
 // chcp.com 报的活动控制台代码页 → TextDecoder 标签。中文 Windows 是 936(GBK)；不在表里或探测
 // 失败都退回 UTF-8（ASCII 子集，对本链路输出的 STATUS/SUBJECT 纯 ASCII 行恒正确）。
 const WINDOWS_CODE_PAGE_ENCODINGS: Readonly<Record<string, string>> = {
@@ -567,7 +566,11 @@ interface AsyncCommandResult {
 }
 
 /** 签名校验失败的类别，决定 installWindows 回报哪种 errorFallback（见 updates.ts）。 */
-type WindowsVerifyFailure = 'verify-env-unavailable' | 'signature-untrusted' | 'publisher-mismatch'
+type WindowsVerifyFailure =
+  | 'verify-env-unavailable'
+  | 'signature-untrusted'
+  | 'signature-indeterminate'
+  | 'publisher-mismatch'
 
 /**
  * 带类别的校验失败。installWindows 据此把「校验环境不可用」与「签名不可信」分开上报；原始诊断
@@ -598,6 +601,11 @@ class WindowsVerifyError extends Error {
  * 上一轮真机实测该校验约 1990ms；用户报的「≥2min 才安装」已定位在退出后 NSIS 静默解压、与验签无关，故
  * 此处以「在所有终端（含受限模式）都能完成校验」优先于「极致离线提速」。安装包字节仍由 SHA-512 对着
  * HTTPS 下发的发布元数据钉死（下载时一次、安装前再一次），发布者身份由下面的 Subject 比对强制。
+ *
+ * 结果三分而非二分：非 Valid 的 Status 里，NotSigned / HashMismatch / NotSupportedFileFormat 是
+ * 包级确证坏；NotTrusted / UnknownError / Incompatible 往往是本机链/吊销/兼容状态。后者在签名者与
+ * 打包策略一致时单独成一类 fallback（见 authenticode.ts）—— 文案不再引导「重新下载」那条必然复现
+ * 的死路，而是引导修复本机环境后重试安装。任何一档都不放行安装（fail-closed 不变）。
  */
 export async function verifyWindowsInstaller(
   installer: string,
@@ -640,14 +648,29 @@ Write-Output ('SUBJECT=' + $subject)
   // 出问题时只有这行能说明当时 PowerShell 处于哪种模式（bug 87042987 的回归验证要求）。
   const languageMode = (result.stdout.match(/^LANGMODE=(.*)$/m)?.[1] ?? '').trim()
   logTiming(log, `Authenticode status=${status} langMode=${languageMode}`, startedAt)
-  if (status !== WINDOWS_AUTHENTICODE_VALID) {
+  // STATUS/SUBJECT 原样落盘：这两行是区分「确证不可信」与「本机不可判定」、以及发布者 DN 形态
+  // 差异的唯一证据；反馈日志包会收走 update.log（feedback.py UPDATE_LOG），下一次同类工单才能定论。
+  persistUpdateLog(`[update] Windows Authenticode verdict input: status=${status} subject=${subject}\n`)
+  const verdict = classifyAuthenticodeStatus(status)
+  if (verdict !== 'valid') {
+    // 不可判定且签名者与打包策略一致：缺的是本机的链/吊销状态，不是包的身份 —— 单独上报，
+    // 文案引导修复环境后重试。不可判定但签名者不符、或包级确证坏：按不可信安全拦截。
+    if (verdict === 'indeterminate' && publisherSubjectsMatch(subject, expectedPublisher)) {
+      persistUpdateLog(
+        `[update] Windows installer signature trust undecidable on this machine: status=${status}\n`
+      )
+      throw new WindowsVerifyError(
+        `Windows installer signature trust could not be determined on this machine: ${status}`,
+        'signature-indeterminate'
+      )
+    }
     persistUpdateLog(`[update] Windows installer signature not trusted: status=${status}\n`)
     throw new WindowsVerifyError(
       `Windows installer signature is not trusted: ${status}`,
       'signature-untrusted'
     )
   }
-  if (subject !== expectedPublisher) {
+  if (!publisherSubjectsMatch(subject, expectedPublisher)) {
     // 把「实际 vs 期望」的发布者 DN 落盘：换验证原语后若 Subject 字符串格式有出入，只有这行能说明是
     // 格式差异还是真的换了签名者。界面只走 errorFallback 笼统文案，不呈现 DN。
     persistUpdateLog(
@@ -663,9 +686,9 @@ Write-Output ('SUBJECT=' + $subject)
 /** 把校验/安装异常映射成结构化 errorFallback；原始文本只落日志，不进用户文案。 */
 function windowsInstallFallback(error: unknown): UpdateInstallFallback {
   if (error instanceof WindowsVerifyError) {
-    return error.kind === 'verify-env-unavailable'
-      ? 'install_verify_unavailable'
-      : 'install_signature_untrusted'
+    if (error.kind === 'verify-env-unavailable') return 'install_verify_unavailable'
+    if (error.kind === 'signature-indeterminate') return 'install_signature_indeterminate'
+    return 'install_signature_untrusted'
   }
   return 'install_failed'
 }

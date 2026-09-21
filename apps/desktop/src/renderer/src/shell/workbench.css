@@ -2991,7 +2991,7 @@
   display: block;
   overflow: auto;
   scrollbar-gutter: stable;
-  background: var(--bg-1);
+  background: var(--vds-bg-gray-default);
 }
 
 /* Keep the browser scrollbar discoverable even with overlay-scrollbar preferences. */

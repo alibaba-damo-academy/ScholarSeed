@@ -2101,6 +2101,7 @@ export function ComponentsPage(): JSX.Element {
           <h2 className="m-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">Progress and Avatar</h2>
           <div className="grid gap-[var(--vds-space-3)]">
             <ProgressBar label={t('progress.upload')} value={64} />
+            <ProgressBar shape="circle" className="size-[var(--vds-icon-10)]" label={t('progress.upload')} value={64} />
             <ProgressBar indeterminate label={t('progress.processing')} />
             <Progress color="success" subtitle={t('progress.business')} title={t('progress.intent')} value={70} />
             <Progress color="warning" showPercentage={false} subtitle={t('progress.hidden')} title={t('progress.download')} value={33} />

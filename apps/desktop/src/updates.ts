@@ -73,11 +73,15 @@ export type UpdateErrorOrigin = 'check' | 'download' | 'install'
  *   不可解析），重试大概率仍失败，文案引导用户去官网手动下载安装。
  * - `install_signature_untrusted`：校验执行了但签名不可信或与打包策略发布者不符，属安全
  *   拦截，文案明确「已阻止安装、请从官方渠道重新获取」，不引导无意义重试。
+ * - `install_signature_indeterminate`：校验执行了、签名者与打包策略一致，但本机建立不起证书链
+ *   信任（离线吊销、缺根证书等）。包字节已被 SHA-512 钉死，重新下载必然复现，文案引导修复
+ *   本机环境后重试安装，不引导重新下载。
  */
 export type UpdateInstallFallback =
   | 'install_failed'
   | 'install_verify_unavailable'
   | 'install_signature_untrusted'
+  | 'install_signature_indeterminate'
 
 /**
  * 主进程内部 updater → shell 的进度回调形状，不过 IPC 桥。

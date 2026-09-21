@@ -1,4 +1,5 @@
-import { ArrowLeft, FileText, NotepadText, Plus, Trash } from 'lucide-react'
+import { IconFont } from '../../components/primitive'
+import { ArrowLeft, FileText, NotepadText, Trash } from 'lucide-react'
 import React, { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -197,7 +198,7 @@ function LiteratureNotesContent({
     <div className="flex h-full min-h-0 flex-col gap-[var(--vds-space-3)] p-[var(--vds-space-3)]">
       <Button
         className="self-end"
-        icon={<Plus size={16} />}
+        icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-8)] !text-[length:var(--vds-icon-8)] !leading-none" />}
         variant="secondary"
         onClick={requestNew}
       >

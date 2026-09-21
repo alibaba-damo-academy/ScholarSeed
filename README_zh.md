@@ -79,6 +79,8 @@ npm run dev
 
 `npm run dev` 会先准备仓库锁定的 Python 运行时和开发环境，再启动 Electron。通常不需要手动安装 workspace 中的 Python 包。
 
+在 macOS 和 Windows 上，`npm run dev` 默认启用 DevTools 和复制会话 ID 按钮。设置 `SCHOLARSEED_DEVTOOLS=0` 可关闭这些开发功能。
+
 ## 模型与服务配置
 
 ScholarSeed 需要配置你有权使用的模型连接。请在应用设置中填写 Provider 地址、模型名称和凭据。本地 HTTP 鉴权和模型授权是不同概念：本地服务健康不代表模型账号已经获得授权。

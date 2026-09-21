@@ -122,6 +122,11 @@ SYSTEM_LOG_LABEL = "system"
 # 日志，排障价值最高，因此排在诊断集的最前面写，不能被历史文件挤掉。
 BACKEND_LOG: Path = LOGS_DIR / "backend.log"
 BACKEND_LOG_LABEL = "backend"
+# Electron 主进程把更新链路的全部诊断落在这里 (见 apps/desktop/src/main/updater.ts 的
+# persistUpdateLog): Authenticode 的 STATUS/SUBJECT/LANGMODE、逐步计时、安装失败分类。
+# 自更新被拦截时, 这是唯一能区分失败类别的证据; 不收它, 这类工单在线上永远无法定论。
+UPDATE_LOG: Path = LOGS_DIR / "update.log"
+UPDATE_LOG_LABEL = "update"
 # trace 索引是可重建的旁路 sqlite, 打进去只是白占额度。
 BUNDLE_EXCLUDED_SUFFIXES = (".sqlite3", ".sqlite3-wal", ".sqlite3-shm")
 
@@ -534,6 +539,7 @@ def _build_log_bundle_contents(
         if include_diagnostics:
             for label, single in (
                 (BACKEND_LOG_LABEL, BACKEND_LOG),
+                (UPDATE_LOG_LABEL, UPDATE_LOG),
                 (SYSTEM_LOG_LABEL, SYSTEM_LOG),
             ):
                 if single.is_file():

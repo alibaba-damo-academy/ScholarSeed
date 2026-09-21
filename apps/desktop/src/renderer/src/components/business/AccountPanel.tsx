@@ -137,6 +137,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   CopyButton,
+  EllipsisText,
   IconButton,
   Input,
   Page,
@@ -378,7 +379,7 @@ function PromptsPage(): React.JSX.Element {
                   rows={3}
                   value={draft[action]}
                   disabled={saving}
-                  className="pb-[var(--vds-space-7)]"
+                  className="!rounded-[var(--vds-settings-prompt-radius)] pb-[var(--vds-space-7)]"
                   data-testid={`selection-prompt-${action}`}
                   maxLength={MAX_SELECTION_PROMPT_CHARS}
                   onChange={(event) =>
@@ -1182,7 +1183,7 @@ function FileVersionPage(): React.JSX.Element {
         )}
         <Card
           padding="none"
-          className="grid px-[var(--vds-card-padding-md)] py-[var(--vds-space-1)]"
+          className="grid !rounded-[var(--vds-settings-files-card-radius)] px-[var(--vds-card-padding-md)] py-[var(--vds-space-1)]"
         >
           <SettingsRow
             title={t('fileSettings.autoSaveLabel')}
@@ -2558,7 +2559,7 @@ function DeveloperPage(): React.JSX.Element {
         </PageSection>
 
         <PageSection title={t('accountPanel.developer.new')}>
-          <Card padding="none" className="px-[var(--vds-card-padding-md)]">
+          <Card padding="none" className="!rounded-[var(--vds-settings-api-key-card-radius)] px-[var(--vds-card-padding-md)]">
             <SettingsRow
               title={t('accountPanel.developer.name')}
               description={t('accountPanel.developer.nameDesc')}
@@ -2638,7 +2639,7 @@ const MODEL_SETTINGS_TABLE_HEADER_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLAS
 const MODEL_SETTINGS_TABLE_ROW_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLASS_NAME} items-center border-b border-[var(--vds-line-1)] px-4 py-3 last:border-b-0`
 const MODEL_SHELL_CLASS_NAME = [
   'grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)]',
-  'overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--border-soft)]'
+  'overflow-hidden rounded-[var(--vds-settings-model-panel-radius)] border border-[var(--border-soft)]'
 ].join(' ')
 const MODEL_PANE_CLASS_NAME =
   'flex min-h-0 flex-col border-r border-[var(--border-soft)] bg-[var(--bg-2)]'
@@ -4525,23 +4526,24 @@ function ArchivedProjectsPage(): React.JSX.Element {
           {t('accountPanel.archives.empty')}
         </div>
       ) : (
-        <div className="flex flex-col gap-[8px]">
+        <div className="flex min-w-0 max-w-full flex-col gap-[var(--vds-space-2)]">
           {projects.map((project) => (
             <div
               key={project.id}
-              className="flex items-center gap-[12px] rounded-[12px] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)]"
+              className="flex min-w-0 max-w-full items-center gap-[12px] rounded-[12px] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)]"
               data-testid={`account-archived-${project.id}`}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px] font-medium leading-[20px] text-[var(--vds-text-primary)]">
+                <EllipsisText wrapperClassName="w-full" className="text-[14px] font-medium leading-[20px] text-[var(--vds-text-primary)]" tooltipPortalled>
                   {project.name}
-                </span>
-                <span
-                  className="block truncate text-[12px] leading-[18px] text-[var(--vds-text-tertiary)]"
-                  title={project.root}
+                </EllipsisText>
+                <EllipsisText
+                  wrapperClassName="w-full"
+                  className="text-[12px] leading-[18px] text-[var(--vds-text-tertiary)]"
+                  tooltipPortalled
                 >
                   {project.root}
-                </span>
+                </EllipsisText>
               </span>
               <Button
                 type="button"

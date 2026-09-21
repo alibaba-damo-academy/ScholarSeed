@@ -8,7 +8,6 @@ import {
   MonitorDown,
   MoreHorizontal,
   Pencil,
-  Plus
 } from 'lucide-react'
 
 import homeBook from '../../assets/home_book.webp'
@@ -1024,7 +1023,7 @@ export function HomeOverview(): React.JSX.Element {
                 <Button
                   className="vds-home-literature-import-trigger"
                   data-testid="home-literature-import"
-                  icon={<Plus size={14} strokeWidth={1.6} />}
+                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
                   variant="outline"
                 >
                   {t('home.importLiterature')}
@@ -1172,7 +1171,7 @@ export function HomeOverview(): React.JSX.Element {
               data-testid="home-project-create-top"
               onClick={() => set({ projectForm: { mode: 'create' } })}
             >
-              <Plus size={14} strokeWidth={1.6} />
+              <IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />
               {t('home.newProject')}
             </Button>
           )}
@@ -1185,7 +1184,7 @@ export function HomeOverview(): React.JSX.Element {
               data-testid="home-project-empty"
               onClick={() => set({ projectForm: { mode: 'create' } })}
             >
-              <Plus size={16} strokeWidth={1.6} />
+              <IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-8)] !text-[length:var(--vds-icon-8)] !leading-none" />
               <span>{t('home.emptyProjects')}</span>
             </Button>
           )}
