@@ -1,5 +1,5 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
-import { LOGIN_WINDOW_CHANNEL } from '../window'
+import { LOGIN_WINDOW_CHANNEL, WINDOW_CLOSE_REQUEST_CHANNEL, WINDOW_CLOSE_REPLY_CHANNEL, type WindowCloseRequest, type WindowCloseReply } from '../window'
 // preload — the only bridge between renderer and main. Exposes the backend API
 // base URL (the renderer talks ASP/HTTP/SSE straight to it), backend log stream,
 // shoot-scene events, an external-open helper, and the version-update surface.
@@ -47,6 +47,17 @@ const boot = ipcRenderer.sendSync('scholarseed:boot') as Boot
 let apiBase = boot.apiBase
 
 const bridge = {
+  getWindowCloseRequest(): Promise<WindowCloseRequest> {
+    return ipcRenderer.invoke(WINDOW_CLOSE_REQUEST_CHANNEL)
+  },
+  onWindowCloseRequest(callback: (request: WindowCloseRequest) => void): () => void {
+    const handler = (_event: unknown, request: WindowCloseRequest): void => callback(request)
+    ipcRenderer.on(WINDOW_CLOSE_REQUEST_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(WINDOW_CLOSE_REQUEST_CHANNEL, handler)
+  },
+  respondWindowClose(reply: WindowCloseReply): Promise<boolean> {
+    return ipcRenderer.invoke(WINDOW_CLOSE_REPLY_CHANNEL, reply)
+  },
   subscriptionLogin(request: SubscriptionRequest): Promise<SubscriptionReply> {
     return ipcRenderer.invoke(SUBSCRIPTION_CHANNEL, request)
   },
@@ -229,6 +240,9 @@ const bridge = {
   },
   diagnoseUpdate(): Promise<UpdateDiagnosis> {
     return ipcRenderer.invoke('scholarseed:update-diagnose')
+  },
+  runtimeStorePath(): Promise<string | null> {
+    return ipcRenderer.invoke('scholarseed:runtime-store-path')
   },
   startUpdate(id: string): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-start', id)

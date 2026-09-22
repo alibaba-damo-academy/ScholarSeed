@@ -1029,6 +1029,8 @@
       "title": "About ScholarSeed",
       "description": "Version, official links, and onboarding.",
       "site": "Official website",
+      "runtimeStore": "Component store location",
+      "runtimeStoreUnavailable": "Unavailable (SCHOLARSEED_RUNTIME_STORE is not a valid absolute path)",
       "mail": "Contact email",
       "copied": "Copied",
       "community": "Official community",

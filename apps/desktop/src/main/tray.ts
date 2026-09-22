@@ -1,26 +1,21 @@
 import {
   app,
-  BrowserWindow,
+  type BrowserWindow,
   Menu,
   Tray,
-  dialog,
   nativeImage,
-  type MessageBoxReturnValue,
   type NativeImage
 } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 
 import type { i18n } from 'i18next'
+import { WINDOW_CLOSE_PLATFORM, WINDOW_CLOSE_REQUEST_CHANNEL, WINDOW_CLOSE_ACTION, isWindowCloseReply, type WindowCloseRequest } from '../window'
 
-const WINDOWS_PLATFORM = 'win32'
 const TRAY_STATE_FILENAME = 'window-close-state.json'
 const TEMPORARY_FILE_SUFFIX = '.tmp'
-const PACKAGED_TRAY_ICON = 'windows-tray.png'
-const DEVELOPMENT_TRAY_ICON_SEGMENTS = ['resources', 'windows.png'] as const
-const CLOSE_DIALOG_MINIMIZE_INDEX = 0
-const CLOSE_DIALOG_QUIT_INDEX = 1
-
+const PACKAGED_TRAY_ICON = 'windows-tray.ico'
+const DEVELOPMENT_TRAY_ICON_SEGMENTS = ['resources', 'windows.ico'] as const
 export interface WindowCloseState {
   askOnClose: boolean
 }
@@ -31,6 +26,8 @@ interface WindowCloseStateStore {
 }
 
 export interface WindowsCloseController {
+  currentRequest(window: BrowserWindow): WindowCloseRequest
+  respond(window: BrowserWindow, reply: unknown): boolean
   ensureTray(window: BrowserWindow): void
   handleClose(window: BrowserWindow, event: Electron.Event): void
 }
@@ -95,76 +92,97 @@ function hideWindowToTray(window: BrowserWindow, log: (line: string) => void): v
   log('[shell] Windows main window minimized to tray; renderer session remains attached\n')
 }
 
-async function askWindowsCloseAction(window: BrowserWindow, localizer: () => i18n): Promise<MessageBoxReturnValue> {
-  const t = localizer().getFixedT(null, 'native')
-  return dialog.showMessageBox(window, {
-    type: 'question',
-    title: t('tray.closeTitle'),
-    message: t('tray.closeMessage'),
-    detail: t('tray.closeDetail'),
-    buttons: [t('tray.minimize'), t('tray.quit'), t('tray.cancel')],
-    defaultId: CLOSE_DIALOG_MINIMIZE_INDEX,
-    cancelId: 2,
-    checkboxLabel: t('tray.doNotAskAgain'),
-    checkboxChecked: false,
-    noLink: true
-  })
-}
-
 export function createWindowsCloseController(options: WindowsCloseControllerOptions): WindowsCloseController {
   let tray: Tray | null = null
+  let trayMenu: Menu | null = null
+  let pendingWindow: BrowserWindow | null = null
+  let requestId = 0
   const stateStore = options.stateStore ?? windowCloseStateStore()
   const platform = options.platform ?? process.platform
 
   function ensureTray(window: BrowserWindow): void {
-    if (platform !== WINDOWS_PLATFORM || tray) return
+    if (platform !== WINDOW_CLOSE_PLATFORM || tray) return
     const t = options.localizer().getFixedT(null, 'native')
     tray = new Tray(createWindowsTrayIcon())
+    options.log(`[tray] created window=${window.id} destroyed=${tray.isDestroyed()}\n`)
     tray.setToolTip(t('tray.tooltip'))
-    tray.setContextMenu(Menu.buildFromTemplate([
+    trayMenu = Menu.buildFromTemplate([
       {
         label: t('tray.show'),
-        click: () => options.revealWindow('tray menu')
+        click: () => reveal('tray menu')
       },
       {
         label: t('tray.quit'),
         click: () => {
+          options.log('[tray] quit selected\n')
           options.markQuitting()
           app.quit()
         }
       }
-    ]))
-    tray.on('double-click', () => options.revealWindow('tray double click'))
+    ])
+    trayMenu.on('menu-will-show', () => options.log('[tray] context menu opening\n'))
+    trayMenu.on('menu-will-close', () => options.log('[tray] context menu closing\n'))
+    tray.on('mouse-enter', () => options.log('[tray] mouse entered\n'))
+    tray.on('right-click', () => {
+      options.log(`[tray] right click window=${window.id} destroyed=${window.isDestroyed()}\n`)
+      tray?.popUpContextMenu(trayMenu ?? undefined)
+    })
+    tray.on('double-click', () => reveal('tray double click'))
     tray.on('click', () => {
-      if (!window.isVisible()) options.revealWindow('tray click')
+      options.log(`[tray] click window=${window.id} destroyed=${window.isDestroyed()}\n`)
+      if (!window.isVisible()) reveal('tray click')
+      else options.log('[tray] click skipped because window is visible\n')
     })
   }
 
+  function reveal(reason: string): void {
+    options.log(`[tray] reveal requested reason=${reason}\n`)
+    const restored = options.revealWindow(reason)
+    options.log(`[tray] reveal completed restored=${restored}\n`)
+  }
+
+  function currentRequest(window: BrowserWindow): WindowCloseRequest {
+    return platform === WINDOW_CLOSE_PLATFORM && pendingWindow === window && !window.isDestroyed()
+      ? requestId : null
+  }
+
+  function respond(window: BrowserWindow, reply: unknown): boolean {
+    if (!isWindowCloseReply(reply) || currentRequest(window) !== reply.requestId) return false
+    options.log(`[tray] close choice request=${reply.requestId} action=${reply.action} remember=${reply.remember}\n`)
+    pendingWindow = null
+    window.webContents.send(WINDOW_CLOSE_REQUEST_CHANNEL, null)
+    if (reply.action === WINDOW_CLOSE_ACTION.cancel) return true
+    if (reply.remember) {
+      try {
+        stateStore.save({ askOnClose: false })
+      } catch (error) {
+        options.log(`[shell] Windows close preference could not be saved: ${String(error)}\n`)
+      }
+    }
+    if (reply.action === WINDOW_CLOSE_ACTION.minimize) {
+      hideWindowToTray(window, options.log)
+    } else {
+      options.markQuitting()
+      app.quit()
+    }
+    return true
+  }
+
   function handleClose(window: BrowserWindow, event: Electron.Event): void {
-    if (platform !== WINDOWS_PLATFORM) return
+    if (platform !== WINDOW_CLOSE_PLATFORM) return
+    options.log(`[tray] close requested window=${window.id}\n`)
+    event.preventDefault()
     ensureTray(window)
+    if (pendingWindow === window) return
     const state = stateStore.load()
     if (!state.askOnClose) {
-      event.preventDefault()
       hideWindowToTray(window, options.log)
       return
     }
-
-    event.preventDefault()
-    void askWindowsCloseAction(window, options.localizer).then((result) => {
-      if (window.isDestroyed()) return
-      if (result.response === CLOSE_DIALOG_MINIMIZE_INDEX) {
-        if (result.checkboxChecked) stateStore.save({ askOnClose: false })
-        hideWindowToTray(window, options.log)
-        return
-      }
-      if (result.response === CLOSE_DIALOG_QUIT_INDEX) {
-        if (result.checkboxChecked) stateStore.save({ askOnClose: false })
-        options.markQuitting()
-        app.quit()
-      }
-    }).catch((error) => options.log(`[shell] Windows close confirmation failed: ${String(error)}\n`))
+    pendingWindow = window
+    requestId += 1
+    window.webContents.send(WINDOW_CLOSE_REQUEST_CHANNEL, requestId)
   }
 
-  return { ensureTray, handleClose }
+  return { ensureTray, handleClose, currentRequest, respond }
 }

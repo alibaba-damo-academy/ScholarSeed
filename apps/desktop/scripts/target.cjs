@@ -42,7 +42,7 @@ const TARGETS = {
     pythonRelative: 'python/python.exe',
     codexRelative: 'codex-runtime/bin/codex.exe',
     ripgrepName: 'rg.exe',
-    icon: 'resources/windows.png'
+    icon: 'resources/windows.ico'
   }
 }
 

@@ -14,6 +14,7 @@
     "show": "显示窗口",
     "quit": "退出应用",
     "closeTitle": "关闭书深窗口？",
+    "closeFailed": "操作未完成，请重试。",
     "closeMessage": "关闭书深窗口？",
     "closeDetail": "最小化到托盘后，Agent 和后台任务会继续运行；退出应用会停止正在进行的工作。",
     "minimize": "最小化到托盘",

@@ -140,8 +140,8 @@
         "to": "defaults"
       },
       {
-        "from": "resources/windows.png",
-        "to": "windows-tray.png"
+        "from": "resources/windows.ico",
+        "to": "windows-tray.ico"
       },
       {
         "from": "resources/product.json",
@@ -201,7 +201,7 @@
       ]
     },
     "win": {
-      "icon": "resources/windows.png",
+      "icon": "resources/windows.ico",
       "target": [
         {
           "target": "nsis",

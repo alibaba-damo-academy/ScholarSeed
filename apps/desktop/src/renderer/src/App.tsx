@@ -27,6 +27,7 @@ import {
 import type { SessionStatus } from './model'
 import { AccountLogin } from './components/business/AccountLogin'
 import { Landing } from './components/business/Landing'
+import { WindowCloseDialog } from './shell/Close'
 import { AccountPanel } from './components/business/AccountPanel'
 import { LanguageSwitchDialog } from './components/business/Preferences'
 import { ProjectForm } from './components/business/ProjectForm'
@@ -756,6 +757,7 @@ function AppRoot(): React.JSX.Element {
         onLogout={handleLogout}
       />
       <OnboardingHost blocked={landingOpen || state.loginOpen} />
+      <WindowCloseDialog />
       {state.loginOpen && !landingOpen && (
         <AccountLogin
           onAuthed={handleAuthed}

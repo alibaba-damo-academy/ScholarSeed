@@ -5,7 +5,8 @@ import { Alert, Button, CopyButton, FloatingToolbar, IconButton, ScrollArea, Spi
 import { Icon } from '../../icons'
 import { Markdown } from '../../components/primitive'
 import { writeClipboard } from '../../components/primitive/clipboard'
-import { TranslationTargetPicker } from '../../components/business/Language'
+import { defaultTranslationTarget, readTranslationModel, readTranslationTarget, TranslationTargetPicker, writeTranslationModel, writeTranslationTarget } from '../../components/business/Language'
+import { ModelMenu } from '../../components/business/ModelMenu'
 import { PromptSettingsGuide } from '../../components/business/PromptSettingsGuide'
 import type { AssistantTranslationTarget } from '../../contracts/assistant'
 import { effectiveSessionModelKey } from '../../catalog'
@@ -68,7 +69,7 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
   const [output, setOutput] = useState('')
   const [error, setError] = useState<{ key: (typeof ERRORS)[keyof typeof ERRORS] | 'suggestion.errors.cancelledIncomplete' | 'suggestion.errors.generateFailed' | 'suggestion.errors.requestFailed' | 'suggestion.errors.cancelled' | 'suggestion.errors.cancelUnconfirmed' | 'suggestion.errors.applyFailed'; detail?: string } | null>(null)
   const [submitted, setSubmitted] = useState(action === 'translate')
-  const [target, setTarget] = useState<AssistantTranslationTarget>(() => i18n.resolvedLanguage?.startsWith('en') ? 'en' : 'zh-CN')
+  const [target, setTarget] = useState<AssistantTranslationTarget>(() => readTranslationTarget('resource-selection') ?? defaultTranslationTarget(i18n.resolvedLanguage || i18n.language, selectedText))
   const [busy, setBusy] = useState(false)
   const [complete, setComplete] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -82,13 +83,15 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
   const request = useRef<ResourceRequest | null>(null)
   const applySnapshot = useRef(onApply)
   const mounted = useRef(true)
-  const selectedModel = effectiveSessionModelKey(state.catalog.models, state.model, state.activeSession, state.threads)
+  const assistantModel = effectiveSessionModelKey(state.catalog.models, state.model, state.activeSession, state.threads)
+  const [translationModel, setTranslationModel] = useState<string | undefined>(() => readTranslationModel('resource-selection'))
+  const selectedModel = translationModel ?? assistantModel
   const hasModel = state.catalog.models.some(item => item.key === selectedModel && !item.disabled)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; stream.current?.abort() } }, [])
   useEffect(() => { setPosition(null); setAnnotated(false) }, [identity])
   useEffect(() => { if (!hasModel) setError({ key: ERRORS.resource_model_unavailable }) }, [hasModel])
   const close = (): void => { stream.current?.abort(); onClose() }
-  const run = async (retry = false, targetLanguage = target): Promise<void> => {
+  const run = async (retry = false, targetLanguage = target, modelOverride = selectedModel): Promise<void> => {
     if (busy) return
     if (!hasModel) { setError({ key: ERRORS.resource_model_unavailable }); return }
     stream.current?.abort()
@@ -103,7 +106,7 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
       if (abort.signal.aborted) return
       const next: ResourceRequest = retry && previous ? {
         ...previous, client_attempt_id: crypto.randomUUID(), retry_of_attempt_id: previous.client_attempt_id
-      } : { ...input, instruction: selectionInstruction(state.selectionPrompts, action, instruction), model_key: selectedModel,
+      } : { ...input, instruction: selectionInstruction(state.selectionPrompts, action, instruction), model_key: modelOverride,
         ...(action === 'translate' ? { target_language: targetLanguage } : {}),
         client_action_id: crypto.randomUUID(), client_attempt_id: crypto.randomUUID() }
       request.current = next
@@ -202,7 +205,7 @@ export function ResourceSuggestion({ action, anchorPosition, anchorWidth, identi
     if (bounds) moveTo(bounds.left + offset.x, bounds.top + offset.y)
   }
   const moveHandle = <strong className={integratedInput ? 'cursor-move touch-none px-2' : 'flex-1 cursor-move touch-none px-2'} tabIndex={0} aria-label={ui('floatingWindow.move', { title: t(LABELS[action]) })} onKeyDown={moveByKeyboard} onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag} onPointerCancel={stopDrag}>{integratedInput ? <Icon name="more-horizontal" size={14} /> : t(LABELS[action])}</strong>
-  const suggestionActions = <>{integratedInput ? toolbarActions : null}{moveHandle}{submitted && action === 'translate' && <TranslationTargetPicker value={target} disabled={busy} onChange={nextTarget => { setTarget(nextTarget); void run(false, nextTarget) }} />}{submitted && action === 'explain' ? <IconButton aria-pressed={pinned} label={ui(pinned ? 'floatingWindow.unpin' : 'floatingWindow.pin')} icon={<Icon name="pin" size={14} />} onClick={() => onPinnedChange(!pinned)} variant={pinned ? 'secondary' : 'ghost'} /> : null}<IconButton label={t('suggestion.close')} icon={<Icon name="close" size={14} />} onClick={close} variant="ghost" /></>
+  const suggestionActions = <>{integratedInput ? toolbarActions : null}{moveHandle}{submitted && action === 'translate' && <><TranslationTargetPicker value={target} disabled={busy} onChange={nextTarget => { writeTranslationTarget('resource-selection', nextTarget); setTarget(nextTarget); void run(false, nextTarget) }} /><ModelMenu compact independent modelKey={selectedModel} onModelSelect={model => { writeTranslationModel('resource-selection', model.key); setTranslationModel(model.key); if (submitted) void run(false, target, model.key) }} showEffort={false} testIdPrefix="resource-translation-model" /></>}{submitted && action === 'explain' ? <IconButton aria-pressed={pinned} label={ui(pinned ? 'floatingWindow.unpin' : 'floatingWindow.pin')} icon={<Icon name="pin" size={14} />} onClick={() => onPinnedChange(!pinned)} variant={pinned ? 'secondary' : 'ghost'} /> : null}<IconButton label={t('suggestion.close')} icon={<Icon name="close" size={14} />} onClick={close} variant="ghost" /></>
   return <FloatingToolbar key={identity} label={integratedInput ? toolbarLabel ?? t(LABELS[action]) : t(LABELS[action])} expanded
     ref={root}
     data-resource-ai-suggestion

@@ -184,6 +184,8 @@ const bridge: BrowserBridge = {
   checkUpdate: async () => upToDate(),
   // 浏览器形态没有更新通路（恒 upToDate、从不带候选包），静默刷新如实无操作。
   refreshUpdate: async () => {},
+  // 浏览器形态没有组件 store（Windows 组件化载荷专属），如实返回 null。
+  runtimeStorePath: async () => null,
   diagnoseUpdate: async () => ({
     url: '',
     releaseLane: 'local',

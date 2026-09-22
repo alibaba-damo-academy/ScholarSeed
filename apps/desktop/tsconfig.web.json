@@ -34,6 +34,7 @@
     "src/notifications.ts",
     "src/skills.ts",
     "src/updates.ts",
+    "src/window.ts",
     "src/locale.ts",
     "src/localization/**/*",
     "src/persistence.ts",

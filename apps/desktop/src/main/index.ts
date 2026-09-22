@@ -1,5 +1,5 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
-import { LOGIN_WINDOW_CHANNEL, WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM } from '../window'
+import { LOGIN_WINDOW_CHANNEL, WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM, WINDOW_CLOSE_REQUEST_CHANNEL, WINDOW_CLOSE_REPLY_CHANNEL } from '../window'
 import { createLoginWindowSizing } from './window'
 // index.ts — Electron main entry.
 //
@@ -33,6 +33,8 @@ import {
   startBackend,
   stopBackend,
   desktopHome,
+  runtimeStoreRoot,
+  LOGS_DIRNAME,
   BackendHandle,
   resolveProductConfig,
   backendHostProcessKey,
@@ -96,6 +98,7 @@ import { externalWebUrl } from './external'
 import { DEFAULT_SERVE_URL } from '../../endpoints'
 import { installApplicationMenu } from './menu'
 import { createWindowsCloseController } from './tray'
+import { RotatingFileLog } from './logfile'
 import {
   IMPORT_PICKER_TARGET,
   isImportPickerTarget,
@@ -114,16 +117,21 @@ let lastBackendFailure: BackendFailure | null = null
 let mainWindow: BrowserWindow | null = null
 let setLoginWindowVisible: ((visible: boolean) => void) | null = null
 let startupScreen: StartupScreen | null = null
+let windowLifecycleLog: RotatingFileLog | null = null
+const WINDOW_LIFECYCLE_LOG_FILENAME = 'window.log'
 const windowsCloseController = createWindowsCloseController({
   localizer: mainLocalization,
   revealWindow: (reason) => revealMainWindow(reason),
   markQuitting: () => { appQuitting = true },
-  log: pushLog
+  log: logWindowLifecycle
 })
 const SCHOLARSEED_DEFAULT_WORKSPACE_ENV = 'SCHOLARSEED_DEFAULT_WORKSPACE'
 const SCHOLARSEED_DEVTOOLS_ENV = 'SCHOLARSEED_DEVTOOLS'
 const MACOS_PLATFORM = 'darwin'
 const WINDOWS_PLATFORM = 'win32'
+const MAIN_WINDOW_BACKGROUND = '#F8F8F5'
+const WINDOWS_TITLE_BAR_HEIGHT = 40
+const WINDOWS_TITLE_BAR_SYMBOL_COLOR = '#4C4C4C'
 const MOCK_KEYCHAIN_SWITCH = 'use-mock-keychain'
 const SESSION_DATA_PREFIX = 'scholarseed-desktop-session'
 const DEFAULT_API_BASE = DEFAULT_SERVE_URL
@@ -245,6 +253,14 @@ function pushLog(line: string): void {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send('scholarseed:backend-log', line)
   }
+}
+
+function logWindowLifecycle(line: string): void {
+  if (process.platform === WINDOWS_PLATFORM) {
+    windowLifecycleLog ??= new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME))
+    windowLifecycleLog.write(`${new Date().toISOString()} pid=${process.pid} ${line}`)
+  }
+  pushLog(line)
 }
 
 function configureCredentialProvider(): void {
@@ -503,12 +519,16 @@ function isExternalUrl(url: string): boolean {
 
 function revealMainWindow(reason: string): boolean {
   const win = mainWindow
-  if (!win || win.isDestroyed()) return false
+  if (!win || win.isDestroyed()) {
+    logWindowLifecycle(`[shell] reveal unavailable; ${reason}\n`)
+    return false
+  }
+  logWindowLifecycle(`[shell] reveal window=${win.id} visible=${win.isVisible()} minimized=${win.isMinimized()} enabled=${win.isEnabled()}; ${reason}\n`)
   if (win.isMinimized()) win.restore()
   win.show()
   if (process.platform === MACOS_PLATFORM) app.focus({ steal: true })
   win.focus()
-  pushLog(`[shell] main window shown; ${reason}\n`)
+  logWindowLifecycle(`[shell] main window shown visible=${win.isVisible()} focused=${win.isFocused()}; ${reason}\n`)
   return true
 }
 
@@ -777,6 +797,14 @@ function dismissLanding(): void {
 function registerIpcHandlers(developerToolsEnabled: boolean): void {
   if (ipcHandlersRegistered) return
   ipcHandlersRegistered = true
+  ipcMain.handle(WINDOW_CLOSE_REQUEST_CHANNEL, (event) => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) return null
+    return windowsCloseController.currentRequest(mainWindow)
+  })
+  ipcMain.handle(WINDOW_CLOSE_REPLY_CHANNEL, (event, reply: unknown) => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) return false
+    return windowsCloseController.respond(mainWindow, reply)
+  })
   ipcMain.handle(LOGIN_WINDOW_CHANNEL, (event, visible: unknown) => {
     if (event.sender !== mainWindow?.webContents || typeof visible !== 'boolean') return
     setLoginWindowVisible?.(visible)
@@ -1225,6 +1253,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // surfaces subscribe to the same state instead of reconstructing it locally.
   ipcMain.handle('scholarseed:update-state-get', () => currentUpdateSnapshot())
   ipcMain.handle('scholarseed:update-diagnose', async () => updater.diagnoseUpdate(pushLog))
+  ipcMain.handle('scholarseed:runtime-store-path', () => runtimeStoreRoot())
   ipcMain.handle('scholarseed:update-check', async () => {
     if (updater.updateLaneUnsupported(pushLog)) {
       return publishUpdateSnapshot({
@@ -1393,9 +1422,16 @@ async function createWindow(): Promise<void> {
     useContentSize: true,
     minWidth: WORKSPACE_WINDOW_MINIMUM.width,
     minHeight: WORKSPACE_WINDOW_MINIMUM.height,
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: process.platform === WINDOWS_PLATFORM ? 'hidden' : 'hiddenInset',
+    titleBarOverlay: process.platform === WINDOWS_PLATFORM
+      ? {
+          color: MAIN_WINDOW_BACKGROUND,
+          symbolColor: WINDOWS_TITLE_BAR_SYMBOL_COLOR,
+          height: WINDOWS_TITLE_BAR_HEIGHT
+        }
+      : undefined,
     trafficLightPosition: { x: 14, y: 16 },
-    backgroundColor: '#F8F8F5',
+    backgroundColor: MAIN_WINDOW_BACKGROUND,
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -1466,6 +1502,7 @@ async function createWindow(): Promise<void> {
   })
 
   mainWindow.on('closed', () => {
+    logWindowLifecycle(`[shell] main window destroyed quitting=${appQuitting}\n`)
     mainWindow = null
     setLoginWindowVisible = null
   })
@@ -1677,6 +1714,7 @@ if (!gotTheLock) {
 }
 
 app.on('window-all-closed', () => {
+  logWindowLifecycle(`[shell] all windows closed quitting=${appQuitting}\n`)
   // On macOS the process stays resident after the last window closes.  Keeping
   // its owned backend alive lets a later Dock activation reopen the same app
   // instead of pointing a fresh window at the dead old localhost port.
@@ -1684,6 +1722,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
+  logWindowLifecycle(`[shell] before quit installing=${updateInstallationInProgress} restarting=${updateRestartRequested}\n`)
   if (updateInstallationInProgress && !updateRestartRequested) {
     event.preventDefault()
     mainWindow?.hide()
@@ -1692,4 +1731,9 @@ app.on('before-quit', (event) => {
   }
   appQuitting = true
   stopManagedBackend()
+})
+
+app.on('will-quit', () => {
+  logWindowLifecycle('[shell] will quit\n')
+  windowLifecycleLog?.end()
 })

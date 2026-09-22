@@ -20,6 +20,13 @@ const { spawnSync } = require('node:child_process')
 
 const COMPONENT_SCHEMA_VERSION = 1
 const RUNTIME_DIRNAME = 'runtime'
+/**
+ * 组件 store 根的用户级覆盖（首装向导高级步骤写入 HKCU Environment 并广播）。
+ * 选 env 而非配置文件：.cmd 启动器在打包机生成、batch 读不了 UTF-16 配置，而 env 是
+ * batch/NSIS/Node 三方原生且同源的寻址档——任一消费者都不会与另一方走岔。
+ * 入口锁在首装（安装后不可改），故 store 根在安装生命周期内不变。
+ */
+const RUNTIME_STORE_ENV = 'SCHOLARSEED_RUNTIME_STORE'
 const STAGING_DIRNAME = 'staging'
 const MANIFESTS_DIRNAME = 'manifests'
 const LOCKS_DIRNAME = 'locks'
@@ -227,11 +234,38 @@ function windowsComponentPreamble(target, contentId) {
   return [
     '@echo off',
     'setlocal',
-    `if defined ${HOME_ENV} (set "SS_RUNTIME=%${HOME_ENV}%\\${RUNTIME_DIRNAME}") else (set "SS_RUNTIME=%USERPROFILE%\\.scholarseed\\${RUNTIME_DIRNAME}")`,
+    // 三档寻址与 Node 侧 resolveRuntimeStoreRoot 同源：首装自定义 store > SCHOLARSEED_HOME
+    // 派生 > 默认 %USERPROFILE%\.scholarseed\runtime。
+    `if defined ${RUNTIME_STORE_ENV} (set "SS_RUNTIME=%${RUNTIME_STORE_ENV}%") else (if defined ${HOME_ENV} (set "SS_RUNTIME=%${HOME_ENV}%\\${RUNTIME_DIRNAME}") else (set "SS_RUNTIME=%USERPROFILE%\\.scholarseed\\${RUNTIME_DIRNAME}"))`,
     `set "SS_PY=%SS_RUNTIME%\\${runtimeRelative}\\${PYTHON_TREE_DIRNAME}\\python.exe"`,
     'if not exist "%SS_PY%" (echo ScholarSeed runtime component is not provisioned yet; start the ScholarSeed app first. 1>&2 & exit /b 1)',
     'set "PYTHONPATH=%~dp0..\\' + PYLIBS_DIRNAME + ';%PYTHONPATH%"'
   ]
+}
+
+/**
+ * 组件 store 根覆盖值的形状校验。Windows 认盘符与 UNC，POSIX 认前导 /；其余一律拒，
+ * 让「env 被手改坏」在解析口显式失败，而不是半路写出个不存在的解释器路径。
+ */
+function isValidRuntimeStoreRoot(value, platform) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4096) return false
+  if (platform === 'win32') return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)
+  return value.startsWith('/')
+}
+
+/**
+ * 组件 store 根的唯一解析口：env 覆盖（形状非法即抛，fail-closed）> <home>/runtime。
+ * backend.ts 与 .cmd 前导（batch 三档）必须保持同档同序，契约测试钉死。
+ */
+function resolveRuntimeStoreRoot(env, home, platform) {
+  const override = env[RUNTIME_STORE_ENV]
+  if (override !== undefined && override !== '') {
+    if (!isValidRuntimeStoreRoot(override, platform)) {
+      throw new Error(`invalid ${RUNTIME_STORE_ENV}: ${override}`)
+    }
+    return override
+  }
+  return path.join(home, RUNTIME_DIRNAME)
 }
 
 function skillPythonLauncherCommand(target, contentId, module) {
@@ -256,6 +290,7 @@ module.exports = {
   PYTHON_KIND,
   PYTHON_TREE_DIRNAME,
   RUNTIME_DIRNAME,
+  RUNTIME_STORE_ENV,
   STAGING_DIRNAME,
   TARGET_PATTERN,
   TEXLIVE_BIN_PARENT_RELATIVE,
@@ -268,8 +303,10 @@ module.exports = {
   consoleScriptLauncherCommand,
   derivePythonContentId,
   deriveTexliveContentId,
+  isValidRuntimeStoreRoot,
   packComponentArchive,
   parseAppComponents,
+  resolveRuntimeStoreRoot,
   sha256FileSync,
   skillPythonLauncherCommand,
   storeComponentDirectory,

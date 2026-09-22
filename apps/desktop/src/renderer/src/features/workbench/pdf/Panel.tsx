@@ -16,7 +16,6 @@ interface PdfPanelProps {
   footer?: ReactNode
   headerAction?: ReactNode
   icon: ReactNode
-  layout?: 'overlay' | 'split'
   onClose: () => void
   onToggleExpanded: () => void
   testId: string
@@ -35,7 +34,6 @@ export function PdfPanel({
   footer,
   headerAction,
   icon,
-  layout = 'overlay',
   onClose,
   onToggleExpanded,
   testId,
@@ -43,11 +41,10 @@ export function PdfPanel({
   toolbar
 }: PdfPanelProps): React.JSX.Element {
   const { t } = useTranslation('pdf')
-  const split = layout === 'split'
   return (
     <aside
       aria-label={ariaLabel}
-      className={`vds-pdf-panel flex h-full min-w-0 flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)]${split ? ' vds-pdf-panel--split relative flex-none' : ` absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] shadow-[var(--vds-shadow-2-left)]${expanded ? ' left-0 max-w-none' : ' w-[var(--vds-layout-pdf-panel-width)] max-w-[calc(100%-var(--vds-layout-pdf-rail-width))]'}`}`}
+      className={`vds-pdf-panel absolute inset-y-0 right-[var(--vds-layout-pdf-rail-width)] z-[var(--vds-z-surface-panel)] flex h-full min-w-0 flex-col overflow-hidden border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] text-[var(--vds-text-primary)] shadow-[var(--vds-shadow-2-left)]${expanded ? ' left-0 max-w-none' : ' w-[var(--vds-layout-pdf-panel-width)] max-w-[calc(100%-var(--vds-layout-pdf-rail-width))]'}`}
       data-testid={testId}
     >
       <header className="flex min-h-12 items-center justify-between gap-2 border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-3 py-2">
@@ -57,14 +54,14 @@ export function PdfPanel({
           {headerAction}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {!split && <IconButton
+          <IconButton
             data-testid={`${testId}-toggle-size`}
             label={expanded ? t('reading.shrinkPanel') : t('reading.expandPanel')}
             icon={expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             size="sm"
             variant="ghostIcon"
             onClick={onToggleExpanded}
-          />}
+          />
           <IconButton
             label={closeLabel}
             icon={<Icon name="close" size={14} />}

@@ -870,16 +870,30 @@ async function windowsProcessCreationFiletime(pid: number): Promise<string | nul
 }
 
 /**
- * NSIS 侧 install.log 的字节数：安装器侧阶段证据的唯一观测点。
- * 2026-09-22 真机该文件恒 0 字节（握手各阶段明确跑过却一行没落），而安装器写失败是静默的——
- * 不在 Node 侧落一行字节数，下一次「静默」在现场日志里仍然无从归因。读不到记 -1。
+ * NSIS 侧安装器日志与 boot 探针矩阵各文件的字节数（-1 = 不存在/不可读）。
+ *
+ * install.log 两轮真机恒 0 字节（握手各阶段明确跑过却一行没落），而安装器写失败是静默的；
+ * 探针矩阵（installer.nsh ssProbeWritePrimitives）用四种写原语组合各写一个独立文件，
+ * 这里把六个尺寸一次落进 update.log，真机一轮即可指认坏原语。不在 Node 侧落这行，
+ * 下一次「静默」在现场日志里仍然无从归因。
  */
-function installLogBytes(): number {
-  try {
-    return statSync(join(desktopHome(), LOGS_DIRNAME, 'install.log')).size
-  } catch {
-    return -1
-  }
+const INSTALLER_LOG_PROBE_FILES = [
+  'install.log',
+  'install-prev.log',
+  'install-probe-a.log',
+  'install-probe-w.log',
+  'install-probe-u16.log',
+  'install-probe-x.log'
+] as const
+
+function installerLogSizes(): string {
+  return INSTALLER_LOG_PROBE_FILES.map((name) => {
+    try {
+      return `${name}=${statSync(join(desktopHome(), LOGS_DIRNAME, name)).size}`
+    } catch {
+      return `${name}=-1`
+    }
+  }).join(' ')
 }
 
 type ReadyOutcome = 'ready' | 'timeout' | 'installer-exited' | 'invalid-ready'
@@ -1093,7 +1107,7 @@ export async function installWindows(
 
     const outcome = await waitForInstallerReady(directory, request, child)
     const elapsedMs = Date.now() - spawnStartedAt
-    persistUpdateLog(`[update] install.log bytes=${installLogBytes()} after handshake outcome=${outcome}\n`)
+    persistUpdateLog(`[update] installer log sizes: ${installerLogSizes()} after handshake outcome=${outcome}\n`)
     if (outcome !== 'ready') {
       // 超时/协议失败：发布 cancel（安装器收到后在卸载前退出）、终止安装器进程——此刻它
       // 还停在 customInit 的等待循环里，没有发生任何安装动作，kill 是安全的。

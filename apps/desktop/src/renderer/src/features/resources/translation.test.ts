@@ -10,7 +10,7 @@ test('resource translation reuses the complete mainstream target catalog', () =>
   ])
 })
 
-test('resource translation keeps current source and exposes only the shared target picker', () => {
+test('resource translation keeps current source and exposes shared target and model pickers', () => {
   const suggestion = readFileSync(new URL('./Suggestion.tsx', import.meta.url), 'utf8')
   const selection = readFileSync(new URL('../workbench/Selection.tsx', import.meta.url), 'utf8')
   assert.match(selection, /w\('selection\.translate'\)/)
@@ -19,8 +19,10 @@ test('resource translation keeps current source and exposes only the shared targ
   assert.doesNotMatch(selection, /POLISH_SUFFIX/)
   assert.match(suggestion, /target_language: targetLanguage/)
   assert.match(suggestion, /<TranslationTargetPicker/)
-  assert.match(suggestion, /startsWith\('en'\) \? 'en' : 'zh-CN'/)
-  assert.doesNotMatch(suggestion, /translationTarget\(selectedText\)/)
+  assert.match(suggestion, /defaultTranslationTarget\(i18n\.resolvedLanguage \|\| i18n\.language, selectedText\)/)
+  assert.match(suggestion, /<ModelMenu[\s\S]*?testIdPrefix="resource-translation-model"/)
+  assert.match(suggestion, /writeTranslationTarget\('resource-selection'/)
+  assert.match(suggestion, /writeTranslationModel\('resource-selection'/)
   assert.doesNotMatch(suggestion, /suggestion\.toEnglish|suggestion\.toChinese/)
   assert.match(suggestion, /\{selectedText\}/)
   assert.match(suggestion, /stream.current === abort/)

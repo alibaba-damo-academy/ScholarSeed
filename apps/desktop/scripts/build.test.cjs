@@ -130,6 +130,7 @@ const UPDATER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main',
 const UPDATE_CONTRACT_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'updates.ts'), 'utf8')
 const AUTHENTICODE_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'authenticode.ts'), 'utf8')
 const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'installer.nsh'), 'utf8')
+const COMPONENTS_CJS_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'runtime', 'components.cjs'), 'utf8')
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
 const UPDATE_FEATURE_SOURCE = fs.readFileSync(
   path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'updates', 'state.ts'), 'utf8')
@@ -543,9 +544,26 @@ test('Windows installer.nsh carries the update handshake contract (proposal 108 
   assert.match(ssLogEvent[1], /Pop \$0\s*\r?\n\s*FunctionEnd|Pop \$0\s*$/)
   assert.match(ssLogEvent[1], /IfFileExists "\$ssHome\\logs" ss_log_dir_ok/)
   assert.doesNotMatch(ssLogEvent[1], /\$ssTimeDayT|\$ssTimeSecondZ/)
-  // 8c. Node 侧把 install.log 字节数记进 update.log：安装器日志静默必须从现场日志可见。
-  assert.match(UPDATER_SOURCE, /install\.log bytes=\$\{installLogBytes\(\)\}/)
-  assert.match(UPDATER_SOURCE, /function installLogBytes\(\): number/)
+  // 第二轮真机证明 'a'+FileSeek 组合仍 0 字节（ready.ini 的 'w'+UTF16LE 每轮成功）：弃用 append，
+  // 首条日志前轮转旧文件（崩溃轮证据保留一代），本体 'w' 写；轮转每轮只发生一次。
+  assert.doesNotMatch(ssLogEvent[1], /FileSeek/)
+  assert.match(ssLogEvent[1], /StrCmp \$ssLogRotated "1" ss_log_open/)
+  assert.match(ssLogEvent[1], /Delete "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/)
+  assert.match(ssLogEvent[1], /Rename "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/)
+  assert.match(ssLogEvent[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" w/)
+  // 8c. boot 探针矩阵：四种写原语组合各写独立文件，home 一可用就跑（后续校验失败/崩溃也留证据）。
+  const probe = INSTALLER_NSH.match(/\n\s*Function ssProbeWritePrimitives\r?\n([\s\S]*?)\n\s*FunctionEnd/)
+  assert.ok(probe, 'ssProbeWritePrimitives function not found')
+  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_APPEND_ANSI_LOG\}" a/)
+  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_WRITE_ANSI_LOG\}" w/)
+  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_APPEND_UTF16_LOG\}" a/)
+  assert.match(probe[1], /FileWriteUTF16LE \$ssLogHandle 'probe-u16/)
+  assert.match(probe[1], /nsExec::Exec `cmd\.exe \/c echo probe-x>>/)
+  assert.match(INSTALLER_NSH, /ReadEnvStr \$ssHome \$\{SS_HOME_ENV\}\r?\n\s*StrCmp \$ssHome "" ss_init_fail_home\r?\n\s*;[^\n]*\r?\n\s*Call ssProbeWritePrimitives/)
+  // 8d. Node 侧把六个文件尺寸落进 update.log：安装器日志静默与坏原语指认都从现场日志可见。
+  assert.match(UPDATER_SOURCE, /installer log sizes: \$\{installerLogSizes\(\)\}/)
+  assert.match(UPDATER_SOURCE, /'install-probe-a\.log'/)
+  assert.match(UPDATER_SOURCE, /'install-prev\.log'/)
   // 9. 协议模式跳掉 assisted 非静默必弹的「安装模式」选择页（2026-09-22 真机事故：只不传 /S
   //    而不跳页时，自动更新停在该页等人工点击，安装始终没发生）。模板在页 PRE 里给的钩子
   //    customInstallMode 置 isForceCurrentInstall 走 setInstallModePerUser+Abort 跳页分支；
@@ -556,6 +574,72 @@ test('Windows installer.nsh carries the update handshake contract (proposal 108 
   assert.match(customInstallMode[1], /\$ssHandshakeMode == "protocol"/)
   assert.match(customInstallMode[1], /\$hasPerUserInstallation == "1"/)
   assert.match(customInstallMode[1], /StrCpy \$isForceCurrentInstall "1"/)
+})
+test('runtime store root resolves through the single owner, env override first', () => {
+  // store 根唯一解析口在 components.cjs（.cmd 前导的 batch 三档与它同档同序）；backend 不得再
+  // 自己拼 join(home, 'runtime')，否则首装自定义 store 会被主进程静默忽略、与 .cmd 走岔。
+  assert.match(DESKTOP_BACKEND_SOURCE, /resolveRuntimeStoreRoot\(process\.env, desktopHome\(\), process\.platform\)/)
+  assert.doesNotMatch(DESKTOP_BACKEND_SOURCE, /join\(desktopHome\(\), RUNTIME_DIRNAME\)/)
+  assert.match(COMPONENTS_CJS_SOURCE, /const RUNTIME_STORE_ENV = 'SCHOLARSEED_RUNTIME_STORE'/)
+  assert.match(COMPONENTS_CJS_SOURCE, /if defined \$\{RUNTIME_STORE_ENV\} \(set "SS_RUNTIME=%\$\{RUNTIME_STORE_ENV\}%"\) else \(if defined \$\{HOME_ENV\}/)
+})
+test('uninstaller clears re-acquirable caches: transient-only on update, full sweep on real uninstall', () => {
+  // 用户目录残留的是「可再获取」缓存（组件 store 数 GB + 暂存包），不是用户数据；NSIS 卸载器
+  // 默认只清 INSTDIR。两档语义钉死：版本更新（旧卸载器带 --updated）只删不一致瞬态
+  // （staging/locks），components/manifests 必须活过更新（proposal 108 P2a 跨版本命中）；
+  // 真卸载整删 store 与暂存包缓存，但 .scholarseed 其余内容一字不动。更新档不碰暂存包缓存——
+  // 新安装器正从其中那个 exe 运行。
+  const customUnInstall = INSTALLER_NSH.match(/\n!macro customUnInstall\r?\n([\s\S]*?)\n!macroend/)
+  assert.ok(customUnInstall, 'customUnInstall macro not found')
+  // store 根与 Node/.cmd 同源三档：env 登记优先，否则默认路径。
+  assert.match(customUnInstall[1], /ReadEnvStr \$R0 "SCHOLARSEED_RUNTIME_STORE"/)
+  assert.match(customUnInstall[1], /StrCpy \$R0 "\$PROFILE\\\.scholarseed\\runtime"/)
+  assert.match(customUnInstall[1], /\$\{if\} \$\{isUpdated\}\r?\n\s*RMDir \/r "\$R0\\staging"\r?\n\s*RMDir \/r "\$R0\\locks"\r?\n\s*\$\{else\}\r?\n\s*RMDir \/r "\$R0"\r?\n\s*DeleteRegValue HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"\r?\n\s*System::Call 'user32::SendMessageTimeout[^\n]*\r?\n\s*RMDir \/r "\$LOCALAPPDATA\\scholarseed-update"\r?\n\s*\$\{endIf\}/)
+  // 不得整删用户 home 或 .scholarseed 根（用户数据）：只允许删 $R0（store 根）与暂存包缓存。
+  assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$PROFILE"/)
+  assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$R0\\(?!staging|locks)/)
+  // 目录名与 TS 事实源逐字对齐，防 nsh 手抄走样。
+  assert.match(DESKTOP_BACKEND_SOURCE, /SCHOLARSEED_HOME_DIRNAME = '\.scholarseed'/)
+  assert.match(COMPONENTS_CJS_SOURCE, /const RUNTIME_DIRNAME = 'runtime'/)
+  assert.match(COMPONENTS_CJS_SOURCE, /const STAGING_DIRNAME = 'staging'/)
+  assert.match(COMPONENTS_CJS_SOURCE, /const LOCKS_DIRNAME = 'locks'/)
+  assert.match(UPDATER_SOURCE, /UPDATE_CACHE_DIRNAME = 'scholarseed-update'/)
+})
+test('runtime store path is exposed read-only through the bridge for the about page', () => {
+  // 展示链路四层齐全：主进程 handle（解析口收 null 不甩异常给渲染层）→ preload → 桥类型 →
+  // web 形态 stub；关于页只读展示、不给改（改 = 数 GB 重解压，入口锁在首装向导）。
+  assert.match(SHELL_SOURCE, /ipcMain\.handle\('scholarseed:runtime-store-path', \(\) => runtimeStoreRoot\(\)\)/)
+  assert.match(DESKTOP_BACKEND_SOURCE, /export function runtimeStoreRoot\(\): string \| null/)
+  assert.match(PRELOAD_SOURCE, /ipcRenderer\.invoke\('scholarseed:runtime-store-path'\)/)
+  const GLOBAL_D_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'), 'utf8')
+  assert.match(GLOBAL_D_SOURCE, /runtimeStorePath: \(\) => Promise<string \| null>/)
+  const BROWSER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'), 'utf8')
+  assert.match(BROWSER_SOURCE, /runtimeStorePath: async \(\) => null/)
+  const ACCOUNT_PANEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'AccountPanel.tsx'), 'utf8')
+  assert.match(ACCOUNT_PANEL_SOURCE, /data-testid="about-runtime-store"/)
+  assert.match(ACCOUNT_PANEL_SOURCE, /runtimeStore \?\? t\('accountPanel\.about\.runtimeStoreUnavailable'\)/)
+  // 只读：关于页不得出现改路径的控件（pick-dir 只允许出现在首装侧/其它既有面）。
+  const aboutPage = ACCOUNT_PANEL_SOURCE.match(/function AboutPage\(\)[\s\S]*?\nfunction /)
+  assert.ok(aboutPage, 'AboutPage function not found')
+  assert.doesNotMatch(aboutPage[0], /pickDir|NSD_CreateDirRequest|runtimeStorePath\(\)\.then\([^)]*set.*[Ee]dit/)
+})
+test('first-install wizard offers an optional component store location, skipped otherwise', () => {
+  // 首装高级步骤：留空 = 默认（透明），仅非空且校验通过才登记 env；非首装场景全部 PRE 跳页。
+  assert.match(INSTALLER_NSH, /!macro customPageAfterChangeDir\r?\n\s*!insertmacro MUI_PAGE_INIT\r?\n\s*PageEx custom\r?\n\s*PageCallbacks ssStorePagePre ssStorePageLeave/)
+  const pre = INSTALLER_NSH.match(/\n\s*Function ssStorePagePre\r?\n([\s\S]*?)\n\s*FunctionEnd/)
+  assert.ok(pre, 'ssStorePagePre function not found')
+  assert.match(pre[1], /\$\{if\} \$\{isUpdated\}\r?\n\s*Abort/)
+  assert.match(pre[1], /\$\{if\} \$hasPerUserInstallation == "1"\r?\n\s*Abort/)
+  assert.match(pre[1], /\$\{if\} \$hasPerMachineInstallation == "1"\r?\n\s*Abort/)
+  assert.match(pre[1], /ReadEnvStr \$R0 "SCHOLARSEED_RUNTIME_STORE"\r?\n\s*StrCmp \$R0 "" ss_store_show\r?\n\s*Abort/)
+  const leave = INSTALLER_NSH.match(/\n\s*Function ssStorePageLeave\r?\n([\s\S]*?)\n\s*FunctionEnd/)
+  assert.ok(leave, 'ssStorePageLeave function not found')
+  assert.match(leave[1], /StrCmp \$R4 "" ss_leave_done/)
+  assert.match(leave[1], /StrCmp \$R5 "\\\\" ss_store_valid/)
+  assert.match(leave[1], /CreateDirectory "\$R4\\ScholarSeedWriteProbe"/)
+  assert.match(leave[1], /RMDir "\$R4\\ScholarSeedWriteProbe"/)
+  assert.match(leave[1], /WriteRegStr HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE" "\$R4"/)
+  assert.match(leave[1], /SendMessageTimeout\(i 0xffff, i 0x001A/)
 })
 test('the updater refuses to spawn a second installer while a previous one is alive', () => {
   // 2026-09-22 真机事故：重拉的客户端对着还挂着的安装器再 spawn 一个，被模板

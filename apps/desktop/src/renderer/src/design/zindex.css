@@ -62,6 +62,8 @@
   --vds-z-feedback-recorder-dialog: calc(var(--vds-z-feedback-recorder-overlay) + 1);
   --vds-z-feedback-recorder-nested-overlay: calc(var(--vds-z-feedback-recorder-dialog) + 1);
   --vds-z-feedback-recorder-nested-dialog: calc(var(--vds-z-feedback-recorder-nested-overlay) + 1);
+  --vds-z-window-close-overlay: calc(var(--vds-z-feedback-recorder-nested-dialog) + 1);
+  --vds-z-window-close: calc(var(--vds-z-window-close-overlay) + 1);
   /* Toast 是全局反馈，必须盖住 modal（如设置弹窗 6000）；低于 loading。 */
   --vds-z-toast: var(--vds-z-notification);
 }

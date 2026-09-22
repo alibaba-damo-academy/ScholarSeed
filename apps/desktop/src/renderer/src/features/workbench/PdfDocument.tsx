@@ -249,6 +249,7 @@ export function PdfDocument({
   const [loadedPages, setLoadedPages] = useState<Map<number, PDFPageProxy>>(() => new Map())
   const [visualRegions, setVisualRegions] = useState<PdfVisualRegion[]>([])
   const [estimatedPageSize, setEstimatedPageSize] = useState<Size>(PDF_DEFAULT_PAGE_SIZE)
+  const [translationLayoutOpen, setTranslationLayoutOpen] = useState(false)
   const [selectionDragSpan, setSelectionDragSpan] = useState<SelectionDragSpan | null>(null)
   const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
   const [cropBox, setCropBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null)
@@ -454,8 +455,11 @@ export function PdfDocument({
   const activePage = loadedPages.get(pageNumber(currentPage, pageCount))
   const natural = activePage?.getViewport({ scale: 1 })
   const fitViewportWidth = size.width + (sidebar ? navigationWidth : 0)
-  const scale = mode === 'custom' ? storedScale : natural && size.width && size.height
-    ? fittedScale(mode, natural, { width: Math.max(1, fitViewportWidth - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
+  const fittedPageSize = natural && translationLayoutOpen
+    ? { width: natural.width * 2, height: natural.height }
+    : natural
+  const scale = mode === 'custom' ? storedScale : fittedPageSize && size.width && size.height
+    ? fittedScale(mode, fittedPageSize, { width: Math.max(1, fitViewportWidth - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
   const scaleRef = useRef(scale)
   scaleRef.current = scale
 
@@ -512,7 +516,7 @@ export function PdfDocument({
     if (focus?.kind === 'citation' && focus.page === currentPage) {
       requestFocus({ kind: 'citation', page: currentPage, region: focus.region })
     }
-  }, [pageCount, scale, sidebar])
+  }, [pageCount, scale, sidebar, translationLayoutOpen])
   useEffect(() => setPageInput(String(currentPage)), [currentPage])
 
   useEffect(() => {
@@ -1011,6 +1015,7 @@ export function PdfDocument({
     projectId: session?.source.kind === 'project' ? session.source.project ?? '' : '', revision: session?.revision ?? '', tabId,
     page: currentPage, pageCount, selection: selections, canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate), onAddComment: addAiComment, onNavigate: navigate,
     onLocate: (sourcePage, text) => { navigate(sourcePage); requestFocus({ kind: 'reading', page: sourcePage, text }) },
+    onDocumentTranslationChange: setTranslationLayoutOpen,
     onExclusiveSurfaceOpen: () => {
       clearFigureSelection()
       closeDocumentPanel()
@@ -1066,9 +1071,7 @@ export function PdfDocument({
     analysis.exitFigureSelection()
   }, [analysis.exitFigureSelection, clearFigureSelection])
   const activeDocumentPanelId = activeDocumentPanel?.id
-  const translationSplitOpen = analysis.panel === 'document_translation'
-  const rightPanelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
-  const overlayPanelOpen = Boolean((analysis.panel && !translationSplitOpen) || recordsOpen || activeDocumentPanelId)
+  const rightPanelOpen = Boolean(analysis.sidePanel || recordsOpen || activeDocumentPanelId)
   useEffect(() => {
     if (!active) return
     set({
@@ -1245,50 +1248,62 @@ export function PdfDocument({
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
         }} onPointerCancel={() => setSelectionDragSpan(null)}>
-        <div data-testid="pdf-pages-track" className={`box-border min-h-full${overlayPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}>
+        <div data-testid="pdf-pages-track" className={`box-border min-h-full${rightPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}>
           {!pageCount && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
-          {pageNumbers.map(number => <PdfPageSlot
-            estimatedSize={estimatedPageSize}
-            fonts={fonts}
-            initialPage={loadedPages.get(number)}
-            key={number}
-            loadPage={loadPage}
-            pageNumber={number}
-            scale={scale}
-            keepRendered={selectionDragSpan !== null && pageInSelectionSpan(number, selectionDragSpan.anchor, selectionDragSpan.focus)}
-            search={query}
-            focus={focus?.page === number ? focus : undefined}
-            annotations={anchoredMarks.filter(mark => mark.page === number)}
-            selectionQuads={workspace.selectionPresentations[tabId] && session?.selection?.locator.kind === 'pdf'
-              ? selections.find(selection => selection.page === number)?.quads
-              : undefined}
-            citationQuads={citationPages?.find(item => item.page === number)?.quads}
-            visualRegions={visualRegions.filter(region => region.page === number)}
-            visualRegionImageInputAvailable={analysis.visualRegionImageInputAvailable}
-            copyingVisualRegionId={analysis.copyingFormulaRegionId}
-            commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
-            onAnnotationOpen={(mark) => {
-              setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
-              setActiveMark(mark.id)
-              setMarkColors(previous => ({ ...previous, [mark.style]: mark.color }))
-            }}
-            onInternalLink={navigateInternalLink}
-            onVisualRegionExplain={analysis.explainRegion}
-            onVisualRegionCopy={region => { void copyVisualRegion(region) }}
-            renderAnnotation={(mark, close) => <PdfAnnotation
-              analyzing={analysis.selectionAnalyzing}
-              canAnalyze={analysis.canAnalyzeSelection}
-              comments={sidecar?.records.comments.filter(comment => comment.mark_id === mark.id) ?? []}
-              mark={mark}
-              saving={saving}
-              onColorChange={(color) => { void updateMark(mark.id, { color }) }}
-              onComment={(body) => addMarkComment(mark.id, body)}
-              onDelete={() => { void deleteMark(mark.id) }}
-              onExplain={(instruction) => { analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction); close(); setActiveMark(null) }}
-              onStyleChange={(style) => { void updateMark(mark.id, { style }) }}
-              onTranslate={() => { analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }); close(); setActiveMark(null) }}
-            />}
-          />)}
+          {pageNumbers.map(number => {
+            const sourcePage = <PdfPageSlot
+              estimatedSize={estimatedPageSize}
+              fonts={fonts}
+              initialPage={loadedPages.get(number)}
+              key={number}
+              loadPage={loadPage}
+              pageNumber={number}
+              scale={scale}
+              keepRendered={selectionDragSpan !== null && pageInSelectionSpan(number, selectionDragSpan.anchor, selectionDragSpan.focus)}
+              search={query}
+              focus={focus?.page === number ? focus : undefined}
+              annotations={anchoredMarks.filter(mark => mark.page === number)}
+              selectionQuads={workspace.selectionPresentations[tabId] && session?.selection?.locator.kind === 'pdf'
+                ? selections.find(selection => selection.page === number)?.quads
+                : undefined}
+              citationQuads={citationPages?.find(item => item.page === number)?.quads}
+              visualRegions={visualRegions.filter(region => region.page === number)}
+              visualRegionImageInputAvailable={analysis.visualRegionImageInputAvailable}
+              copyingVisualRegionId={analysis.copyingFormulaRegionId}
+              commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
+              onAnnotationOpen={(mark) => {
+                setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
+                setActiveMark(mark.id)
+                setMarkColors(previous => ({ ...previous, [mark.style]: mark.color }))
+              }}
+              onInternalLink={navigateInternalLink}
+              onVisualRegionExplain={analysis.explainRegion}
+              onVisualRegionCopy={region => { void copyVisualRegion(region) }}
+              renderAnnotation={(mark, close) => <PdfAnnotation
+                analyzing={analysis.selectionAnalyzing}
+                canAnalyze={analysis.canAnalyzeSelection}
+                comments={sidecar?.records.comments.filter(comment => comment.mark_id === mark.id) ?? []}
+                mark={mark}
+                saving={saving}
+                onColorChange={(color) => { void updateMark(mark.id, { color }) }}
+                onComment={(body) => addMarkComment(mark.id, body)}
+                onDelete={() => { void deleteMark(mark.id) }}
+                onExplain={(instruction) => { analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction); close(); setActiveMark(null) }}
+                onStyleChange={(style) => { void updateMark(mark.id, { style }) }}
+                onTranslate={() => { analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }); close(); setActiveMark(null) }}
+              />}
+            />
+            return analysis.translationOpen ? <div
+              className="mx-auto mb-4 grid w-max items-start gap-[var(--vds-space-4)] [&>.vds-pdf-page]:m-0"
+              data-page-pair={number}
+              data-testid={`pdf-page-pair-${number}`}
+              key={number}
+              style={{ gridTemplateColumns: `${estimatedPageSize.width * scale}px ${estimatedPageSize.width * scale}px` }}
+            >
+              {sourcePage}
+              {analysis.translationPage(number, estimatedPageSize, scale)}
+            </div> : sourcePage
+          })}
         </div>
       </div>
       {analysis.sidePanel}

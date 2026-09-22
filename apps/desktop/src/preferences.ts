@@ -24,6 +24,7 @@ export const MAX_MODEL_KEY_LENGTH = 512
 
 export const LITERATURE_AI_MODEL_ACTIONS = [
   'document_translation',
+  'selection_translation',
   'interpretation',
   'figure_explanation'
 ] as const
