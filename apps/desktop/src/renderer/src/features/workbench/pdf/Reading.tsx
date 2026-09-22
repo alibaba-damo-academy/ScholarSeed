@@ -8,7 +8,6 @@ import { Markdown } from '../../../components/primitive/Markdown'
 import { writeClipboard } from '../../../components/primitive/clipboard'
 import { ModelMenu } from '../../../components/business/ModelMenu'
 import { PromptSettingsGuide } from '../../../components/business/PromptSettingsGuide'
-import { isAssistantTranslationTarget } from '../../../contracts/assistant'
 import { Icon } from '../../../icons'
 import { focusComposer } from '../../../reference'
 import { useApp } from '../../../store'
@@ -295,10 +294,18 @@ export function usePdfAnalysis({ active, literatureId, attachmentId, title, path
   const translationLanguage = (): TranslationDirection => {
     const selected = directions.document_translation
     if (selected) return selected
-    return isAssistantTranslationTarget(translationResult?.target_language)
-      ? translationResult.target_language
-      : defaultTranslationTarget(i18n.resolvedLanguage || i18n.language, translationResult?.source_language ?? '')
+    return defaultTranslationTarget(i18n.resolvedLanguage || i18n.language, translationResult?.source_language ?? '')
   }
+  useEffect(() => {
+    if (!translationResult) return
+    const target = translationLanguage()
+    if (translationResult.target_language === target) return
+    setResults(previous => {
+      const { document_translation: _stale, ...remaining } = previous
+      return remaining
+    })
+    setActiveSentence('')
+  }, [directions.document_translation, translationResult?.target_language, i18n.language, i18n.resolvedLanguage])
   const runTranslationPage = (sourcePage: number, language = translationLanguage()): void => {
     void run('document_translation', 'summary', undefined, undefined, language, sourcePage)
   }
