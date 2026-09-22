@@ -8,10 +8,6 @@
     "image": "Figure selected from the source"
   },
   "translation": {
-    "direction": "Translation direction",
-    "auto": "Detect automatically",
-    "toEnglish": "Chinese to English",
-    "toChinese": "English to Chinese",
     "unlocated": "Source evidence could not be located"
   },
   "outline": {
@@ -113,10 +109,11 @@
       "region_required": "Select a figure or table on the current page.",
       "region_out_of_range": "The selected region extends beyond the page. Select it again.",
       "region_too_small": "The selected region is too small. Select a clear figure or table.",
+      "region_missing": "The selected formula, figure, or table region is unavailable. Select it again.",
       "module_unsupported": "The interpretation module is not supported.",
-      "result_rejected": "The model could not process this content. Translation supports Chinese and English only.",
-      "translation_language_invalid": "The model did not return a valid Chinese–English translation. Try again.",
-      "translation_direction_mismatch": "The translation direction does not match your selection. Try again.",
+      "result_rejected": "The model could not process this content. Try again or choose another model.",
+      "translation_language_invalid": "The model did not return a valid detected source language. Try again.",
+      "translation_direction_mismatch": "The returned target language does not match your selection. Try again.",
       "translation_incomplete": "The translation does not cover every page. Previous results are preserved. Use a model with a larger output capacity.",
       "translation_content_missing": "The translation contains empty pages or missing paragraphs. Try again.",
       "interpretation_incomplete": "The interpretation is incomplete. Previous results are preserved.",
@@ -127,7 +124,7 @@
       "translation_sentence_incomplete": "The sentence translation is incomplete. Try again.",
       "task_missing": "The task does not exist.",
       "pdf_input_unsupported": "The current model does not declare PDF input support. Check its capabilities in model settings or select another model.",
-      "image_input_unsupported": "The current model does not support image input. Switch to a multimodal model that supports images, then try again.",
+      "image_input_unsupported": "The current model does not declare image input support. Select a model that supports images.",
       "generation_failed": "Generation failed. Check the model connection and try again.",
       "literature_deleted": "The literature item was deleted. This result will not be saved.",
       "source_changed_during_generation": "The source PDF changed during generation. Previous results are preserved. Reopen the literature item.",
@@ -303,6 +300,14 @@
     "exporting": "Exporting…",
     "exported": "Exported",
     "search": "Search PDF"
+  },
+  "visualRegions": {
+    "explain": "Explain",
+    "copyFormula": "Copy LaTeX",
+    "copyImage": "Copy image",
+    "formulaCopied": "LaTeX copied",
+    "imageCopied": "Image copied",
+    "copyFailed": "Copy failed"
   },
   "internalLink": "Go to PDF link: {{label}}",
   "internalLinkFallback": "document target",

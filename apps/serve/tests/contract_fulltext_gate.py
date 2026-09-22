@@ -19,6 +19,10 @@ from service.assistant.service.authorization import (
     RESEARCH_IDEA_FULLTEXT,
     FulltextAuthorizer,
 )
+from service.chat.constants import (
+    PRODUCT_TURN_OUTCOME_INTERRUPTED,
+    PRODUCT_TURN_OUTCOME_UNKNOWN,
+)
 from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
 from service.chat.runtime.interaction import SessionInteractions
 from service.literature.api.gate import CONTINUATION_PLAN, CONTINUATION_REJECTED, FulltextGate
@@ -417,6 +421,43 @@ class FulltextGateContract(unittest.TestCase):
             await gate.wait_idle(SESSION_ID)
 
         asyncio.run(scenario())
+        self.assertEqual(len(turns.posts), 1)
+
+    def test_controlled_interrupt_reconciles_unknown_before_continuation(self) -> None:
+        self.precise_selection()
+        self.start_download()
+        live = self.live("precise_search")
+
+        async def wait_terminal(turn_id: str) -> str:
+            self.catalog.update_status(
+                SESSION_ID,
+                SessionStatus.ERROR,
+                turn_id=turn_id,
+                turn_status=PRODUCT_TURN_OUTCOME_UNKNOWN,
+            )
+            return PRODUCT_TURN_OUTCOME_UNKNOWN
+
+        live.ledger.wait_terminal = wait_terminal
+        reconciled: list[str] = []
+
+        async def reconcile_controlled_interrupt(turn_id: str) -> bool:
+            reconciled.append(turn_id)
+            self.catalog.update_status(
+                SESSION_ID,
+                SessionStatus.INTERRUPTED,
+                turn_id=turn_id,
+                turn_status=PRODUCT_TURN_OUTCOME_INTERRUPTED,
+            )
+            return True
+
+        live.ledger.reconcile_controlled_interrupt = reconcile_controlled_interrupt
+        turns = RecordingTurns()
+        self.run_gate(FulltextGate(self.authorizer, turns, poll_seconds=0), live, AUTHORIZE)
+
+        record = self.catalog.get(SESSION_ID)
+        self.assertEqual(reconciled, ["native-turn-1"])
+        self.assertEqual(record.status, SessionStatus.INTERRUPTED)
+        self.assertEqual(record.last_turn_status, PRODUCT_TURN_OUTCOME_INTERRUPTED)
         self.assertEqual(len(turns.posts), 1)
 
     def test_rejected_stopping_task_does_not_resume_and_is_gated_again_next_turn(self) -> None:

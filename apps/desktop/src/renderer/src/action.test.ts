@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { postActionStream, type ActionActivity } from './action.ts'
+import { ActionRequestError, postActionStream, type ActionActivity } from './action.ts'
 
 interface Result {
   invocation_id: string
@@ -157,6 +157,23 @@ test('action stream exposes application errors only from a valid terminal error'
         onActivity() {}
       }),
       new Error('model_failed')
+    )
+  } finally { restore() }
+})
+
+test('action stream preserves structured HTTP error identity for localized presentation', async () => {
+  const restore = installFetch(async () => Response.json({
+    detail: { code: 'pdf_ai_region_missing', diagnostic: '' }
+  }, { status: 422 }))
+  try {
+    await assert.rejects(
+      postActionStream({
+        path: '/action', body: {}, protocolError: 'action_stream_incomplete', parseResult,
+        onActivity() {}
+      }),
+      error => error instanceof ActionRequestError
+        && error.code === 'pdf_ai_region_missing'
+        && error.diagnostic === ''
     )
   } finally { restore() }
 })

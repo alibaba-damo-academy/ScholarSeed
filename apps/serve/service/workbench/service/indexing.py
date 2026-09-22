@@ -42,7 +42,7 @@ PARSER_TIMEOUT_SECONDS = 180
 PAGE_PARSER_TIMEOUT_SECONDS = 25
 MAXIMUM_PARSE_OUTPUT_BYTES = 64_000_000
 MAXIMUM_PENDING_BYTES = 200_000_000
-PARSER_WORKERS = 1
+PARSER_WORKERS = 3
 NAVIGATION_INDEX_WAIT_SECONDS = 30
 PARSER_ENV_KEYS = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL")
 READY = "ready"
@@ -62,6 +62,7 @@ def _decode_page(payload: dict) -> PdfPageContent:
             "page_count": page_number,
             "unavailable_pages": [page_number] if payload.get("unavailable") else [],
             "omissions": payload.get("omissions", []),
+            "regions": payload.get("regions", []),
         }
     )
     return PdfPageContent(
@@ -69,6 +70,7 @@ def _decode_page(payload: dict) -> PdfPageContent:
         index.fragments,
         page_number in index.unavailable_pages,
         index.omissions,
+        index.regions,
     )
 
 
@@ -278,6 +280,9 @@ class PdfIndexService:
                                     omission
                                     for omission in index.omissions
                                     if any(anchor.page == page_number for anchor in omission.pages)
+                                ),
+                                tuple(
+                                    region for region in index.regions if region.page == page_number
                                 ),
                             )
                             connection.execute(

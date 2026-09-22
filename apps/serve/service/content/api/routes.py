@@ -302,6 +302,7 @@ def register_content_routes(app: FastAPI) -> None:
                 project_id,
                 str(payload.get("source") or ""),
                 str(payload.get("mount") or ""),
+                supersede=bool(payload.get("supersede") or False),
             )
         except ContentError as exc:
             raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail=exc.code) from exc

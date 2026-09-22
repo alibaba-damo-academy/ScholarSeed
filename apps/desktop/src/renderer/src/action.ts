@@ -31,6 +31,18 @@ type Terminal<Result> =
   | { type: 'result'; result: Result }
   | { type: 'error'; error: string }
 
+export class ActionRequestError extends Error {
+  readonly code?: string
+  readonly diagnostic: string
+
+  constructor(code?: string, diagnostic = '') {
+    super(diagnostic || code || '')
+    this.code = code
+    this.diagnostic = diagnostic
+    this.name = 'ActionRequestError'
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -49,7 +61,10 @@ async function responseError(response: Response): Promise<Error> {
   const payload = await response.json().catch(() => null) as { detail?: unknown } | null
   if (typeof payload?.detail === 'string') return new Error(payload.detail)
   if (isRecord(payload?.detail) && typeof payload.detail.code === 'string') {
-    return new Error(payload.detail.code)
+    return new ActionRequestError(
+      payload.detail.code,
+      typeof payload.detail.diagnostic === 'string' ? payload.detail.diagnostic : ''
+    )
   }
   return new Error(`http_${response.status}`)
 }

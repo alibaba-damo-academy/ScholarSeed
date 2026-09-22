@@ -256,6 +256,34 @@ class StreamObservation:
 
 
 @dataclass
+class TransportObservation:
+    """Content-free transport failure details safe for trace and diagnostic export."""
+
+    stage: str = ""
+    category: str = ""
+    cause_chain: str = ""
+    root_type: str = ""
+    errno: int | None = None
+    errno_name: str = ""
+    errno_text: str = ""
+    endpoint: str = ""
+
+    def snapshot(self) -> dict[str, Any]:
+        if not self.stage:
+            return {}
+        return {
+            "transport_stage": self.stage,
+            "transport_category": self.category,
+            "transport_cause_chain": self.cause_chain,
+            "transport_root_type": self.root_type,
+            "transport_errno": self.errno,
+            "transport_errno_name": self.errno_name,
+            "transport_errno_text": self.errno_text,
+            "transport_endpoint": self.endpoint,
+        }
+
+
+@dataclass
 class CompletionDiagnostic:
     session_id: str
     requested_model: str
@@ -268,8 +296,11 @@ class CompletionDiagnostic:
     status_code: int | None = None
     content_type: str = ""
     upstream_request_id: str = ""
+    attempt: int = 1
+    max_attempts: int = 1
     upstream_end: str = StreamEnd.NOT_STARTED.value
     failure_type: str = ""
+    transport: TransportObservation = field(default_factory=TransportObservation)
     upstream: StreamObservation = field(default_factory=StreamObservation)
     downstream: StreamObservation = field(default_factory=StreamObservation)
     finished: bool = False
@@ -316,9 +347,12 @@ class CompletionDiagnostic:
             "status_code": self.status_code,
             "content_type": self.content_type,
             "upstream_request_id": self.upstream_request_id,
+            "attempt": self.attempt,
+            "max_attempts": self.max_attempts,
             "end_reason": reason,
             "upstream_end": self.upstream_end,
             "failure_type": self.failure_type,
+            **self.transport.snapshot(),
             "elapsed_ms": round((time.perf_counter() - self.started_at) * 1000, 1),
             "upstream": self.upstream.snapshot(),
             "downstream": self.downstream.snapshot(),

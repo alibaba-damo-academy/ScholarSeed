@@ -1,7 +1,8 @@
 # Vendored Office runtime assets are byte-exact and digest-verified, so the
 # whole tree defaults to binary and must never be text-normalized; new files
 # added to any build directory are covered automatically. Only the notices
-# markdown stays text. Large runtime assets are downloaded from reviewed URLs.
+# markdown stays text. Large runtime assets are downloaded from reviewed OSS
+# URLs and verified by their manifests; they are not tracked through Git LFS.
 apps/desktop/src/renderer/public/office/** -text
 apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md text
 *.pdf binary

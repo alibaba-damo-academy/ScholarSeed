@@ -7,6 +7,7 @@ import { AiPanel } from '../features/assistant/AiPanel'
 import {
   DeleteConfirm,
   LinkedCreateConfirm,
+  LinkSupersedeConfirm,
   MoveDialog,
   UnlinkConfirm
 } from '../features/resources/Dialogs'
@@ -255,6 +256,7 @@ export function WorkbenchShell(): React.JSX.Element {
         <LinkedCreateConfirm />
         <DeleteConfirm />
         <UnlinkConfirm />
+        <LinkSupersedeConfirm />
         <MoveDialog />
       </div>
     </DocumentDragProvider>

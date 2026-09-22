@@ -382,6 +382,83 @@ def main() -> int:
         ),
     )
 
+    # ---- 8. 嵌套关联包含检测: 同一物理文件不得经两个挂载得到两条身份 ----
+    # 用户实测: 关联 A 后再关联 A 的子目录 B, 从两条路径打开 B 下同一文件会各自漂移。
+    nest = root / "嵌套关联"
+    nest_a = nest / "A"
+    nest_b = nest_a / "B"
+    nest_b.mkdir(parents=True)
+    (nest_b / "c.md").write_text("c", encoding="utf-8")
+    nest_sibling = root / "嵌套无关"
+    nest_sibling.mkdir()
+
+    a_ref = content.authorize_root(project.id, str(nest_a), "嵌套A")
+    check("父目录可正常关联", a_ref.mount_path.endswith("/嵌套A"), a_ref.mount_path)
+    check(
+        "子目录落在已生效关联根子树内被拒 (正向包含)",
+        code_of(lambda: content.authorize_root(project.id, str(nest_b), "嵌套B"))
+        == "source_overlap",
+    )
+    check(
+        "包含已生效关联根的上级目录报 source_covers_links (反向, 交用户选择)",
+        code_of(lambda: content.authorize_root(project.id, str(nest), "嵌套上级"))
+        == "source_covers_links",
+    )
+    check(
+        "关联导入只读预检对正向已覆盖来源报 source_overlap",
+        code_of(lambda: content.assert_import_roots_linkable(project.id, (str(nest_b),)))
+        == "source_overlap",
+    )
+    check(
+        "关联导入只读预检对反向来源报 source_covers_links",
+        code_of(lambda: content.assert_import_roots_linkable(project.id, (str(nest),)))
+        == "source_covers_links",
+    )
+    check(
+        "不相交的目录仍可关联",
+        content.authorize_root(project.id, str(nest_sibling), "嵌套无关").mount_path.endswith(
+            "/嵌套无关"
+        ),
+    )
+    check(
+        "supersede 不能救正向: 子目录即便带 supersede 仍被拒",
+        code_of(lambda: content.authorize_root(project.id, str(nest_b), "嵌套B", supersede=True))
+        == "source_overlap",
+    )
+
+    super_ref = content.authorize_root(project.id, str(nest), "嵌套上级", supersede=True)
+    active_sources = {entry.source_path for entry in content.external_roots(project.id)}
+    check(
+        "supersede 取代子关联: 父挂载生效且原子撤销被覆盖的子关联",
+        super_ref.mount_path.endswith("/嵌套上级")
+        and str(nest) in active_sources
+        and str(nest_a) not in active_sources,
+        sorted(active_sources),
+    )
+    check(
+        "取代后子目录落在新父挂载子树内, 再关联子目录仍被正向拒绝",
+        code_of(lambda: content.authorize_root(project.id, str(nest_b), "嵌套B"))
+        == "source_overlap",
+    )
+    content.revoke_root(super_ref.root_id)
+    check(
+        "父级关联撤销后, 原子目录不再被判重叠",
+        content.authorize_root(project.id, str(nest_b), "嵌套B").mount_path.endswith("/嵌套B"),
+    )
+
+    batch_parent = root / "批量父"
+    batch_child = batch_parent / "子"
+    batch_child.mkdir(parents=True)
+    check(
+        "同批次内父子一起关联被拒 (批内包含)",
+        code_of(
+            lambda: content.authorize_roots(
+                project.id, (str(batch_parent), str(batch_child)), ("批量父", "批量子")
+            )
+        )
+        == "source_overlap",
+    )
+
     print(f"\ncontract_content_authorization: PASS {PASS} / FAIL {FAIL}")
     return 1 if FAIL else 0
 

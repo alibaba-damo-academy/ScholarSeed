@@ -126,6 +126,8 @@
     "screenshot": "Annotate screenshot",
     "markProblem": "Mark screenshot",
     "drag": "Drag to move",
+    "dragHint": "Hold and drag to move",
+    "stepsToggle": "Steps ({{count}})",
     "guidance": "Keep working to record automatically; add a note or mark a screenshot when an issue occurs.",
     "recording": "Recording · {{seconds}}s",
     "paused": "Paused · {{seconds}}s",
@@ -171,7 +173,8 @@
         "rect": "Rectangle",
         "arrow": "Arrow",
         "pen": "Pen",
-        "text": "Text"
+        "text": "Text",
+        "redact": "Redact"
       }
     },
     "review": {
@@ -188,6 +191,7 @@
       "screenshotAlt": "Annotated problem screenshot",
       "screenshotNote": "Screenshot note",
       "zoomScreenshot": "Zoom screenshot",
+      "editScreenshot": "Click to edit",
       "copyScreenshot": "Copy image",
       "copyMarkdown": "Copy content",
       "markdownOperation": "Action",
@@ -248,6 +252,7 @@
       "capture_empty": "The captured page was empty. Try again.",
       "capture_too_large": "The captured page exceeds the size limit.",
       "screenshotRequiresStep": "Complete a page action before saving a screenshot.",
+      "screenshotMissing": "This screenshot no longer exists. Return to the report and try again.",
       "invalid_sender": "The screenshot request source is invalid.",
       "descriptionLimit": "The problem description cannot exceed {{limit}} characters."
     }
@@ -637,7 +642,6 @@
     "checkFailed": "Cannot check the submission outcome yet. The content is preserved.",
     "submissionRecovered": "The message was submitted successfully. Its task state has been restored.",
     "notSubmitted": "Confirmed that the message was not submitted. You can resend it.",
-    "stillUnknown": "The server still cannot confirm execution. Check again later to avoid duplicate execution.",
     "attachmentTitle": "Attachment · {{name}}",
     "skillPath": "Skill {{name}} has no available path.",
     "skillDisabled": "Skill {{name}} is not enabled.",

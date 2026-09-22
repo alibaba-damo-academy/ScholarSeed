@@ -1,35 +1,17 @@
-import type { DocumentViewKind, DocumentResidency } from './workspace.ts'
+import type { DocumentViewKind } from './workspace.ts'
 
 const BYTES_PER_UTF16_CODE_UNIT = 2
 const MEBIBYTE = 1024 * 1024
 
-export const DEFAULT_DOCUMENT_RESIDENCY_BUDGET: DocumentResidencyBudget = {
-  maxBackgroundSessions: 6,
-  maxBackgroundBytes: 256 * MEBIBYTE
-}
+export const DEFAULT_EDITOR_LIMIT = 10
 
 export const MAX_TEXT_HISTORY_ENTRIES = 200
 export const MAX_TEXT_HISTORY_BYTES = 32 * MEBIBYTE
 
-export interface DocumentResidencyBudget {
-  maxBackgroundSessions: number
-  maxBackgroundBytes: number
-}
-
-export interface DocumentResidencyCandidate {
+export interface EditorLimitCandidate {
   id: string
-  residentBytes: number
-  selectionCount: number
   lastSelectedSequence: number
   protected: boolean
-  budgeted?: boolean
-}
-
-export interface ResidentDocumentPayload {
-  bytes: Uint8Array
-  savedBytes: Uint8Array
-  text: string | null
-  savedText: string | null
 }
 
 export interface TextHistoryEntry {
@@ -42,52 +24,27 @@ export interface TextHistoryState {
   future: TextHistoryEntry[]
 }
 
-export function estimateDocumentResidentBytes(payload: ResidentDocumentPayload): number {
-  const buffers = new Set<ArrayBufferLike>()
-  let total = 0
-  for (const bytes of [payload.bytes, payload.savedBytes]) {
-    if (buffers.has(bytes.buffer)) continue
-    buffers.add(bytes.buffer)
-    total += bytes.buffer.byteLength
-  }
-  if (payload.text !== null) total += payload.text.length * BYTES_PER_UTF16_CODE_UNIT
-  if (payload.savedText !== null && payload.savedText !== payload.text) {
-    total += payload.savedText.length * BYTES_PER_UTF16_CODE_UNIT
-  }
-  return total
-}
-
-export function selectLfsEvictions(
-  candidates: readonly DocumentResidencyCandidate[],
-  budget: DocumentResidencyBudget
+export function selectLruTabClosures(
+  candidates: readonly EditorLimitCandidate[],
+  limit: number
 ): string[] {
+  const overflow = Math.max(0, candidates.length - limit)
+  if (overflow === 0) return []
   const evictable = candidates
     .filter((candidate) => !candidate.protected)
     .sort(
       (left, right) =>
-        left.selectionCount - right.selectionCount ||
         left.lastSelectedSequence - right.lastSelectedSequence ||
         left.id.localeCompare(right.id)
     )
-  const budgeted = candidates.filter((candidate) => candidate.budgeted !== false)
-  let count = budgeted.length
-  let bytes = budgeted.reduce((total, candidate) => total + candidate.residentBytes, 0)
-  const evictions: string[] = []
-  for (const candidate of evictable) {
-    if (count <= budget.maxBackgroundSessions && bytes <= budget.maxBackgroundBytes) break
-    evictions.push(candidate.id)
-    count -= 1
-    bytes -= candidate.residentBytes
-  }
-  return evictions
+  return evictable.slice(0, overflow).map((candidate) => candidate.id)
 }
 
 export function shouldMountDocumentView(
   active: boolean,
-  viewKind: DocumentViewKind,
-  residency: DocumentResidency
+  viewKind: DocumentViewKind
 ): boolean {
-  return active || (viewKind === 'edit' && residency === 'resident')
+  return active || viewKind === 'edit'
 }
 
 export function trimTextHistory(

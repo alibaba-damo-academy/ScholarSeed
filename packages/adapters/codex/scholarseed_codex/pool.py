@@ -982,7 +982,7 @@ def _pooled_runtime_readiness(
     executable be used at all. A pooled slot that is starting, stopping or closing is a
     session-level transient — it says nothing about the executable, so it must not be
     projected as ``ready=False``. Reporting it as such made one activation's ~2s startup
-    window surface as ``codex_process_not_ready`` to every caller, including sessions that
+    window surface as ``agent runtime not ready`` to every caller, including sessions that
     already owned a healthy host (AOne bug 86998131). Without a READY host we return
     ``None`` and let the caller fall back to the real CLI probe.
     """

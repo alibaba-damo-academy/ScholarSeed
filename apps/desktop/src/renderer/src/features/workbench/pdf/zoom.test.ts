@@ -6,6 +6,11 @@ import { pdfWheelScale } from './zoom.ts'
 const MIN_SCALE = 0.25
 const MAX_SCALE = 4
 const VIEWPORT_HEIGHT = 800
+const TRACKPAD_DELTA_PX = -4
+const TRACKPAD_EVENTS_PER_GESTURE = 12
+const COARSE_WHEEL_DELTA_PX = -100
+const MIN_USEFUL_GESTURE_SCALE = 1.3
+const MAX_COMFORTABLE_GESTURE_SCALE = 1.4
 
 test('PDF wheel zoom accepts Control and Command modifiers without consuming ordinary scrolling', () => {
   assert.equal(pdfWheelScale({ scale: 1, minScale: MIN_SCALE, maxScale: MAX_SCALE, deltaY: -100, deltaMode: 0, viewportHeight: VIEWPORT_HEIGHT, ctrlKey: false, metaKey: false }), null)
@@ -22,6 +27,17 @@ test('PDF wheel zoom keeps fine trackpad deltas continuous and directionally sym
   assert.ok(zoomedOnce > 1 && zoomedOnce < zoomedTwice)
   assert.ok(Math.abs(zoomedTwice - zoomedCombined) < Number.EPSILON)
   assert.ok(Math.abs(pdfWheelScale({ scale: zoomedOnce, minScale: MIN_SCALE, maxScale: MAX_SCALE, deltaY: 4, deltaMode: 0, viewportHeight: VIEWPORT_HEIGHT, ctrlKey: true, metaKey: false })! - 1) < Number.EPSILON)
+})
+
+test('PDF wheel zoom reaches a useful scale in one fine gesture without coarse-wheel overshoot', () => {
+  let gestureScale = 1
+  for (let index = 0; index < TRACKPAD_EVENTS_PER_GESTURE; index += 1) {
+    gestureScale = pdfWheelScale({ scale: gestureScale, minScale: MIN_SCALE, maxScale: MAX_SCALE, deltaY: TRACKPAD_DELTA_PX, deltaMode: 0, viewportHeight: VIEWPORT_HEIGHT, ctrlKey: true, metaKey: false })!
+  }
+  const coarseWheelScale = pdfWheelScale({ scale: 1, minScale: MIN_SCALE, maxScale: MAX_SCALE, deltaY: COARSE_WHEEL_DELTA_PX, deltaMode: 0, viewportHeight: VIEWPORT_HEIGHT, ctrlKey: true, metaKey: false })!
+
+  assert.ok(gestureScale >= MIN_USEFUL_GESTURE_SCALE && gestureScale <= MAX_COMFORTABLE_GESTURE_SCALE)
+  assert.ok(coarseWheelScale >= MIN_USEFUL_GESTURE_SCALE && coarseWheelScale <= MAX_COMFORTABLE_GESTURE_SCALE)
 })
 
 test('PDF wheel zoom normalizes line and page deltas and clamps extreme input', () => {

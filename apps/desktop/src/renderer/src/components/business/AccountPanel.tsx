@@ -2715,6 +2715,7 @@ type ModelPageFailure = {
 }
 
 const WIRE_API_CHOICES = [
+  { value: 'chat_completions', labelKey: 'models.wireChatCompletions' },
   { value: 'responses', labelKey: 'models.wireResponses' }
 ] as const
 

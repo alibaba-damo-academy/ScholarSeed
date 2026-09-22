@@ -157,6 +157,109 @@ export function expandedResourceAncestors(
   return next
 }
 
+/** 把 OS 绝对路径统一成正斜杠, 让前缀包含判定与分隔符无关 (Windows 反斜杠同样适用)。 */
+function normalizeAbsoluteSource(path: string): string {
+  return path.replace(/\\/g, RESOURCE_PATH_SEPARATOR)
+}
+
+/**
+ * 关联导入被后端 `source_overlap` 拒绝后, 用**已加载的关联根**反推该源在资料树里的位置。
+ *
+ * 后端只回一个错误码 (包含判定是它的权威职责); 前端拿关联根节点的 sourcePath/mountPath
+ * 推导要定位到哪个目录: 源落在某个关联根子树内 → 返回该根挂载路径下的对应子路径;
+ * 源反过来包含了某个关联根 → 返回那个被包含根的挂载路径。推导不出 (关联根未加载、
+ * 路径规范化差异) 时返回 null, 调用方只弹提示、不强行定位。
+ */
+export function deriveLinkOverlapTarget(
+  nodes: ResourceNode[],
+  sources: readonly string[]
+): string | null {
+  const roots: { source: string; mount: string }[] = []
+  const collect = (items: ResourceNode[]): void => {
+    for (const item of items) {
+      if (item.linkRoot) {
+        roots.push({
+          source: normalizeAbsoluteSource(item.linkRoot.sourcePath),
+          mount: item.linkRoot.mountPath
+        })
+      }
+      if (item.children) collect(item.children)
+    }
+  }
+  collect(nodes)
+  if (roots.length === 0) return null
+  for (const raw of sources) {
+    const source = normalizeAbsoluteSource(raw)
+    for (const root of roots) {
+      if (isResourcePathAtOrBelow(source, root.source)) {
+        const suffix = source.slice(root.source.length)
+        return suffix ? `${root.mount}${suffix}` : root.mount
+      }
+      if (isResourcePathAtOrBelow(root.source, source)) return root.mount
+    }
+  }
+  return null
+}
+
+/** 被新父目录覆盖、将在「取代并挂载」时被原子撤销的已生效子关联。 */
+export interface CoveredLinkRoot {
+  rootId: string
+  mountPath: string
+  sourcePath: string
+  name: string
+}
+
+/**
+ * 关联导入被后端 `source_covers_links` 拒绝后 (反方向: 新源是已生效关联根的父目录),
+ * 用**已加载的关联根**反推哪些子关联会被这个父目录覆盖。
+ *
+ * 后端只回错误码 (包含判定是它的权威职责); 前端凭关联根节点的 sourcePath 推出被覆盖
+ * 的子关联, 交给选择弹窗: 「取代并挂载父目录」会原子撤销这些子关联, 「直接打开」则
+ * 定位到它们。只认**严格**落在新源子树内的子关联 (相等不算, 相等会被后端兜成
+ * `root_exists`)。推不出 (关联根未加载、路径规范化差异) 时返回空数组, 调用方退回普通报错。
+ */
+export function deriveCoveredLinkRoots(
+  nodes: ResourceNode[],
+  sources: readonly string[]
+): CoveredLinkRoot[] {
+  const parents = sources.map(normalizeAbsoluteSource)
+  if (parents.length === 0) return []
+  const covered: CoveredLinkRoot[] = []
+  const seen = new Set<string>()
+  const visit = (items: ResourceNode[]): void => {
+    for (const item of items) {
+      const linkRoot = item.linkRoot
+      if (linkRoot && !seen.has(linkRoot.rootId)) {
+        const childSource = normalizeAbsoluteSource(linkRoot.sourcePath)
+        const isCovered = parents.some(
+          (parent) => parent !== childSource && isResourcePathAtOrBelow(childSource, parent)
+        )
+        if (isCovered) {
+          seen.add(linkRoot.rootId)
+          covered.push({
+            rootId: linkRoot.rootId,
+            mountPath: linkRoot.mountPath,
+            sourcePath: linkRoot.sourcePath,
+            name: item.name
+          })
+        }
+      }
+      if (item.children) visit(item.children)
+    }
+  }
+  visit(nodes)
+  return covered
+}
+
+/**
+ * 从 OS 绝对源路径取挂载名 (basename)。先归一化分隔符, Windows 反斜杠同样适用;
+ * 后端拒绝含分隔符的挂载名, 这里只交最后一段。
+ */
+export function linkMountNameFromSource(source: string): string {
+  const parts = normalizeAbsoluteSource(source).split(RESOURCE_PATH_SEPARATOR).filter(Boolean)
+  return parts[parts.length - 1] ?? ''
+}
+
 function parentPath(path: string): string {
   const separator = path.lastIndexOf(RESOURCE_PATH_SEPARATOR)
   return separator < 0 ? RESOURCE_ROOT_DIRECTORY : path.slice(0, separator)

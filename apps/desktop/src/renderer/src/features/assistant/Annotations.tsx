@@ -34,7 +34,6 @@ const ITEM_ID_PREFIX = 'item:'
 // 零宽行内锚点不参与文字排版, 浮层相对锚点抬升到当前行上方。
 const INLINE_MARKER_ANCHOR_CLASS = 'relative inline-block h-0 w-0'
 const INLINE_MARKER_FLOAT_CLASS = 'absolute bottom-full left-0 z-10 mb-[12px] -translate-x-1/2'
-const PENDING_ANNOTATION_ID = 'pending-answer-annotation'
 const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
 const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
@@ -50,6 +49,8 @@ const ANSWER_ANNOTATION_SAVE_TOAST_ID = 'answer-annotation-save-failed'
 const SELECTION_ACTION_CLASS = 'w-full justify-start rounded-[var(--vds-radius-3)] !border-0 px-3 !text-[var(--vds-text-primary)] !shadow-none hover:!bg-[var(--vds-surface-hover)]'
 
 interface SelectionDraft {
+  clientAnnotationId: string
+  annotationId?: string
   startUtf16: number
   endUtf16: number
   previewText: string
@@ -260,6 +261,7 @@ export function AnnotatedAnswer({
   const rootRef = useRef<HTMLDivElement>(null)
   const toolbarRef = useRef<HTMLDivElement>(null)
   const commentRef = useRef('')
+  const annotationSavingRef = useRef(false)
   const [draft, setDraft] = useState<SelectionDraft | null>(null)
   useLayoutEffect(() => {
     const root = rootRef.current
@@ -379,6 +381,7 @@ export function AnnotatedAnswer({
     commentRef.current = ''
     setSaveError(null)
     setDraft({
+      clientAnnotationId: crypto.randomUUID(),
       startUtf16: start,
       endUtf16: end,
       previewText,
@@ -446,40 +449,73 @@ export function AnnotatedAnswer({
     setDraft(null)
   }
 
-  const saveAnnotation = async (): Promise<void> => {
-    if (!draft || !answerId) return
-    setSaving(true)
-    const selectedMarkdown = text.slice(draft.startUtf16, draft.endUtf16)
-    const [answerRevision, selectedTextHash] = await Promise.all([
-      sha256Text(text),
-      sha256Text(selectedMarkdown)
-    ])
-    const result = await act.createAnswerAnnotation(answerId, {
-      client_annotation_id: crypto.randomUUID(),
-      answer_revision: answerRevision,
-      start_utf16: draft.startUtf16,
-      end_utf16: draft.endUtf16,
-      selected_text_hash: selectedTextHash,
-      preview_text: draft.previewText,
-      comment: commentRef.current,
-      enqueue: true
-    })
-    setSaving(false)
-    if (result.ok) {
-      closeDraft()
-      return
-    }
+  const showAnnotationError = (error?: string): void => {
     const messageKey = Object.prototype.hasOwnProperty.call(
       ANNOTATION_ERROR_MESSAGES,
-      result.error ?? ''
+      error ?? ''
     )
-      ? ANNOTATION_ERROR_MESSAGES[result.error as keyof typeof ANNOTATION_ERROR_MESSAGES]
+      ? ANNOTATION_ERROR_MESSAGES[error as keyof typeof ANNOTATION_ERROR_MESSAGES]
       : ANNOTATION_SAVE_FALLBACK_MESSAGE
     toast({
       id: ANSWER_ANNOTATION_SAVE_TOAST_ID,
       tone: 'error',
       title: a(messageKey)
     })
+  }
+
+  const addAnnotation = async (): Promise<void> => {
+    if (!draft || !answerId || annotationSavingRef.current) return
+    annotationSavingRef.current = true
+    setSaving(true)
+    try {
+      const selectedMarkdown = text.slice(draft.startUtf16, draft.endUtf16)
+      const [answerRevision, selectedTextHash] = await Promise.all([
+        sha256Text(text),
+        sha256Text(selectedMarkdown)
+      ])
+      const result = await act.createAnswerAnnotation(answerId, {
+        client_annotation_id: draft.clientAnnotationId,
+        answer_revision: answerRevision,
+        start_utf16: draft.startUtf16,
+        end_utf16: draft.endUtf16,
+        selected_text_hash: selectedTextHash,
+        preview_text: draft.previewText,
+        comment: '',
+        enqueue: true
+      })
+      if (!result.ok || !result.annotation) {
+        showAnnotationError(result.error)
+        return
+      }
+      const annotationId = result.annotation.annotation_id
+      setDraft(current => current?.clientAnnotationId === draft.clientAnnotationId
+        ? { ...current, annotationId, mode: 'comment' }
+        : current)
+      window.getSelection()?.removeAllRanges()
+    } catch {
+      showAnnotationError()
+    } finally {
+      annotationSavingRef.current = false
+      setSaving(false)
+    }
+  }
+
+  const saveAnnotation = async (): Promise<void> => {
+    if (!draft?.annotationId || annotationSavingRef.current) return
+    annotationSavingRef.current = true
+    setSaving(true)
+    try {
+      const annotation = state.aiPanel.annotations.find(item => item.annotation_id === draft.annotationId)
+      const unchanged = annotation?.comment === commentRef.current.trim()
+      if (unchanged || await act.updateAnswerAnnotation(draft.annotationId, commentRef.current)) {
+        setDraft(current => current?.clientAnnotationId === draft.clientAnnotationId ? null : current)
+      } else {
+        showAnnotationError()
+      }
+    } finally {
+      annotationSavingRef.current = false
+      setSaving(false)
+    }
   }
 
   useEffect(() => {
@@ -535,30 +571,12 @@ export function AnnotatedAnswer({
     && !annotations.some((annotation) => annotation.annotation_id === focusedAnnotation.annotation_id)
     ? [...annotations, focusedAnnotation]
     : annotations
-  const answerAnnotations = [
-    ...displayedAnnotations.map((annotation) => ({
-      id: annotation.annotation_id,
-      start_utf16: annotation.start_utf16,
-      end_utf16: annotation.end_utf16,
-      focused: annotation.annotation_id === focusedAnnotation?.annotation_id
-    })),
-    ...(draft?.mode === 'comment'
-      ? [{
-        id: PENDING_ANNOTATION_ID,
-        start_utf16: draft.startUtf16,
-        end_utf16: draft.endUtf16
-      }]
-      : [])
-  ]
-
-  // 序号按单条回答内注释创建顺序编排(每条回答从 1 开始), 与 composer 注释列表、
-  // 用户消息徽章同一编排, 保证笔记提交/移除队列后消息列表标识序号稳定。
-  const markerNumber = (annotationId: string): number => {
-    if (annotationId === PENDING_ANNOTATION_ID) return displayedAnnotations.length + 1
-    return displayedAnnotations.findIndex(
-      (item) => item.annotation_id === annotationId
-    ) + 1
-  }
+  const answerAnnotations = displayedAnnotations.map((annotation) => ({
+    id: annotation.annotation_id,
+    start_utf16: annotation.start_utf16,
+    end_utf16: annotation.end_utf16,
+    focused: annotation.annotation_id === focusedAnnotation?.annotation_id
+  }))
 
   useEffect(() => {
     if (!focusedAnnotation || !annotationFocus || !rootRef.current) return undefined
@@ -654,17 +672,15 @@ export function AnnotatedAnswer({
             : undefined
         } : undefined}
         renderAnswerAnnotationMarker={(marker) => {
-          const annotation = annotations.find((item) => item.annotation_id === marker.id)
-          if (!annotation && marker.id !== PENDING_ANNOTATION_ID) return null
-          const number = markerNumber(marker.id)
-          const noteText = annotation
-            ? annotation.comment || annotation.preview_text
-            : draft?.previewText ?? ''
+          const annotation = displayedAnnotations.find((item) => item.annotation_id === marker.id)
+          if (!annotation) return null
+          const number = displayedAnnotations.findIndex(item => item.annotation_id === marker.id) + 1
+          const noteText = annotation.comment || annotation.preview_text
           return (
             <span className={INLINE_MARKER_ANCHOR_CLASS} key={marker.id}>
               <span className={INLINE_MARKER_FLOAT_CLASS}>
                 <AnnotationBadgeNote
-                  annotation={annotation ? annotationDisplay(annotation) : null}
+                  annotation={annotationDisplay(annotation)}
                   ariaLabel={a('remaining.annotationLabel', { number, comment: noteText })}
                   noteText={noteText}
                   number={number}
@@ -705,7 +721,8 @@ export function AnnotatedAnswer({
                   <Button
                     className={SELECTION_ACTION_CLASS}
                     icon={<MessageCirclePlus size={14} />}
-                    onClick={() => setDraft({ ...draft, mode: 'comment' })}
+                    disabled={saving}
+                    onClick={() => void addAnnotation()}
                     size="sm"
                     variant="ghost"
                   >

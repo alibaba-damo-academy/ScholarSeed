@@ -60,6 +60,11 @@ def register_resource_import_routes(app: FastAPI) -> None:
             target_dir = content.within_root(
                 command.project, RootKind.RESOURCES, command.target_dir
             )
+            if command.mode is ImportMode.LINK:
+                # 关联是「登记挂载点」, 与已生效关联根嵌套会让同一份物理文件得到两条
+                # 项目内身份。后台 job 才是权威, 但这里同步预检, 让前端在创建任务的同一
+                # 往返里就拿到 source_overlap, 从而弹提示并在资料树定位到覆盖它的父级关联。
+                content.assert_import_roots_linkable(command.project, command.sources)
             job = _service(request).create(
                 owner_id=request_owner_id(request),
                 project_id=command.project,

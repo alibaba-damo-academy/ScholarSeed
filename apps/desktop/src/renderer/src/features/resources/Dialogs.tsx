@@ -189,6 +189,80 @@ export function UnlinkConfirm(): React.JSX.Element | null {
   )
 }
 
+/**
+ * 反方向关联 (先子后父) 的选择弹窗。
+ *
+ * 后端对「新源是已生效子关联的父目录」回 `source_covers_links` 而非硬拒绝; 这里把
+ * 选择交给用户: 取代子关联并挂载父目录 (原子撤销子关联, **不删除源文件**), 或不挂载、
+ * 直接打开已有子关联。取消则什么都不做。被覆盖的子关联凭已加载的关联根推出。
+ */
+export function LinkSupersedeConfirm(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const pending = state.resource.linkSupersedeConfirm
+  if (!pending) return null
+
+  return (
+    <AlertDialog open onOpenChange={(open) => {
+      if (!open) act.cancelLinkSupersede()
+    }}>
+      <AlertDialogContent
+        aria-label={t('linkSupersede.label')}
+        data-testid="resource-link-supersede-confirm"
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('linkSupersede.title')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {t('linkSupersede.description')}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div
+          className="mt-4 rounded-[10px] border border-[var(--vds-border-default)] p-4"
+          data-testid="resource-link-supersede-covered-box"
+        >
+          <div className="text-[13px] font-[var(--vds-fw-semibold)] text-[var(--vds-text-primary)]">
+            {t('linkSupersede.coveredLabel', { count: pending.covered.length })}
+          </div>
+          <ul
+            className="mt-1 list-disc pl-5 text-[11.5px] text-[var(--vds-text-secondary)]"
+            data-testid="resource-link-supersede-covered"
+          >
+            {pending.covered.map((child) => (
+              <li className="break-all" key={child.rootId}>{child.name}</li>
+            ))}
+          </ul>
+        </div>
+        <Alert tone="warning">
+          <AlertDescription truncate={false}>{t('linkSupersede.warning')}</AlertDescription>
+        </Alert>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            data-testid="resource-link-supersede-cancel"
+            onClick={act.cancelLinkSupersede}
+          >
+            {uiText('cancel')}
+          </AlertDialogCancel>
+          <Button
+            data-testid="resource-link-supersede-open"
+            variant="outline"
+            onClick={() => void act.openCoveredLinkAndCancel()}
+          >
+            {t('linkSupersede.openExistingAction')}
+          </Button>
+          <Button
+            data-testid="resource-link-supersede-go"
+            variant="danger"
+            onClick={() => void act.confirmLinkSupersede()}
+          >
+            {t('linkSupersede.mountAction')}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 /** 把资料树摊平成可选的目录列表，供移动目标选择。 */
 function flattenDirs(nodes: ResourceNode[], depth = 0): { path: string; label: string }[] {
   const rows: { path: string; label: string }[] = []

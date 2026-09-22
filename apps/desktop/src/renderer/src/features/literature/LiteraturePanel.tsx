@@ -979,9 +979,12 @@ export function LiteraturePanel(): React.JSX.Element {
                                   className={`lit-nav-row${active ? ' is-active active:!bg-[var(--vds-bg-gray-hover)]' : ' active:!bg-transparent'}`}
                                   onClick={() => selectProject(project)}
                                 >
-                                  <span className="lit-nav-name">
+                                  <EllipsisText
+                                    tooltipPortalled
+                                    wrapperClassName="lit-nav-name min-w-0"
+                                  >
                                     {project.name}
-                                  </span>
+                                  </EllipsisText>
                                   <span className="lit-count transition-opacity group-hover/project:opacity-0 group-focus-within/project:opacity-0">
                                     {project.count}
                                   </span>

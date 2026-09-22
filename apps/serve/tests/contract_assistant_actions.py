@@ -19,6 +19,7 @@ from scholarseed_runtime.contract.history import TurnStatus
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult
 from service.assistant.api.routes import register_assistant_routes
+from service.assistant.domain.language import TRANSLATION_TARGET_CODES
 from service.assistant.persistence.invocations import (
     ASSISTANT_INVOCATION_TABLE,
     AssistantInvocationConflictError,
@@ -31,6 +32,7 @@ from service.assistant.service.actions import (
     AssistantActionService,
     AssistantInvocationRequest,
     AssistantTranslationRequest,
+    TranslationCompiler,
 )
 from service.chat.persistence.catalog import SESSION_CATALOG_TABLE, SessionCatalogStore
 from service.chat.runtime.composition import OneShotRuntimeResult
@@ -88,7 +90,6 @@ def translation_request(
         retry_of_attempt_id=None,
         project_id="project-1",
         text=text,
-        source_language="en",
         target_language=target,
         source_id="notes/evidence.md",
         source_revision="sha256:" + "1" * 64,
@@ -117,7 +118,8 @@ class AssistantActionContract(unittest.TestCase):
         self.assertEqual(first.prompt_version, TRANSLATE_PROMPT_VERSION)
         self.assertEqual(len(model.requests), 1)
         self.assertEqual(model.requests[0].input_text, SOURCE_TEXT)
-        self.assertIn("en", model.requests[0].instructions)
+        self.assertIn("detect the source language", model.requests[0].instructions.lower())
+        self.assertIn("Simplified Chinese", model.requests[0].instructions)
         self.assertEqual(model.requests[0].project_id, "project-1")
         self.assertEqual(first.receipt_id, "receipt-1")
         with sqlite3.connect(self.database) as connection:
@@ -128,6 +130,19 @@ class AssistantActionContract(unittest.TestCase):
         self.assertEqual(session_count, 0)
         self.assertIsNotNone(persisted)
         self.assertNotIn(SOURCE_TEXT, self.database.read_bytes().decode("utf-8", errors="ignore"))
+
+    def test_translation_catalog_compiles_every_supported_target(self) -> None:
+        compiler = TranslationCompiler()
+
+        compiled = {
+            code: compiler.compile(source_text=SOURCE_TEXT, target_language=code)
+            for code in TRANSLATION_TARGET_CODES
+        }
+
+        self.assertGreaterEqual(len(compiled), 18)
+        self.assertIn("ja", compiled)
+        self.assertIn("Arabic", compiled["ar"].instructions)
+        self.assertTrue(all(item.source_language == "auto" for item in compiled.values()))
 
     def test_generic_invocation_uses_the_same_durable_non_session_path(self) -> None:
         model = OneShotProvider()
@@ -228,8 +243,7 @@ class AssistantActionContract(unittest.TestCase):
             "client_attempt_id": "http-translation-attempt",
             "project_id": "project-1",
             "text": SOURCE_TEXT,
-            "source_language": "en",
-            "target_language": "zh-CN",
+            "target_language": "ja",
             "source_id": "notes/evidence.md",
             "source_revision": "sha256:" + "1" * 64,
         }
@@ -244,6 +258,28 @@ class AssistantActionContract(unittest.TestCase):
         status = client.get(f"/api/assistant/invocations/{payload['invocation_id']}")
         self.assertEqual(status.status_code, 200)
         self.assertEqual(status.json(), payload)
+
+        legacy = client.post(
+            "/api/assistant/translations",
+            json={
+                **translation,
+                "client_action_id": "legacy-translation",
+                "client_attempt_id": "legacy-translation-attempt",
+                "source_language": "en",
+            },
+        )
+        self.assertEqual(legacy.status_code, 503)
+
+        invalid = client.post(
+            "/api/assistant/translations",
+            json={
+                **translation,
+                "client_action_id": "invalid-translation",
+                "client_attempt_id": "invalid-translation-attempt",
+                "target_language": "unsupported",
+            },
+        )
+        self.assertEqual(invalid.status_code, 422)
 
         completion = client.post(
             "/api/assistant/invocations",

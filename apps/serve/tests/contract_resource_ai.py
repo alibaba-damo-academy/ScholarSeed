@@ -420,6 +420,7 @@ class ResourceContracts(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_translation_has_explicit_target_and_one_low_latency_request(self):
+        self.assertEqual(len(TranslationTarget), 18)
         for target in TranslationTarget:
             command = replace(
                 self.command,
@@ -432,9 +433,11 @@ class ResourceContracts(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.status, ModelInvocationStatus.COMPLETED)
             request = self.provider.requests[-1]
             self.assertIn('"target_language": "' + target.value + '"', request.input_text)
+            self.assertIn('"target_language_name":', request.input_text)
+            self.assertIn("Detect the source language from the selected text", request.instructions)
             self.assertIn("retain fragments already in the target language", request.instructions)
             self.assertEqual(request.reasoning_policy, ReasoningPolicy.LOW_LATENCY)
-        self.assertEqual(len(self.provider.requests), 2)
+        self.assertEqual(len(self.provider.requests), 18)
         with self.assertRaises(SelectionEvidenceError):
             await self.service.execute(replace(self.command, action=ResourceAction.TRANSLATE))
 

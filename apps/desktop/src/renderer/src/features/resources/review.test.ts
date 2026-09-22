@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import test from 'node:test'
 
-import { hasDirtyReviewEditor } from './api.ts'
+import { fetchResourceReviewBatchForPath, hasDirtyReviewEditor } from './api.ts'
 
 import {
   openReviewTab,
@@ -23,6 +23,7 @@ const sharedDiffSource = readFileSync(new URL('../workbench/Diff.tsx', import.me
 const liveSource = readFileSync(new URL('../../live.ts', import.meta.url), 'utf8')
 const composerSource = readFileSync(new URL('../../components/business/Composer.tsx', import.meta.url), 'utf8')
 const resourcePanelSource = readFileSync(new URL('./ResourcePanel.tsx', import.meta.url), 'utf8')
+const indicatorsSource = readFileSync(new URL('./Indicators.tsx', import.meta.url), 'utf8')
 
 test('review tab keeps project and batch identities without collisions', () => {
   const tab = reviewTab('project / 甲', 'batch:1', 3)
@@ -79,6 +80,47 @@ test('turn admission probes unfinished members from open and failed batches', as
     globalThis.fetch = originalFetch
     globalThis.window = originalWindow
   }
+})
+
+test('tree review resolves the unfinished batch containing the selected path', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://test' }
+  } as Window & typeof globalThis
+  const cursors: string[] = []
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input))
+    const state = url.searchParams.get('state')
+    const cursor = url.searchParams.get('after_batch_id') ?? ''
+    cursors.push(`${state}:${cursor}`)
+    if (state === 'open' && !cursor) {
+      return Response.json({
+        items: [{ id: 'batch-a', members: [{ path: 'resources/other.md', state: 'pending' }] }],
+        next_cursor: 'batch-a'
+      })
+    }
+    if (state === 'open' && cursor === 'batch-a') {
+      return Response.json({
+        items: [{ id: 'batch-b', members: [{ path: 'resources/notes.md', state: 'pending' }] }],
+        next_cursor: null
+      })
+    }
+    return Response.json({ items: [], next_cursor: null })
+  }
+  try {
+    const batch = await fetchResourceReviewBatchForPath('project-id', 'resources/notes.md')
+    assert.equal(batch?.id, 'batch-b')
+    assert.deepEqual(cursors, ['open:', 'open:batch-a'])
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+  }
+})
+
+test('tree review indicator opens the batch page instead of version history', () => {
+  assert.match(indicatorsSource, /act\.openResourceReview\(node\.path\)/)
+  assert.doesNotMatch(indicatorsSource, /act\.openResourceHistory\(node\.path\)/)
 })
 
 test('resources contributes the review viewer and uses the shared review surface', () => {

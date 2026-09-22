@@ -5,6 +5,7 @@ import { Copy } from 'lucide-react'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
 import aiThinking from '../assets/ai-thinking.gif'
+import { AnnotationSummary } from '../features/assistant/Notes'
 
 import '../styles.css'
 import {
@@ -134,6 +135,29 @@ import {
   useToast,
   type ToastData
 } from './ui'
+
+function AnnotationSummaryDemo(): JSX.Element {
+  const [annotations, setAnnotations] = useState([
+    { id: 'first', previewText: '第一段原文', comment: '第一条注释' },
+    { id: 'second', previewText: '第二段原文', comment: '第二条注释' }
+  ])
+  return (
+    <section className="grid bg-[var(--vds-surface-raised)]" data-testid="render-annotation-workspace">
+      <AnnotationSummary
+        annotations={annotations}
+        onClear={() => setAnnotations([])}
+        onEdit={async (annotationId, comment) => {
+          setAnnotations(items => items.map(item => item.id === annotationId ? { ...item, comment } : item))
+          return true
+        }}
+        onRemove={annotationId => setAnnotations(items => items.filter(item => item.id !== annotationId))}
+      />
+      <div className="bg-[var(--vds-other-overlay-2)]" data-testid="render-annotation-message">
+        <AnnotationSummary annotations={annotations} testId="render-sent-annotation-summary" />
+      </div>
+    </section>
+  )
+}
 
 function ToastQueueDemo(): JSX.Element {
   const { toast } = useToast()
@@ -1179,6 +1203,7 @@ function Fixture(): JSX.Element {
 
       <ToastProvider>
         <ToastQueueDemo />
+        <AnnotationSummaryDemo />
         <Toaster
           aria-label="队列通知"
           closeLabel="关闭队列通知"

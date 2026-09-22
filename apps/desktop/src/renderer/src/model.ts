@@ -434,7 +434,7 @@ export type ConvItem = TurnOwned & (
   | {
       kind: 'error'
       applicationFailure?: ApplicationRequestFailure
-      failure?: { kind: 'quota' | 'credits' | 'rate_limit' | 'auth' | 'request' | 'model_config' | 'unavailable' | 'content_policy' | 'unknown'; fallback: 'frame' | 'runtime' | 'raw' }
+      failure?: { kind: 'quota' | 'credits' | 'rate_limit' | 'auth' | 'request' | 'model_config' | 'unavailable' | 'content_policy' | 'unknown'; fallback: 'frame' | 'runtime' | 'raw'; automaticRetryAttempts?: number }
       title: string
       message: string
       action: string

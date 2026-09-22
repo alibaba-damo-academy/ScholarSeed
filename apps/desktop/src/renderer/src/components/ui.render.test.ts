@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { readFile } from 'node:fs/promises'
 
-import { chromium, type Browser, type Page } from '@playwright/test'
+import { chromium, expect, type Browser, type Page } from '@playwright/test'
 import react from '@vitejs/plugin-react'
 import { createServer, type ViteDevServer } from 'vite'
 
@@ -118,6 +118,61 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     await server?.close()
   }
 }
+
+test('annotation summary fits its content in a grid instead of stretching to the composer width', async () => {
+  await withFixture(async (page) => {
+    const workspace = page.getByTestId('render-annotation-workspace')
+    const summary = page.getByTestId('answer-annotation-summary')
+    await expect(summary).toBeVisible()
+    const workspaceBox = await workspace.boundingBox()
+    const summaryBox = await summary.boundingBox()
+    assert.ok(workspaceBox && summaryBox)
+    assert.ok(summaryBox.width < workspaceBox.width, 'annotation chip must not fill its grid track')
+    await summary.getByRole('button', { name: '移除全部' }).click()
+    await expect(summary).toHaveCount(0)
+  })
+})
+
+test('sent and composer annotation chips keep the same opaque surface, border and radius', async () => {
+  await withFixture(async (page) => {
+    const composer = page.getByTestId('answer-annotation-summary')
+    const sent = page.getByTestId('render-sent-annotation-summary')
+    const workspace = page.getByTestId('render-annotation-workspace')
+    const composerStyle = await composer.evaluate(element => {
+      const style = getComputedStyle(element)
+      return [style.backgroundColor, style.backgroundImage, style.border, style.borderRadius]
+    })
+    const sentStyle = await sent.evaluate(element => {
+      const style = getComputedStyle(element)
+      return [style.backgroundColor, style.backgroundImage, style.border, style.borderRadius]
+    })
+    assert.deepEqual(sentStyle, composerStyle)
+    assert.equal(sentStyle[0], await workspace.evaluate(element => getComputedStyle(element).backgroundColor))
+    assert.notEqual(sentStyle[1], 'none')
+  })
+})
+
+test('annotation summary hover list supports editing and deleting individual annotations', async () => {
+  await withFixture(async (page) => {
+    const summary = page.getByTestId('answer-annotation-summary')
+    await summary.getByRole('button', { name: '2 条注释' }).hover()
+    const first = page.getByTestId('answer-annotation-details-first')
+    const second = page.getByTestId('answer-annotation-details-second')
+    await expect(first).toBeVisible()
+    await expect(second).toBeVisible()
+    await expect(second.getByRole('button', { name: '编辑注释 2' })).toBeVisible()
+    await first.getByRole('button', { name: '编辑注释 1' }).click()
+    await first.getByRole('textbox', { name: '编辑注释 1' }).fill('修改后的注释')
+    await first.getByRole('button', { name: '保存', exact: true }).click()
+    await expect(first).toContainText('修改后的注释')
+    await first.getByRole('button', { name: '移除注释 1' }).click()
+    await expect(first).toHaveCount(0)
+    await expect(summary).toContainText('1 条注释')
+    await expect(second).toContainText('第二条注释')
+    await second.getByRole('button', { name: '移除注释 1' }).click()
+    await expect(summary).toHaveCount(0)
+  })
+})
 
 test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feedback', async () => {
   await withFixture(async (page) => {

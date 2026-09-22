@@ -277,3 +277,26 @@ test('unknown library states warn without implying absence, and missing snapshot
     await assert.rejects(loadConversationSearch('session', 'missing', new AbortController().signal), /result_unavailable/)
   } finally { Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow }); globalThis.fetch = previousFetch }
 })
+
+test('unrestorable searches surface as an interrupted status instead of an internal code', () => {
+  // 重启后 serve 只给投影状态: 前端必须把它当终态, 既不能再订阅 SSE, 也不能退回 unknown 文案。
+  const source = readFileSync(new URL('./Search.tsx', import.meta.url), 'utf8')
+  assert.match(source, /search_interrupted: 'search\.status\.search_interrupted'/)
+  const terminal = source.slice(
+    source.indexOf('const TERMINAL_STATUSES'),
+    source.indexOf('const RESULT_SORT_LABELS')
+  )
+  assert.match(terminal, /'search_interrupted'/)
+  const contract = readFileSync(new URL('../../contracts/literature.ts', import.meta.url), 'utf8')
+  assert.match(contract, /\| 'search_interrupted'/)
+  const copies: Record<string, string> = { zh: '搜索被中断', en: 'Search interrupted' }
+  for (const [locale, expected] of Object.entries(copies)) {
+    const messages = JSON.parse(
+      readFileSync(
+        new URL(`../../../../localization/locales/${locale}/literature.json`, import.meta.url),
+        'utf8'
+      )
+    )
+    assert.equal(messages.search.status.search_interrupted, expected)
+  }
+})

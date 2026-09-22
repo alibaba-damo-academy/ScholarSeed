@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { invokeFigure, pdfResponseLanguage, type PdfAiRequest } from './analysis.ts'
+import { ASSISTANT_TRANSLATION_TARGETS } from '../../../contracts/assistant.ts'
+import { invokeFigure, pdfResponseLanguage, type PdfAiRequest, PDF_TRANSLATION_TARGETS } from './analysis.ts'
 
 const request: PdfAiRequest = {
   literature_id: 'paper', project_id: '', revision: 'old', model_key: 'model',
@@ -68,4 +70,17 @@ test('figure invocation streams crop and markdown before authoritative result', 
     assert.equal(result.revision, 'revision')
     assert.equal(result.crop, 'data:image/png;base64,crop')
   } finally { restore() }
+})
+
+test('PDF translation reuses the complete mainstream target catalog', () => {
+  assert.deepEqual(PDF_TRANSLATION_TARGETS, ASSISTANT_TRANSLATION_TARGETS)
+})
+
+test('PDF translation only exposes a searchable target-language control', () => {
+  const control = readFileSync(new URL('./Translation.tsx', import.meta.url), 'utf8')
+  const reading = readFileSync(new URL('./Reading.tsx', import.meta.url), 'utf8')
+
+  assert.match(control, /TranslationTargetPicker/)
+  assert.doesNotMatch(control, /translation\.auto|translation\.toEnglish|translation\.toChinese/)
+  assert.doesNotMatch(reading, /\?\? 'auto'|selected !== 'auto'/)
 })

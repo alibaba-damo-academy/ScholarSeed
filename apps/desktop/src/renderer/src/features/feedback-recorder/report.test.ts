@@ -120,14 +120,16 @@ test('recording report excludes screenshots without a valid linked step', () => 
       screenshotId: 'linked',
       stepId: 'step-1',
       note: '',
-      file: {} as File,
+      sourceFile: {} as File,
+      renderedFile: { name: 'feedback.png' } as File,
       previewUrl: 'blob:linked',
       annotations: []
     },
     {
       screenshotId: 'orphan',
       note: '',
-      file: {} as File,
+      sourceFile: {} as File,
+      renderedFile: { name: 'feedback-2.png' } as File,
       previewUrl: 'blob:orphan',
       annotations: []
     }

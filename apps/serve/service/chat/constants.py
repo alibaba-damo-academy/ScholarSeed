@@ -114,6 +114,7 @@ PRODUCT_TURN_OUTCOME_UNKNOWN = "unknown_outcome"
 PRODUCT_TURN_OUTCOME_CONFIRMED = "unknown_confirmed"
 TURN_OUTCOME_UNCONFIRMED = "turn_outcome_unconfirmed"
 TURN_UNKNOWN_CONFIRM_DECISION = "continue_without_replay"
+TURN_CONTROLLED_INTERRUPT_RESOLUTION = "controlled_interrupt"
 TURN_UNKNOWN_CONFIRM_INVALID = "turn_unknown_confirmation_invalid"
 TURN_UNKNOWN_NOT_FOUND = "turn_unknown_not_found"
 

@@ -10,7 +10,7 @@ from service.literature.persistence.store import connect
 
 TABLE = "literature_ai_results"
 SEGMENT_TABLE = "literature_ai_segments"
-TRANSIENT_MODULES = frozenset(("figure_explanation",))
+TRANSIENT_MODULES = frozenset(("figure_explanation", "formula_latex"))
 DOCUMENT_TRANSLATION_MODULE = "document_translation"
 INTERPRETATION_KIND = "interpretation"
 

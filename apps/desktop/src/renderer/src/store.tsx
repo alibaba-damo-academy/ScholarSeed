@@ -7,7 +7,7 @@ import { assistantFailureDetail } from './features/assistant/failure'
 import { sessionTitleFallback } from './session'
 import type { SessionTitleFallback } from './session'
 import type { ForegroundMessage } from './contracts/feedback'
-import { resourceErrorMessage } from './features/resources/error'
+import { resourceErrorMessage, SOURCE_COVERS_LINKS_ERROR, SOURCE_OVERLAP_ERROR } from './features/resources/error'
 import { useTranslation } from 'react-i18next'
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -54,7 +54,7 @@ import {
   registerLocalPaths,
   revealSystemPath
 } from './api'
-import { listExternalRoots, revokeRoot } from './features/project/api'
+import { authorizeRoot, listExternalRoots, revokeRoot } from './features/project/api'
 import { ProjectFormTarget } from './components/business/ProjectForm'
 import { DEFAULT_WORKDIR } from './i18n'
 import { CAPTURE_SETTLE_FRAMES, waitForFrames } from './frames'
@@ -115,6 +115,7 @@ import {
 } from './features/assistant/selection'
 import type {
   ArtifactLibraryLinksResult,
+  AnswerAnnotation,
   AnswerAnnotationCreate,
   AssistantContextCandidate,
   AssistantIngress,
@@ -129,7 +130,6 @@ import type {
   AssistantSelectionActionMutationResult,
   AssistantSelectionStreamOptions,
   AssistantTranslationInput,
-  AssistantTranslationLanguage,
   AssistantTranslationTarget,
   ContextRefKind,
   SearchScope
@@ -165,6 +165,7 @@ import {
 } from './features/literature/state'
 import {
   fetchResourceTree,
+  fetchResourceReviewBatchForPath,
   fetchVersionCapability,
   admitResourceVersion,
   importResources,
@@ -179,6 +180,7 @@ import {
   findResourceNode,
   INITIAL_RESOURCE_STATE,
   INVALID_RESOURCE_NAME_MESSAGE,
+  LinkSupersedeConfirmState,
   MARKDOWN_SUFFIX,
   NameDraftState,
   NodeMenuState,
@@ -199,7 +201,10 @@ import {
 import {
   beginResourceTreeReload,
   expandedResourceAncestors,
+  deriveCoveredLinkRoots,
+  deriveLinkOverlapTarget,
   finishResourceTreeReload,
+  linkMountNameFromSource,
   materializeResourcePath,
   relocateExpandedResourcePaths,
   relocateResourcePath,
@@ -230,9 +235,11 @@ import {
   type CloseTabContext,
   type LiteratureResultReference,
   openLiteratureSearchTabs,
+  openReviewTab,
   openVersionDiffTab,
   OVERVIEW_TAB,
   type VersionDiffReference,
+  reviewTab,
   versionDiffTab,
   WorkbenchTab
 } from './features/workbench/tabs'
@@ -248,7 +255,6 @@ export type AccountSettingsPage = 'prompts' | 'preferences' | 'account' | 'model
 export type MainView = 'home' | 'conversation' | 'projects' | 'resource' | 'literature' | 'writing'
 export type WorkspaceLoadState = 'loading' | 'ready' | 'error'
 
-const CJK_TEXT_PATTERN = /[\u3400-\u9fff]/u
 
 function mainViewForWorkbenchTab(tab: WorkbenchTab | undefined): MainView | null {
   if (!tab) return null
@@ -281,10 +287,6 @@ function closeTabContext(current: AppState): CloseTabContext {
     view: current.mainView,
     viewFallbackId: matchesView ? documents.focusedTabId : null
   }
-}
-
-function defaultTranslationTarget(text: string): AssistantTranslationTarget {
-  return CJK_TEXT_PATTERN.test(text) ? 'en' : 'zh-CN'
 }
 
 /**
@@ -1209,6 +1211,7 @@ export interface Actions extends AssistantIngress {
   retryResourceCreate: () => void
   cancelResourceNameDraft: () => void
   openResourceHistory: (path: string) => Promise<void>
+  openResourceReview: (path: string) => Promise<void>
   closeResourceHistory: () => void
   refreshResourceVersioning: (projectOverride?: string) => Promise<void>
   admitResourceVersion: (path: string) => Promise<void>
@@ -1224,6 +1227,10 @@ export interface Actions extends AssistantIngress {
   confirmResourceUnlink: (target: UnlinkConfirmState) => void
   cancelResourceUnlink: () => void
   unlinkResourceRoot: () => Promise<void>
+  /** 反方向关联 (先子后父) 选择弹窗: 取消 / 取代并挂载 / 直接打开已有子关联。 */
+  cancelLinkSupersede: () => void
+  confirmLinkSupersede: () => Promise<void>
+  openCoveredLinkAndCancel: () => Promise<void>
   openResourceMoveDialog: (path: string, name: string) => void
   closeResourceMoveDialog: () => void
   moveResourceNode: (path: string, targetDir: string) => Promise<void>
@@ -1259,7 +1266,7 @@ export interface Actions extends AssistantIngress {
   createAnswerAnnotation: (
     answerId: string,
     input: Omit<AnswerAnnotationCreate, 'expected_context_revision'>
-  ) => Promise<{ ok: boolean; error?: string }>
+  ) => Promise<{ ok: boolean; annotation?: AnswerAnnotation; error?: string }>
   /** Edit an unclaimed annotation comment using annotation and context CAS revisions. */
   updateAnswerAnnotation: (annotationId: string, comment: string) => Promise<boolean>
   /** Permanently delete an unclaimed annotation using annotation and context CAS revisions. */
@@ -1358,10 +1365,7 @@ export interface Actions extends AssistantIngress {
   /** 把选中文献加为 AI 上下文（PRD「上下文附加」）。 */
   attachLiteratureToAi: () => Promise<void>
   retryTranslation: () => Promise<void>
-  setTranslationLanguages: (
-    source: AssistantTranslationLanguage,
-    target: AssistantTranslationTarget
-  ) => void
+  setTranslationTarget: (target: AssistantTranslationTarget) => void
   closeTranslation: () => void
 }
 
@@ -1850,8 +1854,7 @@ export function StoreProvider({
   ): Promise<AssistantInvocationMutationResult> => {
     const current = stateRef.current
     const projectId = current.homeSelectedProjectId
-    const sourceLanguage = input.source_language ?? 'auto'
-    const targetLanguage = input.target_language ?? defaultTranslationTarget(input.text)
+    const targetLanguage = input.target_language ?? (current.lang === 'en' ? 'en' : 'zh-CN')
     const clientActionId = identity?.clientActionId ?? crypto.randomUUID()
     const clientAttemptId = crypto.randomUUID()
     if (!projectId) {
@@ -1865,7 +1868,6 @@ export function StoreProvider({
             input,
             clientActionId,
             clientAttemptId,
-            sourceLanguage,
             targetLanguage,
             loading: false,
             invocation: null,
@@ -1884,7 +1886,6 @@ export function StoreProvider({
           input,
           clientActionId,
           clientAttemptId,
-          sourceLanguage,
           targetLanguage,
           loading: true,
           invocation: null,
@@ -1898,7 +1899,6 @@ export function StoreProvider({
       retry_of_attempt_id: identity?.retryOfAttemptId,
       project_id: projectId,
       text: input.text,
-      source_language: sourceLanguage,
       target_language: targetLanguage,
       source_id: input.source_id,
       source_revision: input.source_revision,
@@ -2473,7 +2473,6 @@ export function StoreProvider({
       await runTranslation(
         {
           ...translation.input,
-          source_language: translation.sourceLanguage,
           target_language: translation.targetLanguage
         },
         {
@@ -2482,14 +2481,13 @@ export function StoreProvider({
         }
       )
     },
-    setTranslationLanguages: (source, target) => setState((current) => ({
+    setTranslationTarget: (target) => setState((current) => ({
       ...current,
       aiPanel: current.aiPanel.translation
         ? {
           ...current.aiPanel,
           translation: {
             ...current.aiPanel.translation,
-            sourceLanguage: source,
             targetLanguage: target
           }
         }
@@ -2999,6 +2997,24 @@ export function StoreProvider({
       if (!capability?.file_id) { actRef.current.noticeResource('error', resourceErrorMessage('version_admission_unavailable')); return }
       setState((current) => ({ ...current, resource: { ...current.resource, historyTarget: { project, path, fileId: capability.file_id! } } }))
     },
+    openResourceReview: async (path) => {
+      const project = stateRef.current.homeSelectedProjectId
+      if (!project) return
+      const batch = await fetchResourceReviewBatchForPath(project, path)
+      if (stateRef.current.homeSelectedProjectId !== project) return
+      if (!batch) {
+        actRef.current.noticeResource('error', resourceErrorMessage('review_batch_unavailable'))
+        return
+      }
+      const tab = reviewTab(project, batch.id, batch.members.length)
+      setState((current) => ({
+        ...current,
+        mainView: 'resource',
+        modulePanelOpen: true,
+        tabs: openReviewTab(current.tabs, project, batch.id, batch.members.length),
+        activeTab: tab.id
+      }))
+    },
     closeResourceHistory: () => setState((current) => ({ ...current, resource: { ...current.resource, historyTarget: null } })),
     refreshResourceVersioning: async (projectOverride) => {
       const workspace = documentWorkspaces.forProject(projectOverride ?? stateRef.current.homeSelectedProjectId)
@@ -3266,6 +3282,84 @@ export function StoreProvider({
             : { key: 'feedback.unlinked', name: target.name }
       )
     },
+    cancelLinkSupersede: () => setState((current) => ({
+      ...current,
+      resource: { ...current.resource, linkSupersedeConfirm: null }
+    })),
+    confirmLinkSupersede: async () => {
+      const { resource, homeSelectedProjectId } = stateRef.current
+      const pending = resource.linkSupersedeConfirm
+      if (!pending || !homeSelectedProjectId) return
+      // 先关弹窗: 取代是逐个同步授权, 期间不再接受重复点击。
+      setState((current) => ({
+        ...current,
+        resource: { ...current.resource, linkSupersedeConfirm: null }
+      }))
+      let mountedPath: string | null = null
+      let failure: string | undefined
+      for (const source of pending.sources) {
+        // supersede=true: 后端在同一事务里原子撤销被这个父目录覆盖的子关联再挂载,
+        // 不留「子关联已撤、父挂载未成」的半态或双身份窗口。
+        const result = await authorizeRoot(
+          homeSelectedProjectId,
+          source,
+          linkMountNameFromSource(source),
+          true
+        )
+        if (!result.ok) {
+          failure = result.error
+          break
+        }
+        mountedPath = result.root?.mountPath ?? mountedPath
+      }
+      if (failure !== undefined) {
+        // 未全部成功: 失败的那个源及其子关联保持原状 (后端按源逐个原子取代)。
+        // 只刷新树反映真实状态并报错, 不乱关仍生效子关联名下的页签。
+        await actRef.current.reloadResourceTree()
+        actRef.current.noticeResource('error', resourceErrorMessage(failure))
+        return
+      }
+      // 全部取代成功: 被覆盖的子关联已原子撤销。像取消关联一样关掉它们名下的孤儿
+      // 页签、清展开态、丢弃按路径串附加的上下文引用 (路径基准已随挂载点消失)。
+      let remainingExpanded = resource.expanded
+      let tabsClosed = true
+      for (const child of pending.covered) {
+        tabsClosed = documentWorkspaces
+          .forProject(homeSelectedProjectId)
+          .requestCloseProjectPath(homeSelectedProjectId, child.mountPath) && tabsClosed
+        remainingExpanded = removeExpandedResourcePaths(remainingExpanded, child.mountPath)
+      }
+      const contextSynced = await syncResourceContext((refs, submittedRefIds) =>
+        pending.covered.reduce(
+          (acc, child) => transformResourceContextRefs(acc, submittedRefIds, child.mountPath, null),
+          refs
+        )
+      )
+      await actRef.current.reloadResourceTree(remainingExpanded)
+      if (mountedPath) {
+        actRef.current.selectResourceFile(mountedPath)
+        void revealResourceTreePath(mountedPath, homeSelectedProjectId)
+      }
+      const partial = !tabsClosed || !contextSynced
+      actRef.current.noticeResource(
+        partial ? 'error' : 'ok',
+        partial
+          ? { key: 'feedback.linkSupersedeCleanupFailed', count: pending.covered.length }
+          : { key: 'feedback.linkSuperseded', count: pending.covered.length }
+      )
+    },
+    openCoveredLinkAndCancel: async () => {
+      const { resource, homeSelectedProjectId } = stateRef.current
+      const target = resource.linkSupersedeConfirm?.covered[0]
+      setState((current) => ({
+        ...current,
+        resource: { ...current.resource, linkSupersedeConfirm: null }
+      }))
+      // 「不挂载, 直接打开原子目录」: 不取代、不授权, 只定位到已有的子关联。
+      if (!target) return
+      actRef.current.selectResourceFile(target.mountPath)
+      await revealResourceTreePath(target.mountPath, homeSelectedProjectId)
+    },
     openResourceMoveDialog: (path, name) => setState((current) => ({
       ...current,
       resource: { ...current.resource, moveDialog: { path, name } }
@@ -3361,6 +3455,41 @@ export function StoreProvider({
       const targetDir = resource.importDialog?.targetDir ?? ''
       const result = await createResourceImport(mode, sources, targetDir, homeSelectedProjectId)
       if (!result.ok) {
+        if (result.error === SOURCE_COVERS_LINKS_ERROR) {
+          // 反方向 (先子后父): 新源是已生效子关联的父目录。后端不硬拒绝, 回
+          // source_covers_links; 前端凭已加载的关联根推出被覆盖的子关联, 关导入弹窗、
+          // 弹选择框, 让用户决定「取代子关联并挂载父目录」还是「直接打开已有子关联」。
+          const coveredRoots = deriveCoveredLinkRoots(stateRef.current.resource.tree, sources)
+          if (coveredRoots.length > 0) {
+            const target: LinkSupersedeConfirmState = {
+              sources,
+              covered: coveredRoots.map((item) => ({
+                rootId: item.rootId,
+                mountPath: item.mountPath,
+                name: item.name
+              }))
+            }
+            setState((current) => ({
+              ...current,
+              resource: { ...current.resource, importDialog: null, linkSupersedeConfirm: target }
+            }))
+            return
+          }
+          // 推不出被覆盖的子关联 (关联根未加载/路径规范化差异): 退回普通报错, 不弹空框。
+        } else if (result.error === SOURCE_OVERLAP_ERROR) {
+          // 正向 (先父后子): 撞上已生效的父级关联, 后端只回 source_overlap (包含判定是
+          // 它的权威职责), 前端用已加载的关联根反推出这份资料在树里的位置 —— 关弹窗、
+          // 定位过去, 再弹统一文案。用户立刻看到「它已经在那个父级关联里了」。
+          const revealPath = deriveLinkOverlapTarget(stateRef.current.resource.tree, sources)
+          if (revealPath) {
+            setState((current) => ({
+              ...current,
+              resource: { ...current.resource, importDialog: null }
+            }))
+            actRef.current.selectResourceFile(revealPath)
+            void revealResourceTreePath(revealPath, homeSelectedProjectId)
+          }
+        }
         actRef.current.noticeResource(
           'error',
           resourceErrorMessage(result.error)
@@ -4071,13 +4200,16 @@ export function StoreProvider({
               capabilities: selection.capabilities
             } : {}),
             annotations: result.annotation
-              ? [...value.aiPanel.annotations, result.annotation]
+              ? [
+                ...value.aiPanel.annotations.filter(annotation => annotation.annotation_id !== result.annotation!.annotation_id),
+                result.annotation
+              ]
               : value.aiPanel.annotations,
             contextError: result.ok ? null : value.aiPanel.contextError
           }
         }
       })
-      return { ok: result.ok, ...(result.error ? { error: result.error } : {}) }
+      return { ok: result.ok, annotation: result.annotation, ...(result.error ? { error: result.error } : {}) }
     },
     updateAnswerAnnotation: async (annotationId, comment) => {
       const current = stateRef.current

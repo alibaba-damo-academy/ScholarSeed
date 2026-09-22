@@ -118,52 +118,54 @@ ScholarSeed 采用桌面客户端、本地服务与 Agent 运行时分层架构�
 
 ### 从源码运行
 
-环境要求：Git、Git LFS、Node.js **24.16.0**、npm **11.13.0**、uv **≥ 0.12.11**，以及 `make` 和目标平台的构建工具。
+环境要求：Git、Node.js **24.16.0**、npm **11.13.0**、uv **≥ 0.12.11**，以及目标平台的原生构建工具。
 
 克隆本仓库后，在仓库根目录执行：
 
 ```bash
-git lfs install
-git lfs pull
-make install
-make build
-make config-template
-make desktop
+npm ci
+npm run dev
 ```
 
-大文件通过 Git LFS 管理，请完整拉取运行资源。Python 与 Codex 运行时由仓库工具链统一准备。
+`npm run dev` 会准备清单固定版本的 Python 和开发环境，再启动 Electron。运行时二进制从清单中审核过的 HTTPS 地址下载，校验大小与 SHA-256 后缓存到本机；不需要 Git LFS 或 GitHub Release 访问权限。首次构建需要联网，可用 `SCHOLARSEED_ARTIFACT_CACHE` 指定独立缓存目录。
 
 启动后，在设置中配置模型连接，或登录书深账号。文献检索与全文获取需要对应服务和访问权限。
 
-`make config` 提供交互式配置。`make config-template` 及依赖它的启动命令会更新配置，已有配置时请先备份。
+需要分步安装时，依次执行 `npm run install:python`、`npm run config:template`、`npm run build`、`npm run desktop`。`npm run config` 提供交互式配置；调整已有配置前请先备份。
 
 ## 本地开发
 
 ```bash
 # 检查开发环境
-make doctor
+npm run doctor
 
 # 启动桌面开发环境
-make desktop-dev
+npm run dev
 
 # 构建桌面端
-make build
+npm run build
 
 # 运行桌面测试与类型检查
 npm --prefix apps/desktop test
 npm --prefix apps/desktop run typecheck
 
 # 检查 Python 代码
-make check
+npm run check
 ```
 
-科研技能源码位于 `skills/community/`。修改后可通过 `make skills-install` 构建技能包，通过 `make skills-verify` 检查与源码的一致性。
+科研技能源码位于 `skills/community/`。修改后可通过 `npm run skills:install` 构建技能包，通过 `npm run skills:verify` 检查与源码的一致性。
 
 ## 打包
 
 ```bash
 # 构建开发版安装包
-npm --prefix apps/desktop run package:installer
+npm run package
+
+# 只验证未签名应用，不生成安装器
+npm run package:check
+
+# 正式签名安装包（需要通过安全环境注入发布凭据）
+npm run package:dist
 
 # 查看平台、架构和发布选项
 node apps/desktop/scripts/build.cjs --help

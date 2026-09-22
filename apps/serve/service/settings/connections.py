@@ -71,9 +71,6 @@ SUPPORTED_PROVIDERS = frozenset({"anthropic", OPENAI_PROVIDER})
 WIRE_API_KEY = "wire_api"
 CALL_URL_KEY = "call_url"
 CHAT_COMPLETIONS_PATH = "/chat/completions"
-# All model providers use the native Responses protocol.  Chat Completions is
-# retained only as a legacy enum for reading old data, never as a new runtime
-# connection (native Codex tools require Responses).
 DEFAULT_WIRE_API = ModelWireProtocol.RESPONSES.value
 SUPPORTED_WIRE_APIS = frozenset(protocol.value for protocol in ModelWireProtocol)
 # Keys through which the built-in configuration decides *where a request goes* and
@@ -155,8 +152,9 @@ def _profile_preview_name(profile: Mapping[str, Any]) -> str:
 
 
 def profile_wire_api(profile: Mapping[str, Any]) -> str:
-    """Return the provider protocol; providers are Responses-only."""
-    return ModelWireProtocol.RESPONSES.value
+    """Return the connection's declared provider protocol."""
+    wire_api = str(profile.get(WIRE_API_KEY) or "").strip().lower() or DEFAULT_WIRE_API
+    return wire_api if wire_api in SUPPORTED_WIRE_APIS else DEFAULT_WIRE_API
 
 
 def personal_call_url(profile: Mapping[str, Any]) -> str:
@@ -472,10 +470,6 @@ class ModelProfileStore:
         if not base_url:
             raise ValueError("base_url is required")
         wire_api = str(values.get(WIRE_API_KEY) or "").strip().lower() or DEFAULT_WIRE_API
-        # Preset providers use the native Responses transport; Chat Completions is
-        # retained only for explicitly custom connections.
-        if str(values.get(PRESET_ID_KEY) or "").strip():
-            wire_api = ModelWireProtocol.RESPONSES.value
         if wire_api not in SUPPORTED_WIRE_APIS:
             names = ", ".join(sorted(SUPPORTED_WIRE_APIS))
             raise ValueError(f"wire_api must be one of: {names}")

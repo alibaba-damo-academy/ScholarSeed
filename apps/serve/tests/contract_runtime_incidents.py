@@ -44,6 +44,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_RUNTIME_INCIDENT,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
+    PRODUCT_EVENT_TURN_RECONCILED,
     PRODUCT_EVENT_TURN_UNKNOWN,
     PRODUCT_TURN_OUTCOME_FAILED,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
@@ -64,6 +65,10 @@ from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.incidents import event_incident, incident_data
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import readiness_payload
+from service.chat.service.rejections import (
+    TRANSIENT_PROVIDER_FAILURE_CODE,
+    TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+)
 from service.chat.service.streams import CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE
 from service.chat.service.turns import TurnService
 
@@ -447,6 +452,40 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kinds.count(PRODUCT_EVENT_TURN_UNKNOWN), 1)
         self.assertEqual(kinds.count(PRODUCT_EVENT_TURN_COMPLETED), 1)
         self.assertFalse(self.live.ledger.has_unknown_outcome)
+
+    async def test_controlled_interrupt_reconciles_unknown_without_human_confirmation(
+        self,
+    ) -> None:
+        unknown = self.incident(
+            RuntimeIncidentState.DETECTED,
+            incident_id="controlled-interrupt",
+            retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+        )
+        await self.emit(RuntimeEventKind.TURN_UNKNOWN, incident=unknown)
+
+        self.assertTrue(await self.live.ledger.reconcile_controlled_interrupt(VENDOR_TURN_ID))
+        self.assertFalse(self.live.ledger.has_unknown_outcome)
+        record = self.catalog.get(PRODUCT_SESSION_ID)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.status, SessionStatus.INTERRUPTED)
+        self.assertEqual(record.last_turn_status, PRODUCT_TURN_OUTCOME_INTERRUPTED)
+        uncertainty = self.catalog.uncertainty(
+            PRODUCT_SESSION_ID,
+            UncertaintyKind.TURN,
+            VENDOR_TURN_ID,
+        )
+        self.assertIsNotNone(uncertainty)
+        assert uncertainty is not None
+        self.assertEqual(uncertainty.state, UncertaintyState.RECONCILED)
+        self.assertEqual(
+            [
+                event.kind
+                for event in self.events.replay(PRODUCT_SESSION_ID)
+                if event.kind == PRODUCT_EVENT_TURN_RECONCILED
+            ],
+            [PRODUCT_EVENT_TURN_RECONCILED],
+        )
 
     async def test_only_authoritative_reconciliation_reopens_turn_admission(self) -> None:
         unknown = self.incident(
@@ -1028,6 +1067,36 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.payload["code"], CONTENT_SAFETY_BLOCKED)
         self.assertEqual(record.payload["message"], CONTENT_SAFETY_MESSAGE)
         self.assertFalse(record.payload["retryable"])
+
+    async def test_exhausted_bridge_retry_count_reaches_product_failure(self) -> None:
+        client_turn_id = "client-transient-failure-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "status_code": 500,
+                "attempt": 3,
+                "max_attempts": 3,
+                "downstream": {},
+            }
+        )
+
+        await self.emit(
+            RuntimeEventKind.TURN_FAILED,
+            payload={
+                "error_code": "codex_provider_failed",
+                "safe_error": "The model provider rejected the request.",
+                "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            },
+        )
+
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(record.kind, PRODUCT_EVENT_TURN_FAILED)
+        self.assertEqual(record.payload["code"], TRANSIENT_PROVIDER_FAILURE_CODE)
+        self.assertEqual(record.payload["message"], TRANSIENT_PROVIDER_FAILURE_MESSAGE)
+        self.assertTrue(record.payload["retryable"])
+        self.assertEqual(record.payload["automatic_retry_attempts"], 3)
 
     async def test_later_same_turn_bridge_result_replaces_stale_content_failure(self) -> None:
         client_turn_id = "client-retried-turn"

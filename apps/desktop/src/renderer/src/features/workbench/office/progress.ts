@@ -1,11 +1,19 @@
 export type OfficeWarmupStage = 'permission' | 'catalog' | 'reading' | 'runtime' | 'ready' | 'error'
+export type OfficeWarmupFailure =
+  | 'font-permission'
+  | 'font-catalog'
+  | 'font-read'
+  | 'runtime-assets'
+  | 'runtime-initialization'
+  | 'runtime-execution'
 
 export interface OfficeWarmupStatus {
   stage: OfficeWarmupStage
   done: number
   total: number
   loadedBytes: number
-  error?: string
+  error?: OfficeWarmupFailure
+  detail?: string
 }
 
 export const INITIAL_OFFICE_WARMUP_STATUS: OfficeWarmupStatus = {
@@ -16,6 +24,9 @@ export const INITIAL_OFFICE_WARMUP_STATUS: OfficeWarmupStatus = {
 }
 
 const MAX_PROGRESS = 100
+const OFFICE_WARMUP_RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 20_000] as const
+export const OFFICE_WARMUP_SLOW_THRESHOLD_MS = 60_000
+export const OFFICE_WARMUP_RECOVERY_WINDOW_MS = 180_000
 const OFFICE_WARMUP_STAGES = new Set<OfficeWarmupStage>([
   'permission',
   'catalog',
@@ -24,6 +35,19 @@ const OFFICE_WARMUP_STAGES = new Set<OfficeWarmupStage>([
   'ready',
   'error'
 ])
+const OFFICE_WARMUP_FAILURES = new Set<OfficeWarmupFailure>([
+  'font-permission',
+  'font-catalog',
+  'font-read',
+  'runtime-assets',
+  'runtime-initialization',
+  'runtime-execution'
+])
+const RECOVERABLE_OFFICE_WARMUP_FAILURES = new Set<OfficeWarmupFailure>([
+  'runtime-assets',
+  'runtime-initialization',
+  'runtime-execution'
+])
 
 export function officeWarmupProgress(status: OfficeWarmupStatus): number | null {
   if (status.stage === 'ready') return MAX_PROGRESS
@@ -31,22 +55,53 @@ export function officeWarmupProgress(status: OfficeWarmupStatus): number | null 
   return Math.min(MAX_PROGRESS, Math.round(status.done / status.total * MAX_PROGRESS))
 }
 
-export function shouldShowOfficeWarmup(status: OfficeWarmupStatus, retrying: boolean): boolean {
-  return retrying || status.stage === 'error'
+export function shouldShowOfficeWarmup(
+  status: OfficeWarmupStatus,
+  visible: boolean,
+  recovering = false
+): boolean {
+  return visible || (status.stage === 'error' && !recovering)
 }
 
 export function shouldShowOfficeWarmupProgress(status: OfficeWarmupStatus, retrying: boolean): boolean {
   return retrying && status.stage !== 'error' && status.stage !== 'ready'
 }
 
+export function isOfficeWarmupSlow(status: OfficeWarmupStatus, elapsedMs: number): boolean {
+  return status.stage !== 'ready'
+    && status.stage !== 'error'
+    && elapsedMs >= OFFICE_WARMUP_SLOW_THRESHOLD_MS
+}
+
+export function officeWarmupRetryDelay(
+  status: OfficeWarmupStatus,
+  elapsedMs: number,
+  attempt: number
+): number | null {
+  if (
+    status.stage !== 'error'
+    || !status.error
+    || !RECOVERABLE_OFFICE_WARMUP_FAILURES.has(status.error)
+  ) return null
+  const delay = OFFICE_WARMUP_RETRY_DELAYS_MS[
+    Math.min(Math.max(0, attempt), OFFICE_WARMUP_RETRY_DELAYS_MS.length - 1)
+  ]
+  return elapsedMs + delay <= OFFICE_WARMUP_RECOVERY_WINDOW_MS ? delay : null
+}
+
 export function parseOfficeWarmupStatus(message: Record<string, unknown>): OfficeWarmupStatus | null {
   const stage = String(message.stage) as OfficeWarmupStage
   if (!OFFICE_WARMUP_STAGES.has(stage)) return null
+  const reportedFailure = String(message.error ?? '') as OfficeWarmupFailure
+  const error = stage === 'error'
+    ? OFFICE_WARMUP_FAILURES.has(reportedFailure) ? reportedFailure : 'runtime-execution'
+    : undefined
   return {
     stage,
     done: Number(message.done ?? 0),
     total: Number(message.total ?? 0),
     loadedBytes: Number(message.loadedBytes ?? 0),
-    ...(typeof message.error === 'string' ? { error: message.error } : {})
+    ...(error ? { error } : {}),
+    ...(typeof message.detail === 'string' ? { detail: message.detail } : {})
   }
 }

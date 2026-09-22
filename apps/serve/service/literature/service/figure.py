@@ -22,6 +22,7 @@ from service.literature.service.analysis import (
     read_source,
 )
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.citations import PdfIndexPort
 from service.platform.content import ContentPort
 from service.platform.inference import ModelInvocationObserver, ModelInvocationStatus
 
@@ -58,18 +59,26 @@ class FigureActionService:
         repository: LiteratureRepository,
         pdf: LiteraturePdf,
         content: ContentPort | None = None,
+        indexes: PdfIndexPort | None = None,
     ) -> None:
         self._actions = actions
         self._tasks = tasks
         self._repository = repository
         self._pdf = pdf
         self._content = content
+        self._indexes = indexes
 
     def prepare(self, request: AnalysisRequest) -> PreparedAnalysis:
         if request.kind is not ActionKind.FIGURE:
             raise AnalysisError(AnalysisErrorCode.FIGURE_STREAM_REQUIRED)
-        prepared = prepare(request, self._repository, self._pdf, self._content)
-        if prepared.compiled is None or request.rect is None:
+        prepared = prepare(
+            request,
+            self._repository,
+            self._pdf,
+            self._content,
+            indexes=self._indexes,
+        )
+        if prepared.compiled is None or prepared.request.rect is None:
             raise AnalysisError(AnalysisErrorCode.PREPARATION_FAILED)
         return prepared
 

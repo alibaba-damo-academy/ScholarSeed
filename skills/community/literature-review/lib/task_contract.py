@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from confirmation import lock, SECONDS
 from chapter_plan import ROLES
 from bibliography_contract import is_bibliography_title
 
@@ -15,7 +16,7 @@ REQUEST_FIELDS = {'local_pdfs','writing_strategy','chapter_concurrency','intent'
     'retrieval','publication','constraints','output_scope','selected_section_ids',
     'user_instructions','outline_review','section_instructions','length_target',
     'length_min','length_max','length_unit','user_requests','effective_requirements',
-    'stage_instructions','auto_authorization'}
+    'stage_instructions','auto_authorization','review_timeout_seconds'}
 RETRIEVAL_FIELDS = {'corpus_size','dimensions','time_range','temporal_policy','mode'}
 PUBLICATION_FIELDS = {'format','template','citation_style'}
 TIME_RANGE_FIELDS = {'start_year','end_year'}
@@ -86,7 +87,11 @@ def validate_request(data):
     result.setdefault('language', 'CHINESE' if re.search(r'[\u3400-\u9fff]',result['intent']) else 'ENGLISH')
     if result['language'] not in ('CHINESE','ENGLISH'): raise ValueError('language must be CHINESE or ENGLISH; local exceptions belong in effective_requirements')
     result.setdefault('outline_review', 'required' if result['output_scope']=='survey' else 'auto')
-    if result['outline_review'] not in ('auto','required'): raise ValueError('outline_review must be auto or required')
+    if result['outline_review'] not in ('auto','required','timeout_auto'): raise ValueError('outline_review must be auto, required or timeout_auto')
+    if result['outline_review']=='timeout_auto':
+        result.setdefault('review_timeout_seconds',SECONDS)
+    if 'review_timeout_seconds' in result and (type(result['review_timeout_seconds']) is not int or result['review_timeout_seconds']!=SECONDS):
+        raise ValueError('review_timeout_seconds must be 300 (five minutes)')
     originals = [result['intent'],result['user_instructions'],*result['user_requests']]
     if result['user_requests'] and not result['effective_requirements'].strip():
         raise ValueError('effective_requirements is required with follow-ups')
@@ -212,14 +217,21 @@ def sync_views(workspace, request=None):
 
 
 def configure(workspace, patch):
+    with lock(workspace):
+        return _configure(workspace,patch)
+
+
+def _configure(workspace, patch):
     ws=Path(workspace); path=ws/'01_input/writing_request.json'
     before=read_request(ws) if path.exists() else None
     if not isinstance(patch,dict): raise ValueError('request update must be an object')
     merged={**(before or {}),**patch}
+    if not before and merged.get('output_scope','survey')=='survey':
+        merged.setdefault('outline_review','timeout_auto')
     if before and 'output_scope' in patch and patch['output_scope']!=before['output_scope'] and 'writing_strategy' not in patch:
         merged['writing_strategy']='chapter_delta' if patch['output_scope']=='survey' else 'whole'
     if before and 'output_scope' in patch and patch['output_scope']!=before['output_scope'] and 'outline_review' not in patch:
-        merged['outline_review']='required' if patch['output_scope']=='survey' else 'auto'
+        merged['outline_review']='timeout_auto' if patch['output_scope']=='survey' else 'auto'
     for key in ('retrieval','publication'):
         if key in patch:
             if not isinstance(patch[key],dict): raise ValueError(key+' must be an object')

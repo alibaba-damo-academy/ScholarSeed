@@ -19,7 +19,10 @@ LITERATURE_NOT_FOUND = "literature_not_found"
 LITERATURE_PROJECT_REQUIRED = "literature_project_required"
 PDF_CAPTION = "caption"
 PDF_FIGURE = "figure"
+PDF_FORMULA = "formula"
 PDF_TABLE = "table"
+PDF_TEXT_EXCLUDE = "exclude"
+PDF_TEXT_RETAIN = "retain"
 
 CitationAnswerFilter = Callable[[str, str, str], str]
 
@@ -70,6 +73,16 @@ class PdfOmission:
 
 
 @dataclass(frozen=True)
+class PdfVisualRegion:
+    region_id: str
+    kind: str
+    reason: str
+    text_policy: str
+    page: int
+    quad: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
 class PdfIndex:
     index_id: str
     revision: str
@@ -77,6 +90,7 @@ class PdfIndex:
     page_count: int
     unavailable_pages: tuple[int, ...] = ()
     omissions: tuple[PdfOmission, ...] = ()
+    regions: tuple[PdfVisualRegion, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +99,7 @@ class PdfPageContent:
     fragments: tuple[PdfFragment, ...]
     unavailable: bool = False
     omissions: tuple[PdfOmission, ...] = ()
+    regions: tuple[PdfVisualRegion, ...] = ()
 
 
 @dataclass(frozen=True)

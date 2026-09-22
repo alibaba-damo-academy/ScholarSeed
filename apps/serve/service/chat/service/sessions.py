@@ -138,7 +138,7 @@ SESSION_OPERATION_FAILURES = {
 }
 RUNTIME_FAILURE_DEFAULT_MESSAGE = "请重试；若仍失败，请重新打开会话。"
 RUNTIME_FAILURE_MESSAGES = {
-    "codex_process_capacity_reached": (
+    "agent_runtime_capacity_reached": (
         "Agent 运行时进程池已满。请在正在运行的任务结束后完全退出书深，重新打开后重试。"
     ),
     SESSION_MODEL_UNAVAILABLE_ERROR: "所选模型当前不可用，请检查模型配置后重试。",

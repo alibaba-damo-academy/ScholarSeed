@@ -1899,8 +1899,12 @@ class ContentService:
 
     # ---- 关联外部根与授权 ----
 
-    def authorize_root(self, project_id: str, source: str, mount: str) -> ExternalRootRef:
-        return self._roots.authorize(self._registry.resolve(project_id), source, mount)
+    def authorize_root(
+        self, project_id: str, source: str, mount: str, *, supersede: bool = False
+    ) -> ExternalRootRef:
+        return self._roots.authorize(
+            self._registry.resolve(project_id), source, mount, supersede=supersede
+        )
 
     def authorize_root_at(
         self, project_id: str, source: str, parent: str, name: str
@@ -1961,6 +1965,11 @@ class ContentService:
         prefix = f"{resource_root}/" if resource_root else ""
         mounts = tuple(scope.relative(target)[len(prefix) :] for target in targets)
         return self._roots.authorize_many(scope.project, sources, mounts, nested=True)
+
+    def assert_import_roots_linkable(self, project_id: str, sources: tuple[str, ...]) -> None:
+        """关联导入创建任务前的只读包含预检; 权威复检仍在 job 执行 `authorize_import_roots` 时。"""
+
+        self._roots.assert_linkable(self._registry.resolve(project_id), sources)
 
     def revoke_root(self, root_id: str) -> None:
         self._roots.revoke(root_id)

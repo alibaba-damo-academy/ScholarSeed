@@ -8,10 +8,6 @@
     "image": "原文框选图表"
   },
   "translation": {
-    "direction": "翻译方向",
-    "auto": "自动识别",
-    "toEnglish": "中译英",
-    "toChinese": "英译中",
     "unlocated": "未定位到原文依据"
   },
   "outline": {
@@ -113,10 +109,11 @@
       "region_required": "请在当前页框选图或表。",
       "region_out_of_range": "框选区域超出页面，请重新框选。",
       "region_too_small": "框选区域过小，请重新框选清晰图表。",
+      "region_missing": "未找到对应的公式、图片或表格区域，请重新选择。",
       "module_unsupported": "未知解读模块。",
-      "result_rejected": "模型无法处理此内容；本版翻译仅支持中英互译。",
-      "translation_language_invalid": "模型未返回有效的中英互译结果，请重试。",
-      "translation_direction_mismatch": "模型返回的翻译方向与所选方向不符，请重试。",
+      "result_rejected": "模型无法处理此内容，请重试或更换模型。",
+      "translation_language_invalid": "模型未返回有效的源语言识别结果，请重试。",
+      "translation_direction_mismatch": "模型返回的目标语言与所选语言不符，请重试。",
       "translation_incomplete": "全文译文不完整，未覆盖全部页面；旧结果已保留，请更换输出容量更大的模型。",
       "translation_content_missing": "全文译文存在空页或缺失段落，请重试。",
       "interpretation_incomplete": "解读模块输出不完整，旧结果已保留。",
@@ -127,7 +124,7 @@
       "translation_sentence_incomplete": "逐句译文不完整，请重试。",
       "task_missing": "任务不存在",
       "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
-      "image_input_unsupported": "当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。",
+      "image_input_unsupported": "当前模型未声明支持图片输入，请切换支持图片的模型。",
       "generation_failed": "生成失败，请检查模型连接并重试。",
       "literature_deleted": "文献已删除，本次结果不再写入。",
       "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
@@ -303,6 +300,14 @@
     "exporting": "导出中…",
     "exported": "导出成功",
     "search": "搜索 PDF"
+  },
+  "visualRegions": {
+    "explain": "解释",
+    "copyFormula": "复制 LaTeX",
+    "copyImage": "复制图片",
+    "formulaCopied": "已复制 LaTeX",
+    "imageCopied": "已复制图片",
+    "copyFailed": "复制失败"
   },
   "internalLink": "跳转到 PDF 内部链接：{{label}}",
   "internalLinkFallback": "文档目标",

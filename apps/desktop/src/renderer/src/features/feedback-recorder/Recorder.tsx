@@ -24,15 +24,23 @@ import { CAPTURE_SETTLE_FRAMES, waitForFrames } from '../../frames'
 import { useApp } from '../../store'
 import { Annotator, type AnnotatorResult } from './Annotator'
 import { Capture } from './Capture'
-import { useFloatingSurface } from './drag'
+import {
+  FLOATING_EDGE_MARGIN_PX,
+  FLOATING_PANEL_MARGIN_PX,
+  useFloatingSurface
+} from './drag'
 import {
   RECORDER_MAX_REQUESTS,
   RECORDER_MAX_STEPS,
   RECORDER_DESCRIPTION_MAX_LENGTH,
   RECORDER_ROOT_ATTRIBUTE,
+  appendInitialScreenshot,
   createRecordingSession,
   normalizeNote,
+  replaceRecordedScreenshot,
   requiresDiscardConfirmation,
+  selectFeedbackImages,
+  type Annotation,
   type RecorderPhase,
   type RecordingSession,
   type SummaryFields
@@ -49,6 +57,11 @@ import { Review } from './Review'
 import type { FeedbackCaptureError } from '../../../../feedback'
 
 const SCREENSHOT_LIMIT = 5
+const EMPTY_ANNOTATIONS: readonly Annotation[] = []
+
+type AnnotationContext =
+  | { mode: 'create'; sourceFile: File }
+  | { mode: 'edit'; screenshotId: string; sourceFile: File }
 
 function blankSummary(): SummaryFields {
   return { generated: '', final: '', actual: '', expected: '', additional: '' }
@@ -71,14 +84,17 @@ export function Recorder(): React.JSX.Element {
   const stepCountRef = React.useRef(0)
   const entryRef = React.useRef<HTMLButtonElement | null>(null)
   const [phase, setPhase] = React.useState<RecorderPhase>('idle')
-  const floating = useFloatingSurface(phase)
+  const floating = useFloatingSurface(
+    phase,
+    phase === 'idle' ? FLOATING_EDGE_MARGIN_PX : FLOATING_PANEL_MARGIN_PX
+  )
   const setEntrySurface = React.useCallback((node: HTMLButtonElement | null): void => {
     entryRef.current = node
     floating.setSurface(node)
   }, [floating.setSurface])
   const [session, setSession] = React.useState<RecordingSession | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0)
-  const [captureSource, setCaptureSource] = React.useState<File | null>(null)
+  const [annotationContext, setAnnotationContext] = React.useState<AnnotationContext | null>(null)
   const [summary, setSummary] = React.useState<SummaryFields>(blankSummary)
   const [error, setError] = React.useState('')
   const [ticket, setTicket] = React.useState('')
@@ -97,7 +113,7 @@ export function Recorder(): React.JSX.Element {
     latestStepRef.current = undefined
     stepCountRef.current = 0
     setElapsedSeconds(0)
-    setCaptureSource(null)
+    setAnnotationContext(null)
     setSummary(blankSummary())
     setError('')
     setTicket('')
@@ -154,7 +170,30 @@ export function Recorder(): React.JSX.Element {
     })
   }, [updateSession])
 
-  const start = (): void => {
+  const captureSourceFile = React.useCallback(async (): Promise<File | null> => {
+    setError('')
+    const root = rootRef.current
+    if (root) root.style.visibility = 'hidden'
+    let result
+    try {
+      await waitForFrames(CAPTURE_SETTLE_FRAMES)
+      result = await window.scholarseed.captureFeedbackScreenshot()
+    } catch {
+      setError(t('feedbackRecorder.errors.capture_failed'))
+      return null
+    } finally {
+      if (root) root.style.visibility = ''
+    }
+    if (!result.ok) {
+      setError(captureErrorText(t, result.error))
+      return null
+    }
+    const bytes = new Uint8Array(result.bytes.byteLength)
+    bytes.set(result.bytes)
+    return new File([bytes.buffer], `feedback-source-${Date.now()}.png`, { type: 'image/png' })
+  }, [t])
+
+  const start = async (): Promise<void> => {
     dispose()
     const created = createRecordingSession()
     const initialStep = createInitialPageStep(created.startedAtMs)
@@ -165,6 +204,17 @@ export function Recorder(): React.JSX.Element {
     installProbe(next.startedAtMs)
     setSession(next)
     setPhase('recording')
+    const sourceFile = await captureSourceFile()
+    if (!sourceFile) return
+    const renderedFile = new File([sourceFile], `feedback-${Date.now()}.png`, { type: 'image/png' })
+    const withScreenshot = appendInitialScreenshot(sessionRef.current || next, {
+      previewUrl: URL.createObjectURL(renderedFile),
+      renderedFile,
+      screenshotId: crypto.randomUUID(),
+      sourceFile
+    })
+    sessionRef.current = withScreenshot
+    setSession(withScreenshot)
   }
 
   const setPaused = (paused: boolean): void => {
@@ -205,48 +255,72 @@ export function Recorder(): React.JSX.Element {
       setError(t('feedbackRecorder.errors.screenshotLimit'))
       return
     }
-    setError('')
-    const root = rootRef.current
-    if (root) root.style.visibility = 'hidden'
-    let result
-    try {
-      await waitForFrames(CAPTURE_SETTLE_FRAMES)
-      result = await window.scholarseed.captureFeedbackScreenshot()
-    } catch {
-      setError(t('feedbackRecorder.errors.capture_failed'))
-      return
-    } finally {
-      if (root) root.style.visibility = ''
-    }
-    if (!result.ok) {
-      setError(captureErrorText(t, result.error))
-      return
-    }
-    const bytes = new Uint8Array(result.bytes.byteLength)
-    bytes.set(result.bytes)
-    setCaptureSource(new File([bytes.buffer], `feedback-source-${Date.now()}.png`, { type: 'image/png' }))
+    const sourceFile = await captureSourceFile()
+    if (!sourceFile) return
+    setAnnotationContext({
+      mode: 'create',
+      sourceFile
+    })
     setPhase('annotating')
   }
 
   const saveScreenshot = (result: AnnotatorResult): void => {
+    const context = annotationContext
+    if (!context) return
+    const previewUrl = URL.createObjectURL(result.renderedFile)
+    if (context.mode === 'edit') {
+      const target = sessionRef.current?.screenshots.find((entry) => entry.screenshotId === context.screenshotId)
+      if (!target) {
+        URL.revokeObjectURL(previewUrl)
+        setError(t('feedbackRecorder.errors.screenshotMissing'))
+        setAnnotationContext(null)
+        setPhase('review')
+        return
+      }
+      updateSession((current) => ({
+        ...current,
+        screenshots: current.screenshots.map((entry) => entry.screenshotId === context.screenshotId
+          ? replaceRecordedScreenshot(entry, {
+            ...result,
+            note: normalizeNote(result.note),
+            previewUrl
+          })
+          : entry)
+      }))
+      URL.revokeObjectURL(target.previewUrl)
+      setAnnotationContext(null)
+      setPhase('review')
+      return
+    }
     const step = latestStepRef.current
     if (!step) {
+      URL.revokeObjectURL(previewUrl)
       setError(t('feedbackRecorder.errors.screenshotRequiresStep'))
-      setCaptureSource(null)
+      setAnnotationContext(null)
       setPhase('recording')
       return
     }
     updateSession((current) => ({
       ...current,
       screenshots: [...current.screenshots, {
+        automatic: false,
         screenshotId: crypto.randomUUID(),
         stepId: step.stepId,
+        sourceFile: context.sourceFile,
         ...result,
+        previewUrl,
         note: normalizeNote(result.note)
       }]
     }))
-    setCaptureSource(null)
+    setAnnotationContext(null)
     setPhase('recording')
+  }
+
+  const editScreenshot = (screenshotId: string): void => {
+    const screenshot = sessionRef.current?.screenshots.find((entry) => entry.screenshotId === screenshotId)
+    if (!screenshot) return
+    setAnnotationContext({ mode: 'edit', screenshotId, sourceFile: screenshot.sourceFile })
+    setPhase('annotating')
   }
 
   const submit = async (): Promise<void> => {
@@ -314,9 +388,7 @@ export function Recorder(): React.JSX.Element {
         includeLogs: true,
         includeTrace: true,
         sessionId: state.activeSession,
-        images: session.screenshots
-          .filter((screenshot) => session.steps.some((step) => step.stepId === screenshot.stepId))
-          .map((screenshot) => screenshot.file),
+        images: selectFeedbackImages(session),
         recordingReport: reportFile(report)
       })
       if (!result.ok) {
@@ -349,16 +421,14 @@ export function Recorder(): React.JSX.Element {
                 ref={setEntrySurface}
                 style={floating.style}
                 size="xs"
-                className="pointer-events-auto fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] touch-none cursor-move !rounded-full !border-[var(--vds-error-light-border)] ![background:var(--vds-surface-raised)] shadow-[var(--vds-shadow-md)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-error-bg-default)] hover:![background:var(--vds-error-light-bg-default)] hover:shadow-[var(--vds-shadow-focus)] will-change-transform"
-                icon={(
-                  <span className="block h-1.5 w-1.5 rounded-full bg-[var(--vds-error-bg-default)]" />
-                )}
+                className="pointer-events-auto fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] touch-none cursor-move !rounded-full !border-[var(--vds-brand-light-border)] ![background:var(--vds-brand-light-bg-default)] text-[var(--vds-brand-bg-default)] shadow-[var(--vds-shadow-sm)] transition-[background-color,border-color,box-shadow,transform] hover:!border-[var(--vds-brand-bg-default)] hover:![background:var(--vds-brand-light-bg-hover)] hover:shadow-[var(--vds-shadow-focus)] active:![background:var(--vds-brand-light-bg-active)] will-change-transform"
+                icon={<span className="block h-2 w-2 rounded-full bg-[var(--vds-brand-bg-default)] ring-2 ring-[var(--vds-brand-light-bg-hover)]" />}
                 label={t('feedbackRecorder.entry')}
                 title={undefined}
                 data-testid="feedback-recorder-entry"
                 {...floating.handleProps}
                 onClick={() => {
-                  if (!floating.consumeSuppressedClick()) start()
+                  if (!floating.consumeSuppressedClick()) void start()
                 }}
               />
             </TooltipTrigger>
@@ -377,6 +447,7 @@ export function Recorder(): React.JSX.Element {
           requiresCancelConfirmation={requiresDiscardConfirmation(session)}
           screenshotCount={session.screenshots.length}
           stepCount={session.steps.length}
+          steps={session.steps}
           onCancel={clearSession}
           onCapture={() => void capture()}
           onNoteChange={(text) => {
@@ -393,10 +464,20 @@ export function Recorder(): React.JSX.Element {
           onStop={stop}
         />
       ) : null}
-      {phase === 'annotating' && captureSource ? (
+      {phase === 'annotating' && annotationContext ? (
         <Annotator
-          source={captureSource}
-          onCancel={() => { setCaptureSource(null); setPhase('recording') }}
+          initialAnnotations={annotationContext.mode === 'edit'
+            ? session?.screenshots.find((entry) => entry.screenshotId === annotationContext.screenshotId)?.annotations || EMPTY_ANNOTATIONS
+            : EMPTY_ANNOTATIONS}
+          initialNote={annotationContext.mode === 'edit'
+            ? session?.screenshots.find((entry) => entry.screenshotId === annotationContext.screenshotId)?.note || ''
+            : ''}
+          source={annotationContext.sourceFile}
+          onCancel={() => {
+            const returnPhase = annotationContext.mode === 'edit' ? 'review' : 'recording'
+            setAnnotationContext(null)
+            setPhase(returnPhase)
+          }}
           onSave={saveScreenshot}
         />
       ) : null}
@@ -413,6 +494,7 @@ export function Recorder(): React.JSX.Element {
           submitting={phase === 'submitting'}
           summary={summary}
           onCancel={clearSession}
+          onEditScreenshot={editScreenshot}
           onDeleteScreenshot={(screenshotId) => updateSession((current) => {
             const target = current.screenshots.find((entry) => entry.screenshotId === screenshotId)
             if (target) URL.revokeObjectURL(target.previewUrl)

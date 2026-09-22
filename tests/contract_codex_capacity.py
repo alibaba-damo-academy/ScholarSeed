@@ -34,7 +34,7 @@ from scholarseed_codex.protocol.session import (
     CodexSessionOpenRequest,
 )
 from scholarseed_codex.protocol.state import (
-    CODEX_PROCESS_STOP_TIMEOUT_SECONDS,
+    AGENT_RUNTIME_STOP_TIMEOUT_SECONDS,
     AppServerError,
     CodexActivationStage,
     CodexProcessState,
@@ -64,8 +64,8 @@ TEST_EXECUTABLE_ENV = "SCHOLARSEED_TEST_CODEX_BIN"
 TEST_RUNTIME_ID = "codex"
 TEST_EXECUTABLE = "/capacity-contract/codex"
 TEST_VERSION = "codex-cli 0.154.0"
-TEST_CHILD_DELAY_SECONDS = CODEX_PROCESS_STOP_TIMEOUT_SECONDS + 1.0
-TEST_CHILD_CHECK_SECONDS = CODEX_PROCESS_STOP_TIMEOUT_SECONDS + 0.25
+TEST_CHILD_DELAY_SECONDS = AGENT_RUNTIME_STOP_TIMEOUT_SECONDS + 1.0
+TEST_CHILD_CHECK_SECONDS = AGENT_RUNTIME_STOP_TIMEOUT_SECONDS + 0.25
 TEST_CLEANUP_EVENT_LOOP_TURNS = 5
 TEST_TOMBSTONE_LIMIT = 2
 TEST_SECRET_VALUE = "capacity-contract-sensitive-material"
@@ -1381,7 +1381,7 @@ class RealProcessLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                     for start in (host.start, host._start_process):
                         with self.assertRaises(AppServerError) as blocked:
                             await start()
-                        self.assertEqual(blocked.exception.safe_error, "codex_process_unavailable")
+                        self.assertEqual(blocked.exception.safe_error, "agent_runtime_unavailable")
                         self.assertIs(
                             blocked.exception.retryability, RuntimeRetryability.IN_PROGRESS
                         )
@@ -1439,7 +1439,7 @@ class RealProcessLifecycleContracts(unittest.IsolatedAsyncioTestCase):
             try:
                 with self.assertRaises(AppServerError) as lost:
                     await asyncio.wait_for(pending.future, TEST_TIMEOUT_SECONDS)
-                self.assertEqual(lost.exception.safe_error, "codex_process_exit")
+                self.assertEqual(lost.exception.safe_error, "agent_runtime_exit")
                 self.assertIs(host._proc, process)
                 self.assertIsNone(process.returncode)
                 stopping = asyncio.create_task(host.stop_idle(host.process_generation))
@@ -1499,7 +1499,7 @@ class RealProcessLifecycleContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(discarding.done())
                 with self.assertRaises(AppServerError) as blocked:
                     await host.start()
-                self.assertEqual(blocked.exception.safe_error, "codex_process_unavailable")
+                self.assertEqual(blocked.exception.safe_error, "agent_runtime_unavailable")
                 release.touch()
                 await asyncio.wait_for(discarding, TEST_TIMEOUT_SECONDS)
                 self.assertEqual(process.returncode, 0)

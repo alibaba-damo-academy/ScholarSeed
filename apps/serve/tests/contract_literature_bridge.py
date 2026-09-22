@@ -49,6 +49,7 @@ from service.platform.bridge import (
 )
 from service.platform.citations import (
     LITERATURE_STORAGE,
+    PDF_FORMULA,
     CitationDocument,
     CitationPage,
     PdfFragment,
@@ -729,6 +730,33 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 parse_pages.assert_called_once_with(document, 1, 1)
             with patch.object(reopened, "_parse_pages", side_effect=AssertionError("cache miss")):
                 self.assertEqual([page.page for page in reopened.pages(document, 1, 2)], [1, 2])
+        finally:
+            reopened.close()
+
+    def test_visual_regions_survive_the_persistent_page_cache(self) -> None:
+        source = fixtures.SourceFixture(self.root / "region-cache")
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text(
+                (170, 100),
+                "L(theta) = E[r] - beta * D_KL(pi || pi_ref)",
+                fontsize=13,
+            )
+            source.payload = pdf.tobytes()
+        document = source.citation_document(
+            "project",
+            fixtures.ContextRef("ref", fixtures.ContextRefKind.FILE, "paper.pdf", "Paper"),
+        )
+        indexes = PdfIndexService(source)
+        try:
+            regions = indexes.pages(document, 1, 1)[0].regions
+            self.assertEqual([item.kind for item in regions], [PDF_FORMULA])
+        finally:
+            indexes.close()
+        reopened = PdfIndexService(source)
+        try:
+            with patch.object(reopened, "_parse_pages", side_effect=AssertionError("cache miss")):
+                self.assertEqual(reopened.pages(document, 1, 1)[0].regions, regions)
         finally:
             reopened.close()
 

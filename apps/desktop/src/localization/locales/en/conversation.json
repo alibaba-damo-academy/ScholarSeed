@@ -42,10 +42,10 @@
     "transportRecovered": "Local ScholarSeed service connection restored",
     "detail": ": {{detail}}",
     "reason": {
-      "codex_process_exit": "Agent runtime exited",
+      "agent_runtime_exit": "Agent runtime exited",
       "runtime_transport_lost": "Local Agent runtime transport disconnected",
       "runtime_rpc_timeout": "Agent runtime request acknowledgment timed out",
-      "codex_process_unavailable": "Agent runtime is temporarily unavailable",
+      "agent_runtime_unavailable": "Agent runtime is temporarily unavailable",
       "thread_resume_failed": "The current session could not be resumed",
       "codex_turn_retrying": "The model service is retrying",
       "codex_terminal_outcome_conflict": "Conflicting terminal outcomes detected; the first authoritative result was retained",
@@ -126,6 +126,7 @@
     },
     "unavailable": {
       "message": "The model service is temporarily unavailable.",
+      "exhausted": "The model service is temporarily unavailable after {{count}} automatic attempts",
       "action": "The model service or network connection is temporarily unavailable. Your question and context have been retained."
     },
     "request": {

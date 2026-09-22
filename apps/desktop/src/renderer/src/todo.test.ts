@@ -287,6 +287,11 @@ test('elapsed time uses the default font at body-lv1 size with tertiary color', 
   assert.doesNotMatch(TODO_PANEL_SOURCE, /<span ref=\{elapsedRef\} className="[^"]*font-mono/)
 })
 
+test('plan progress numbers use the default font', () => {
+  assert.match(TODO_PANEL_SOURCE, /<Badge size="sm" tone="neutral" className="shrink-0" data-testid="todo-progress">/)
+  assert.doesNotMatch(TODO_PANEL_SOURCE, /data-testid="todo-progress"[^>]*(?:font-mono|tabular-nums)/)
+})
+
 test('pending steps use the lucide circle-dashed mark instead of the disabled glyph', () => {
   assert.match(TODO_PANEL_SOURCE, /todo: \{ lucide: CircleDashed, messageKey: 'todo\.status\.todo'/)
   assert.doesNotMatch(TODO_PANEL_SOURCE, /todo: \{ mark: 'a-line-status-notfull'/)

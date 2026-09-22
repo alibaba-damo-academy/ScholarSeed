@@ -358,6 +358,12 @@ test('Monaco runs in a language-scoped frame while the application renderer stay
   }
 })
 
+test('Monaco runtime and editor host share the frame document', () => {
+  assert.match(frameSource, /frameDocument\?\.getElementById\(MONACO_FRAME_HOST_ID\)/)
+  assert.doesNotMatch(frameSource, /const hostRef = useRef<HTMLDivElement>/)
+  assert.doesNotMatch(frameSource, /mirrorRuntimeStyles/)
+})
+
 test('literal LaTeX labels use the editor locale while language IDs stay intact', () => {
   assert.equal(codeLanguageLabel('latex-source', 'LaTeX (code)'), 'LaTeX (code)')
   assert.equal(codeLanguageLabel('latex-source', 'LaTeX（代码）'), 'LaTeX（代码）')

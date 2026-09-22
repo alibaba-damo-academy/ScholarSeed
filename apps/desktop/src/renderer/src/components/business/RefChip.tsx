@@ -8,7 +8,7 @@ import { cx } from '../ui/utils'
 // 输入区引入标签的统一视觉基线(原技能 chip 样式): 资料/文件/选区/技能等所有
 // 引入方式共用同一灰底 chip, 托盘内不允许并存第二套色系或第二套尺寸。
 const REF_CHIP_CLASS_NAME =
-  'relative inline-flex h-[28px] max-w-full items-center gap-[8px] rounded-[8px] border border-solid border-[var(--vds-divider-default)] bg-[var(--vds-other-overlay-1)] px-[8px] py-[4px]'
+  'relative inline-flex h-[28px] max-w-full items-center gap-[8px] rounded-[8px] border border-solid border-[var(--vds-divider-default)] [background:linear-gradient(var(--vds-other-overlay-1),var(--vds-other-overlay-1)),var(--vds-surface-raised)] px-[8px] py-[4px]'
 const REF_CHIP_ICON_CLASS_NAME =
   'inline-flex size-3 shrink-0 items-center justify-center text-[var(--vds-text-8)]'
 const REF_CHIP_LABEL_CLASS_NAME =

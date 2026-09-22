@@ -2,8 +2,8 @@ const WHEEL_DELTA_PIXEL = 0
 const WHEEL_DELTA_LINE = 1
 const WHEEL_DELTA_PAGE = 2
 const WHEEL_LINE_HEIGHT_PX = 16
-const MAX_WHEEL_DELTA_PX = 240
-const WHEEL_ZOOM_SENSITIVITY = 0.002
+const MAX_WHEEL_DELTA_PX = 45
+const WHEEL_ZOOM_SENSITIVITY = 0.006
 
 interface PdfWheelScaleInput {
   scale: number

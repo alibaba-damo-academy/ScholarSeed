@@ -251,14 +251,16 @@ const SEARCH_STATUS_KEYS = {
   failed: 'search.status.failed',
   interrupted: 'search.status.interrupted',
   unknown: 'search.status.unknown',
-  empty: 'search.status.empty'
+  empty: 'search.status.empty',
+  search_interrupted: 'search.status.search_interrupted'
 } as const
 const TERMINAL_STATUSES = new Set<LiteratureSearchTask['status']>([
   'completed',
   'failed',
   'interrupted',
   'unknown',
-  'empty'
+  'empty',
+  'search_interrupted'
 ])
 const RESULT_SORT_LABELS: Record<ResultSort, string> = {
   relevance: '相关度',

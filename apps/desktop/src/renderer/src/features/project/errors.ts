@@ -17,5 +17,7 @@ export const ROOT_ERROR_TEXT: Record<string, string> = {
   root_already_revoked: '这条关联已经撤销过了',
   source_not_supported: '只能关联普通文件或文件夹',
   source_inside_project: '这个文件或文件夹已经在项目里，不需要关联',
-  source_contains_project: '不能关联包含本项目的上级目录'
+  source_contains_project: '不能关联包含本项目的上级目录',
+  source_overlap: '该目录已被父级关联覆盖',
+  source_covers_links: '它的子目录已单独关联，请在资料库里关联该父目录以取代子关联'
 }

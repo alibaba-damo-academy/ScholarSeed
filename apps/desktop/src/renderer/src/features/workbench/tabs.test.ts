@@ -7,7 +7,9 @@ import {
   LITERATURE_TAB,
   literatureSearchTab,
   OVERVIEW_TAB,
+  reviewTab,
   tabMatchesProject,
+  tabVisibleInCurrentView,
   versionDiffTab,
   type WorkbenchTab
 } from './tabs.ts'
@@ -21,6 +23,16 @@ test('project-scoped tabs are hidden outside their owner and remain available on
   assert.equal(tabMatchesProject(OVERVIEW_TAB, 'beta'), true)
   assert.equal(tabMatchesProject({ ...tab, projectId: null }, null), true)
   assert.equal(tabMatchesProject({ ...tab, projectId: null }, 'alpha'), false)
+})
+
+test('version diff tabs follow their owning project and remain available on return', () => {
+  const tab = versionDiffTab(DIFF_REFERENCE)
+
+  assert.equal(tab.projectId, DIFF_REFERENCE.project)
+  assert.equal(tabMatchesProject(tab, DIFF_REFERENCE.project), true)
+  assert.equal(tabMatchesProject(tab, 'p2'), false)
+  assert.equal(tabMatchesProject(tab, null), false)
+  assert.equal(tabMatchesProject(tab, DIFF_REFERENCE.project), true)
 })
 
 test('the active workbench tab wins over a stale focused document', () => {
@@ -59,6 +71,28 @@ const DIFF_REFERENCE = {
 }
 const WEB_TAB: WorkbenchTab = { id: 'web-search:1', kind: 'web_search', title: 'web', closable: true }
 const DOCUMENT_TAB_ID = 'resources/sp9/note.md'
+
+test('review tab stays independent from its document and can be closed', () => {
+  const review = reviewTab('project-1', 'batch-1', 2)
+
+  assert.equal(tabVisibleInCurrentView(review.kind, 'resource'), true)
+  assert.equal(review.title, '审阅修改 · 2')
+  assert.equal(review.closable, true)
+  assert.equal(
+    activeNavigationTabId(review.id, new Set([review.id, DOCUMENT_TAB_ID]), DOCUMENT_TAB_ID, 'overview'),
+    review.id
+  )
+
+  const closed = closeTab(
+    [OVERVIEW_TAB, review],
+    review.id,
+    review.id,
+    { view: 'resource', viewFallbackId: DOCUMENT_TAB_ID }
+  )
+
+  assert.equal(closed.activeId, DOCUMENT_TAB_ID)
+  assert.deepEqual(closed.tabs, [OVERVIEW_TAB])
+})
 
 test('closing the active tab never hands over to a tab hidden in the current view', () => {
   const diff = versionDiffTab(DIFF_REFERENCE)

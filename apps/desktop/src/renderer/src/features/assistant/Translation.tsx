@@ -1,19 +1,16 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Alert, Button, CopyButton, IconButton, Select } from '../../components/ui'
+import {
+  Alert,
+  Button,
+  CopyButton,
+  IconButton
+} from '../../components/ui'
+import { TranslationTargetPicker } from '../../components/business/Language'
 import { writeClipboard } from '../../components/primitive/clipboard'
-import type {
-  AssistantTranslationLanguage,
-  AssistantTranslationTarget
-} from '../../contracts/assistant'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
-
-
-function alternateTarget(source: AssistantTranslationLanguage): AssistantTranslationTarget {
-  return source === 'zh-CN' ? 'en' : 'zh-CN'
-}
 
 export function Translation(): React.JSX.Element | null {
   const { state, act } = useApp()
@@ -35,14 +32,6 @@ export function Translation(): React.JSX.Element | null {
     ? errorMessages[errorCode]
     : errorCode ? t('translation.errors.unknown', { detail: errorCode }) : ''
 
-  const setSource = (value: string): void => {
-    const source = value as AssistantTranslationLanguage
-    act.setTranslationLanguages(
-      source,
-      source === translation.targetLanguage ? alternateTarget(source) : translation.targetLanguage
-    )
-  }
-
   return (
     <section className="vds-ai-translation" data-testid="ai-translation">
       <header className="vds-ai-translation__head">
@@ -59,34 +48,11 @@ export function Translation(): React.JSX.Element | null {
         />
       </header>
       <div className="vds-ai-translation__controls">
-        <Select
-          aria-label={t('translation.sourceLanguage')}
-          size="sm"
-          value={translation.sourceLanguage}
-          disabled={translation.loading}
-          onValueChange={setSource}
-        >
-          <option value="auto">{t('translation.auto')}</option>
-          <option value="en">{t('translation.english')}</option>
-          <option value="zh-CN">{t('translation.chinese')}</option>
-        </Select>
-        <Icon name="chevron-right" size={13} />
-        <Select
-          aria-label={t('translation.targetLanguage')}
-          size="sm"
+        <TranslationTargetPicker
           value={translation.targetLanguage}
           disabled={translation.loading}
-          onValueChange={(value) => {
-            const target = value as AssistantTranslationTarget
-            act.setTranslationLanguages(
-              target === translation.sourceLanguage ? 'auto' : translation.sourceLanguage,
-              target
-            )
-          }}
-        >
-          <option value="zh-CN">{t('translation.chinese')}</option>
-          <option value="en">{t('translation.english')}</option>
-        </Select>
+          onChange={act.setTranslationTarget}
+        />
         <Button
           data-testid="ai-translation-retry"
           disabled={translation.loading}

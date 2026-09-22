@@ -1,11 +1,10 @@
-import { useTranslation } from 'react-i18next'
 import React from 'react'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui'
+import { useTranslation } from 'react-i18next'
+import { TranslationTargetPicker } from '../../../components/business/Language'
 import type { TranslationDirection, TranslationSentence } from './analysis'
 
 export function Language({ value, disabled, onChange }: { value: TranslationDirection; disabled?: boolean; onChange: (value: TranslationDirection) => void }): React.JSX.Element {
-  const { t } = useTranslation('pdf')
-  return <Select size="sm" value={value} disabled={disabled} onValueChange={next => onChange(next as TranslationDirection)}><SelectTrigger aria-label={t('translation.direction')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="auto">{t('translation.auto')}</SelectItem><SelectItem value="en">{t('translation.toEnglish')}</SelectItem><SelectItem value="zh">{t('translation.toChinese')}</SelectItem></SelectContent></Select>
+  return <TranslationTargetPicker value={value} disabled={disabled} onChange={onChange} />
 }
 
 export function Translation({ sentences, active, onSelect }: { sentences: TranslationSentence[]; active: string; onSelect: (sentence: TranslationSentence) => void }): React.JSX.Element {

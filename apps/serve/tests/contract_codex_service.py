@@ -4000,7 +4000,7 @@ class RuntimeFailureMessageTests(unittest.TestCase):
             ("permission_switch", "session_permission_switch_failed", "权限模式切换失败"),
         )
         reasons = (
-            ("codex_process_capacity_reached", "运行时进程池已满"),
+            ("agent_runtime_capacity_reached", "运行时进程池已满"),
             ("runtime_rpc_rejected", "拒绝"),
             ("runtime_transport_lost", "本地连接已中断"),
             ("runtime_rpc_timeout", "超时"),

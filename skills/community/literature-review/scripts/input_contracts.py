@@ -6,7 +6,8 @@ import re
 
 ROOT=Path(__file__).resolve().parents[1]
 OPERATIONS=('writing.configure','writing.approve','outline.configure',
-            'figures.plan','evidence.build','papers.import-local')
+            'figures.plan','evidence.build','papers.import-local',
+            'writing.review-start','writing.review-status','writing.review-wait','writing.review-response','writing.review-timeout')
 
 
 def examples(operation):
@@ -44,7 +45,8 @@ def describe_input(operation,workspace=None):
           'stage_instructions':'optional string; cannot override the task',
           'output_scope':['survey','section'],'selected_section_ids':'unique top-level numeric-string IDs, e.g. ["3"]; section scope only',
           'section_instructions':'object mapping top-level section IDs to strings',
-          'outline_review':['required','auto'],'auto_authorization':'actual user quote required for survey auto continuation',
+          'outline_review':['required','auto','timeout_auto'],'auto_authorization':'actual user quote required for immediate survey auto continuation',
+          'review_timeout_seconds':'300 only; timeout_auto waits five minutes after actual display. New full-survey tasks default to timeout_auto; existing required/auto policies are preserved.',
           'writing_strategy':['chapter_delta','whole'],
           'chapter_concurrency':'integer 1..8; compatibility field, native chapters launch concurrently',
           'length_min':'optional positive integer','length_max':'optional positive integer >= length_min',
@@ -68,6 +70,23 @@ def describe_input(operation,workspace=None):
                                         'invalid':'至少一张图；一张比较表',
                                         'reason':'The invalid value joins noncontiguous spans with a punctuation mark absent from the source. Use separate constraints or one complete original span.'},
                       strategy_note='whole is a legacy value; both values use the same native chapter/delta pipeline')
+    elif operation.startswith('writing.review-'):
+        fields={'packet_id':'actual current review-packet ID'}
+        required=['packet_id']
+        if operation=='writing.review-start':
+            fields.update(displayed='true only after showing the outline, publication settings and timeout notice',
+                          message_id='optional actual host display message ID; omit if unavailable')
+            required.append('displayed')
+        elif operation=='writing.review-response':
+            fields.update(user_response='actual nonempty user reply; includes pause, cancellation and revision requests',
+                          message_id='optional actual user message ID')
+            required.append('user_response')
+        elif operation=='writing.review-wait':
+            fields['wait_seconds']='optional integer 0..30; default 30. Observation only; never silently approves.'
+        result.update(required=required,fields=fields,
+                      cli_options={'--packet-id':'alternative to packet_id in --request',
+                                   '--wait-seconds':'alternative to wait_seconds for review-wait only'},
+                      host_contract='Start after actual display. Persist/schedule deadline_at or keep an interruptible wait active. Record user input before processing a timeout. Timeout output includes a deduplicatable notice_id and decision_id; no fake user_response and no generation is launched by these commands.')
     elif operation=='writing.approve':
         result.update(required=['packet_id','user_response'],fields={k:{
             'packet_id':'copy from the displayed review packet','user_response':'actual nonempty user response',
@@ -126,7 +145,7 @@ def describe_input(operation,workspace=None):
             if p.is_file():result['current_outline']=json.loads(p.read_text())
             p=ws/'02_retrieval/selected_paper.json'
             if p.is_file():result['available_paper_ids']=list(json.loads(p.read_text()))
-        if operation=='writing.approve':
+        if operation=='writing.approve' or operation.startswith('writing.review-'):
             p=ws/'04_outline/review_packet.json'
             if p.is_file():result['current_packet_id']=json.loads(p.read_text()).get('packet_id')
         if operation=='figures.plan':
@@ -142,6 +161,9 @@ def input_error(operation,error):
     message=str(error)
     result={'status':'FAILED','code':'INPUT_INVALID','message':message}
     if hasattr(error,'report'):result.update(error.report())
+    if isinstance(error,BlockingIOError):
+        return {'status':'FAILED','code':'STATE_BUSY','message':message,
+                'next_action':'Retry the same state operation after the current writer finishes. Preserve queued user input and do not start a duplicate workflow.'}
     if operation not in OPERATIONS:return result
     result['describe_input']='slr '+operation.replace('.',' ')+' --describe-input'
     result['next_action']='Correct the named input; query describe_input only if its shape is unclear.'

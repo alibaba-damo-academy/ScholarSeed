@@ -4,8 +4,10 @@ import { type PDFPageProxy, type RenderTask } from 'pdfjs-dist/legacy/build/pdf.
 
 import { TextLayerBuilder } from 'pdfjs-dist/legacy/web/pdf_viewer.mjs'
 
-import { Button, Popover, PopoverContent, PopoverTrigger } from '../../../components/ui'
+import { Button, IconButton, Popover, PopoverContent, PopoverTrigger, Tooltip } from '../../../components/ui'
+import { Icon } from '../../../icons'
 import type { PdfMark } from '../api'
+import type { PdfVisualRegion } from './analysis'
 import type { PdfFonts } from './fonts'
 import { citationRegions, clipQuads, enclosingRectangle, matchText, nearestRectangle, projectVisibleMarks, type Size } from './geometry'
 import { externalPdfLinks, PDF_ANNOTATION_INTENT, type ExternalPdfLink } from './links'
@@ -50,10 +52,15 @@ export interface PdfPageProps {
   focus?: PdfFocus
   citationQuads?: number[][]
   selectionQuads?: number[][]
+  visualRegions?: PdfVisualRegion[]
+  visualRegionImageInputAvailable?: boolean
+  copyingVisualRegionId?: string
   thumbnail?: boolean
   keepRendered?: boolean
   onAnnotationOpen?: (mark: PdfMark) => void
   onInternalLink?: (destination: PdfDestination) => void | Promise<void>
+  onVisualRegionExplain?: (region: PdfVisualRegion) => void
+  onVisualRegionCopy?: (region: PdfVisualRegion) => void
   renderAnnotation?: (mark: PdfMark, close: () => void) => ReactNode
 }
 
@@ -82,11 +89,11 @@ function searchQuads(host: HTMLElement, query: string): { quad: number[]; ordina
   })
 }
 
-export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], thumbnail = false, keepRendered = false, onAnnotationOpen, onInternalLink, renderAnnotation }: PdfPageProps): React.JSX.Element {
+export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds = [], search = '', focus, citationQuads = [], selectionQuads = [], visualRegions = [], visualRegionImageInputAvailable = true, copyingVisualRegionId, thumbnail = false, keepRendered = false, onAnnotationOpen, onInternalLink, onVisualRegionExplain, onVisualRegionCopy, renderAnnotation }: PdfPageProps): React.JSX.Element {
   const { t } = useTranslation('pdf')
   const host = useRef<HTMLDivElement>(null)
-  const canvas = useRef<HTMLCanvasElement>(null)
-  const stagingCanvas = useRef<HTMLCanvasElement>(null)
+  const canvas = useRef<HTMLCanvasElement | null>(null)
+  const stagingCanvas = useRef<HTMLCanvasElement | null>(null)
   const textHost = useRef<HTMLDivElement>(null)
   const text = useRef<HTMLDivElement | null>(null)
   const annotationTriggers = useRef(new Map<string, HTMLButtonElement>())
@@ -104,6 +111,8 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
   const [links, setLinks] = useState<PdfInternalLink[]>([])
   const [externalLinks, setExternalLinks] = useState<ExternalPdfLink[]>([])
   const [linkTarget, setLinkTarget] = useState<PdfLinkTarget | null>(null)
+  const [hoveredRegion, setHoveredRegion] = useState<string | null>(null)
+  const [focusedRegion, setFocusedRegion] = useState<string | null>(null)
   const viewport = page.getViewport({ scale })
   const renderable = near || keepRendered
   const visibleAnnotations = useMemo(() => projectVisibleMarks(annotations), [annotations])
@@ -298,7 +307,17 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
     <div ref={host} className={thumbnail ? 'vds-pdf-thumbnail-page' : 'vds-pdf-page'}
       data-testid={thumbnail ? undefined : `pdf-page-${page.pageNumber}`} data-page={page.pageNumber}
       data-canvas-rendered={canvasReady} data-text-rendered={ready}
-      data-rendered={ready} style={{ width: viewport.width, height: viewport.height, '--total-scale-factor': scale * page.userUnit } as React.CSSProperties}>
+      data-rendered={ready}
+      onPointerMove={thumbnail ? undefined : event => {
+        const bounds = host.current?.getBoundingClientRect()
+        if (!bounds || (event.target as HTMLElement).closest('[data-pdf-visual-toolbar]')) return
+        const x = (event.clientX - bounds.left) / bounds.width
+        const y = (event.clientY - bounds.top) / bounds.height
+        const selected = visualRegions.find(region => region.quad[0] <= x && x <= region.quad[2] && region.quad[1] <= y && y <= region.quad[3])
+        setHoveredRegion(selected?.region_id ?? null)
+      }}
+      onPointerLeave={thumbnail ? undefined : () => setHoveredRegion(null)}
+      style={{ width: viewport.width, height: viewport.height, '--total-scale-factor': scale * page.userUnit } as React.CSSProperties}>
       {renderable && <canvas ref={node => { if (node) canvas.current = node }} style={{ width: viewport.width, height: viewport.height }} />}
       {!thumbnail && <div ref={textHost} onClick={event => {
         if (window.getSelection()?.toString()) return
@@ -312,6 +331,34 @@ export function PdfPage({ page, fonts, scale, annotations = [], commentMarkIds =
         if (mark) annotationTriggers.current.get(mark.id)?.click()
       }} />}
       {!canvasReady && <span className="vds-pdf-page-placeholder">{error !== null ? t('pageRenderFailed', { detail: error }) : t('page', { page: page.pageNumber })}</span>}
+      {!thumbnail && <div className="pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] overflow-visible">
+        {visualRegions.map(region => {
+          const copying = region.kind === 'formula' && copyingVisualRegionId === region.region_id
+          const formulaCopyUnavailable = region.kind === 'formula' && !visualRegionImageInputAvailable
+          const visible = hoveredRegion === region.region_id || focusedRegion === region.region_id || copying
+          if (!visible) return null
+          const explainButton = <IconButton size="xs" variant="secondary" disabled={!visualRegionImageInputAvailable} label={t('visualRegions.explain')} icon={<Icon name="sparkle" size={12} />} onClick={() => onVisualRegionExplain?.(region)} />
+          const copyButton = <IconButton size="xs" variant="secondary" disabled={region.kind === 'formula' && !visualRegionImageInputAvailable} label={t(region.kind === 'formula' ? 'visualRegions.copyFormula' : 'visualRegions.copyImage')} loading={copying} icon={<Icon name="copy" size={12} />} onClick={() => onVisualRegionCopy?.(region)} />
+          return <div
+            key={region.region_id}
+            data-pdf-visual-region={region.kind}
+            className="absolute border border-dashed border-[var(--vds-border-strong)]"
+            style={{ left: `${region.quad[0] * 100}%`, top: `${region.quad[1] * 100}%`, width: `${(region.quad[2] - region.quad[0]) * 100}%`, height: `${(region.quad[3] - region.quad[1]) * 100}%` }}
+          >
+            <div
+              data-pdf-visual-toolbar
+              className="pointer-events-auto absolute bottom-0 right-0 flex translate-y-full gap-1 rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-1 shadow-[var(--vds-shadow-raised)]"
+              onFocusCapture={() => setFocusedRegion(region.region_id)}
+              onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedRegion(null) }}
+              onKeyDown={event => { if (event.key === 'Escape') { setFocusedRegion(null); setHoveredRegion(null); (event.currentTarget.querySelector(':focus') as HTMLElement | null)?.blur() } }}
+              onPointerDown={event => event.stopPropagation()}
+            >
+              {visualRegionImageInputAvailable ? explainButton : <Tooltip portalled content={t('reading.figureUnavailable')} side="bottom"><span className="inline-flex">{explainButton}</span></Tooltip>}
+              {formulaCopyUnavailable ? <Tooltip portalled content={t('reading.figureUnavailable')} side="bottom"><span className="inline-flex">{copyButton}</span></Tooltip> : copyButton}
+            </div>
+          </div>
+        })}
+      </div>}
       {!thumbnail && <div data-pdf-highlight-layer className="pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] overflow-hidden mix-blend-darken">
         {focus?.kind === 'link' && linkTarget ? <span
           data-internal-link-target

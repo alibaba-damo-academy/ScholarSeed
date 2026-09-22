@@ -1,7 +1,7 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
-import scholarseedLogoMark from '../../assets/scholarseed-logo-mark.png'
+import scholarseedLogoMark from '../../assets/logo.svg'
 import { accountDisplayText } from '../../account'
 import { Icon } from '../../icons'
 import { QUICK_START_PRESETS, QuickStartPreset } from '../../quickstart'

@@ -140,6 +140,10 @@
         "to": "defaults"
       },
       {
+        "from": "resources/windows.png",
+        "to": "windows-tray.png"
+      },
+      {
         "from": "resources/product.json",
         "to": "product.json"
       },

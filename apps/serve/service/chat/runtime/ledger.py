@@ -37,6 +37,7 @@ from service.chat.constants import (
     RUNTIME_INCIDENT_IDEMPOTENCY_PREFIX,
     RUNTIME_INCIDENT_INVALID,
     RUNTIME_LEGACY_ERROR,
+    TURN_CONTROLLED_INTERRUPT_RESOLUTION,
 )
 from service.chat.persistence.catalog import (
     SessionCatalogStore,
@@ -223,6 +224,37 @@ class SessionLedger:
                 },
                 turn_id=turn_id,
                 idempotency_key=f"{INTERNAL_EVENT_KEY_PREFIX}:turn-confirmed:{turn_id}",
+            )
+            return True
+
+    async def reconcile_controlled_interrupt(self, turn_id: str) -> bool:
+        """Resolve uncertainty when ScholarSeed initiated and completed the interrupt."""
+
+        async with self.lock:
+            current = self._unknown_admission.get(turn_id)
+            if current is None:
+                return False
+            _generation, incident_id = current
+            reconciled = self._catalog.reconcile_interrupted_turn_uncertainty(
+                self.id,
+                turn_id,
+                resolution=TURN_CONTROLLED_INTERRUPT_RESOLUTION,
+            )
+            if not reconciled:
+                return False
+            self._unknown_admission.pop(turn_id, None)
+            await self.publish(
+                PRODUCT_EVENT_TURN_RECONCILED,
+                {
+                    "turn_id": turn_id,
+                    "incident_id": incident_id,
+                    "resolution": TURN_CONTROLLED_INTERRUPT_RESOLUTION,
+                    "outcome": PRODUCT_TURN_OUTCOME_INTERRUPTED,
+                },
+                turn_id=turn_id,
+                idempotency_key=(
+                    f"{INTERNAL_EVENT_KEY_PREFIX}:controlled-interrupt:{turn_id}"
+                ),
             )
             return True
 
@@ -676,6 +708,18 @@ class SessionLedger:
                             ),
                         }
                         if outcome == PRODUCT_TURN_OUTCOME_FAILED
+                        else {}
+                    ),
+                    **(
+                        {
+                            "automatic_retry_attempts": payload[
+                                "automatic_retry_attempts"
+                            ]
+                        }
+                        if outcome == PRODUCT_TURN_OUTCOME_FAILED
+                        and isinstance(payload.get("automatic_retry_attempts"), int)
+                        and not isinstance(payload.get("automatic_retry_attempts"), bool)
+                        and payload["automatic_retry_attempts"] > 1
                         else {}
                     ),
                 },

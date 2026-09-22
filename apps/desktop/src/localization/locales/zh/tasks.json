@@ -52,6 +52,8 @@
       "importFailed": "导入失败，请检查源文件和目录权限。",
       "copyFailed": "复制失败，请检查目录权限。",
       "rootExists": "同名关联来源已经存在。",
+      "sourceOverlap": "该目录已被父级关联覆盖。",
+      "sourceCoversLinks": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
       "diskFull": "磁盘空间不足，请清理空间后重试。",
       "storageIoFailed": "本地存储读写失败，请检查磁盘状态后重试。",
       "interrupted": "导入被应用退出或服务重启中断。",

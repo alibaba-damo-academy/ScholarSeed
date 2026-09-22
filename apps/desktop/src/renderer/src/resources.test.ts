@@ -783,6 +783,14 @@ test('resource tree opens files and toggles folders through one click action', (
   )
 })
 
+test('resource tree ignores follow-up clicks from a native double click', () => {
+  assert.match(
+    resourcePanelSource,
+    /const open = \(event: React\.MouseEvent<HTMLDivElement>\): void => \{[\s\S]*?if \(event\.detail > 1\) return[\s\S]*?openResourceFile\(node\.path\)/
+  )
+  assert.doesNotMatch(resourcePanelSource, /RESOURCE_FILE_OPEN_DEBOUNCE_MS/)
+})
+
 test('resource file auto-context requires the AI panel to remain open', () => {
   assert.match(
     storeSource,

@@ -11,6 +11,7 @@ from enum import Enum
 from pkgutil import get_data
 from typing import Protocol
 
+from service.assistant.domain.language import TRANSLATION_TARGET_INVALID, translation_target
 from service.assistant.persistence.invocations import (
     AssistantInvocationRecord,
     AssistantInvocationStore,
@@ -32,10 +33,8 @@ ONE_SHOT_PURPOSE = "assistant.one_shot"
 ONE_SHOT_MAXIMUM_INPUT_CHARS = 12_000
 ONE_SHOT_MAXIMUM_INSTRUCTION_CHARS = 8_000
 ONE_SHOT_MAXIMUM_OUTPUT_TOKENS = 4_096
-TRANSLATE_PROMPT_VERSION = "translate/v1"
+TRANSLATE_PROMPT_VERSION = "translate/v2"
 TRANSLATE_PURPOSE = "assistant.translate"
-TRANSLATE_SUPPORTED_SOURCE_LANGUAGES = frozenset(("auto", "en", "zh-CN"))
-TRANSLATE_SUPPORTED_TARGET_LANGUAGES = frozenset(("en", "zh-CN"))
 TRANSLATE_PROMPT_RESOURCE = ("prompts", "translate.md")
 ACTION_RUNTIME_UNAVAILABLE = "action_runtime_unavailable"
 ACTION_INPUT_INVALID = "action_input_invalid"
@@ -50,7 +49,7 @@ UNRESOLVED_INVOCATION_STATES = frozenset(
         ModelInvocationStatus.UNKNOWN,
     )
 )
-ACTION_LANGUAGE_INVALID = "invalid_language_pair"
+ACTION_LANGUAGE_INVALID = TRANSLATION_TARGET_INVALID
 ACTION_RUNTIME_FAILED = "action_runtime_failed"
 
 
@@ -86,7 +85,6 @@ class AssistantTranslationRequest:
     retry_of_attempt_id: str | None
     project_id: str
     text: str
-    source_language: str
     target_language: str
     source_id: str = ""
     source_revision: str | None = None
@@ -120,7 +118,6 @@ class AssistantActionCompiler(Protocol):
         self,
         *,
         source_text: str,
-        source_language: str,
         target_language: str,
     ) -> CompiledAssistantAction: ...
 
@@ -141,26 +138,20 @@ class TranslationCompiler:
         self,
         *,
         source_text: str,
-        source_language: str,
         target_language: str,
     ) -> CompiledAssistantAction:
-        if source_language not in TRANSLATE_SUPPORTED_SOURCE_LANGUAGES:
-            raise ValueError(ACTION_LANGUAGE_INVALID)
-        if target_language not in TRANSLATE_SUPPORTED_TARGET_LANGUAGES:
-            raise ValueError(ACTION_LANGUAGE_INVALID)
-        if source_language == target_language:
-            raise ValueError(ACTION_LANGUAGE_INVALID)
+        target = translation_target(target_language)
         instructions = self._template.format(
-            source_language=source_language,
-            target_language=target_language,
+            target_language=target.code,
+            target_language_name=target.prompt_name,
         )
         return CompiledAssistantAction(
             purpose=TRANSLATE_PURPOSE,
             prompt_version=self.prompt_version,
             instructions=instructions,
             input_text=source_text,
-            source_language=source_language,
-            target_language=target_language,
+            source_language="auto",
+            target_language=target.code,
         )
 
 
@@ -243,7 +234,6 @@ class AssistantActionService:
             raise ValueError("assistant translate action is not registered")
         compiled = compiler.compile(
             source_text=request.text,
-            source_language=request.source_language,
             target_language=request.target_language,
         )
         return await self._run(

@@ -144,6 +144,16 @@ test('turn failures map stable provider codes to actionable product guidance', a
 
   const untyped = describeTurnFailure({ message: 'backend unavailable' })
   assert.equal(untyped.runtimeAction, undefined)
+  const exhausted = describeTurnFailure({
+    code: 'service_unavailable',
+    message: 'The model provider is temporarily unavailable.',
+    retryable: true,
+    automatic_retry_attempts: 3
+  })
+  assert.equal(exhausted.failure?.kind, 'unavailable')
+  assert.equal(exhausted.failure?.automaticRetryAttempts, 3)
+  assert.equal(display(exhausted).message, '模型服务暂时不可用，已自动重试 3 次')
+  assert.equal(exhausted.runtimeAction, 'continue_turn')
   await locale.changeLanguage('en')
   assert.equal(display(quota).title, 'Answer generation failed')
   assert.equal(display(quota).message, 'The allocated model quota has been exhausted.')
@@ -227,6 +237,30 @@ test('the turn failure card renders the reason ahead of the next step', () => {
   assert.ok(body.indexOf('turn-failure-reason') < body.indexOf('turn-failure-action'))
 })
 
+test('exhausted automatic retries reuse the compact continuation notice', () => {
+  const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const notice = stream.indexOf('data-testid="turn-retry-exhausted-notice"')
+  const card = stream.indexOf('data-testid="turn-failure-card"')
+  assert.notEqual(notice, -1)
+  assert.notEqual(card, -1)
+  assert.ok(notice < card)
+  assert.match(stream.slice(notice, card), /data-testid="turn-continue"/)
+})
+
+test('assistant copy action appears only after the turn stops running', () => {
+  const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  assert.match(stream, /copyEnabled=\{turnOutcome !== 'running'\}/)
+  assert.match(stream, /\{item\.text && copyEnabled && \(/)
+})
+
+test('queued send failures use product copy instead of raw service errors', () => {
+  const composer = readFileSync(new URL('./components/business/Composer.tsx', import.meta.url), 'utf8')
+  const pendingFailure = composer.indexOf("feedback('components', 'composer.pendingFailed'")
+  assert.notEqual(pendingFailure, -1)
+  assert.match(composer.slice(pendingFailure, pendingFailure + 500), /queuedMessageErrorText/)
+  assert.doesNotMatch(composer.slice(pendingFailure, pendingFailure + 500), /String\(result\?\.error\)/)
+})
+
 test('unsupported model rejection maps to a model_config card without retry', async () => {
   const locale = createInstance()
   await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
@@ -281,7 +315,7 @@ function incident(state: RuntimeIncidentData['state']): RuntimeIncidentData {
     kind: 'process_exit',
     strategy: 'auto_restart',
     retryability: state === 'failed' ? 'user_retryable' : 'in_progress',
-    safe_error: 'codex_process_exit',
+    safe_error: 'agent_runtime_exit',
     process_generation: 2,
     attempt: state === 'recovered' ? 2 : 1,
     max_attempts: 5
@@ -800,7 +834,7 @@ test('Electron reload projects unknown TURN and HIL once without replaying a req
     }],
     uncertainOperations: [
       uncertain('tool_response', 'unknown', 'request-tool'),
-      uncertain('turn', 'unknown', 'turn-unknown', 'codex_process_exit')
+      uncertain('turn', 'unknown', 'turn-unknown', 'agent_runtime_exit')
     ],
     timestamp: 1_700_000_000_000
   }
@@ -970,7 +1004,7 @@ test('ambiguous turn application text switches language while raw diagnostics an
   const t = locale.getFixedT(null, 'conversation')
   for (const [message, reason] of [
     [undefined, 'unconfirmed'], ['runtime_rpc_timeout', 'timeout'],
-    ['runtime_transport_lost', 'transportLost'], ['codex_process_exit', 'processExit']
+    ['runtime_transport_lost', 'transportLost'], ['agent_runtime_exit', 'processExit']
   ] as const) {
     const updated = { ...thread(), ...reportTurnUnknown(thread(), { sessionId: 'session-1', turnId: 'turn', message }) }
     const card = updated.conversation.find(item => item.kind === 'error')

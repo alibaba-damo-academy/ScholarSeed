@@ -346,12 +346,44 @@ class ContentCatalog:
         return row
 
     def authorize_external_roots(
-        self, rows: tuple[ExternalRootRow, ...]
+        self,
+        rows: tuple[ExternalRootRow, ...],
+        *,
+        supersede_root_ids: tuple[str, ...] = (),
+        at: float | None = None,
     ) -> tuple[ExternalRootRow, ...]:
-        """Atomically restore or insert a fully preflighted root batch."""
+        """Atomically restore or insert a fully preflighted root batch.
 
+        `supersede_root_ids` 是被新根覆盖而要先软撤销的已生效关联 (新源是它们的
+        父目录)。撤销与新授权必须在**同一个事务**里: 分两步会出现「子关联已撤、
+        父挂载未成」的半态, 或反过来留下双身份窗口。
+        """
+
+        stamp = time.time() if at is None else at
         activated: list[ExternalRootRow] = []
         with self._tx() as connection:
+            for root_id in supersede_root_ids:
+                superseded = connection.execute(
+                    f"SELECT mount_path, source_path FROM {EXTERNAL_ROOTS_TABLE}"
+                    " WHERE root_id = ? AND revoked_at IS NULL",
+                    (root_id,),
+                ).fetchone()
+                if superseded is None:
+                    continue
+                connection.execute(
+                    f"UPDATE {EXTERNAL_ROOTS_TABLE} SET revoked_at = ? WHERE root_id = ?",
+                    (stamp, root_id),
+                )
+                connection.execute(
+                    f"INSERT INTO {AUDIT_TABLE} (at, project_id, action, detail)"
+                    " VALUES (?, ?, ?, ?)",
+                    (
+                        stamp,
+                        rows[0].project_id if rows else "",
+                        AUDIT_REVOKE,
+                        f"{superseded['mount_path']} <- {superseded['source_path']}",
+                    ),
+                )
             for proposed in rows:
                 conflict = connection.execute(
                     f"SELECT root_id FROM {EXTERNAL_ROOTS_TABLE} WHERE project_id = ?"

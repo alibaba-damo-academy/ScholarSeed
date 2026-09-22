@@ -856,7 +856,9 @@ class ContentPort(Protocol):
 
     # ---- 关联外部根与授权 ----
 
-    def authorize_root(self, project_id: str, source: str, mount: str) -> ExternalRootRef:
+    def authorize_root(
+        self, project_id: str, source: str, mount: str, *, supersede: bool = False
+    ) -> ExternalRootRef:
         """授权一处项目外文件或目录, 并登记为项目内虚拟挂载点。"""
         ...
 
@@ -876,6 +878,10 @@ class ContentPort(Protocol):
         self, project_id: str, sources: tuple[str, ...], target_dir: str
     ) -> tuple[ExternalRootRef, ...]:
         """关联导入并为本地条目、挂载点和同批来源统一避让名称。"""
+        ...
+
+    def assert_import_roots_linkable(self, project_id: str, sources: tuple[str, ...]) -> None:
+        """关联导入创建任务前的只读包含预检; 与已生效关联根重叠则拒 `source_overlap`。"""
         ...
 
     def revoke_root(self, root_id: str) -> None:

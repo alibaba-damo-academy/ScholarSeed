@@ -6,6 +6,7 @@
 .vds-pdf-thumbnail { display: grid; gap: 5px; text-align: center; }
 .vds-pdf-thumbnail-page { position: relative; background: white; overflow: hidden; }
 .vds-pdf-pages { overflow: auto; padding: 16px; min-height: 0; min-width: 0; overflow-anchor: none; scrollbar-gutter: stable both-edges; }
+.vds-pdf-panel--split { width: var(--vds-layout-pdf-translation-width); min-width: var(--vds-layout-pdf-panel-width); max-width: calc(100% - var(--vds-layout-pdf-panel-width)); }
 .vds-pdf-page { position: relative; margin: 0 auto 16px; background: white; color: black; box-shadow: var(--shadow); line-height: 1; flex-shrink: 0; }
 .vds-pdf-page canvas, .vds-pdf-thumbnail-page canvas { display: block; }
 .vds-pdf-page-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #6b6b6b; font-size: 12px; pointer-events: none; }

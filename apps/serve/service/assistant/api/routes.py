@@ -936,7 +936,6 @@ def register_assistant_routes(app: FastAPI) -> None:
                     retry_of_attempt_id=body.retry_of_attempt_id,
                     project_id=body.project_id,
                     text=body.text,
-                    source_language=body.source_language,
                     target_language=body.target_language,
                     source_id=body.source_id.strip(),
                     source_revision=(body.source_revision or "").strip() or None,

@@ -18,12 +18,20 @@ from service.literature.persistence.reading import (
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.pdf import LiteraturePdf
-from service.platform.citations import PDF_INDEX_STATE
+from service.platform.citations import (
+    LITERATURE_STORAGE,
+    PDF_INDEX_STATE,
+    CitationDocument,
+    PdfIndexPort,
+)
 from service.platform.pdf import PdfAnnotationError, embedded_pdf_records
 from service.platform.ranges import parse_byte_range
 from service.platform.records import EMPTY_RECORDS, ProjectPdfRecordPort, RecordOwner, RecordTarget
 from service.platform.resources import ResourceManagedCopyPort
 from service.platform.workbench import DocumentFormatPort
+from service.workbench.service.regions import crop as crop_region
+from service.workbench.service.regions import manifest as region_manifest
+from service.workbench.service.regions import region as resolve_region
 
 MAX_RECORD_BYTES = 10 * 1024 * 1024
 OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
@@ -93,6 +101,13 @@ def _project_records(request: Request) -> ProjectPdfRecordPort:
     service = getattr(request.app.state, "pdf_records", None)
     if service is None:
         raise HTTPException(503, "records_unavailable")
+    return service
+
+
+def _pdf_indexes(request: Request) -> PdfIndexPort:
+    service = getattr(request.app.state, PDF_INDEX_STATE, None)
+    if service is None:
+        raise HTTPException(503, "pdf_index_unavailable")
     return service
 
 
@@ -198,6 +213,59 @@ def register_reading_routes(
             )
         headers["Content-Length"] = str(size)
         return Response(data, media_type=media_type, headers=headers)
+
+    def attachment_document(literature_id: str, attachment_id: str) -> CitationDocument:
+        attachment = attachments.attachment(literature_id, attachment_id)
+        data, media_type, revision = attachments.read_attachment(literature_id, attachment_id)
+        if media_type != "application/pdf":
+            raise ContentError("literature_attachment_not_pdf")
+        return CitationDocument(
+            "",
+            f"{literature_id}/{attachment_id}",
+            attachment.name,
+            revision,
+            data,
+            storage_scope=LITERATURE_STORAGE,
+        )
+
+    @app.get(f"{ROUTE}/regions")
+    def visual_regions(
+        literature_id: str,
+        attachment_id: str,
+        request: Request,
+        revision: str = Query(...),
+        start_page: int = Query(..., ge=1),
+        end_page: int = Query(..., ge=1),
+    ) -> dict:
+        try:
+            document = attachment_document(literature_id, attachment_id)
+            if document.revision != revision:
+                raise HTTPException(409, "source_revision_conflict")
+            return region_manifest(_pdf_indexes(request), document, start_page, end_page)
+        except ContentError as error:
+            raise _content_error(error) from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.get(f"{ROUTE}/regions/{{region_id}}/image")
+    def visual_region_image(
+        literature_id: str,
+        attachment_id: str,
+        region_id: str,
+        request: Request,
+        revision: str = Query(...),
+        page: int = Query(..., ge=1),
+    ) -> Response:
+        try:
+            document = attachment_document(literature_id, attachment_id)
+            if document.revision != revision:
+                raise HTTPException(409, "source_revision_conflict")
+            selected = resolve_region(_pdf_indexes(request), document, page, region_id)
+            return Response(crop_region(document.payload, selected), media_type="image/png")
+        except ContentError as error:
+            raise _content_error(error) from error
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
 
     @app.put(f"{ROUTE}/content")
     async def commit_content(

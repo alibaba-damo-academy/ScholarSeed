@@ -1,6 +1,24 @@
+/**
+ * 关联导入/授权与已生效关联根存在包含关系时的稳定错误码。
+ *
+ * 后端 content 域是权威判定方 (`roots.py` 的 `source_overlap`); 前端只在资料库
+ * 关联导入这一条流上额外用它触发「弹提示 + 在左侧资料树定位到覆盖它的父级关联」。
+ */
+export const SOURCE_OVERLAP_ERROR = 'source_overlap'
+
+/**
+ * 反方向: 新源是某个已生效关联根的**父目录** (先关联了 /A/B, 再关联 /A)。
+ *
+ * 后端不硬拒绝, 而是回这个码, 让资料库关联导入弹「取代子关联并挂载父目录 /
+ * 直接打开已有子关联」的选择 (见 `LinkSupersedeConfirm`)。仅在推不出被覆盖的
+ * 子关联时才退回普通报错, 所以这里仍登记一条文案兜底。
+ */
+export const SOURCE_COVERS_LINKS_ERROR = 'source_covers_links'
+
 const RESOURCE_ERROR_KEYS = {
   version_admission_unavailable: 'operationError.version_admission_unavailable',
   version_admission_failed: 'operationError.version_admission_failed',
+  review_batch_unavailable: 'operationError.review_batch_unavailable',
   disk_revision_conflict: 'operationError.disk_revision_conflict',
   invalid_name: 'operationError.invalid_name',
   name_too_long: 'operationError.name_too_long',
@@ -22,6 +40,8 @@ const RESOURCE_ERROR_KEYS = {
   same_parent: 'operationError.same_parent',
   copy_into_self: 'operationError.copy_into_self',
   source_not_found: 'operationError.source_not_found',
+  [SOURCE_OVERLAP_ERROR]: 'operationError.source_overlap',
+  [SOURCE_COVERS_LINKS_ERROR]: 'operationError.source_covers_links',
   too_many_duplicates: 'operationError.too_many_duplicates',
   file_too_large: 'operationError.file_too_large',
   not_text_file: 'operationError.not_text_file',

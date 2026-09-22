@@ -9,6 +9,9 @@ import {
   beginResourceTreeReload,
   finishResourceTreeReload,
   isResourcePathAtOrBelow,
+  deriveLinkOverlapTarget,
+  deriveCoveredLinkRoots,
+  linkMountNameFromSource,
   refreshesResourceTree,
   relocateExpandedResourcePaths,
   RESOURCE_ROOT_DIRECTORY,
@@ -253,4 +256,67 @@ test('only resources-root content events refresh the resource tree', () => {
   assert.equal(refreshesResourceTree({ root: 'sessions' }), false)
   assert.equal(refreshesResourceTree({ root: 'literature' }), false)
   assert.equal(refreshesResourceTree({ root: 'artifacts' }), false)
+})
+
+test('deriveLinkOverlapTarget maps a rejected source back to its covering link root', () => {
+  // 源落在已生效关联根子树内 → 还原它在该挂载点下的相对位置。
+  assert.equal(
+    deriveLinkOverlapTarget(tree, ['/authorized/关联资料/子文件夹']),
+    'resources/关联资料/子文件夹'
+  )
+  // 源正好等于关联根本身 → 定位到挂载点。
+  assert.equal(deriveLinkOverlapTarget(tree, ['/authorized/关联资料']), 'resources/关联资料')
+  // 源反过来包含了已生效关联根 → 定位到被包含的那个根 (按树序取第一个)。
+  assert.equal(deriveLinkOverlapTarget(tree, ['/authorized']), 'resources/关联资料')
+  // Windows 反斜杠来源同样能匹配 (规范化成正斜杠后比较)。
+  assert.equal(
+    deriveLinkOverlapTarget(tree, ['\\authorized\\关联资料\\子文件夹']),
+    'resources/关联资料/子文件夹'
+  )
+  // 同前缀但不在子树内 (边界) → 不算覆盖。
+  assert.equal(deriveLinkOverlapTarget(tree, ['/authorized/关联资料2']), null)
+  // 完全不相交 → 推导不出, 调用方只弹提示不定位。
+  assert.equal(deriveLinkOverlapTarget(tree, ['/elsewhere/x']), null)
+  // 没有任何关联根时无从推导。
+  assert.equal(deriveLinkOverlapTarget([], ['/authorized/关联资料/子文件夹']), null)
+})
+
+test('deriveCoveredLinkRoots finds child links strictly under a new parent source', () => {
+  // 反方向: 新源 /authorized 是两个已生效关联根的父目录 → 两个子关联都被覆盖, 按树序去重。
+  const covered = deriveCoveredLinkRoots(tree, ['/authorized'])
+  assert.deepEqual(
+    covered.map((item) => item.rootId),
+    ['root-1', 'root-2']
+  )
+  assert.deepEqual(covered[0], {
+    rootId: 'root-1',
+    mountPath: 'resources/关联资料',
+    sourcePath: '/authorized/关联资料',
+    name: '关联资料'
+  })
+  // 同一关联根挂在父节点与其子节点上, seen 去重后只出现一次 (不是 4 条)。
+  assert.equal(covered.length, 2)
+
+  // 新源正好等于某个关联根 → 相等不算覆盖 (后端兜成 root_exists), 另一根也不在子树内。
+  assert.deepEqual(deriveCoveredLinkRoots(tree, ['/authorized/关联资料']), [])
+  // 正方向: 新源是关联根的子目录 → 关联根不是它的后代, 不算被覆盖。
+  assert.deepEqual(deriveCoveredLinkRoots(tree, ['/authorized/关联资料/子文件夹']), [])
+  // 同前缀但跨段边界 (关联 vs 关联资料) → 不算覆盖。
+  assert.deepEqual(deriveCoveredLinkRoots(tree, ['/authorized/关联']), [])
+  // Windows 反斜杠来源规范化后同样命中。
+  assert.deepEqual(
+    deriveCoveredLinkRoots(tree, ['\\authorized']).map((item) => item.rootId),
+    ['root-1', 'root-2']
+  )
+  // 没有源 / 没有关联根 → 空数组, 调用方退回普通报错。
+  assert.deepEqual(deriveCoveredLinkRoots(tree, []), [])
+  assert.deepEqual(deriveCoveredLinkRoots([], ['/authorized']), [])
+})
+
+test('linkMountNameFromSource takes the last path segment regardless of separator', () => {
+  assert.equal(linkMountNameFromSource('/authorized/关联资料'), '关联资料')
+  assert.equal(linkMountNameFromSource('\\authorized\\关联资料'), '关联资料')
+  assert.equal(linkMountNameFromSource('/authorized/关联资料/'), '关联资料')
+  assert.equal(linkMountNameFromSource('关联资料'), '关联资料')
+  assert.equal(linkMountNameFromSource(''), '')
 })

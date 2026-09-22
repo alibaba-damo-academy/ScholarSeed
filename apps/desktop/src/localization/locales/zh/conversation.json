@@ -42,10 +42,10 @@
     "transportRecovered": "本地书深服务连接已恢复",
     "detail": "：{{detail}}",
     "reason": {
-      "codex_process_exit": "Agent 运行时已退出",
+      "agent_runtime_exit": "Agent 运行时已退出",
       "runtime_transport_lost": "Agent 运行时本地传输已断开",
       "runtime_rpc_timeout": "Agent 运行时请求确认超时",
-      "codex_process_unavailable": "Agent 运行时暂时不可用",
+      "agent_runtime_unavailable": "Agent 运行时暂时不可用",
       "thread_resume_failed": "当前会话恢复失败",
       "codex_turn_retrying": "模型服务正在重试",
       "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
@@ -126,6 +126,7 @@
     },
     "unavailable": {
       "message": "模型服务暂时不可用。",
+      "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
       "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
     },
     "request": {

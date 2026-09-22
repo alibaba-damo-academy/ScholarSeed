@@ -23,6 +23,7 @@ import scholarseed_codex.pool as pool_module
 from scholarseed_codex.activity import subagent_lifecycle_payload
 from scholarseed_codex.capacity import CapacityPolicy, HostRole
 from scholarseed_codex.catalog import bind_native_model, standard_model
+from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.events import translate_event
 from scholarseed_codex.failure import PROVIDER_AUTH_MESSAGE, provider_failure
 from scholarseed_codex.pool import CodexHostPool
@@ -49,6 +50,7 @@ from scholarseed_codex.router import AgentRoute, ThreadRouter
 from scholarseed_codex.session import CodexRuntimeSession
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
+from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_runtime.contract import (
     ActorKind,
     CallbackKind,
@@ -88,6 +90,7 @@ from scholarseed_runtime.contract.evidence import (
     RuntimeProcessEventKind,
     RuntimeRpcEvidence,
 )
+from scholarseed_runtime.contract.history import MessagePhase
 from scholarseed_runtime.contract.incident import (
     RuntimeIncident,
     RuntimeIncidentKind,
@@ -1929,6 +1932,100 @@ def test_content_completion_and_sequence() -> None:
     )
 
 
+def test_nullable_phase_message_streaming() -> None:
+    print("== nullable message phase streaming ==")
+
+    async def scenario() -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+
+        async def observe(event: CodexSessionEvent) -> None:
+            events.append(event)
+
+        thread = SimpleNamespace(
+            thread_id="native-thread",
+            request=CodexSessionOpenRequest(
+                request_id="request-1",
+                runtime_id="codex",
+                cwd=ROOT,
+            ),
+            listener=observe,
+            model="model",
+            writable_roots=(),
+            attached_generation=1,
+        )
+        runtime = CodexTurnRuntime(
+            thread,
+            request=AsyncMock(),
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=CodexEmitter(),
+            router=SimpleNamespace(bind_turn=Mock(), bind_item=Mock()),
+            watcher=SimpleNamespace(),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        item = {"id": "message-1", "type": "agentMessage", "phase": None, "text": "hello"}
+        await runtime.notification(
+            "item/started",
+            {"turnId": "turn-1", "itemId": "message-1", "item": item},
+            generation=1,
+        )
+        for delta in ("hel", "lo"):
+            await runtime.notification(
+                "item/agentMessage/delta",
+                {"turnId": "turn-1", "itemId": "message-1", "delta": delta},
+                generation=1,
+            )
+        await runtime.notification(
+            "item/completed",
+            {"turnId": "turn-1", "itemId": "message-1", "item": item},
+            generation=1,
+        )
+        await runtime._flush_unknown_message("turn-1", MessagePhase.FINAL_ANSWER)
+        phased_item = {
+            "id": "message-2",
+            "type": "agentMessage",
+            "phase": MessagePhase.FINAL_ANSWER.value,
+            "text": "late",
+        }
+        await runtime.notification(
+            "item/agentMessage/delta",
+            {"turnId": "turn-2", "itemId": "message-2", "delta": "late"},
+            generation=1,
+        )
+        await runtime.notification(
+            "item/started",
+            {"turnId": "turn-2", "itemId": "message-2", "item": phased_item},
+            generation=1,
+        )
+        await runtime.notification(
+            "item/completed",
+            {"turnId": "turn-2", "itemId": "message-2", "item": phased_item},
+            generation=1,
+        )
+        return events
+
+    events = asyncio.run(scenario())
+    deltas = [event for event in events if event.kind is CodexSessionEventKind.ASSISTANT_DELTA]
+    completed = [
+        event for event in events if event.kind is CodexSessionEventKind.ASSISTANT_COMPLETED
+    ]
+    check(
+        "nullable-phase text deltas stream before completion",
+        [event.payload.get("text") for event in deltas] == ["hel", "lo", "late"],
+    )
+    check(
+        "late phase metadata does not duplicate already streamed text",
+        len(deltas) == 3,
+    )
+    check(
+        "terminal order resolves the nullable phase as final answer",
+        len(completed) == 2
+        and completed[0].payload.get("text") == "hello"
+        and completed[0].payload.get("phase") == MessagePhase.FINAL_ANSWER.value,
+    )
+
+
 def test_capability_resolution_is_synthesised_once_per_pair() -> None:
     print("== declared vs effective context window ==")
 
@@ -2442,6 +2539,7 @@ def main() -> int:
     test_inventory_projection()
     test_mcp_control_projection()
     test_content_completion_and_sequence()
+    test_nullable_phase_message_streaming()
     test_capability_resolution_is_synthesised_once_per_pair()
     test_subagent_lifecycle_survives_out_of_order_observation()
     test_unsupported_dynamic_tool_fails_fast()

@@ -34,7 +34,6 @@ import {
 const COMMENT_MAX_LENGTH = 600
 
 // 设计稿: 注释标识为蓝色圆形气泡 + 白色序号, 左下角带小尾巴;
-// 回答内联与用户消息下方共用同一标识, hover/点击交互由 AnnotationBadgeNote 承接。
 const ANNOTATION_BADGE_CLASS = 'relative inline-grid size-5 place-items-center rounded-[var(--vds-radius-circle)] border-0 bg-transparent p-0 text-[10px] font-[var(--vds-fw-semibold)] text-[var(--vds-static-white)] shadow-none focus-visible:shadow-[var(--vds-focus-brand)]'
 
 // 设计稿: hover 标识时为白色圆角气泡仅展示备注文本; 点击标识为可编辑弹窗,
@@ -407,7 +406,7 @@ export function AnnotationSummary({
   const summaryLabel = `${annotations.length} ${t('annotation.count')}`
   return (
     <ComposerRefChip
-      className={className}
+      className={`w-fit${className ? ` ${className}` : ''}`}
       closeLabel={t('remaining.removeAll')}
       data-testid={testId}
       icon={<Icon name="quote" size={12} />}
