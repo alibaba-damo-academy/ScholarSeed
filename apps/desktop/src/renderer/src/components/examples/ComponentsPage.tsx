@@ -2386,7 +2386,7 @@ export function ComponentsPage(): JSX.Element {
 
             <div className="grid w-[min(420px,100%)] gap-[var(--vds-space-2)]">
               {collapsibleSettingsItems.map((item) => (
-                <Collapsible defaultOpen={item.titleKey === 'disclosure.account'} key={item.titleKey}>
+                <Collapsible animated defaultOpen={item.titleKey === 'disclosure.account'} key={item.titleKey}>
                   <CollapsibleTrigger asChild>
                     <Button className="h-auto w-full justify-between p-[var(--vds-space-3)]" variant="ghost">
                       <span className="font-[var(--vds-fw-medium)]">{t(item.titleKey)}</span>

@@ -40,7 +40,9 @@ export function useCardArtifacts(items: readonly ConvItem[]): ReadonlySet<string
 
 export function useLatestDisplayCards(items: readonly ConvItem[]): ConvItem[] {
   const cards = useContext(DisplayCardsContext)
-  return latestDisplayCardItems(items, card => (
-    cards.get(card.type)?.supersessionKey?.(card.content) ?? null
-  ))
+  return latestDisplayCardItems(
+    items,
+    card => cards.get(card.type)?.supersessionKey?.(card.content) ?? null,
+    card => cards.get(card.type)?.supersessionPosition
+  )
 }

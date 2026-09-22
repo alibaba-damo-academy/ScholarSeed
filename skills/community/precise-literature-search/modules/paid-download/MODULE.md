@@ -19,6 +19,11 @@ wheel, dependencies or browser is an environment blocker,
 not permission to install packages or switch to test data. `placeholder.py`
 is an offline test fixture only, never a production fallback.
 
+Follow the [product Python contract](../../SKILL.md#product-python) on every
+attempt, including resume: do not choose another Python or set
+`PAPER_DL_EXECUTABLE` / `PAPER_DL_ROOT` to recover from a startup failure.
+External downloader configuration requires the user's explicit selection.
+
 ```bash
 scholarseed-skill-python "$SKILL_DIR/scripts/module_runner.py" \
   --module paid-download \

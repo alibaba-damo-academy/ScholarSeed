@@ -1,6 +1,6 @@
 {
   "profile": "fast",
-  "summary": "Local PDFs and supplementary discovery form one evidence corpus. Parallel chapter tasks continue fixed openings as native text; an independent figure author completes images and captions. Scripts assemble full v1 and apply one source delta to editable v2. workflow publish checks current source, compiles/exports it and renders the first three PDF pages; content diagnostics are advisory.",
+  "summary": "Local PDFs and supplementary discovery form one evidence corpus. Parallel chapter tasks continue fixed openings as native text; an independent figure author completes images and captions. Scripts assemble full v1 and apply one source delta to editable v2. workflow publish checks current source, compiles/exports it and renders the first page plus actual figure/table pages including longtable continuations; unresolved page mappings are reported explicitly.",
   "stages": [
     {
       "id": "retrieval_adapt",
@@ -110,8 +110,9 @@
       "title": "Legacy section preparation",
       "description": "Legacy section preparation only. New work uses evidence build, outline generate, manuscript prepare and manuscript generate.",
       "command": [
-        "bash",
-        "${SLR_HOME}/scripts/generation/_fast/stages/generation_prep.sh"
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/legacy_stage.py",
+        "generation_prep"
       ],
       "cwd": "workspace",
       "timeout_sec": 600,
@@ -136,8 +137,9 @@
       "title": "Legacy section merge",
       "description": "Validate and merge legacy section artifacts only. Current tasks use manuscript generate to assemble full v1 and refine it into editable v2, then workflow publish.",
       "command": [
-        "bash",
-        "${SLR_HOME}/scripts/generation/_fast/stages/generation_merge.sh"
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/legacy_stage.py",
+        "generation_merge"
       ],
       "cwd": "workspace",
       "timeout_sec": 900,
@@ -195,12 +197,12 @@
       "status": {
         "kind": "stdout_json"
       },
-      "description": "Report current-source diagnostics and compiler result; postcheck renders the first three PDF pages. No generation-state gates."
+      "description": "Report current-source diagnostics and compiler result; postcheck renders the first page and actual figure/table pages including longtable continuations. No generation-state gates."
     },
     {
       "id": "verify_postcheck",
       "title": "Post-delivery check against the finished artefact",
-      "description": "Report current-source diagnostics and compiler result; postcheck renders the first three PDF pages. No generation-state gates.",
+      "description": "Report current-source diagnostics and compiler result; postcheck renders the first page and actual figure/table pages including longtable continuations. No generation-state gates.",
       "command": [
         "scholarseed-skill-python",
         "${SLR_HOME}/scripts/manuscript_publication.py",

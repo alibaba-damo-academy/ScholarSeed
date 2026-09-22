@@ -1178,7 +1178,10 @@ declare module 'i18next' {
             "sessionUnavailable": "当前会话不可用，消息未提交。",
             "terminating": "■ 正在终止当前运行",
             "withdrawUnavailable": "当前会话不可用，排队消息未撤回。",
-            "withdrawFailed": "排队消息撤回失败，内容仍已保留，请重试。",
+            "withdrawFailed": "暂时无法确认撤回结果。请在连接恢复后重新查看队列；若消息仍可撤回，可再次撤回，不要重复发送。",
+            "withdrawStateChanged": "消息状态已变化，无法撤回。请查看队列和会话中的最新状态。",
+            "withdrawMissing": "该排队消息已不存在。请查看会话记录确认是否已发送。",
+            "withdrawDenied": "当前无法访问该会话，消息未撤回。请检查登录状态和会话访问权限。",
             "resendFailed": "重新发送失败，内容仍已保留。",
             "stateChanged": "任务状态已经变化",
             "queueRefreshFailed": "消息已提交，但待处理列表刷新失败。",
@@ -1949,6 +1952,7 @@ declare module 'i18next' {
             "installVerifyUnavailable": "无法在此设备上完成更新校验，请前往官网手动下载最新版本安装。",
             "installSignatureUntrusted": "更新包签名校验未通过，为安全起见已阻止安装；请从官方渠道重新获取安装包。",
             "installSignatureIndeterminate": "本机无法判定更新包签名是否可信（证书链或吊销信息不可用），已阻止自动安装；签名者与官方发布一致、包字节未被改动，重新下载不会改变该结果。请恢复网络或根证书可用后重试安装，或联系网络管理员。",
+            "installAlreadyRunning": "上一轮更新的安装程序仍在运行，请先等待它完成，或关闭该安装窗口后重试；安装包已就绪，不需要重新下载。",
             "checkFailedSub": "检查更新失败：{{error}}",
             "installRetryHint": "安装包已就绪，重试的是安装这一步，不需要重新下载。",
             "summaryHint": "本次更新内容如下，欢迎体验新版本。"
@@ -2827,6 +2831,7 @@ declare module 'i18next' {
             "preparing": "正在准备书深…",
             "connecting": "正在连接已有服务…",
             "startingBackend": "正在启动本地服务…",
+            "startingBackendFirstRun": "首次启动正在初始化本地服务，可能需要数分钟…",
             "opening": "正在打开工作台…",
             "backendFailed": "书深后端启动失败",
             "interfaceFailed": "书深界面加载失败",
@@ -3046,6 +3051,7 @@ declare module 'i18next' {
         "pdfImport": {
             "choose": "选择要导入的 PDF",
             "chooseBibliography": "选择要导入的 Bib 或 RIS 文件",
+            "drop": "松开以导入 PDF",
             "description": "正在逐个上传并解析所选 PDF。窗口会保留每个文件的处理结果。",
             "pending": "等待处理",
             "uploading": "上传中 · {{progress}}%",
@@ -3379,6 +3385,7 @@ declare module 'i18next' {
             "noProjectsDescription": "请先创建资料库项目，再存入附件。",
             "copySucceeded": "存入成功",
             "operationFailed": "操作失败",
+            "openFailed": "附件打开失败，请重试。",
             "missingTitle": "附件文件已丢失",
             "missingDescription": "文献库里已经没有这份文件，打开会失败。可以移除这条附件记录，或重新上传。"
         },
@@ -3638,9 +3645,9 @@ declare module 'i18next' {
             }
         },
         "join": {
-            "button": "加入文献库",
+            "button": "加入我的文献",
             "direct": "直接加入",
-            "project": "加入项目",
+            "project": "关联至项目",
             "collection": "加入我的分类",
             "newCollection": "新建分类…",
             "added": "已加入",
@@ -3816,6 +3823,7 @@ declare module 'i18next' {
             "explain": "解释",
             "translate": "翻译",
             "figure": "图表解释",
+            "figureUnavailable": "当前模型未声明支持图片输入，请切换支持图片的模型。",
             "figureGuide": {
                 "title": "图表解释",
                 "description": "框选图片、表格或图形，获取解释。",
@@ -3829,6 +3837,7 @@ declare module 'i18next' {
             "figureResult": "选区 · 第 {{page}} 页",
             "figureResultPending": "选区 · 正在解释…",
             "continueSelecting": "继续框选",
+            "currentModel": "当前模型",
             "regenerate": "重新生成",
             "generateSummary": "生成阅读总结",
             "close": "关闭阅读面板",
@@ -3902,13 +3911,14 @@ declare module 'i18next' {
                 "translation_sentence_incomplete": "逐句译文不完整，请重试。",
                 "task_missing": "任务不存在",
                 "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
-                "image_input_unsupported": "当前模型未声明支持图片输入，请在设置 → 模型服务确认能力或切换模型。",
+                "image_input_unsupported": "当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。",
                 "generation_failed": "生成失败，请检查模型连接并重试。",
                 "literature_deleted": "文献已删除，本次结果不再写入。",
                 "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
                 "execution_failed": "生成失败，旧结果已保留，请重试。",
                 "preparation_failed": "无法准备阅读任务，请检查文献和模型设置后重试。",
                 "operation_busy": "当前操作已有生成任务；其他 AI 操作仍可使用。",
+                "figure_stream_required": "图表解释需要使用流式接口，请更新客户端后重试。",
                 "source_invalid": "请选择有效的项目 PDF 文件进行图表解释。"
             },
             "errorDiagnostic": "{{message}}\n{{detail}}"
@@ -5790,8 +5800,16 @@ declare module 'i18next' {
                 "title": "跳转到行",
                 "description": "输入 1 到 {{count}} 之间的行号。",
                 "confirm": "跳转"
-            },
-            "languagePending": "代码编辑器语言将在重新打开应用后生效。请先保存工作。"
+            }
+        },
+        "languageSwitch": {
+            "title": "保存并切换语言？",
+            "description_other": "有 {{count}} 个代码文件尚未保存。保存成功后，将重新加载已打开的代码编辑器并切换为{{language}}；当前页面和文件保持不变。",
+            "confirm": "保存并切换",
+            "cancel": "取消",
+            "saving": "正在保存…",
+            "saveFailed": "部分文件未能保存。请处理保存错误或外部冲突后重试。",
+            "preferencesFailed": "语言偏好未能保存。请检查后重试。"
         },
         "officeDocument": {
             "searching": "查找中…",

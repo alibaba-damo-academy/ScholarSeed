@@ -4,6 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync } = require('node:child_process')
+const { ensureArtifact } = require('./artifacts.cjs')
 
 const VENDOR_DIRECTORY = ['scripts', 'vendor', 'python-build-standalone']
 const MANIFEST_FILENAME = 'manifest.json'
@@ -38,14 +39,17 @@ function pythonRelease(repo, platform = process.platform, arch = process.arch) {
   if (!selected) throw new Error(`no Desktop Python distribution for ${platform}/${arch}`)
   if (!VERSION_PATTERN.test(manifest.python) || !VERSION_PATTERN.test(manifest.sqlite)
       || !/^\d{8}$/.test(manifest.release)) throw new Error('invalid Python runtime manifest')
-  const filename = `cpython-${manifest.python}+${manifest.release}-${selected.triple}-install_only.tar.gz`
+  const filename = selected.archive
+  if (filename !== `cpython-${manifest.python}+${manifest.release}-${selected.triple}-install_only.tar.gz`) {
+    throw new Error('Python archive name differs from its runtime manifest')
+  }
   const archive = path.join(directory, filename)
-  const checksum = fs.readFileSync(`${archive}.sha256`, 'utf8').trim().split(/\s+/)
-  if (!SHA256_PATTERN.test(checksum[0]) || checksum[1]?.replace(/^\*/, '') !== filename) {
-    throw new Error('Python archive checksum is missing or invalid')
+  if (!SHA256_PATTERN.test(selected.sha256) || typeof selected.url !== 'string' ||
+      !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
+    throw new Error('Python archive metadata is missing or invalid')
   }
   return { ...selected, python: manifest.python, sqlite: manifest.sqlite,
-    platform, archive, sha256: checksum[0] }
+    platform, archive }
 }
 
 async function verifyPythonArchive(release) {
@@ -134,7 +138,9 @@ function cleanupTemporary(directory) {
 }
 
 async function preparePython(repo) {
-  const release = await verifyPythonArchive(pythonRelease(repo))
+  const release = pythonRelease(repo)
+  await ensureArtifact(release.archive, release)
+  await verifyPythonArchive(release)
   const destination = cacheRoot(repo, release)
   if (fs.existsSync(destination)) return verifyCache(destination, release)
   fs.mkdirSync(path.dirname(destination), { recursive: true })

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from service.content.domain.model import IGNORED_NAMES, ContentError, resolve_root
 from service.content.service.space import ProjectSpace
@@ -41,7 +41,12 @@ def _entry(
         logical = space.relative(resolved)
     except (ContentError, OSError):
         return None
-    if not _inside(resolved, allowed_roots) or not resolved.is_file() or space.excluded(logical):
+    if (
+        not _inside(resolved, allowed_roots)
+        or not resolved.is_file()
+        or space.excluded(logical)
+        or not all(_scan_name(part) for part in PurePosixPath(logical).parts)
+    ):
         return None
     return ResourceEntry(
         path=logical,

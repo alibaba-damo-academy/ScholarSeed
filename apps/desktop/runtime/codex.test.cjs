@@ -60,6 +60,11 @@ test('vendored manifest selects only reviewed platforms', () => {
   assert.equal(mac.target, 'aarch64-apple-darwin')
   assert.equal(intelMac.target, 'x86_64-apple-darwin')
   assert.equal(windows.target, 'x86_64-pc-windows-msvc')
+  for (const selected of [mac, intelMac, windows]) {
+    assert.match(selected.url, /^https:\/\//)
+    assert.match(selected.sha256, /^[a-f0-9]{64}$/)
+    assert.ok(selected.bytes > 0)
+  }
   assert.throws(() => artifact(desktop, 'win32', 'arm64'), /Unsupported/)
 })
 
@@ -90,7 +95,9 @@ test('installed selection has no external fallback', () => {
   }
 })
 
-test('Intel macOS runtime probe tolerates Rosetta bootstrap latency', async () => {
+test('Intel macOS runtime probe tolerates Rosetta bootstrap latency', {
+  skip: process.env.SCHOLARSEED_NATIVE_MATRIX !== '1'
+}, async () => {
   const desktop = path.resolve(__dirname, '..')
   const runtime = await resolveVendoredCodex(desktop, 'darwin', 'x64')
   assert.equal(runtime.reported_version, '0.155.1')

@@ -16,7 +16,7 @@ def main() -> int:
         settings_module.SERVE_SETTINGS_FILE = Path(temporary) / "settings.json"
         try:
             settings = SettingsService(environ={})
-            assert settings.permission_mode() == "ask"
+            assert settings.permission_mode() == "safe_auto"
 
             for mode in ("safe_auto", "bypassPermissions", "ask"):
                 assert settings.set_permission_mode(mode) == mode

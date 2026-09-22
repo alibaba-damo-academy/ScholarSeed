@@ -72,7 +72,7 @@ user-supplied import policy.
 The stable required result is `metadata.json`. Current AS's `report.md` is
 optional and `search_provenance.json` is not generated; preserve whatever
 session/round/fallback traces AS actually supplies. After AS finishes, use the
-provided workspace launcher to import its result:
+provided workspace CLI (`runtime.cli.argv` or its matching shell command) to import its result. The following POSIX example uses `slr`; Windows uses the returned `slr.cmd` or Python command:
 
 ```bash
 ./<topic>/slr import-search --source <absolute-AS-result-directory>

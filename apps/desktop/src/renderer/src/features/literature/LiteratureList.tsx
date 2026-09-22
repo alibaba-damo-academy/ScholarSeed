@@ -56,6 +56,7 @@ import {
   useToast
 } from '../../components/ui'
 import emptyImage from '../../assets/empty_img.webp'
+import { hasDraggedFiles } from '../../drag'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { ArrowDownToLine, ArrowLeft, FileDown, Link, MonitorDown, Trash } from 'lucide-react'
@@ -93,7 +94,11 @@ import {
 } from './error'
 import { saveBibtex } from './export'
 import { LiteratureDetail } from './LiteratureDetail'
-import { timestampLabel } from './projection'
+import {
+  mergeLiteratureSummaries,
+  replaceLiteratureSummary,
+  timestampLabel
+} from './projection'
 import { createFormatters } from '../../../../localization/format'
 import {
   inheritedZoteroSelection,
@@ -657,6 +662,8 @@ export function LiteratureList(): React.JSX.Element {
   const [zoteroDestination, setZoteroDestination] = useState('')
   const [pdfImportOpen, setPdfImportOpen] = useState(false)
   const [pdfImports, setPdfImports] = useState<PdfImportRecord[]>([])
+  const [pdfDropActive, setPdfDropActive] = useState(false)
+  const pdfDragDepth = useRef(0)
   const [newlyImported, setNewlyImported] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [batchDialog, setBatchDialog] = useState<BatchDialog>(null)
@@ -673,6 +680,18 @@ export function LiteratureList(): React.JSX.Element {
   const [batchExpanded, setBatchExpanded] = useState<Set<string>>(new Set())
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [emptyImportOpen, setEmptyImportOpen] = useState(false)
+  const localUpdates = useRef(
+    new Map<
+      string,
+      {
+        item: LiteratureSummary
+        projectId: string | undefined
+        request: number
+      }
+    >()
+  )
+  const listRequest = useRef(0)
+  const pendingListRequest = useRef<number | null>(null)
   const [columns, setColumns] = useState<ColumnSetting[]>(loadColumns)
   const [draggedColumn, setDraggedColumn] = useState<ColumnKey | null>(null)
   const pdfInput = useRef<HTMLInputElement>(null)
@@ -685,6 +704,15 @@ export function LiteratureList(): React.JSX.Element {
   const saveColumns = (next: ColumnSetting[]): void => {
     setColumns(next)
     localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(next))
+  }
+  const updateVisibleItem = (updated: LiteratureSummary): void => {
+    const request = pendingListRequest.current
+    if (request !== null)
+      localUpdates.current.set(updated.id, { item: updated, projectId, request })
+    setItems((current) => replaceLiteratureSummary(current, updated))
+    const catalogueItems = catalogue.getSnapshot().items
+    const nextCatalogueItems = replaceLiteratureSummary(catalogueItems, updated)
+    if (nextCatalogueItems !== catalogueItems) catalogue.items(nextCatalogueItems)
   }
   /**
    * 所有列共用的排序切换：同一列再点一次反转方向，并持久化到 SORT_STORAGE_KEY，
@@ -747,14 +775,27 @@ export function LiteratureList(): React.JSX.Element {
   }, [query.q, search])
   useEffect(() => {
     let active = true
+    const request = ++listRequest.current
+    pendingListRequest.current = request
     const controller = new AbortController()
     setLoading(true)
     setError(null)
     listAllLiteratures(query, controller.signal)
       .then((value) => {
         if (active) {
-          setItems(value)
-          catalogue.items(value)
+          const currentUpdates = new Map(
+            [...localUpdates.current.entries()]
+              .filter(
+                ([, update]) =>
+                  update.projectId === projectId && update.request === request
+              )
+              .map(([itemId, update]) => [itemId, update.item])
+          )
+          const next = mergeLiteratureSummaries(value, currentUpdates)
+          for (const itemId of currentUpdates.keys())
+            localUpdates.current.delete(itemId)
+          setItems(next)
+          catalogue.items(next)
         }
       })
       .catch((reason: unknown) => {
@@ -770,11 +811,18 @@ export function LiteratureList(): React.JSX.Element {
           )
       })
       .finally(() => {
-        if (active) setLoading(false)
+        if (active) {
+          pendingListRequest.current = null
+          setLoading(false)
+        }
       })
     return () => {
       active = false
       controller.abort()
+      if (pendingListRequest.current === request)
+        pendingListRequest.current = null
+      for (const [itemId, update] of localUpdates.current)
+        if (update.request === request) localUpdates.current.delete(itemId)
     }
   }, [query, reload])
   useEffect(() => {
@@ -1210,11 +1258,10 @@ export function LiteratureList(): React.JSX.Element {
       return updateZoteroSelection(current, node, selected)
     })
   }
-  const uploadPdf = async (
-    event: React.ChangeEvent<HTMLInputElement>
+  const importPdfFiles = async (
+    input: FileList | readonly File[]
   ): Promise<void> => {
-    const files = [...(event.target.files ?? [])]
-    event.target.value = ''
+    const files = Array.from(input)
     if (!files.length) return
     const records = files.map(
       (file, index): PdfImportRecord => ({
@@ -1226,7 +1273,7 @@ export function LiteratureList(): React.JSX.Element {
       })
     )
     setPdfImports(records)
-    setPdfImportOpen(records.length > 1)
+    setPdfImportOpen(true)
     setError(null)
     const updateImport = (
       id: string,
@@ -1283,6 +1330,15 @@ export function LiteratureList(): React.JSX.Element {
     // 一份都没落地时不要动用户的筛选: 清搜索词与标签是为「新文献看得见」服务的。
     if (landed > 0) revealImported()
   }
+  const uploadPdf = (event: React.ChangeEvent<HTMLInputElement>): void => {
+    const files = [...(event.target.files ?? [])]
+    event.target.value = ''
+    void importPdfFiles(files)
+  }
+  const clearPdfDrop = (): void => {
+    pdfDragDepth.current = 0
+    setPdfDropActive(false)
+  }
   const uploadBibliography = async (
     event: React.ChangeEvent<HTMLInputElement>
   ): Promise<void> => {
@@ -1321,7 +1377,7 @@ export function LiteratureList(): React.JSX.Element {
         accept="application/pdf,.pdf"
         multiple
         aria-label={literature('pdfImport.choose')}
-        onChange={(event) => void uploadPdf(event)}
+        onChange={uploadPdf}
       />
       <Input
         ref={bibliographyInput}
@@ -1705,7 +1761,37 @@ export function LiteratureList(): React.JSX.Element {
         </div>
       ) : null}
       <div className={`lit-body${focusedId ? ' has-detail' : ''} isolate p-4`}>
-        <div className="relative flex flex-1 min-w-0">
+        <div
+          className="relative flex flex-1 min-w-0"
+          data-drop-active={pdfDropActive ? 'true' : 'false'}
+          data-testid="literature-drop-target"
+          onDragEnter={(event) => {
+            if (!hasDraggedFiles(event.dataTransfer)) return
+            event.preventDefault()
+            pdfDragDepth.current += 1
+            setPdfDropActive(true)
+          }}
+          onDragLeave={(event) => {
+            if (!hasDraggedFiles(event.dataTransfer)) return
+            event.preventDefault()
+            pdfDragDepth.current = Math.max(0, pdfDragDepth.current - 1)
+            if (pdfDragDepth.current === 0) setPdfDropActive(false)
+          }}
+          onDragOver={(event) => {
+            if (!hasDraggedFiles(event.dataTransfer)) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'copy'
+            setPdfDropActive(true)
+          }}
+          onDrop={(event) => {
+            if (!hasDraggedFiles(event.dataTransfer)) return
+            event.preventDefault()
+            event.stopPropagation()
+            event.dataTransfer.dropEffect = 'copy'
+            clearPdfDrop()
+            void importPdfFiles(event.dataTransfer.files)
+          }}
+        >
           <div className="lit-table flex-1 min-w-0 overflow-x-auto overflow-y-auto rounded-[var(--vds-radius-6)] border border-solid border-[var(--vds-line-1)] bg-[var(--vds-bg-gray-default)]">
             <div
               className="lit-table-head"
@@ -1919,6 +2005,17 @@ export function LiteratureList(): React.JSX.Element {
               ])
             )}
           </div>
+          {pdfDropActive ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-[var(--vds-z-local-control)] flex items-center justify-center rounded-[var(--vds-radius-6)] border-2 border-dashed border-[var(--vds-brand-border-default)] bg-[var(--vds-brand-light-bg-default)] text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-brand-text-primary)]"
+              role="status"
+            >
+              <span className="flex items-center gap-[var(--vds-space-2)]">
+                <MonitorDown size={18} strokeWidth={1.8} />
+                {literature('pdfImport.drop')}
+              </span>
+            </div>
+          ) : null}
           <div className="lit-column-actions">
             <Popover>
               <PopoverTrigger asChild>
@@ -1979,6 +2076,7 @@ export function LiteratureList(): React.JSX.Element {
             id={focusedId}
             attachmentId={focusedAttachmentId}
             onClose={() => catalogue.focus(null)}
+            onItemUpdated={updateVisibleItem}
           />
         </Sheet>
       </div>

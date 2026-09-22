@@ -46,4 +46,5 @@ function writeSkillPythonLauncher(directory, python, platform = process.platform
   return launcher
 }
 
-module.exports = { SKILL_PYTHON_COMMAND, skillPythonLauncherPath, writeSkillPythonLauncher }
+module.exports = { SKILL_PYTHON_COMMAND, SKILL_PYTHON_MODULE, skillPythonLauncherPath,
+  writeSkillPythonLauncher }

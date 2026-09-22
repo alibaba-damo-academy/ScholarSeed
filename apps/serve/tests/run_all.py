@@ -64,6 +64,7 @@ os.environ.setdefault(brand.PROJECT_DIRNAME_ENV, brand.PROJECT_DIRNAME)
 # service.research.* / ActionActor 的 42 个套件同批移除 —— 门不再挂不可导入的套件。
 SUITES = [
     "contract_folder_names",
+    "contract_runtime_components",
     "contract_oauth",
     "contract_oauth_bridge",
     "contract_subscriptions",

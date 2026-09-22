@@ -726,12 +726,17 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         self.assertIn("never translate, abbreviate, or mix them", prompt)
 
     def test_response_language_is_a_base_instruction(self) -> None:
-        response_language_rule = "Use the language of the user's own request in the current turn"
-        prompt = base_instructions()
+        response_language_rule = (
+            "Use the language of the user's own request in the **current turn** "
+            "for **all user-visible text**"
+        )
+        prompt = " ".join(base_instructions().split())
         self.assertIn(response_language_rule, prompt)
         self.assertIn("tool-call preambles", prompt)
         self.assertIn("plan steps", prompt)
-        self.assertNotIn(response_language_rule, developer_instructions())
+        self.assertIn("**Before emitting any user-visible text**", prompt)
+        self.assertIn("**correct it if needed**", prompt)
+        self.assertNotIn(response_language_rule, " ".join(developer_instructions().split()))
 
     def test_tool_preamble_uses_the_users_language(self) -> None:
         prompt = base_instructions()
@@ -743,6 +748,10 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
             "Follow the Response Language rule when writing preambles",
             prompt,
         )
+        self.assertIn("follow these principles:", prompt)
+        self.assertNotIn("follow these principles and examples:", prompt)
+        self.assertNotIn("**Examples:**", prompt)
+        self.assertNotIn("Add CLI entry with file args", prompt)
 
     def test_nonresearch_prompt_does_not_require_capability_promotion(self) -> None:
         prompt = developer_instructions()

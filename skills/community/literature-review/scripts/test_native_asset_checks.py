@@ -52,12 +52,42 @@ class AssetChecksTest(unittest.TestCase):
         plan=assets('tab:T1');plan['shared_tables'][0]['section_id']='1.2'
         self.assertEqual(self.codes(r'\label{sec:s1}\label{sec:s1_2}'+table(),plan),[])
         self.assertIn('asset_wrong_owner',self.codes(r'\label{sec:s1}\label{sec:s1_1}'+table(),plan))
+        self.assertIn('asset_wrong_owner',self.codes(r'\label{sec:s1}'+table(),plan))
+
+    def test_chapter_owner_allows_descendants_but_not_similar_chapter_prefix(self):
+        plan=assets('tab:T1')
+        self.assertNotIn('asset_wrong_owner',self.codes(r'\label{sec:s1}\label{sec:s1_2}'+table(),plan))
+        self.assertIn('asset_wrong_owner',self.codes(r'\label{sec:s10}\label{sec:s10_2}'+table(),plan))
+        figure=r'\begin{figure}\includegraphics{F1.png}\caption{Relations.}\label{fig:F1}\end{figure}'
+        plan['shared_figures']=[{'label':'fig:F1','section_id':'1'}]
+        self.assertNotIn('asset_wrong_owner',self.codes(r'\label{sec:s1_2}'+figure,plan))
 
     def test_longtable_counts_as_one_and_is_not_reported_missing_by_layout(self):
         source=table(env='longtable')
         self.assertEqual(self.codes(source,assets('tab:T1')),[])
         report=inspect_native_tables(source,assets('tab:T1')['shared_tables'])
         self.assertNotIn('planned_table_missing_from_assembled_source',str(report))
+
+    def test_long_qualification_in_nonwrapping_column_is_reported(self):
+        source=(r'\begin{table}\caption{Comparison}\label{tab:T1}'
+                r'\begin{tabularx}{\linewidth}{>{\raggedright\arraybackslash}X c}'
+                r'\toprule Method&Reasoning\\\midrule SemRank&否（单次LLM调用重排）\\'
+                r'\bottomrule\end{tabularx}\end{table}')
+        report=inspect_native_tables(source,assets('tab:T1')['shared_tables'])
+        self.assertIn('long_text_in_nonwrapping_column',str(report))
+
+    def test_standalone_longtable_is_checked_and_nested_float_is_rejected(self):
+        source=(r'\begin{longtable}{p{3cm}p{8cm}}\caption{Comparison}\label{tab:T1}\\'
+                r'\toprule Method&Result\\\midrule\endfirsthead'
+                r'\toprule Method&Result\\\midrule\endhead A&Supported\\'
+                r'\bottomrule\end{longtable}')
+        report=inspect_native_tables(source,assets('tab:T1')['shared_tables'])
+        self.assertEqual(report['status'],'SUCCESS',report)
+        self.assertEqual(report['tables_checked'],1)
+        nested=inspect_native_tables(r'\begin{table}'+source+r'\end{table}',assets('tab:T1')['shared_tables'])
+        self.assertIn('longtable_inside_unbreakable_box',str(nested))
+        missing=inspect_native_tables(source.replace(r'\endhead',''),assets('tab:T1')['shared_tables'])
+        self.assertIn('longtable_missing_repeated_header',str(missing))
 
     def test_duplicate_figure_shell_identified_without_removing_real_image(self):
         plan=assets();plan['shared_figures']=[{'label':'fig:F1','section_id':'1'}]

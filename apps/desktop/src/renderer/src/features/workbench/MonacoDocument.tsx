@@ -2,9 +2,9 @@ import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { Redo2, Replace, Save, Search, TextWrap, Undo2 } from 'lucide-react'
+import type * as Monaco from 'monaco-editor/editor/editor.api'
 
 import {
-  Alert,
   BadgeDot,
   Button,
   Dialog,
@@ -41,13 +41,9 @@ import { languageFor } from './language'
 import { encodeTextForSave, textForMonaco } from './text'
 import './editor.css'
 import { editorPerformanceFor } from './limits'
-import { MONACO_LANGUAGE } from './nls'
-import {
-  editorFor,
-  monaco,
-  restoreView,
-  saveView
-} from './monaco'
+import { restoreView, saveView } from './monaco'
+import { MonacoFrame } from './monaco/host'
+import type { MonacoFrameContext, MonacoRuntime } from './monaco/contract'
 import {
   documentTextReveal,
   selectionFingerprint,
@@ -59,8 +55,8 @@ import {
 } from './workspace'
 
 function editorSelectionViewport(
-  editor: monaco.editor.IStandaloneCodeEditor,
-  selection: monaco.Selection
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  selection: Monaco.Selection
 ): SelectionViewport | null {
   const host = editor.getDomNode()
   const end = editor.getScrolledVisiblePosition(selection.getEndPosition())
@@ -97,51 +93,62 @@ const FIND_WIDGET_SELECTOR = '.find-widget'
 const CLOSE_FIND_WIDGET_COMMAND = 'closeFindWidget'
 const FIND_WIDGET_BLUR_SOURCE = 'find-widget-blur'
 const USER_SELECTION_SOURCES = new Set(['keyboard', 'mouse'])
-const MONACO_SHORTCUT_KEYS: Readonly<Record<string, monaco.KeyCode>> = {
-  '/': monaco.KeyCode.Slash,
-  '`': monaco.KeyCode.Backquote,
-  ',': monaco.KeyCode.Comma,
-  '-': monaco.KeyCode.Minus,
-  '.': monaco.KeyCode.Period,
-  ';': monaco.KeyCode.Semicolon,
-  '=': monaco.KeyCode.Equal,
-  '[': monaco.KeyCode.BracketLeft,
-  '\\': monaco.KeyCode.Backslash,
-  ']': monaco.KeyCode.BracketRight,
-  "'": monaco.KeyCode.Quote,
-  ArrowDown: monaco.KeyCode.DownArrow,
-  ArrowLeft: monaco.KeyCode.LeftArrow,
-  ArrowRight: monaco.KeyCode.RightArrow,
-  ArrowUp: monaco.KeyCode.UpArrow,
-  End: monaco.KeyCode.End,
-  Enter: monaco.KeyCode.Enter,
-  Home: monaco.KeyCode.Home,
-  PageDown: monaco.KeyCode.PageDown,
-  PageUp: monaco.KeyCode.PageUp,
-  Space: monaco.KeyCode.Space,
-  Tab: monaco.KeyCode.Tab
-}
-const MONACO_SHORTCUT_MODIFIERS: Record<ShortcutModifier, number> = {
-  alt: monaco.KeyMod.Alt,
-  primary: monaco.KeyMod.CtrlCmd,
-  shift: monaco.KeyMod.Shift
+type MonacoKeyCodeName =
+  | 'Backquote' | 'Backslash' | 'BracketLeft' | 'BracketRight' | 'Comma'
+  | 'DownArrow' | 'End' | 'Enter' | 'Equal' | 'Home' | 'LeftArrow' | 'Minus'
+  | 'PageDown' | 'PageUp' | 'Period' | 'Quote' | 'RightArrow' | 'Semicolon'
+  | 'Slash' | 'Space' | 'Tab' | 'UpArrow'
+
+const MONACO_SHORTCUT_KEYS: Readonly<Record<string, MonacoKeyCodeName>> = {
+  '/': 'Slash',
+  '`': 'Backquote',
+  ',': 'Comma',
+  '-': 'Minus',
+  '.': 'Period',
+  ';': 'Semicolon',
+  '=': 'Equal',
+  '[': 'BracketLeft',
+  '\\': 'Backslash',
+  ']': 'BracketRight',
+  "'": 'Quote',
+  ArrowDown: 'DownArrow',
+  ArrowLeft: 'LeftArrow',
+  ArrowRight: 'RightArrow',
+  ArrowUp: 'UpArrow',
+  End: 'End',
+  Enter: 'Enter',
+  Home: 'Home',
+  PageDown: 'PageDown',
+  PageUp: 'PageUp',
+  Space: 'Space',
+  Tab: 'Tab'
 }
 
-function monacoKeyCode(key: string): monaco.KeyCode | undefined {
+function monacoShortcutModifiers(monaco: MonacoRuntime['monaco']): Record<ShortcutModifier, number> {
+  return {
+    alt: monaco.KeyMod.Alt,
+    primary: monaco.KeyMod.CtrlCmd,
+    shift: monaco.KeyMod.Shift
+  }
+}
+
+function monacoKeyCode(monaco: MonacoRuntime['monaco'], key: string): Monaco.KeyCode | undefined {
   if (/^[a-z]$/i.test(key)) return monaco.KeyCode.KeyA + key.toLowerCase().charCodeAt(0) - 'a'.charCodeAt(0)
   if (/^[0-9]$/.test(key)) return monaco.KeyCode.Digit0 + Number(key)
-  return MONACO_SHORTCUT_KEYS[key]
+  const keyName = MONACO_SHORTCUT_KEYS[key]
+  return keyName ? monaco.KeyCode[keyName] as Monaco.KeyCode : undefined
 }
 
-function monacoBinding(binding: ShortcutBinding): number {
-  const key = monacoKeyCode(binding.key)
+function monacoBinding(monaco: MonacoRuntime['monaco'], binding: ShortcutBinding): number {
+  const key = monacoKeyCode(monaco, binding.key)
   if (key === undefined) throw new Error(`Unsupported Monaco shortcut key: ${binding.key}`)
-  return binding.modifiers.reduce((value, modifier) => value | MONACO_SHORTCUT_MODIFIERS[modifier], key)
+  const modifiers = monacoShortcutModifiers(monaco)
+  return binding.modifiers.reduce((value, modifier) => value | modifiers[modifier], key)
 }
 
-function monacoShortcut(id: ShortcutCommandId, overrides: ShortcutOverrides): number | undefined {
+function monacoShortcut(monaco: MonacoRuntime['monaco'], id: ShortcutCommandId, overrides: ShortcutOverrides): number | undefined {
   const binding = effectiveShortcutBindings(id, overrides)[0]
-  return binding ? monacoBinding(binding) : undefined
+  return binding ? monacoBinding(monaco, binding) : undefined
 }
 
 const CODE_ACTIONS: Readonly<Partial<Record<ShortcutCommandId, string>>> = {
@@ -195,7 +202,7 @@ export function MonacoDocument({
   formatOnSave?: boolean
   viewKind: DocumentViewKind
 }): React.JSX.Element {
-  const { t, i18n } = useTranslation('workbench')
+  const { t } = useTranslation('workbench')
   const { t: uiText } = useTranslation('ui')
   const { toast } = useToast()
   const { state: appState, set, act } = useApp()
@@ -204,8 +211,8 @@ export function MonacoDocument({
   const session = state.sessions[sessionId]
   const tab = state.tabs[tabId]
   const reveal = documentTextReveal(tab)
-  const hostRef = useRef<HTMLDivElement>(null)
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const [frame, setFrame] = useState<MonacoFrameContext | null>(null)
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const wrapEnabledRef = useRef(appState.editorWordWrap)
   wrapEnabledRef.current = appState.editorWordWrap
   const savedVersionRef = useRef<number | null>(null)
@@ -250,12 +257,13 @@ export function MonacoDocument({
   useSelectionActionContribution(tabId, replacementContribution)
 
   useEffect(() => {
-    const host = hostRef.current
+    const host = frame?.host
     if (!host || !session || session.text === null || session.loadState !== 'ready') return
+    const monaco = frame.runtime.monaco
     const isMarkdownSource = session.viewer === 'markdown' && viewKind === 'preview'
     const lightweight = session.lightweightText
     const performance = editorPerformanceFor(session.bytes.byteLength)
-    const editor = editorFor(host, sessionId, session.source.path, session.text, {
+    const editor = frame.runtime.editorFor(host, sessionId, session.source.path, session.text, {
       readOnly: (!isMarkdownSource && viewKind === 'preview') || !session.capabilities.can_edit,
       editContext: false,
       automaticLayout: true,
@@ -279,7 +287,7 @@ export function MonacoDocument({
       return
     }
     editorRef.current = editor
-    const adaptiveFindSpace = bindAdaptiveFindSpace(editor, host)
+    const adaptiveFindSpace = bindAdaptiveFindSpace(editor, host, monaco.editor.EditorOption.padding)
     savedVersionRef.current ??= model.getAlternativeVersionId()
     const prior = restoreView(tabId)
     if (prior) editor.restoreViewState(prior)
@@ -327,15 +335,15 @@ export function MonacoDocument({
     let pendingFindBlurFrame: number | null = null
     const handleFindWidgetFocusOut = (event: FocusEvent): void => {
       const target = event.target
-      if (!(target instanceof Element)) return
-      const widget = target.closest(FIND_WIDGET_SELECTOR)
+      if (!target || typeof (target as Element).closest !== 'function') return
+      const widget = (target as Element).closest(FIND_WIDGET_SELECTOR)
       if (!widget || !host.contains(widget)) return
       const nextTarget = event.relatedTarget
-      if (nextTarget instanceof Node && widget.contains(nextTarget)) return
+      if (nextTarget && widget.contains(nextTarget as Node)) return
       if (pendingFindBlurFrame !== null) cancelAnimationFrame(pendingFindBlurFrame)
       pendingFindBlurFrame = requestAnimationFrame(() => {
         pendingFindBlurFrame = null
-        if (widget.contains(document.activeElement)) return
+        if (widget.contains(host.ownerDocument.activeElement)) return
         editor.trigger(FIND_WIDGET_BLUR_SOURCE, CLOSE_FIND_WIDGET_COMMAND, null)
       })
     }
@@ -396,10 +404,10 @@ export function MonacoDocument({
       const nativeBindings = CODE_NATIVE_BINDINGS[commandId] ?? shortcutBindings(commandId)
       for (const nativeBinding of nativeBindings) {
         if (!effective.some(candidate => sameBinding(candidate, nativeBinding))) {
-          editor.addCommand(monacoBinding(nativeBinding), () => undefined)
+          editor.addCommand(monacoBinding(monaco, nativeBinding), () => undefined)
         }
       }
-      const shortcut = monacoShortcut(commandId, appState.shortcutOverrides)
+      const shortcut = monacoShortcut(monaco, commandId, appState.shortcutOverrides)
       if (shortcut === undefined) continue
       if ((CODE_EDIT_ACTION_COMMANDS as readonly ShortcutCommandId[]).includes(commandId)) continue
       editor.addCommand(shortcut, () => {
@@ -476,7 +484,7 @@ export function MonacoDocument({
       editor.dispose()
       editorRef.current = null
     }
-  }, [appState.shortcutOverrides, controller, formatOnSave, sessionId, set, tabId, t, toast, toolbarHost, viewKind, session?.loadState])
+  }, [appState.shortcutOverrides, controller, formatOnSave, frame, sessionId, set, tabId, t, toast, toolbarHost, viewKind, session?.loadState])
 
   useEffect(() => {
     const editor = editorRef.current
@@ -625,8 +633,12 @@ export function MonacoDocument({
   )
   const editor = (
     <div className="vds-code-document is-actions-external" data-shortcut-scope="code" data-testid="document-editor" data-language={languageFor(session.source.path)}>
-      {i18n.resolvedLanguage !== MONACO_LANGUAGE && <Alert tone="info" title={t('code.languagePending')} />}
-      <div ref={hostRef} className="vds-monaco relative" data-testid="monaco-editor" />
+      <MonacoFrame
+        language={appState.lang}
+        onReady={setFrame}
+        testId="monaco-editor"
+        theme={document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'}
+      />
     </div>
   )
   if (!toolbarHost) {

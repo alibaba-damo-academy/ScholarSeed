@@ -216,6 +216,17 @@ const TAG_TONE_CLASS_NAMES: Record<
   danger:
     '[--vds-tag-background:var(--vds-error-light-bg-default)] [--vds-tag-border:var(--vds-error-light-border)] [--vds-tag-color:var(--vds-error-text-primary)] [--vds-tag-accent:var(--vds-error-text-placeholder)] [--vds-tag-close-color:var(--vds-error-bg-default)] [--vds-tag-close-hover-color:var(--vds-error-bg-hover)]'
 }
+/**
+ * 选中态的状态钩子: 只挂 class, 自身不画任何视觉。
+ *
+ * 对比交给容器表达 —— 有标签被选中时, 未选中的 chip 整体降透明度。不在 chip 自身
+ * 加描边或字重, 一是标签云换行排布, 任何尺寸变化都会让点击瞬间整片重排跳位; 二是在
+ * 一堆彩色色块里, 「把没选的压下去」比「把选中的描出来」辨识度更高。
+ *
+ * class 仍必须由组件给出: 它是 aria-pressed 之外的机器可读状态, 容器规则靠它区分
+ * 选中与未选中, 页面不该自己拼这个类名。
+ */
+const TAG_SELECTED_CLASS_NAME = 'vds-tag--selected'
 const ALERT_BASE_CLASS_NAME =
   'flex min-w-0 items-start gap-[var(--vds-space-2)] rounded-[var(--vds-alert-radius)] border border-solid border-[var(--vds-alert-border)] bg-[var(--vds-alert-background)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-alert-color)] [font-family:var(--vds-font-main)]'
 const ALERT_TONE_CLASS_NAMES: Record<AlertTone, string> = {
@@ -857,6 +868,7 @@ export function badgeStyleClassName({
 
 export interface TagClassOptions {
   className?: string
+  selected?: boolean
   size?: TagSize
   tone?: TagTone
   variant?: TagVariant
@@ -864,6 +876,7 @@ export interface TagClassOptions {
 
 export function tagVariants({
   className,
+  selected = false,
   size = 'default',
   tone,
   variant
@@ -890,6 +903,7 @@ export function tagVariants({
     TAG_BASE_CLASS_NAME,
     TAG_SIZE_CLASS_NAMES[size],
     TAG_TONE_CLASS_NAMES[visualTone],
+    selected && TAG_SELECTED_CLASS_NAME,
     className
   )
 }

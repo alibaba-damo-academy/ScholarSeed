@@ -125,26 +125,50 @@ function ModelRow({
 
 /** The shared menu owns portal positioning, viewport collision and dismissal. */
 export function ModelMenu({
-  compact = false
+  compact = false,
+  independent = false,
+  testIdPrefix = 'model',
+  modelKey,
+  onModelSelect,
+  modelFilter,
+  showEffort = true
 }: {
   compact?: boolean
+  independent?: boolean
+  testIdPrefix?: string
+  modelKey?: string
+  onModelSelect?: (model: ModelInfo) => void
+  modelFilter?: (model: ModelInfo) => boolean
+  showEffort?: boolean
 }): React.JSX.Element {
   const { state, set, act, patchThread } = useApp()
   const { t } = useTranslation('components')
   const { t: account } = useTranslation('account')
   const { models, subscriptionGroups } = state.catalog
   const effort = useEffort()
+  const [localOpen, setLocalOpen] = React.useState(false)
   const [submenu, setSubmenu] = React.useState<'effort' | null>(null)
-  const selectedModelKey = effectiveSessionModelKey(
+  const menuOpen = independent ? localOpen : state.modelMenuOpen
+  const setMenuOpen = (open: boolean): void => {
+    if (independent) setLocalOpen(open)
+    else set({ modelMenuOpen: open })
+  }
+  const sessionModelKey = effectiveSessionModelKey(
     models,
     state.model,
     state.activeSession,
     state.threads
   )
+  const controlled = onModelSelect !== undefined
+  const selectedModelKey = controlled ? (modelKey ?? '') : sessionModelKey
   const selectedModel = models.find((model) => model.key === selectedModelKey)
+  const visibleModels = React.useMemo(
+    () => modelFilter ? models.filter(modelFilter) : models,
+    [modelFilter, models]
+  )
   // 一个可选模型都没有时（未登录且未配置自有连接），持久化的默认键即使还指向某个置灰行,
   // 也不该再把它当「当前模型」展示: 按钮回到「选择模型」, 灰行上也不留选中标记。
-  const modelAvailable = hasSelectableModel(models)
+  const modelAvailable = hasSelectableModel(visibleModels)
   // 未选择模型(无可选模型, 或默认键未命中任何可选行, 如登出后仅剩置灰行): 强度入口
   // 整体禁用、回显占位符并隐藏其上方分割线。目录里的置灰行不算当前模型。
   const hasCurrentModel = modelAvailable && Boolean(selectedModel)
@@ -154,19 +178,21 @@ export function ModelMenu({
   const unavailableModelId = selectedModel
     ? ''
     : personalModelId(selectedModelKey)
-  const selectedLabel = !modelAvailable
+  const selectedLabel = controlled && selectedModel
+    ? modelDisplayLabels(selectedModel, account).label
+    : !modelAvailable
     ? t('models.choose')
     : (selectedModel && modelDisplayLabels(selectedModel, account).label) ||
       (unavailableModelId &&
         t('models.unavailable', { model: unavailableModelId })) ||
       (compact ? t('models.choose') : '—')
   const subscriptionModels = React.useMemo(
-    () => models.filter((model) => model.billing === 'subscription' && model.source !== 'builtin'),
-    [models]
+    () => visibleModels.filter((model) => model.billing === 'subscription' && model.source !== 'builtin'),
+    [visibleModels]
   )
   const apiModels = React.useMemo(
-    () => models.filter((model) => model.billing !== 'subscription'),
-    [models]
+    () => visibleModels.filter((model) => model.billing !== 'subscription'),
+    [visibleModels]
   )
   const panelRef = React.useRef<HTMLDivElement | null>(null)
   const controlsRef = React.useRef<HTMLDivElement | null>(null)
@@ -182,17 +208,21 @@ export function ModelMenu({
   // sit below the capped popover's fold. Opening at the top would leave the active model
   // off-screen, so open at the selection instead of making the user hunt for it.
   React.useEffect(() => {
-    if (!state.modelMenuOpen) return
+    if (!menuOpen) return
     const selected = panelRef.current?.querySelector<HTMLElement>('[data-selected="true"]')
     selected?.scrollIntoView({ block: 'nearest' })
     controlsRef.current?.focus()
-  }, [state.modelMenuOpen, selectedModelKey, submenu])
+  }, [menuOpen, selectedModelKey, submenu])
 
   const selectModel = async (model: ModelInfo): Promise<void> => {
     if (switching.current) return
     setSubmenu(null)
-    set({ modelMenuOpen: false })
+    setMenuOpen(false)
     if (model.key === selectedModelKey) return
+    if (controlled) {
+      onModelSelect(model)
+      return
+    }
     const sessionId = state.activeSession
     switching.current = true
     setPending({ sessionId, model: { ...model } })
@@ -254,17 +284,17 @@ export function ModelMenu({
 
   return (
     <Popover
-      open={state.modelMenuOpen}
+      open={menuOpen}
       onOpenChange={(open) => {
         if (open) setSubmenu(null)
-        set({ modelMenuOpen: open })
+        setMenuOpen(open)
       }}
     >
       <div className={MODEL_CHIP_FRAME_CLASS}>
         <PopoverTrigger asChild>
           <Button
             type="button"
-            data-testid="model-selector-toggle"
+            data-testid={`${testIdPrefix}-selector-toggle`}
             className={`${MODEL_CHIP_CLASS} w-full overflow-hidden ${compact ? 'min-h-8 !border-transparent !bg-transparent hover:!bg-[var(--vds-other-overlay-1)]' : ''}`}
             size="content"
             unstyled
@@ -275,7 +305,7 @@ export function ModelMenu({
                 ? t('models.switchingTo', { model: modelDisplayLabels(pendingHere.model, account).label })
                 : `${selectedLabel} · ${hasCurrentModel ? effort.label : '-'}`
             }
-            aria-expanded={state.modelMenuOpen}
+            aria-expanded={menuOpen}
           >
             <span
               className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left text-[var(--text)]"
@@ -375,18 +405,18 @@ export function ModelMenu({
                 </>
               )}
 
-              {models.some((model) => model.source === 'personal') && (
+              {!controlled && visibleModels.some((model) => model.source === 'personal') && (
                 <div className="px-[10px] pb-[var(--vds-space-1)] pt-[6px] text-[9.5px] leading-[1.35] text-[var(--text-3)]">
                   {t('models.effect')}
                 </div>
               )}
-              {models.length === 0 && (
+              {visibleModels.length === 0 && (
                 <div className="px-[10px] py-[var(--vds-space-2)] text-[11px] text-[var(--text-3)]">
                   {t('models.empty')}
                 </div>
               )}
             </div>
-            <div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
+            {showEffort ? <><div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
             <Button
               type="button"
               role="menuitem"
@@ -407,7 +437,7 @@ export function ModelMenu({
               <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
                 <Icon name="chevron-right" size={12} />
               </span>
-            </Button>
+            </Button></> : null}
             <div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
             <Button
               type="button"
@@ -417,7 +447,7 @@ export function ModelMenu({
               size="content"
               unstyled
               onClick={() => {
-                set({ modelMenuOpen: false })
+                setMenuOpen(false)
                 act.openSettings('models')
               }}
             >
@@ -428,7 +458,7 @@ export function ModelMenu({
             </Button>
           </div>
 
-          {submenu === 'effort' ? (
+          {showEffort && submenu === 'effort' ? (
             <div
               role="menu"
               aria-label={t('models.effortRow')}

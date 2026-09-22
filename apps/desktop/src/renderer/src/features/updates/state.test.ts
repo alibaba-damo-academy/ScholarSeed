@@ -232,6 +232,8 @@ test('failure wording follows the action that failed', () => {
     [snapshot('ready', { error: 'STATUS=乱码', errorFallback: 'install_signature_untrusted', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureUntrusted'],
     // 本机不可判定（链/吊销状态）是独立分类：文案引导修复环境后重试，而不是重新下载那条死路。
     [snapshot('ready', { error: 'STATUS=NotTrusted', errorFallback: 'install_signature_indeterminate', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installSignatureIndeterminate'],
+    // 上一轮安装器还活着：独立分类，文案说清在等什么，而不是报「安装失败」诱导对着互斥量重试。
+    [snapshot('ready', { errorFallback: 'install_already_running', errorOrigin: 'install' }), 'c:update.titleInstallFailed', 'c:update.installAlreadyRunning'],
     [snapshot('rolled-back', { rollbackVersion: '0.2.0', error: 'health confirmation timeout', errorOrigin: 'install' }), 'c:update.rolledBack', 'c:update.installFailedSub:health confirmation timeout']
   ]
   for (const [state, title, text] of cases) {

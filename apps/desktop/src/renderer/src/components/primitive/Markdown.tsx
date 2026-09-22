@@ -56,6 +56,10 @@ const MARKDOWN_QUOTE_CLASS_NAME = 'md-quote my-2.5 border-0 border-l-2 border-so
 const MARKDOWN_HR_CLASS_NAME = 'md-hr my-4 border-0 border-t border-solid border-t-[var(--border-soft)]'
 const MARKDOWN_TABLE_CLASS_NAME = [
   'md-table my-2.5 block box-border max-w-full overflow-x-auto border-collapse font-[var(--font-sans)] text-[13.5px]',
+  '[.conversation-stream_&]:!my-0 [.conversation-stream_&]:!table [.conversation-stream_&]:!overflow-visible',
+  '[.conversation-stream_&_tr]:!border-b-0 [.conversation-stream_&_tr>*:first-child]:!border-l-0 [.conversation-stream_&_tr>*:last-child]:!border-r-0',
+  '[.conversation-stream_&_thead>tr:first-child>*]:!border-t-0 [.conversation-stream_&_tbody:last-child>tr:last-child>*]:!border-b-0',
+  '[.conversation-stream_&_th]:!bg-[var(--vds-other-overlay-1)]',
   '[&_th]:border [&_td]:border [&_th]:border-[var(--border)] [&_td]:border-[var(--border)]',
   '[&_th]:px-[11px] [&_td]:px-[11px] [&_th]:py-1.5 [&_td]:py-1.5',
   '[&_th]:text-left [&_td]:text-left [&_th]:bg-[var(--bg-2)] [&_th]:font-semibold [&_th]:text-[var(--text-2)]'
@@ -323,7 +327,13 @@ function markdownComponents(): Components {
     blockquote: ({ node: _node, ...props }) => <blockquote className={MARKDOWN_QUOTE_CLASS_NAME} {...props} />,
     hr: ({ node: _node, ...props }) => <hr className={MARKDOWN_HR_CLASS_NAME} {...props} />,
     pre: ({ node: _node, ...props }) => <pre className={MARKDOWN_PRE_CLASS_NAME} {...props} />,
-    table: ({ node: _node, ...props }) => <Table className={MARKDOWN_TABLE_CLASS_NAME} density="compact" {...props} />,
+    table: ({ node: _node, ...props }) => (
+      <div className="contents [.conversation-stream_&]:block [.conversation-stream_&]:my-[var(--vds-space-3)] [.conversation-stream_&]:min-w-0 [.conversation-stream_&]:max-w-full [.conversation-stream_&]:overflow-hidden [.conversation-stream_&]:rounded-[var(--vds-radius-6)] [.conversation-stream_&]:border [.conversation-stream_&]:border-solid [.conversation-stream_&]:border-[var(--vds-border-default)]">
+        <div className="contents [.conversation-stream_&]:block [.conversation-stream_&]:max-w-full [.conversation-stream_&]:overflow-x-auto">
+          <Table className={MARKDOWN_TABLE_CLASS_NAME} density="compact" {...props} />
+        </div>
+      </div>
+    ),
     thead: ({ node: _node, ...props }) => <TableHeader {...props} />,
     tbody: ({ node: _node, ...props }) => <TableBody {...props} />,
     tr: ({ node: _node, ...props }) => <TableRow {...props} />,

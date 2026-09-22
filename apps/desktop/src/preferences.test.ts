@@ -6,17 +6,41 @@ import {
   MAX_TRACKED_RECENT_FILES,
   MAX_TRACKED_RECENT_LITERATURE,
   MAX_TRACKED_RECENT_SESSIONS,
+  MAX_MODEL_KEY_LENGTH,
   defaultRendererPreferences,
   sanitizeRecentFiles,
   sanitizeRecentLiterature,
   sanitizeRecentSessions,
   sanitizeRendererPreferences,
+  sanitizeLiteratureAiModels,
   recentLiteratureEqual,
   recentSessionsEqual,
   touchRecentFile,
   touchRecentLiterature,
   touchRecentSession
 } from './preferences.ts'
+
+test('literature AI model preferences keep only known actions and valid model keys', () => {
+  assert.deepEqual(sanitizeLiteratureAiModels({
+    document_translation: 'qwen3.8-max',
+    interpretation: 'personal-profile:gpt-5.6-sol',
+    figure_explanation: 'qwen-vl-max',
+    selection_translation: 'ignored',
+    unknown: 'ignored'
+  }), {
+    document_translation: 'qwen3.8-max',
+    interpretation: 'personal-profile:gpt-5.6-sol',
+    figure_explanation: 'qwen-vl-max'
+  })
+  assert.deepEqual(sanitizeLiteratureAiModels({
+    document_translation: '',
+    interpretation: 'x'.repeat(MAX_MODEL_KEY_LENGTH + 1),
+    figure_explanation: 42
+  }), {})
+  assert.deepEqual(sanitizeRendererPreferences({
+    literatureAiModels: { interpretation: 'gpt-5.6-sol' }
+  }).literatureAiModels, { interpretation: 'gpt-5.6-sol' })
+})
 
 test('notification preferences persist while privacy mode remains fail-closed', () => {
   const parsed = sanitizeRendererPreferences({

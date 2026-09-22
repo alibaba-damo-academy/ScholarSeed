@@ -7,6 +7,7 @@ root 从 substrate 机制路径单一来源 SCHOLARSEED_HOME 派生 (root 可经
 from __future__ import annotations
 
 import os
+import re
 from hashlib import sha256
 from pathlib import Path
 
@@ -127,8 +128,51 @@ def storage_instance_id(root: Path = SCHOLARSEED_HOME) -> str:
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# ── Windows 版本化组件仓库 (proposal 108 §7 / P2a) ─────────────────────────
+# Desktop 主进程把 python/texlive 组件 provision 到该根下并发布为不可变目录;
+# 本模块是路径契约唯一 owner, Desktop 的 runtime/components.cjs 镜像同一相对形状,
+# 两侧契约测试互相钉死 (desktop: runtime/components.test.cjs 读本文件常量比对)。
+RUNTIME_DIRNAME = "runtime"
+RUNTIME_STAGING_DIRNAME = "staging"
+RUNTIME_MANIFESTS_DIRNAME = "manifests"
+RUNTIME_LOCKS_DIRNAME = "locks"
+RUNTIME_COMPONENT_KINDS = ("python", "texlive")
+RUNTIME_DIR: Path = SCHOLARSEED_HOME / RUNTIME_DIRNAME
+RUNTIME_STAGING_DIR: Path = RUNTIME_DIR / RUNTIME_STAGING_DIRNAME
+RUNTIME_MANIFESTS_DIR: Path = RUNTIME_DIR / RUNTIME_MANIFESTS_DIRNAME
+RUNTIME_LOCKS_DIR: Path = RUNTIME_DIR / RUNTIME_LOCKS_DIRNAME
+_RUNTIME_TARGET_PATTERN = re.compile(r"^[a-z0-9]+-[a-z0-9_]+$")
+_RUNTIME_CONTENT_ID_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+
+def runtime_component_dir(kind: str, target: str, content_id: str) -> Path:
+    """已发布组件目录 <runtime>/<kind>/<target>-<contentId>。
+
+    三个入参都过形状闸再参与拼接 —— 组件目录名是路径的最后两段, 这是防穿越的唯一防线,
+    与 Desktop 侧 componentDirectoryName 同判据。
+    """
+
+    if kind not in RUNTIME_COMPONENT_KINDS:
+        raise ValueError(f"unknown runtime component kind: {kind}")
+    if not _RUNTIME_TARGET_PATTERN.fullmatch(target):
+        raise ValueError(f"invalid runtime component target: {target}")
+    if not _RUNTIME_CONTENT_ID_PATTERN.fullmatch(content_id):
+        raise ValueError(f"invalid runtime component content id: {content_id}")
+    return RUNTIME_DIR / kind / f"{target}-{content_id}"
+
+
 __all__ = [
     "SCHOLARSEED_HOME",
+    "RUNTIME_DIRNAME",
+    "RUNTIME_STAGING_DIRNAME",
+    "RUNTIME_MANIFESTS_DIRNAME",
+    "RUNTIME_LOCKS_DIRNAME",
+    "RUNTIME_COMPONENT_KINDS",
+    "RUNTIME_DIR",
+    "RUNTIME_STAGING_DIR",
+    "RUNTIME_MANIFESTS_DIR",
+    "RUNTIME_LOCKS_DIR",
+    "runtime_component_dir",
     "DEFAULT_WORKSPACE_ENV",
     "SERVICE_DIR",
     "SERVICE_BRIDGE_DIR",

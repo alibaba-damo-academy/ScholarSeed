@@ -219,8 +219,8 @@ GLOBAL_PERMISSION_MODES: tuple[str, ...] = (
     SAFE_AUTO_PERMISSION_MODE,
     BYPASS_PERMISSION_MODE,
 )
-# PRD 2.1.2 ④: 审批策略默认档为「请求批准」(敏感操作逐项确认)。
-DEFAULT_GLOBAL_PERMISSION_MODE = ASK_PERMISSION_MODE
+# 首次使用默认交由安全审批器处理；用户主动选择后持久化覆盖该缺省值。
+DEFAULT_GLOBAL_PERMISSION_MODE = SAFE_AUTO_PERMISSION_MODE
 GLOBAL_PERMISSION_MODE_KEY = "default_permission_mode"
 SESSION_PERMISSION_MODE_KEY = "initial_permission_mode"
 SESSION_WORKFLOW_ENABLED_KEY = "workflow_enabled"

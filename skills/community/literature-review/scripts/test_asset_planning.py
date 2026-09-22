@@ -117,7 +117,8 @@ class AssetPlanTest(unittest.TestCase):
         for phrase in ('- 1 Mechanisms','    - Figure F1:', '    - 1.1 Comparison', '        - Table T1:', '- 2 Limitations', '    - Table T2:'):
             self.assertIn(phrase,text)
         self.assertIn('1-2 sentences',packet['display_instructions'])
-        self.assertIn('citation format and template',packet['display_instructions'])
+        self.assertEqual(packet['confirmation']['state'], 'auto')
+        self.assertIn('without another question', packet['display_instructions'])
         for hidden in ('Visual guidance:', '| Figure |', 'purpose', 'What it shows'):
             self.assertNotIn(hidden,text)
 

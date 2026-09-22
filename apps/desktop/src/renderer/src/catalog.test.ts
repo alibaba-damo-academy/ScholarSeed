@@ -8,6 +8,7 @@ import {
   hasSelectableModel,
   personalModelId,
   pruneMissingCatalogThreads,
+  requestModelSupportsImageInput,
   requestModelKey,
   retainCatalogThread,
   selectableCatalogModelKey,
@@ -108,6 +109,23 @@ test('a request model key falls back to the default instead of sending an empty 
   assert.equal(requestModelKey(models, 'qwen3.8-max', 'unloaded-session', threads), 'qwen3.8-max')
   assert.equal(requestModelKey(models, 'qwen3.8-max', null, threads), 'qwen3.8-max')
   assert.equal(requestModelKey(models, 'qwen3.8-max', configured.id, threads), 'deepseek-v4-pro')
+})
+
+test('figure explanation reads image support from the same model selected for its request', () => {
+  const active = thread('active-session')
+  const personalKey = 'personal-0123456789abcdef0123456789abcdef:qwen3.8-max'
+  active.runtime = { name: 'codex', model_id: personalKey }
+  const threads = { [active.id]: active }
+  const models = [
+    { key: 'qwen3.8-max', image_input: false },
+    { key: personalKey, model_id: 'qwen3.8-max', image_input: true },
+    { key: 'text-only', image_input: false }
+  ]
+
+  assert.equal(requestModelSupportsImageInput(models, 'qwen3.8-max', active.id, threads), true)
+  assert.equal(requestModelSupportsImageInput(models, 'text-only', null, threads), false)
+  assert.equal(requestModelSupportsImageInput([{ key: 'undeclared' }], 'undeclared', null, {}), false)
+  assert.equal(requestModelSupportsImageInput([], 'qwen3.8-max', null, {}), false)
 })
 
 // 与后端 `parse_personal_model_key` 是同一份契约; 两侧都断言才不会各自漂移。

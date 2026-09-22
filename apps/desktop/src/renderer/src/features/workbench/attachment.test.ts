@@ -135,6 +135,80 @@ test('literature attachments use the server workbench projection before loading 
   }
 })
 
+test('project documents reuse versioning from the open projection', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://test' }
+  } as Window & typeof globalThis
+  try {
+    const requests: string[] = []
+    const versioning = {
+      file_id: 'file-notes',
+      version_id: 'version-notes',
+      working_revision: 'sha256:notes',
+      disk_revision: 'sha256:notes',
+      manual_admitted: false,
+      can_version: true,
+      can_diff: true,
+      can_preview_history: true,
+      management_state: 'managed',
+      drifted: false,
+      snapshot_state: 'saved',
+      pending: null
+    }
+    globalThis.fetch = async (request) => {
+      const url = String(request)
+      requests.push(url)
+      if (url.startsWith('http://test/api/workbench/open?')) {
+        return Response.json({
+          path: 'resources/notes.md',
+          viewer: 'markdown',
+          processor: null,
+          content_kind: 'text',
+          capabilities: {
+            can_preview: true,
+            can_edit: true,
+            can_select: true,
+            can_annotate: false,
+            can_save: true,
+            can_version: true,
+            can_diff: true,
+            pending: []
+          },
+          project_id: 'project',
+          media_type: 'text/markdown',
+          size: 8,
+          revision: 'sha256:notes',
+          content_url: '/api/workbench/content',
+          asset_id: null,
+          source_state: null,
+          versioning
+        })
+      }
+      if (url.startsWith('http://test/api/workbench/content?')) {
+        return new Response('# notes', { headers: { 'Content-Type': 'text/markdown' } })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const loaded = await loadDocument({
+      kind: 'project',
+      project: 'project',
+      path: 'resources/notes.md'
+    })
+    if (isDocumentLoadFailure(loaded)) assert.fail(loaded.code)
+    assert.deepEqual(loaded.versioning, versioning)
+    assert.deepEqual(requests, [
+      'http://test/api/workbench/open?path=resources%2Fnotes.md&project=project',
+      'http://test/api/workbench/content?path=resources%2Fnotes.md&project=project'
+    ])
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+  }
+})
+
 test('unsupported literature attachments do not download their content', async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window

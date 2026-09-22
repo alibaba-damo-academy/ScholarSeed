@@ -126,7 +126,7 @@ test('metadata sync is offered for every identifier and confirms title matches',
   assert.match(detailSource, /await applyMetadata\(fields, payload\.bib_type\)/)
   assert.match(
     detailSource,
-    /updateLiterature\(id, \{ fields, \.\.\.\(bibType \? \{ bib_type: bibType \} : \{\}\) \}, projectId\)/
+    /const update = \{ fields, \.\.\.\(bibType \? \{ bib_type: bibType \} : \{\}\) \}[\s\S]*?queueLiteratureUpdate\(update\)[\s\S]*?acceptUpdatedItem\(updated\)/
   )
   // 确认框里勾选的字段同样带上命中项的文献类型。
   assert.match(
@@ -136,7 +136,19 @@ test('metadata sync is offered for every identifier and confirms title matches',
   // 免登录: 可用性判据不再吃登录态, 页面也不再为此取账号身份。
   assert.match(detailSource, /canSyncMetadata\(item\)/)
   assert.doesNotMatch(detailSource, /useAccountIdentity/)
-  assert.match(detailSource, /catalogue\.reload\(\)/)
+  assert.match(detailSource, /onItemUpdated\(updated\)/)
+})
+
+test('basic information saves update one row without reloading the literature list', () => {
+  const saveBlock = detailSource.match(
+    /const save = async \(update: LiteratureUpdate\): Promise<void> => \{[\s\S]*?\n  \}/
+  )?.[0]
+  assert.ok(saveBlock)
+  assert.match(saveBlock, /acceptUpdatedItem\(updated\)/)
+  assert.doesNotMatch(saveBlock, /catalogue\.reload\(\)/)
+  assert.match(detailSource, /catalogue\.reloadPanel\(\)/)
+  assert.match(saveBlock, /queueLiteratureUpdate\(update\)/)
+  assert.match(detailSource, /updateQueue\.current\.then/)
 })
 
 test('metadata sync copy is localized and keeps the agreed wording', () => {

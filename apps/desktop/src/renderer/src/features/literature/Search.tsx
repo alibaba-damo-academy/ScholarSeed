@@ -84,13 +84,13 @@ interface ResultColumnLayout {
 
 const RESULT_COLUMN_SETS: Record<ResultColumnSet, ResultColumnLayout> = {
   search: {
-    grid: 'grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)]',
+    grid: 'grid-cols-[42px_minmax(360px,2fr)_minmax(280px,1.35fr)]',
     minWidth: SEARCH_RESULTS_NO_ACCESS_MIN_WIDTH_PX,
     access: false,
     detailAbstract: false
   },
   conversation: {
-    grid: 'grid-cols-[42px_minmax(280px,1.35fr)_minmax(360px,2fr)_110px]',
+    grid: 'grid-cols-[42px_minmax(360px,2fr)_minmax(280px,1.35fr)_110px]',
     minWidth: SEARCH_RESULTS_TABLE_MIN_WIDTH_PX,
     access: true,
     detailAbstract: true
@@ -690,7 +690,7 @@ export function LiteratureSearchView({
                 <span className="text-sm tabular-nums text-[var(--vds-text-secondary)]">
                   {t('batch.selected', { count: picked.length })}
                 </span>
-                <JoinLibraryMenu papers={picked} size="md" onJoined={onJoined} />
+                <JoinLibraryMenu papers={picked} size="md" variant="primary" onJoined={onJoined} />
               </div>
           </header>
         <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col gap-[var(--vds-space-4)] overflow-auto px-[var(--vds-space-5)] py-[var(--vds-space-4)]">
@@ -815,7 +815,7 @@ export function LiteratureSearchView({
                             <PaperMetadata paper={paper} />
                             <div className="mt-[var(--vds-space-2)]">
                               {isSaved(paper) ? <JoinedLabel />
-                                : <JoinLibraryMenu papers={[paper]} size="md" onJoined={onJoined} />}
+                                : <JoinLibraryMenu papers={[paper]} size="md" variant="outline" onJoined={onJoined} />}
                             </div>
                           </div>
                           <p tabIndex={0} className={RESULT_BODY_CELL_CLASS}>
@@ -954,7 +954,7 @@ export function LiteratureSearchView({
           </div>
           <footer className="shrink-0 border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-4">
             {isSaved(focused) ? <JoinedLabel />
-              : <JoinLibraryMenu className="w-full" papers={[focused]} size="md" onJoined={onJoined} />}
+              : <JoinLibraryMenu className="w-full" papers={[focused]} size="md" variant="outline" onJoined={onJoined} />}
           </footer>
         </aside>
       ) : null}

@@ -9,6 +9,13 @@ export interface TagProps extends HTMLAttributes<HTMLSpanElement> {
   closeIcon?: ReactNode
   closeLabel?: string
   onClose?: () => void
+  /**
+   * 多选筛选里的选中态, 只负责视觉 (内阴影描边)。
+   *
+   * Tag 是 span 且内部还要放关闭按钮, 没法自己变成真正的 button, 因此 role 与
+   * aria-pressed 由把它当 toggle 用的调用方声明; 纯展示的标签不传即可。
+   */
+  selected?: boolean
   size?: TagSize
   tone?: TagTone
   variant?: TagVariant
@@ -26,7 +33,7 @@ const TAG_CLOSE_CLASS_NAME = [
   'focus-visible:outline-none focus-visible:shadow-[var(--vds-focus-brand)]'
 ].join(' ')
 
-export function Tag({ children, className, closeIcon = '×', closeLabel, color, onClose, size, style, tone, variant, ...props }: TagProps): JSX.Element {
+export function Tag({ children, className, closeIcon = '×', closeLabel, color, onClose, selected = false, size, style, tone, variant, ...props }: TagProps): JSX.Element {
   const { t } = useTranslation('ui')
   const handleClose = (event: MouseEvent<HTMLButtonElement>): void => {
     event.stopPropagation()
@@ -34,7 +41,7 @@ export function Tag({ children, className, closeIcon = '×', closeLabel, color, 
   }
 
   return (
-    <span className={tagVariants({ className, size, tone, variant })} style={{ ...(color ? semanticTagVariables(color) : {}), ...style } as CSSProperties} {...props}>
+    <span className={tagVariants({ className, selected, size, tone, variant })} style={{ ...(color ? semanticTagVariables(color) : {}), ...style } as CSSProperties} {...props}>
       <span className="min-w-0 overflow-hidden text-ellipsis text-[var(--vds-tag-color)]">{children}</span>
       {onClose ? <TagClose aria-label={closeLabel ?? t('tag.close')} onClick={handleClose}>{closeIcon}</TagClose> : null}
     </span>

@@ -118,12 +118,15 @@ class WorkspaceTest(unittest.TestCase):
         choices={'formats':['markdown'],'templates':[],'citation_styles':[{'id':'numeric','usable':True},{'id':'author_year','usable':True}]}
         with patch('operator_cli.publication_options',return_value=choices):
             packet=review_packet(self.ws)
+            self.assertEqual(packet['confirmation']['state'],'required')
             with self.assertRaises(ValueError):approve(self.ws,{'packet_id':packet['packet_id']})
             with self.assertRaises(ValueError):require_approval(self.ws)
             decision={'packet_id':packet['packet_id'],'user_response':'Approved, use author-year.', 'publication':{'citation_style':'author_year'}}
             receipt=approve(self.ws,decision);require_approval(self.ws)
+            self.assertEqual(review_packet(self.ws)['confirmation']['state'],'approved')
             self.assertEqual(receipt['publication']['citation_style'],'author_year')
             configure(self.ws,{'publication':{'citation_style':'numeric'}})
+            self.assertEqual(review_packet(self.ws)['confirmation']['state'],'required')
             with self.assertRaises(ValueError):require_approval(self.ws)
             configure(self.ws,{'effective_requirements':'A changed research scope, absent from the displayed packet.'})
             with self.assertRaisesRegex(ValueError,'stale'):approve(self.ws,decision)

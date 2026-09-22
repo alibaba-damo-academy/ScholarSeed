@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { blocksRendererReload, prepareRendererLoad } from './reload.ts'
+import {
+  blocksRendererReload,
+  prepareRendererLoad
+} from './reload.ts'
 
 test('blocks product reload accelerators without consuming ordinary typing', () => {
   assert.equal(blocksRendererReload({ key: 'r', meta: true, control: false, shift: false }), true)

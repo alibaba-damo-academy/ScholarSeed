@@ -167,3 +167,24 @@ test('onboarding seen state persists through the preference writer', async () =>
   assert.equal(disk.onboarding.seen.globalLib, true)
   assert.deepEqual(applied.at(-1), { seen: { globalLib: true } })
 })
+
+test('the writer exposes only the last fully committed preference snapshot', async () => {
+  const gate = deferred<void>()
+  let disk = { ...DEFAULT_RENDERER_PREFERENCES }
+  const writer = new PreferenceWriter(disk, {
+    save: async (value) => {
+      await gate.promise
+      disk = value
+      return disk
+    },
+    reconcile: async () => disk,
+    apply: async () => {},
+    failed: () => assert.fail('unexpected failure')
+  })
+
+  const pending = writer.submit({ language: 'en' })
+  assert.equal(writer.current().language, 'zh')
+  gate.resolve()
+  await pending
+  assert.equal(writer.current().language, 'en')
+})

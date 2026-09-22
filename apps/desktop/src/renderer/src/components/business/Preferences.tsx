@@ -9,6 +9,15 @@ import { Icon } from '../../icons'
 import { useApp } from '../../store'
 import { IconFont } from '../primitive'
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPortal,
+  AlertDialogTitle,
   Button,
   Popover,
   PopoverContent,
@@ -47,6 +56,55 @@ const LANGUAGE_COMPACT_OPTION_CLASS_NAME = 'flex !h-[32px] min-h-[32px] w-full i
 const LANGUAGE_COMPACT_OPTION_ACTIVE_CLASS_NAME = 'bg-[var(--vds-other-overlay-1)]'
 const LANGUAGE_COMPACT_OPTION_MARK_CLASS_NAME = 'w-[18px] shrink-0 text-center text-[13px] font-[var(--vds-fw-medium)] leading-5 text-[var(--vds-text-secondary)]'
 const LANGUAGE_COMPACT_POPOVER_STYLE = { transform: 'translateX(-12px)' } as const
+
+export function LanguageSwitchDialog(): React.JSX.Element {
+  const { state, act } = useApp()
+  const { t } = useTranslation('workbench')
+  const pending = state.languageSwitch
+  const failure = pending?.failure
+  return (
+    <AlertDialog
+      open={Boolean(pending)}
+      onOpenChange={(open) => {
+        if (!open && !pending?.saving) act.cancelLanguageSwitch()
+      }}
+    >
+      <AlertDialogPortal>
+        <AlertDialogContent data-testid="language-switch-dialog">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('languageSwitch.title')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {failure
+                ? t(failure === 'save'
+                  ? 'languageSwitch.saveFailed'
+                  : 'languageSwitch.preferencesFailed')
+                : t('languageSwitch.description', {
+                  count: pending?.dirtyCount ?? 0,
+                  language: pending ? LOCALES[pending.target].label : ''
+                })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending?.saving}>
+              {t('languageSwitch.cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pending?.saving}
+              onClick={(event) => {
+                event.preventDefault()
+                void act.confirmLanguageSwitch()
+              }}
+            >
+              {pending?.saving
+                ? t('languageSwitch.saving')
+                : t('languageSwitch.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialog>
+  )
+}
 
 export function LanguagePopoverControl({
   className,

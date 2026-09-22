@@ -76,7 +76,7 @@ def configure_outline(ws,value):
 
 
 def review_packet(ws):
-    from writing_contract import approval_snapshot
+    from writing_contract import approval_snapshot, require_approval
     ws=Path(ws); outline=json.loads((ws/'04_outline/outline.json').read_text())
     from manuscript import validate_plan
     from writing_contract import select_outline
@@ -94,14 +94,28 @@ def review_packet(ws):
     if publication.get('format')=='latex_pdf' and publication_language(
             resolved_language_map(outline,read_request(ws)['language']))=='chinese':
         publication['template']='ctexart'
+    review_mode=read_request(ws)['outline_review']
+    confirmation_state='auto' if review_mode=='auto' else 'approved'
+    if review_mode=='required':
+        try:require_approval(ws)
+        except ValueError:confirmation_state='required'
+    display='Summarize the actual user requirements in 1-2 sentences, then display the indented outline_markdown with asset captions; do not expand descriptions, paper lists, analytical tasks or placement rationale.'
+    if confirmation_state=='auto':
+        action='Reuse the recorded automatic-continuation policy and publication settings; continue with manuscript prepare without another question.'
+    elif confirmation_state=='approved':
+        action='The current outline/task/publication snapshot already has a real approval; continue with manuscript prepare without another question.'
+    else:
+        action=('Retain publication choices explicitly stated by the user; do not ask the user to choose them again. '
+                'The current review still needs a real confirmation: ask once for missing choices or confirmation of the current settings, offering only usable options, '
+                'then record the actual reply with writing approve --request. Configured defaults alone are not user approval.')
     result={'status':'SUCCESS','packet_id':packet_id or uuid.uuid4().hex,'snapshot':snapshot,'outline':outline,
-        'outline_markdown':rendered,'display_instructions':'First summarize the actual user request, including personalized requirements, in 1-2 sentences. Then show outline_markdown as an indented hierarchy with figure/table captions under their owning sections. Do not expand descriptions, paper lists, analysis tasks, purposes or placement rationale. Finally ask for citation format and template together, offering only usable options. Reuse existing explicit choices or automatic-continuation authorization instead of asking again.',
+        'outline_markdown':rendered,'display_instructions':display+' '+action,
         'publication':publication, 'options':options,
         'summary_inputs':{k:read_request(ws).get(k) for k in ('user_requests','effective_requirements','constraints')},
-        'outline_review':read_request(ws)['outline_review'],
-        'next_action':('Summarize the user requirements briefly, display the indented outline with nested captions, and reuse recorded automatic authorization and publication choices; continue with manuscript prepare.'
-                       if read_request(ws)['outline_review']=='auto' else
-                       'Summarize the user requirements in 1-2 sentences, display the indented outline with nested captions, then ask for citation format and template; record the real reply with writing approve --request.')}
+        'outline_review':review_mode,
+        'confirmation':{'state':confirmation_state,'approval_record_needed':confirmation_state=='required',
+                        'publication_settings_are_not_proof_of_user_choice':True},
+        'next_action':display+' '+action}
     atomic_json(ws/'04_outline/review_packet.json',result)
     return result
 
@@ -115,7 +129,12 @@ def approve(ws,decision):
     if not packet_path.exists(): raise ValueError('display outline review-packet before recording a decision')
     packet=json.loads(packet_path.read_text())
     if decision.get('packet_id')!=packet['packet_id'] or packet['snapshot']!=approval_snapshot(ws): raise ValueError('decision belongs to a stale outline or task; display the current packet')
-    choice={**packet['publication'],**decision.get('publication',{})}
+    publication=decision.get('publication',{})
+    if not isinstance(publication,dict):raise ValueError('publication must be an object')
+    if 'template' in publication:
+        from task_contract import validate_template_value
+        validate_template_value(publication['template'])
+    choice={**packet['publication'],**publication}
     options=publication_options(ws)
     if choice.get('format') not in options['formats']: raise ValueError('selected output format is not available in this environment')
     if choice.get('format')=='latex_pdf' and not any(x['id']==choice.get('template') and x['usable'] for x in options['templates']): raise ValueError('selected template is not usable for the current language/environment')

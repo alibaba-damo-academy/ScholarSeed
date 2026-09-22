@@ -353,7 +353,7 @@ export type ResourceNoticeMessage = ResourceErrorMessage | {
   destination: string
   detail?: string
 } | {
-  key: 'localImport.pickerUnavailable' | 'localImport.dropPathError' | 'panel.invalidDrop' | 'feedback.revealDesktopUnavailable'
+  key: 'localImport.pickerUnavailable' | 'localImport.dropPathError' | 'panel.invalidDrop' | 'panel.loadFailed' | 'feedback.revealDesktopUnavailable'
     | 'feedback.cannotOpenSearch' | 'feedback.renameDirty' | 'feedback.nameCopied' | 'feedback.clipboardUnavailable' | 'feedback.locationUnavailable' | 'feedback.pathUnavailable' | 'feedback.pathCopied' | 'feedback.deleteDirty' | 'feedback.trashUnavailable' | 'feedback.unlinkDirty' | 'feedback.moveDirty' | 'feedback.movePathMissing' | 'feedback.alreadyAtRoot' | 'feedback.importChanged' | 'feedback.clipboardFailed' | 'feedback.revealFailed' | 'feedback.trashFailed' | 'feedback.unlinkFailed' | 'feedback.importQueued' | 'feedback.linkQueued' | 'feedback.createUncertain' | 'feedback.linkedCreateFailed' | 'feedback.openBeforeContext'
   detail?: string
 } | {
@@ -529,7 +529,7 @@ export interface ResourceState {
   /** 一次性操作反馈（成功/失败），由原子 Toast 展示。 */
   notice: ResourceNoticeState | null
   /** 树加载态，用于区分「空项目」与「还没加载完」。 */
-  loadState: 'idle' | 'loading' | 'ready' | 'error'
+  loadState: 'idle' | 'loading' | 'ready' | 'refreshing' | 'error'
 }
 
 export const INITIAL_RESOURCE_STATE: ResourceState = {

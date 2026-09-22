@@ -35,6 +35,10 @@ export class PreferenceWriter {
     return this.start()
   }
 
+  current(): RendererPreferences {
+    return this.committed
+  }
+
   private start(): Promise<void> {
     if (!this.running) {
       this.running = this.drain().finally(() => {

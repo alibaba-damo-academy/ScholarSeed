@@ -88,6 +88,8 @@ DEFAULT_SORT_COLUMN = "i.created_at"
 DEFAULT_SORT_DIRECTION = SORT_DESCENDING
 #: 所有排序共用的稳定兜底键，避免同值行的顺序随查询计划漂移。
 ROW_TIEBREAK = f"i.id {SORT_ASCENDING}"
+#: 「最近」窗口的长度。列表、计数与标签 facet 共用同一份定义。
+RECENT_WINDOW_SECONDS = 7 * 86400
 #: 曲别针列的排序键。
 ATTACHMENT_SORT_KEY = "attachment"
 ATTACHMENT_PRESENT = 0
@@ -225,6 +227,18 @@ def _collection_scope(project_id: str) -> str | None:
     """Map the public empty global scope to its persisted NULL identity."""
 
     return project_id or None
+
+
+def _recent_window(sql: str, args: builtins.list[Any]) -> str:
+    """把「最近」窗口追加到 `_selection` 的产物上, 并按引用补一个绑定参数。
+
+    必须由调用方在 `_selection` 返回之后再追加: 那段 sql 以 `FROM` 开头, 外层还要
+    接 `SELECT` 前缀、`ORDER BY` 与分页, 把窗口条件提前塞进去就会拼出非法 SQL。
+    """
+
+    sql += " AND i.created_at >= ?" if " WHERE " in sql else " WHERE i.created_at >= ?"
+    args.append(time.time() - RECENT_WINDOW_SECONDS)
+    return sql
 
 
 def encode(view: LiteratureView) -> str:
@@ -367,8 +381,7 @@ class LiteratureRepository:
             without_project=without_project,
         )
         if recent_only:
-            sql += " AND i.created_at >= ?" if " WHERE " in sql else " WHERE i.created_at >= ?"
-            args.append(time.time() - 7 * 86400)
+            sql = _recent_window(sql, args)
         sql = f"SELECT DISTINCT i.* {sql} ORDER BY {_order_by(sort, order)} LIMIT ? OFFSET ?"
         args.extend((limit, offset))
         with connect(self.database) as c:
@@ -393,8 +406,7 @@ class LiteratureRepository:
             without_project=without_project,
         )
         if recent_only:
-            sql += " AND i.created_at >= ?" if " WHERE " in sql else " WHERE i.created_at >= ?"
-            args.append(time.time() - 7 * 86400)
+            sql = _recent_window(sql, args)
         with connect(self.database) as c:
             return int(c.execute(f"SELECT count(DISTINCT i.id) {sql}", args).fetchone()[0])
 
@@ -451,10 +463,18 @@ class LiteratureRepository:
             if project_id:
                 args.append(project_id)
         if tag_ids:
+            # 多标签取交集: 命中的不同标签数必须等于请求的标签数。写成相关子查询
+            # 而不是 JOIN + GROUP BY, 因为本函数返回的 sql 之后还要被调用方接上
+            # 「最近」窗口与 ORDER BY / 分页, GROUP BY 夹在中间会把这些条件挤到
+            # 非法位置; 子查询也不会让外层行翻倍, 已有的 DISTINCT 因此保持幂等。
             placeholders = ",".join("?" for _ in tag_ids)
-            sql += " JOIN literature_item_tags it ON it.literature_id=i.id"
-            where.append(f"it.tag_id IN ({placeholders})")
+            where.append(
+                "(SELECT count(DISTINCT matched.tag_id) FROM literature_item_tags matched "
+                "WHERE matched.literature_id=i.id "
+                f"AND matched.tag_id IN ({placeholders})) = ?"
+            )
             args.extend(tag_ids)
+            args.append(len(tag_ids))
         if q:
             where.append(
                 "(i.title LIKE ? OR i.authors LIKE ? OR i.publication LIKE ? "
@@ -1335,6 +1355,57 @@ class LiteratureRepository:
                 entry["total"] = library_counts.get(entry["id"], 0)
                 rows.append(entry)
             return rows
+
+    def scoped_tags(
+        self,
+        project_id: str = "",
+        collection_ids: tuple[str, ...] = (),
+        without_collection: bool = False,
+        without_project: bool = False,
+        recent_only: bool = False,
+    ) -> builtins.list[dict[str, Any]]:
+        """侧栏标签云的作用域 facet: 全库标签都列出, 计数按当前分类收敛后降序排。
+
+        与 tags() 的差别只有计数口径: tags() 按项目收敛, 这里按分类 (含递归子孙)
+        收敛, 因此选中分类后计数会掉到 0 —— 但标签照样列出, 用户要能看到全貌并且
+        随时切回来, 而不是标签随分类忽隐忽现。
+
+        作用域刻意不含 tag_ids: 交集筛选下被选中的维度不能过滤自己的 facet, 否则
+        选中第一个标签之后其余标签的计数会退化成交集, 用户没法再叠加第二个。
+
+        count 复用 _selection, 与列表共享同一份作用域定义 (含递归子孙分类), 侧栏
+        计数因此不会和列表条数各说各话。total 仍由 tags() 给出并保持全库口径 ——
+        删除标签是全库操作, 确认框必须报全库影响面。
+        """
+
+        sql, args = self._selection(
+            q="",
+            project_id=project_id,
+            collection_ids=collection_ids,
+            tag_ids=(),
+            without_collection=without_collection,
+            without_project=without_project,
+        )
+        if recent_only:
+            sql = _recent_window(sql, args)
+        with connect(self.database) as c:
+            scoped = {
+                str(row["tag_id"]): int(row["count"])
+                for row in c.execute(
+                    "SELECT matched.tag_id, count(DISTINCT matched.literature_id) count "
+                    "FROM literature_item_tags matched WHERE matched.literature_id IN "
+                    f"(SELECT DISTINCT i.id {sql}) GROUP BY matched.tag_id",
+                    args,
+                )
+            }
+        rows = []
+        for entry in self.tags():
+            entry["count"] = scoped.get(str(entry["id"]), 0)
+            rows.append(entry)
+        # 计数降序。tags() 已经按 created_at DESC 给出, 而 list.sort 是稳定的
+        # (reverse=True 也不会翻转同值项), 所以同计数保持「新标签在前」。
+        rows.sort(key=lambda row: row["count"], reverse=True)
+        return rows
 
     def create_collection(
         self, name: str, parent_id: str | None = None, project_id: str = ""

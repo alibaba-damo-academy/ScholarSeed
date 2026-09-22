@@ -9,6 +9,7 @@
     "preparing": "正在准备书深…",
     "connecting": "正在连接已有服务…",
     "startingBackend": "正在启动本地服务…",
+    "startingBackendFirstRun": "首次启动正在初始化本地服务，可能需要数分钟…",
     "opening": "正在打开工作台…",
     "backendFailed": "书深后端启动失败",
     "interfaceFailed": "书深界面加载失败",

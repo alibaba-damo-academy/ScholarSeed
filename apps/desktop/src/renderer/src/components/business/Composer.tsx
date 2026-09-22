@@ -103,6 +103,7 @@ import {
   markOptimisticQueueOutcomeUnknown,
   optimisticQueuedMessage,
   queuedMessageErrorText,
+  queuedWithdrawalFeedback,
   queuedMessageFromPayload,
   settleOptimisticQueuedMessage,
   shouldOptimisticallyPresentUserMessage,
@@ -342,7 +343,7 @@ const SUBMENU_GAP = 6
 const SUBMENU_CLOSE_DELAY = 160
 const SUBMENU_VIEWPORT_PADDING = 8
 const submenuFlyoutClass =
-  'fixed z-[var(--vds-z-popover)] w-max overflow-hidden rounded-[12px] bg-[var(--vds-bg-white-default)] shadow-[2px_4px_12px_0_rgba(0,0,0,0.1)]'
+  'fixed z-[var(--vds-z-popover)] w-max overflow-hidden rounded-[12px] bg-[var(--vds-bg-white-default)] shadow-[2px_4px_12px_0_rgba(0,0,0,0.1)] transition-[height,top] duration-[var(--vds-duration-fast)] ease-[ease] motion-reduce:transition-none'
 const plusMenuNavClass = (hasPane: boolean): string =>
   [
     'flex w-[176px] flex-none flex-col gap-[var(--vds-space-1)]',
@@ -574,8 +575,12 @@ export function Composer({
   const [skillVisibleCount, setSkillVisibleCount] =
     React.useState(PLUS_MENU_PAGE_SIZE)
   const submenuRef = React.useRef<HTMLDivElement | null>(null)
+  const submenuContentRef = React.useRef<HTMLDivElement | null>(null)
   const submenuCloseTimerRef = React.useRef<number | null>(null)
   const plusMenuNavRef = React.useRef<HTMLDivElement | null>(null)
+  const [submenuStyle, setSubmenuStyle] = React.useState<React.CSSProperties>({
+    visibility: 'hidden'
+  })
   React.useEffect(() => {
     setPlusMenuOpen(false)
     setSkillPanelOpen(false)
@@ -784,6 +789,7 @@ export function Composer({
     cancelSubmenuClose()
     submenuCloseTimerRef.current = window.setTimeout(() => {
       submenuCloseTimerRef.current = null
+      if (submenuRef.current?.contains(document.activeElement)) return
       setSkillPanelOpen(false)
       act.closeAiContextPicker()
     }, SUBMENU_CLOSE_DELAY)
@@ -798,12 +804,12 @@ export function Composer({
   const openSourceSubmenu = (
     source: (typeof availableContextSources)[number]
   ): void => {
+    cancelSubmenuClose()
     if (
       state.aiPanel.contextPickerOpen &&
       state.aiPanel.contextPickerSource === source.id
     )
       return
-    cancelSubmenuClose()
     clearAtTrigger()
     setSkillPanelOpen(false)
     setReferenceQuery('')
@@ -814,12 +820,13 @@ export function Composer({
   // 否则首次打开会按加载占位的高度锁死坐标, 列表到达后弹窗错位。
   React.useLayoutEffect(() => {
     const el = submenuRef.current
+    const content = submenuContentRef.current
     const nav = plusMenuNavRef.current
-    if (!el || !nav) return
+    if (!el || !content || !nav) return
     if (!(skillPanelOpen || state.aiPanel.contextPickerOpen)) return
     const navRect = nav.getBoundingClientRect()
-    const width = el.offsetWidth
-    const height = el.offsetHeight
+    const width = content.offsetWidth
+    const height = content.offsetHeight
     const viewportWidth = window.innerWidth
     // 右侧宽度足够贴右侧; 不够时翻到一级菜单左侧。
     const rightLeft = navRect.right + SUBMENU_GAP
@@ -837,9 +844,17 @@ export function Composer({
         )
     // 二级弹窗底部与一级菜单底部对齐, 向上展开; 超高时收敛到视口内。
     const top = Math.max(SUBMENU_VIEWPORT_PADDING, navRect.bottom - height)
-    el.style.left = `${left}px`
-    el.style.top = `${top}px`
-    el.style.visibility = 'visible'
+    setSubmenuStyle((current) => {
+      if (
+        current.visibility === 'visible' &&
+        current.left === left &&
+        current.top === top &&
+        current.height === height
+      ) {
+        return current
+      }
+      return { height, left, top, visibility: 'visible' }
+    })
   }, [
     skillPanelOpen,
     skillQuery,
@@ -2070,6 +2085,7 @@ export function Composer({
   const retractQueuedMessage = async (
     queuedMessageId: string
   ): Promise<void> => {
+    if (queuedActionId !== null) return
     const sessionId = sidNow ?? ''
     if (!sessionId) {
       set({ foregroundError: feedback('components', 'composer.withdrawUnavailable') })
@@ -2088,19 +2104,24 @@ export function Composer({
       }))
       return
     }
-    const removed = await deleteQueuedMessage(sessionId, queuedMessageId)
-    if (removed) {
-      releaseQueuedOutbox(sessionId, queuedMessageId)
-      patchThread(sessionId, (thread) => ({
-        queuedMessages: (thread.queuedMessages ?? []).filter(
-          (item) => item.queuedMessageId !== queuedMessageId
-        )
-      }))
-      await act.loadAiContext(sessionId)
-      return
+    setQueuedActionId(queuedMessageId)
+    try {
+      const result = await deleteQueuedMessage(sessionId, queuedMessageId)
+      if (result.ok) {
+        releaseQueuedOutbox(sessionId, queuedMessageId)
+        patchThread(sessionId, (thread) => ({
+          queuedMessages: (thread.queuedMessages ?? []).filter(
+            (item) => item.queuedMessageId !== queuedMessageId
+          )
+        }))
+        await act.loadAiContext(sessionId)
+        return
+      }
+      await refreshQueuedMessages(sessionId)
+      set({ foregroundError: queuedWithdrawalFeedback(result) })
+    } finally {
+      setQueuedActionId(null)
     }
-    await refreshQueuedMessages(sessionId)
-    set({ foregroundError: feedback('components', 'composer.withdrawFailed') })
   }
 
   const sendQueued = async (queuedMessageId: string): Promise<void> => {
@@ -3157,44 +3178,46 @@ export function Composer({
                         className={submenuFlyoutClass}
                         data-testid="composer-plus-submenu"
                         ref={submenuRef}
-                        style={{ visibility: 'hidden' }}
+                        style={submenuStyle}
+                        onFocusCapture={cancelSubmenuClose}
                         onMouseEnter={cancelSubmenuClose}
                         onMouseLeave={scheduleSubmenuClose}
                       >
-                        {state.aiPanel.contextPickerOpen && (
-                          <div
-                            className={contextPaneClass}
-                            data-testid="ai-context-picker"
-                          >
-                            <ReferencePicker
-                              candidates={state.aiPanel.contextCandidates}
-                              emptyLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
-                                (source) => source.id === state.aiPanel.contextPickerSource
-                              )?.emptyLabel ?? t('composer.emptySource'))}
-                              filter={referenceFilter}
-                              loading={state.aiPanel.contextCandidatesLoading}
-                              onBack={() => act.closeAiContextPicker()}
-                              onFilterChange={setReferenceFilter}
-                              onQueryChange={setReferenceQuery}
-                              onSelect={(candidate) => {
-                                void act.addContext(candidate).then((result) => {
-                                  if (result.accepted_ref_ids.length === 0) return
-                                  setPlusMenuOpen(false)
-                                  act.closeAiContextPicker()
-                                })
-                              }}
-                              projectId={assistantProject(state).projectId}
-                              query={referenceQuery}
-                              sourceLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
-                                (source) => source.id === state.aiPanel.contextPickerSource
-                              )?.label ?? '')}
-                            />
-                          </div>
-                        )}
-                        {/* 技能列表与导航左右排列，由页面浮层避让窗口边缘。
-                        (技能名 + 一句话说明); 点某条即载入本次对话并生成输入框内的技能标签。 */}
-                        {skillPanelOpen && (
-                          <div className={skillPanelClass}>
+                        <div className="w-max" ref={submenuContentRef}>
+                          {state.aiPanel.contextPickerOpen && (
+                            <div
+                              className={contextPaneClass}
+                              data-testid="ai-context-picker"
+                            >
+                              <ReferencePicker
+                                candidates={state.aiPanel.contextCandidates}
+                                emptyLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
+                                  (source) => source.id === state.aiPanel.contextPickerSource
+                                )?.emptyLabel ?? t('composer.emptySource'))}
+                                filter={referenceFilter}
+                                loading={state.aiPanel.contextCandidatesLoading}
+                                onBack={() => act.closeAiContextPicker()}
+                                onFilterChange={setReferenceFilter}
+                                onQueryChange={setReferenceQuery}
+                                onSelect={(candidate) => {
+                                  void act.addContext(candidate).then((result) => {
+                                    if (result.accepted_ref_ids.length === 0) return
+                                    setPlusMenuOpen(false)
+                                    act.closeAiContextPicker()
+                                  })
+                                }}
+                                projectId={assistantProject(state).projectId}
+                                query={referenceQuery}
+                                sourceLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
+                                  (source) => source.id === state.aiPanel.contextPickerSource
+                                )?.label ?? '')}
+                              />
+                            </div>
+                          )}
+                          {/* 技能列表与导航左右排列，由页面浮层避让窗口边缘。
+                          (技能名 + 一句话说明); 点某条即载入本次对话并生成输入框内的技能标签。 */}
+                          {skillPanelOpen && (
+                            <div className={skillPanelClass}>
                             <div className={skillPanelHeadClass}>
                               <Icon name="search" size={14} />
                               <Input
@@ -3374,8 +3397,9 @@ export function Composer({
                                 {t('composer.manageSkills')}
                               </Button>
                             </div>
-                          </div>
-                        )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </PopoverContent>

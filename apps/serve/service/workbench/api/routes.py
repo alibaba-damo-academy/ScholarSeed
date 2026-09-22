@@ -158,6 +158,7 @@ def register_workbench_routes(app: FastAPI) -> None:
             snapshot = content.snapshot(project or "", path)
         except ContentError as exc:
             raise _fail(exc) from exc
+        versioning = None
         if snapshot.size > WORKBENCH_PREVIEW_MAX_BYTES:
             source_bytes = None
             content_kind = ContentKind.OVERSIZED
@@ -212,6 +213,7 @@ def register_workbench_routes(app: FastAPI) -> None:
             "content_url": CONTENT_ROUTE,
             "asset_id": binding.asset.asset_id if binding is not None else None,
             "source_state": binding.state.value if binding is not None else None,
+            "versioning": asdict(versioning) if versioning is not None else None,
         }
 
     @app.api_route(CONTENT_ROUTE, methods=["GET", "HEAD"])

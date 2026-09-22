@@ -1,6 +1,6 @@
 # Native Windows execution
 
-Target Windows 10+ x64 with Python 3.11+ and Chrome. The scripts use the same arguments and JSON contracts on both platforms; use the product Skill Python launcher instead of assuming a host `python3` command exists. Runtime discovery uses `.venv/Scripts/python.exe` and `.venv/Scripts/paper-dl.exe` on Windows.
+Target Windows 10+ x64 with Python 3.11+ and Chrome. The scripts use the same arguments and JSON contracts on both platforms; use `scholarseed-skill-python` and the [product Python contract](../SKILL.md#product-python), not a host `python3` or `py` command. The default downloader runs the active product `python.exe` with `-m paper_dl`. `.venv/Scripts/paper-dl.exe` belongs only to an explicitly user-selected `PAPER_DL_ROOT`, not default runtime discovery.
 
 Translate Bash examples into PowerShell when that is the current shell:
 

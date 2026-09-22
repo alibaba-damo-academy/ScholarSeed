@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next'
-import type { QueuedMessagePayload, TurnInputItem } from './api'
+import type { QueuedMessageDeleteResponse, QueuedMessagePayload, TurnInputItem } from './api'
+import { feedback, type FeedbackDescriptor } from './contracts/feedback.ts'
 import type { ConvItem, QueuedMessage } from './model'
 
 const INITIAL_QUEUE_SEQUENCE = 0
@@ -57,6 +58,31 @@ const CANCELLABLE_QUEUE_STATES = new Set<QueuedMessage['state']>([
 
 export function canCancelQueuedMessage(message: QueuedMessage): boolean {
   return CANCELLABLE_QUEUE_STATES.has(message.state)
+}
+
+const QUEUE_WITHDRAWAL_ERRORS = {
+  queued_message_not_editable: 'composer.withdrawStateChanged',
+  queued_message_not_found: 'composer.withdrawMissing',
+  session_not_found: 'composer.withdrawUnavailable',
+  session_not_live: 'composer.withdrawUnavailable'
+} as const
+
+const QUEUE_WITHDRAWAL_STATUSES = {
+  401: 'composer.withdrawDenied',
+  403: 'composer.withdrawDenied',
+  404: 'composer.withdrawUnavailable',
+  409: 'composer.withdrawStateChanged'
+} as const
+
+export function queuedWithdrawalFeedback(result: QueuedMessageDeleteResponse): FeedbackDescriptor {
+  const error = result.error ?? ''
+  if (Object.prototype.hasOwnProperty.call(QUEUE_WITHDRAWAL_ERRORS, error)) {
+    return feedback('components', QUEUE_WITHDRAWAL_ERRORS[error as keyof typeof QUEUE_WITHDRAWAL_ERRORS])
+  }
+  if (Object.prototype.hasOwnProperty.call(QUEUE_WITHDRAWAL_STATUSES, result.status)) {
+    return feedback('components', QUEUE_WITHDRAWAL_STATUSES[result.status as keyof typeof QUEUE_WITHDRAWAL_STATUSES])
+  }
+  return feedback('components', 'composer.withdrawFailed')
 }
 
 /** Idle sends read as conversation immediately; pending work keeps queue semantics. */

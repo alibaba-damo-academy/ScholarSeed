@@ -12,6 +12,13 @@ const { verifyBrowser } = require('./browser.cjs')
 const { verifyAsarClosure } = require('./closure.cjs')
 const { verifyNotices } = require('./notices.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
+const {
+  APP_COMPONENTS_FILENAME,
+  COMPONENTS_DIRNAME,
+  PYTHON_TREE_DIRNAME,
+  TEXLIVE_TREE_DIRNAME,
+  parseAppComponents
+} = require('../runtime/components.cjs')
 const { verifyPython } = require('../../../scripts/python.cjs')
 const { skillPythonLauncherPath } = require('../runtime/python.cjs')
 const { probe: probeTexlive, stagedEngines } = require('../runtime/texlive.cjs')
@@ -25,7 +32,9 @@ const LOCALIZED_PRODUCT_NAMES = {
   en: EXPECTED_PRODUCT_NAME,
   zh_CN: LOCALIZED_PRODUCT_NAME
 }
-const CHECK_TIMEOUT_MS = 600_000
+// win32 组件化后 package-check 首启要在隔离 home 里 provision 组件（~2.5GiB 解压 + 探测），
+// 600s 不够；上限放宽到 30min，仍远小于「卡死无上限」。
+const CHECK_TIMEOUT_MS = 1_800_000
 const DARWIN_SHORT_TEMP_ROOT = '/tmp'
 const DARWIN_UNIX_SOCKET_PATH_BYTES = 104
 const PACKAGE_CHECK_LOG_PREFIX = 'package-check'
@@ -34,15 +43,7 @@ const NSIS_DIRECTORY_PREFIX = '/D='
 const SYSTEM_PATHS = process.platform === 'win32'
   ? String(process.env.PATH || '').split(path.delimiter)
   : ['/usr/bin', '/bin', '/usr/sbin', '/sbin']
-const RUNTIME_PROBE_SCRIPT = `
-import importlib, json, pathlib, sysconfig
-names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex")
-root = pathlib.Path(sysconfig.get_path("purelib")).resolve()
-resolved = {name: str(pathlib.Path(importlib.import_module(name).__file__).resolve()) for name in names}
-assert all(pathlib.Path(filename).is_relative_to(root) for filename in resolved.values())
-assert not list(root.glob("__editable__*")) and not list(root.glob("*.egg-link"))
-print(json.dumps({"site_packages": str(root), "modules": resolved}, sort_keys=True))
-`.trim()
+const { RUNTIME_PROBE_SCRIPT } = require('./probe.cjs')
 
 function artifactTemporaryRoot(platform = process.platform) {
   return platform === 'darwin' ? DARWIN_SHORT_TEMP_ROOT : os.tmpdir()
@@ -165,6 +166,9 @@ async function verifyContent(application, frozen, signed = false) {
   if (JSON.stringify(compiledClosure) !== JSON.stringify(frozen.closure)) {
     throw new Error('artifact JavaScript differs from frozen compiled entries')
   }
+  if (frozen.components) {
+    return await verifyComponentContent(application, frozen, current, closure)
+  }
   const browser = frozen.platform === 'darwin'
     ? await verifyBrowser(current.resources, frozen.arch, frozen.browser, true)
     : null
@@ -216,6 +220,66 @@ async function verifyContent(application, frozen, signed = false) {
     '--manifest', path.join(backend, INVENTORY_FILENAME),
     '--requirements', path.join(backend, REQUIREMENTS_FILENAME)])
   return { current, imports, browser, closure }
+}
+
+/**
+ * win32 组件化包内验证（proposal 108 §7.3）：python/texlive 以组件 zip 交付，包内没有
+ * 松散树也没有可执行解释器，运行探针在构建期（打包前）执行并冻结进 context.components.buildTime。
+ * 这里的验证退化为摘要链：manifest 冻结哈希 → 每个 zip 的 sha256/字节数 → 通用资源哈希 →
+ * 松散树必须不存在（不保留重复组件树）。安装后的真实运行验证由 package-check 首启
+ * provision（真解压 + 真探测 + 真 serve 健康检查）承担。
+ */
+async function verifyComponentContent(application, frozen, current, closure) {
+  const backend = path.join(current.resources, 'backend')
+  const componentsDirectory = path.join(backend, COMPONENTS_DIRNAME)
+  const manifestPath = path.join(componentsDirectory, APP_COMPONENTS_FILENAME)
+  if (await sha256(manifestPath) !== frozen.components.appComponentsSha256) {
+    throw new Error('packaged app-components manifest differs from frozen build evidence')
+  }
+  const manifest = parseAppComponents(fs.readFileSync(manifestPath, 'utf8'))
+  if (!manifest ||
+      JSON.stringify(manifest.components) !== JSON.stringify(frozen.components.components)) {
+    throw new Error('packaged component manifest differs from frozen build evidence')
+  }
+  for (const component of manifest.components) {
+    const archive = path.join(componentsDirectory, component.archive)
+    fs.accessSync(archive, fs.constants.R_OK)
+    if (await sha256(archive) !== component.archiveSha256 ||
+        fs.statSync(archive).size !== component.archiveBytes) {
+      throw new Error(`packaged component archive differs from manifest: ${component.archive}`)
+    }
+  }
+  for (const tree of [PYTHON_TREE_DIRNAME, TEXLIVE_TREE_DIRNAME]) {
+    if (fs.existsSync(path.join(backend, tree))) {
+      throw new Error(`componentized payload must not keep a loose ${tree} tree`)
+    }
+  }
+  const required = [current.executable, current.codex, current.rg,
+    path.join(current.resources, 'renderer', 'index.html'),
+    path.join(current.resources, 'defaults', 'config.json'),
+    path.join(current.resources, 'product.json'),
+    path.join(current.resources, 'backend', 'skills.lock.json'),
+    current.skillPython]
+  for (const filename of required) fs.accessSync(filename, fs.constants.R_OK)
+  if (await sha256(required[4]) !== frozen.config.sha256 ||
+      await sha256(required[5]) !== frozen.product.sha256 ||
+      await sha256(required[6]) !== frozen.lockSha256 ||
+      await sha256(current.codex) !== frozen.binaries.codex.sha256 ||
+      await sha256(current.rg) !== frozen.binaries.rg.sha256) {
+    throw new Error('packaged resources differ from frozen build inputs')
+  }
+  for (const [filename, checksum] of [
+    [REQUIREMENTS_FILENAME, frozen.pythonDependencies.requirements_sha256],
+    [INVENTORY_FILENAME, frozen.pythonDependencies.inventory_sha256],
+    [VERIFIER_FILENAME, frozen.pythonDependencies.verifier_sha256]
+  ]) {
+    if (await sha256(path.join(backend, filename)) !== checksum) {
+      throw new Error(`packaged Python dependency evidence changed: ${filename}`)
+    }
+  }
+  const imports = { ...frozen.components.buildTime.imports }
+  imports.runtime = frozen.components.buildTime.python
+  return { current, imports, browser: null, closure }
 }
 
 function macTrust(application, frozen) {

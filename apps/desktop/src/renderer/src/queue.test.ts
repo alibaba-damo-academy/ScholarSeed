@@ -11,6 +11,7 @@ import {
   optimisticQueuedMessage,
   queueBlockedByUnconfirmed,
   queuedMessageErrorText,
+  queuedWithdrawalFeedback,
   queuedMessageFromPayload,
   rejectOptimisticQueuedMessage,
   settleOptimisticQueuedMessage,
@@ -25,6 +26,23 @@ import {
 } from './outbox.ts'
 
 const input = [{ type: 'text' as const, text: '继续补充证据' }]
+
+test('withdrawal feedback distinguishes conflicts, missing messages, access and uncertainty', () => {
+  const cases = [
+    { status: 409, error: 'queued_message_not_editable', key: 'composer.withdrawStateChanged' },
+    { status: 404, error: 'queued_message_not_found', key: 'composer.withdrawMissing' },
+    { status: 404, error: 'session_not_found', key: 'composer.withdrawUnavailable' },
+    { status: 403, error: '', key: 'composer.withdrawDenied' },
+    { status: 401, error: '', key: 'composer.withdrawDenied' },
+    { status: 0, error: '', key: 'composer.withdrawFailed' },
+    { status: 500, error: '', key: 'composer.withdrawFailed' }
+  ]
+  for (const entry of cases) {
+    assert.deepEqual(queuedWithdrawalFeedback({ ok: false, ...entry }), {
+      ns: 'components', key: entry.key, values: undefined
+    })
+  }
+})
 
 test('shows a running-turn submission before the server acknowledges the queue', () => {
   const optimistic = optimisticQueuedMessage([], 'client-1', input, [])

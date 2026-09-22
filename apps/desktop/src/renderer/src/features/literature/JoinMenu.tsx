@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { LiteratureSearchPaper } from '../../contracts/literature'
 import { Button, DropdownMenu, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
-  DropdownMenuTrigger, useToast, type ButtonSize } from '../../components/ui'
+  DropdownMenuTrigger, useToast, type ButtonSize, type ButtonVariant } from '../../components/ui'
 import { useApp } from '../../store'
 import { CreateCollectionDialog } from './CreateCollectionDialog'
 import { DestinationRows, MENU_BOUNDS } from './DestinationTree'
@@ -18,8 +18,8 @@ export function JoinedLabel(): React.JSX.Element {
     <Check size="1em" aria-hidden="true" /><span>{t('join.added')}</span>
   </span>
 }
-export function JoinLibraryMenu({ papers, onJoined, className, size = 'sm' }: {
-  papers: LiteratureSearchPaper[]; onJoined?: (papers: LiteratureSearchPaper[], destination: JoinDestination) => void; className?: string; size?: ButtonSize
+export function JoinLibraryMenu({ papers, onJoined, className, size = 'sm', variant = 'secondary' }: {
+  papers: LiteratureSearchPaper[]; onJoined?: (papers: LiteratureSearchPaper[], destination: JoinDestination) => void; className?: string; size?: ButtonSize; variant?: ButtonVariant
 }): React.JSX.Element {
   const { state } = useApp()
   const projectId = state.homeSelectedProjectId ?? undefined
@@ -102,7 +102,7 @@ export function JoinLibraryMenu({ papers, onJoined, className, size = 'sm' }: {
       if (value) targets.current = papers.filter(paper => !receipts.has(paperJoinKey(paper, projectId)))
       setOpen(value)
     }}>
-      <DropdownMenuTrigger asChild><Button className={className} variant="secondary" size={size} loading={busy} disabled={!papers.length || busy}
+      <DropdownMenuTrigger asChild><Button className={className} variant={variant} size={size} loading={busy} disabled={!papers.length || busy}
         onClick={event => event.stopPropagation()} data-testid="join-library-trigger">{t('join.button')}<ChevronDown size="1em" aria-hidden="true" /></Button></DropdownMenuTrigger>
       <DropdownMenuContent className={MENU_BOUNDS} onClick={event => event.stopPropagation()} onKeyDownCapture={event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setOpen(false) }

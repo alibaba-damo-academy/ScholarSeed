@@ -14,6 +14,11 @@ from manuscript_delta import apply_delta, REFINE_GUIDANCE
 from figure_caption import CAPTION_CONTENT_GUIDANCE
 from native_document import assemble, extension, figure_files, chapter_frame, complete_chapter
 from writing_prompt_guidance import TASK_GUIDANCE, MANUSCRIPT_WRITING_GUIDANCE
+from citation_identity import authoring_view, normalize_citations
+from platform_io import file_lock
+from bibliography_contract import inspect_bibliography
+from abstract_contract import (ABSTRACT_GUIDANCE, ABSTRACT_CHAPTER_GUIDANCE,
+                               ABSTRACT_REPAIR_GUIDANCE, inspect_abstracts)
 
 CHAPTER_GUIDANCE = r'''Write the assigned chapter as a raw native continuation: LaTeX for
 latex_pdf, Markdown for markdown. The script records its ID and assembles it.
@@ -40,6 +45,9 @@ context, not permission to add a table or image here. Empty tables means zero
 tables; express comparisons in prose. Otherwise write each listed table exactly
 once beneath its specified section/subsection, using its label, dimensions,
 allowed evidence and caption meaning. Write native tables, not table JSON.
+A chapter-owned asset may appear within that chapter's subsections. An asset
+assigned to a specific subsection stays within that subsection; PDF float-page
+placement does not change its source ownership.
 Figure assets have a different owner: this chapter supplies explanation and
 references only (LaTeX: Figure~\ref{fig:F1}, Chinese: 图~\ref{fig:F1}). The figure
 branch and assembler supply the image, environment, label and caption together;
@@ -65,7 +73,7 @@ dimensions, allowed citation keys and scientific caption meaning. Render the
 caption content in one \caption{...} followed by its \label{tab:T1}; LaTeX supplies
 the display number. A legacy numbered caption is rewritten as descriptive content.
 
-Every table uses a table environment with centering and is width-bounded by
+Short tables use a table environment with centering and are width-bounded by
 \linewidth. Prefer \begin{tabularx}{\linewidth}{...}. A bare tabular containing
 only l/c/r columns is forbidden when it has more than three columns or any cell
 contains explanations, assumptions, limitations, mechanisms, citations or other
@@ -73,7 +81,18 @@ free text. Use >{\raggedright\arraybackslash}X for free-text columns; use a
 ragged-right p{Wcm} only for a justified fixed width. If multiple columns contain
 free text, make all of them wrapping columns instead of giving only one column
 the remaining width. Reserve l/c/r for genuinely short atomic values such as a
-year, one number, one symbol, Y/N or a short abbreviation.
+year, one number, one symbol, Y/N or a short abbreviation. A yes/no column must
+not contain long parenthetical explanations; put qualifications in a wrapping
+column or a concise table note instead.
+
+Height matters independently of width: table and tabularx cannot break across
+pages. If descriptions make a table too tall for one page, shorten redundant
+wording while preserving evidence, or use a standalone longtable with bounded
+p{...} columns. The template loads longtable. Never nest longtable in table,
+resizebox or another unbreakable box; X columns require tabularx and do not work
+in plain longtable. Use endfirsthead/endhead to repeat column headers and place
+the planned caption and label once. Preserve every planned row and comparison
+dimension. Do not shrink a tall table into unreadable text.
 
 Keep the sum of explicit p{Wcm} widths well below \linewidth because padding also
 uses width. Keep cells concise; move shared qualifications to the caption or
@@ -103,7 +122,11 @@ qualifications, rows and comparison dimensions. Modify only the listed tables;
 tables not listed must not be redesigned for layout. Asset-contract warnings are
 a separate repair scope; caption wording may change to remove self-numbering.
 
-Make each affected table width-bounded by \linewidth. Prefer tabularx with
+Make each affected table width-bounded by \linewidth and fit its height to a page
+or use a standalone multipage longtable with repeated headers. Preserve the
+planned caption/label and rows; do not nest longtable inside a float or scaling
+box. Move long qualifications out of l/c/r columns into wrapping columns or
+table notes. Prefer tabularx with
 ragged-right wrapping X columns for free text. Replace inappropriate l/c/r columns,
 keep fixed widths conservative, and shorten only redundant wording without losing
 meaning. Use resizebox{\linewidth}{!} only when a readable tabularx design is not
@@ -120,6 +143,8 @@ def chapter_asset_contract(packet):
 
 
 def chapter_system(packet):
+    if packet.get('chapter_kind') == 'abstract':
+        return TASK_GUIDANCE + '\n' + ABSTRACT_GUIDANCE + '\n' + ABSTRACT_CHAPTER_GUIDANCE
     if not packet.get('shared_tables'):
         return CHAPTER_SYSTEM
     guidance = (TABLE_AUTHORING_GUIDANCE_LATEX if packet.get('output_format') == 'latex_pdf'
@@ -127,8 +152,10 @@ def chapter_system(packet):
     return CHAPTER_SYSTEM + '\n' + guidance
 
 
-def chapter_messages(packet):
+def chapter_messages(packet, cite_keys=None):
     packet = {**packet, 'asset_contract': chapter_asset_contract(packet)}
+    if cite_keys is not None:
+        packet = authoring_view(packet, cite_keys)
     messages=[{'role':'system','content':chapter_system(packet)},
               {'role':'user','content':json.dumps(packet,ensure_ascii=False)}]
     if 'chapter_opening' not in packet:
@@ -200,7 +227,7 @@ def prepare_packets(ws,contract,outline,assets,cards,keys,task,spec):
     for job in plan['jobs']:
         packet=packet_for([job],plan,outline,assets,cards,keys,task,request,{},spec['format'])
         path=ws/'05_generation/_internal/chapter_packets'/f"{job['section_id']}.json"
-        messages=chapter_messages(packet)
+        messages=chapter_messages(packet, keys)
         checked=capacity(messages,cfg) if cfg else None
         save(path,packet);entries.append({'section_id':job['section_id'],'path':str(path),'capacity':checked})
     save(ws/'05_generation/_internal/chapter_packets.json',{'packets':entries})
@@ -208,11 +235,9 @@ def prepare_packets(ws,contract,outline,assets,cards,keys,task,spec):
 
 
 async def generate(workspace,chapter_cfg=None,refine_cfg=None,client=None):
-    import fcntl
     ws=Path(workspace).resolve();internal=ws/'05_generation/_internal'
     internal.mkdir(parents=True,exist_ok=True)
-    with (internal/'chapter_pipeline.lock').open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with file_lock(internal/'chapter_pipeline.lock'):
         return await _generate(ws,chapter_cfg,refine_cfg,client)
 
 
@@ -237,6 +262,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
     spec=contract['publication'];suffix=extension(spec['format'])
     entries=read(gen/'_internal/chapter_packets.json')['packets']
     packets=[read(e['path']) for e in entries]
+    cite_key_map=read(ws/'03_process/cite_keys.json')
     chapter_cfg=chapter_cfg or load_stage_config('chapter_generation')
     refine_cfg=refine_cfg or load_stage_config('refinement_delta')
     if not chapter_cfg or not refine_cfg:raise GenerationError('INPUT_MISSING','chapter and refinement model configurations required')
@@ -254,12 +280,13 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         if status['jobs'].get(sid,{}).get('state')=='complete' and path.exists():
             return
         status['jobs'][sid]={'state':'running'};update()
-        messages=chapter_messages(packet)
+        messages=chapter_messages(packet, cite_key_map)
         try:
             text,metrics=await invoke(ws,'chapter_'+sid,messages,chapter_cfg,client=client,json_output=False)
+            text,repairs=normalize_citations(text,cite_key_map)
             save(path,complete_chapter(packet,text))
             status['model_calls']+=metrics['model_calls']
-            status['jobs'][sid]={'state':'complete','path':str(path)}
+            status['jobs'][sid]={'state':'complete','path':str(path),'citation_id_repairs':repairs}
         except Exception as exc:
             status['model_calls']+=getattr(exc,'context',{}).get('model_calls',0)
             status['jobs'][sid]={'state':'failed','error':diagnostic(exc)}
@@ -289,6 +316,8 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             update('assembling')
             outline=read(gen/'_internal/manuscript_outline.json')['outline']
             assemble(ws,outline,packets,spec,figures)
+        normalized,repairs=normalize_citations(v1.read_text(),cite_key_map)
+        if repairs:save(v1,normalized)
         update('refining')
         # V1 includes actual image wrappers/captions. Included text dependencies
         # are supplied in full as independent delta targets, never just paths.
@@ -326,6 +355,21 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         if asset_report['issues']:
             request_packet['asset_contract_warnings'] = asset_report['issues']
         refine_guidance=REFINE_GUIDANCE
+        bibliography_report=inspect_bibliography(sources,suffix=='md')
+        request_packet.pop('bibliography_warnings',None)
+        if bibliography_report['issues']:
+            request_packet['bibliography_warnings']=bibliography_report['issues']
+        abstract_report=inspect_abstracts(sources['main'],packets)
+        save(gen/'_status/abstract_precheck.json',abstract_report)
+        request_packet.pop('abstract_warnings',None)
+        if any(p.get('chapter_kind')=='abstract' for p in packets):
+            request_packet['abstract_instructions']=[
+                {'section_id':p['chapter_ids'][0],'output_language':p['output_language'],
+                 'local_instructions':p.get('local_instructions',{})}
+                for p in packets if p.get('chapter_kind')=='abstract']
+            refine_guidance += '\n' + ABSTRACT_GUIDANCE + '\n' + ABSTRACT_REPAIR_GUIDANCE
+        if abstract_report['issues']:
+            request_packet['abstract_warnings']=abstract_report['issues']
         if table_report['issues']:
             request_packet['table_layout_warnings']=table_report['issues']
             refine_guidance += '\n' + TABLE_REPAIR_GUIDANCE
@@ -334,7 +378,7 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
         if not response.exists():
             text,metrics=await invoke(ws,'refinement_delta',
                 [{'role':'system','content':refine_guidance},
-                 {'role':'user','content':json.dumps(request_packet,ensure_ascii=False)}],
+                 {'role':'user','content':json.dumps(authoring_view(request_packet,cite_key_map),ensure_ascii=False)}],
                 refine_cfg,client=client,json_output=False)
             status['model_calls']+=metrics['model_calls'];save(response,text)
         from scripted_generation import parse_response
@@ -346,18 +390,25 @@ async def _generate(ws,chapter_cfg,refine_cfg,client):
             save(gen/'refine.error.json',diagnostic(exc))
         # All validation precedes writes. Retain frozen included files with v1.
         for target,text in result.items():
+            text,repairs=normalize_citations(text,cite_key_map)
             if target!='main':save(paths[target],text)
+            else:result['main']=text
         save(v2,result['main'])
         post_table_report=(inspect_native_tables(result['main'],planned_tables)
                            if suffix=='tex' else {'status':'SUCCESS','tables_checked':0,'issues':[]})
         save(gen/'_status/table_layout_postcheck.json',post_table_report)
         post_asset_report = inspect_native_assets(result, asset_plan, spec['format'])
         save(gen/'_status/asset_contract_postcheck.json', post_asset_report)
+        post_abstract_report=inspect_abstracts(result['main'],packets)
+        save(gen/'_status/abstract_postcheck.json',post_abstract_report)
         status.update(status='SUCCESS',artifact=str(v2),**applied,
+                      abstract=post_abstract_report,
                       asset_contract=post_asset_report,
                       table_layout=post_table_report,
                       refinement_applied=not (gen/'refine.error.json').exists(),
                       next_action='Edit v2 and its dependencies directly; run workflow publish.')
+        if post_abstract_report['issues']:
+            status['next_action']='Review abstract default deviations against user/template exceptions; repair v2 directly where needed, then run workflow publish.'
         update('main_editable')
         return status
     except BaseException as exc:

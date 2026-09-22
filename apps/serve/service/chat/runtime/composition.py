@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
-import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -90,13 +88,11 @@ from service.platform.bridge import (
     INTERNAL_BASE_URL_ENV,
 )
 from service.platform.citations import CitationAnswerFilter
-from service.platform.executables import executable_suffix, resolve_command
+from service.platform.executables import command_directories, probe_command, resolve_command
 from service.platform.resources import AgentResourceChangeSink
 from service.settings.capabilities import REASONING_EFFORT_LEVELS
 
 EXECUTABLE_PATH_ENV = "PATH"
-BRIDGE_DIR_ENV = "SCHOLARSEED_BRIDGE_DIR"
-_BRIDGE_PROBE_TIMEOUT_SECONDS = 5
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -1094,87 +1090,24 @@ class LiveSessionService:
 
     @staticmethod
     def _resolve_bridge_executable() -> Path | None:
-        """Resolve a working ``scholarseed-bridge`` executable path, if any.
-
-        Resolution order:
-        1. ``$SCHOLARSEED_BRIDGE_DIR`` — Desktop shell injects the packaged
-           ``backend/bin/`` here. Its shells are relocatable and always the
-           authoritative source when set.
-        2. ``shutil.which(BRIDGE_COMMAND)`` — dev venv, or the packaged env's
-           ``Scripts``/``bin`` when it's already on ``PATH``.
-        3. ``sysconfig.get_path("scripts")`` — the console-script installed by
-           the running interpreter's own env, with the platform's expected
-           executable suffix. This is where installers write ``.exe``
-           trampolines on Windows and shebang scripts on POSIX; both are
-           unreliable across relocation, so we only trust them after a probe.
-
-        Every candidate is probed with ``--help``: uv-generated Windows
-        trampolines fail to canonicalize their embedded Python path after the
-        bundle is relocated and error out at exec time. Advertising a broken
-        bridge would leave the model repeatedly hitting the same failing
-        command, so we drop it and log a warning instead.
-        """
-
-        suffix = executable_suffix()
+        """Resolve and probe the first usable product/PATH/environment bridge."""
         seen: set[Path] = set()
-
-        directory_hint = os.environ.get(BRIDGE_DIR_ENV, "").strip()
-        if directory_hint:
-            candidate = Path(directory_hint) / f"{BRIDGE_COMMAND}{suffix}"
-            if candidate.is_file():
-                resolved = candidate.expanduser().resolve()
-                if LiveSessionService._probe_bridge(resolved):
-                    return resolved
-                seen.add(resolved)
-
-        which = shutil.which(BRIDGE_COMMAND)
-        if which:
-            resolved = Path(which).expanduser().resolve()
-            if resolved not in seen:
-                if LiveSessionService._probe_bridge(resolved):
-                    return resolved
-                seen.add(resolved)
-
-        sibling = resolve_command(BRIDGE_COMMAND)
-        if sibling is not None:
-            resolved = sibling.expanduser().resolve()
-            if resolved not in seen and LiveSessionService._probe_bridge(resolved):
-                return resolved
-
+        for directory in command_directories():
+            candidate = resolve_command(BRIDGE_COMMAND, directory)
+            if candidate is None or candidate in seen:
+                continue
+            seen.add(candidate)
+            if LiveSessionService._probe_bridge(candidate):
+                return candidate
         _LOGGER.warning(
-            "scholarseed-bridge executable unavailable; agents will not see the product bridge on PATH"
+            "scholarseed-bridge executable unavailable; no working launcher was selected"
         )
         return None
 
     @staticmethod
     def _probe_bridge(path: Path) -> bool:
-        """Return True when ``path --help`` exits cleanly.
-
-        ``--help`` runs the argparse root of ``service.cli.bridge`` and never
-        touches any network or filesystem beyond loading the interpreter, so
-        it is safe to invoke unconditionally as a probe.
-        """
-
-        try:
-            result = subprocess.run(
-                [str(path), "--help"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                timeout=_BRIDGE_PROBE_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            _LOGGER.warning("scholarseed-bridge probe failed at %s: %s", path, error)
-            return False
-        if result.returncode != 0:
-            _LOGGER.warning(
-                "scholarseed-bridge probe at %s exited with code %s: %s",
-                path,
-                result.returncode,
-                result.stderr.decode(errors="replace")[:200] if result.stderr else "",
-            )
-            return False
-        return True
+        """Probe bridge help without entering a product operation."""
+        return probe_command(path)
 
     def _session_options(
         self,

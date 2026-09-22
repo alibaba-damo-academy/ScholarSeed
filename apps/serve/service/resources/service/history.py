@@ -1554,6 +1554,7 @@ class ResourceVersionService:
                 drifted=state.drifted,
                 file_id=state.file_id,
                 working_revision=state.working_revision,
+                disk_revision=state.observed_revision,
                 version_id=state.version_id,
                 snapshot_state=state.snapshot_state,
                 pending=state.pending,

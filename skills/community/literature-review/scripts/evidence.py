@@ -23,7 +23,8 @@ OPTIONAL = {
 # Only operational metadata is excluded from the writing view. Unknown business
 # fields inside card/common_fields are retained, including formulas and results.
 OPERATIONAL = {'source_maps', 'source_map', 'provenance', 'processing_log',
-               'request_log', 'cache_path', 'source_path', 'processing_status'}
+               'request_log', 'cache_path', 'source_path', 'processing_status',
+               'paperId', 'paper_id'}
 
 
 def read(path):
@@ -159,6 +160,7 @@ def build(ws, view, options=None):
         index[pid] = {**head, 'field_mapping': mapping,
                       'source_pointer': f'03_process/paper_cards.json#/{pid}'}
         lines += [f"## [{keys[pid]}] {head['title']}",
+                  f"Type: {head['paper_type']}; Year: {head['year']}; Evidence: {head['reading_depth']}" if view == 'writing' else
                   f"ID: {pid}; Type: {head['paper_type']}; Year: {head['year']}; Evidence: {head['reading_depth']}"]
         for label, value in fields.items():
             lines.append(f'{label}: ' + (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)))

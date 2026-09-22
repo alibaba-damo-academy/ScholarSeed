@@ -4,7 +4,8 @@ Desktop ships a pruned TeX Live tree in `resources/backend/texlive` so the
 bundled `literature-review` skill can compile Chinese (`xelatex` + `ctexart` +
 `xeCJK`) and English (`pdflatex` + the skill's `neurips_2026.sty`) survey PDFs
 with `bibtex`, without depending on TeX installed on the user's machine. The
-bundle script verifies the checked-in archive checksum before staging it, and
+bundle script downloads the reviewed archive through the shared cache and verifies
+its checksum before staging it, and
 `backend.ts` puts the platform binary directory on the `PATH` it hands to Serve,
 so the skill resolves the engines with its existing `shutil.which` lookups.
 
@@ -19,12 +20,8 @@ Current source:
   host's system fonts and is identical on macOS and Windows)
 - macOS archive: `texlive-2026-universal-darwin.tar.gz` (top-level member `texlive/`)
 - Windows archive: `texlive-2026-windows.tar.gz` (top-level member `texlive/`)
-- archive SHA-256: see `<archive>.sha256` sidecar files
-- stored in **Git LFS**, like the Codex archives: `.gitattributes` maps
-  `scripts/vendor/texlive/*.tar.gz` to the LFS filter, and `.gitignore` needs the
-  `!scripts/vendor/texlive/*.tar.gz` negation because the repository ignores
-  `*.tar.gz` globally. The LFS `oid` is the same SHA-256 as the sidecar, so a
-  committed pointer and the sidecar cross-check each other.
+- archive URL, byte length and SHA-256: see `manifest.json`
+- archives are published as GitHub Release assets and are not stored in Git or Git LFS
 - macOS extracted tree: 306 MB; archive: 117 MB
 - licenses: `texlive/LICENSE.TL` and `texlive/LICENSE.CTAN` inside the archive;
   per-package licenses ship with their own files
@@ -49,15 +46,15 @@ scripts\vendor\texlive\build-windows.ps1 -WorkDir C:\absolute\scratch\dir
 ```
 
 The recipe needs network access (it is the only TeX Live download point in the
-repository) and runs the compile oracle before freezing. Packaging itself stays
-offline and only consumes the committed archive.
+repository) and runs the compile oracle before freezing. Packaging consumes the
+verified user-level cache and only downloads when that cache is missing.
 
 `build.sh` and `build-windows.ps1` are not byte-reproducible: macOS `/usr/bin/tar`
 and Windows `System32\tar.exe` are bsdtar, which has no `--sort`, so member order
 follows the filesystem walk. Member mtimes are normalized and the gzip header is
-stripped (`gzip -n` / `tar -czf`). The committed archive plus its sidecar are the
-artifact of record; equivalence after a rebuild is established by the oracle, not
-by digest.
+stripped (`gzip -n` / `tar -czf`). The release asset plus manifest digest are the
+artifact of record; equivalence after a rebuild is established by the oracle and
+reviewed metadata.
 
 ## Order constraints in the recipe
 

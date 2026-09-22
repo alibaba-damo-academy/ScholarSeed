@@ -1,7 +1,9 @@
-import React from 'react'
+import React, { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
-import { Button, Card, CardContent, CardHeader, CardTitle, ProgressBar, Spinner } from '../../../components/ui'
+import { Button, Card, CardContent, CardHeader, CardTitle, IconButton, ProgressBar, Spinner } from '../../../components/ui'
+import { Icon } from '../../../icons'
 import {
   officeWarmupProgress,
   shouldShowOfficeWarmup,
@@ -21,7 +23,11 @@ export function OfficeWarmup({
   visible: boolean
 }): React.JSX.Element | null {
   const { t } = useTranslation('workbench')
-  if (!shouldShowOfficeWarmup(status, visible)) return null
+  const [dismissedError, setDismissedError] = useState(false)
+  useEffect(() => {
+    if (status.stage !== 'error' && dismissedError) setDismissedError(false)
+  }, [dismissedError, status.stage])
+  if (!shouldShowOfficeWarmup(status, visible) || (status.stage === 'error' && dismissedError)) return null
   const progress = officeWarmupProgress(status)
   const detail = status.stage === 'reading'
     ? t('officeWarmup.reading', { done: status.done, total: status.total, size: (status.loadedBytes / MEBIBYTE).toFixed(1) })
@@ -35,17 +41,29 @@ export function OfficeWarmup({
             ? t('officeWarmup.error')
             : t('officeWarmup.title')
 
-  return (
+  const content = (
     <Card
-      className="pointer-events-auto fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] z-[var(--vds-z-background-task)] w-[calc(var(--vds-popover-width-md)-var(--vds-space-10))]"
+      className={`pointer-events-auto fixed bottom-[var(--vds-space-4)] right-[var(--vds-space-4)] ${status.stage === 'error' ? 'z-[var(--vds-z-toast)]' : 'z-[var(--vds-z-background-task)]'} w-[calc(var(--vds-popover-width-md)-var(--vds-space-10))]`}
       data-testid="office-font-warmup"
       variant="elevated"
     >
       <CardHeader className="pb-[var(--vds-space-2)]">
-        <CardTitle className="flex items-center gap-[var(--vds-space-2)]">
-          {status.stage !== 'error' && <Spinner size="sm" />}
-          {status.stage === 'error' ? t('officeWarmup.error') : t('officeWarmup.title')}
-        </CardTitle>
+        <div className="flex items-center justify-between gap-[var(--vds-space-2)]">
+          <CardTitle className="flex items-center gap-[var(--vds-space-2)]">
+            {status.stage !== 'error' && <Spinner size="sm" />}
+            {status.stage === 'error' ? t('officeWarmup.error') : t('officeWarmup.title')}
+          </CardTitle>
+          {status.stage === 'error' && (
+            <IconButton
+              data-testid="office-font-warmup-close"
+              icon={<Icon name="close" size={14} />}
+              label={t('officeDocument.close')}
+              onClick={() => setDismissedError(true)}
+              size="sm"
+              variant="ghost"
+            />
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {shouldShowOfficeWarmupProgress(status, visible) && (
@@ -55,4 +73,5 @@ export function OfficeWarmup({
       </CardContent>
     </Card>
   )
+  return status.stage === 'error' ? createPortal(content, document.body) : content
 }

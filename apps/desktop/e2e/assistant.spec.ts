@@ -466,6 +466,59 @@ test('Folder expands', async ({}, testInfo) => {
   }
 })
 
+test('Assistant reference filters keep one visible animated flyout', async ({}, testInfo) => {
+  test.skip(
+    !CONTEXT_SOURCES_E2E_ENABLED,
+    'requires Resource and Literature features to register their Assistant source contributions'
+  )
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const panel = page.getByTestId('ai-panel')
+    if (!await panel.isVisible()) await page.getByTestId('topbar-ai').click()
+    await panel.getByTestId('composer-plus').click()
+    await page.getByTestId('composer-add-session-context').click()
+    await expect(page.getByTestId('ai-context-picker')).toBeVisible()
+    const referenceSubmenu = page.getByTestId('composer-plus-submenu')
+    const referenceSubmenuElement = await referenceSubmenu.elementHandle()
+    if (!referenceSubmenuElement) throw new Error('reference_submenu_missing')
+    const transitionProperties = await referenceSubmenu.evaluate((element) => (
+      getComputedStyle(element).transitionProperty.split(',').map((property) => property.trim())
+    ))
+    expect(transitionProperties).toEqual(expect.arrayContaining(['height', 'top']))
+
+    for (const filter of ['recent', 'newest', 'all'] as const) {
+      await page.getByTestId(`reference-picker-filter-${filter}`).click()
+      await expect(page.getByTestId(`reference-picker-filter-${filter}`)).toHaveAttribute('aria-pressed', 'true')
+      await expect(referenceSubmenu).toBeVisible()
+      expect(await referenceSubmenu.evaluate(
+        (element, initialElement) => element === initialElement,
+        referenceSubmenuElement
+      )).toBe(true)
+    }
+    await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
+    const search = page.getByTestId('reference-picker-search')
+    await search.fill('啊')
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
+    await expect(search).toBeVisible()
+    await expect(search).toBeFocused()
+    await search.pressSequentially('发')
+    await expect(search).toHaveValue('啊发')
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-filters-stable.png') })
+    await search.press('Escape')
+    await expect(referenceSubmenu).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('Assistant resources and literature enter through the prototype queue and reach the real Agent', async ({}, testInfo) => {
   test.skip(
     !CONTEXT_SOURCES_E2E_ENABLED,

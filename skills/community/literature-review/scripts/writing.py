@@ -24,7 +24,9 @@ from writing_contract import (preparation_identity, digest, load_outline, read_r
                               require_approval, select_outline, validate_request)
 from _utils import extract_json, format_paper_card_nested
 from output_spec import read_output_spec
+from citation_identity import authoring_view, normalize_citations_in_value
 
+from platform_io import file_lock
 
 def read(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -286,6 +288,7 @@ async def generate(ws, ids, concurrency, repairs, overwrite, dry_run, client=Non
             started = time.monotonic()
             try:
                 context = packet(ws, sid)
+                cite_key_map = read(ws / '03_process/cite_keys.json')
                 fingerprint = digest(context)
                 target = ws / f"05_generation/section_drafts/{sid}.json"
                 dest = ws / f"05_generation/_internal/writing_packets/{sid}.json"
@@ -307,7 +310,7 @@ async def generate(ws, ids, concurrency, repairs, overwrite, dry_run, client=Non
                                 "degraded": bool(old.get("degraded"))}
                     raise ValueError("existing draft differs from this input; review it or use --overwrite explicitly")
                 messages = [{"role": "system", "content": SYSTEM},
-                            {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+                            {"role": "user", "content": json.dumps(authoring_view(context, cite_key_map), ensure_ascii=False)},
                             {"role": "user", "content": assignment_constraints(context)}]
                 history = ws / "_logs/writing/history" / call_group
                 context_path = history / f"{sid}.context.json"
@@ -341,6 +344,7 @@ async def generate(ws, ids, concurrency, repairs, overwrite, dry_run, client=Non
                     normalized = []
                     try:
                         value = extract_json(raw)
+                        value = normalize_citations_in_value(value, cite_key_map)
                         from asset_wrappers import normalize
                         value, normalized = normalize(value, context, render_table)
                         errors = validate_draft(value, context)
@@ -512,10 +516,8 @@ def main():
         elif args.action in ("context", "draft"):
             # One writer coordinator per workspace. Separate workspaces can run
             # concurrently; this prevents duplicate ownership and status races.
-            import fcntl
             (ws / "05_generation/_internal").mkdir(parents=True, exist_ok=True)
-            with (ws / "05_generation/_internal/writing.lock").open("w") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with file_lock(ws / "05_generation/_internal/writing.lock"):
                 result = asyncio.run(generate(ws, args.only, args.concurrency, args.repairs,
                                                args.overwrite, args.dry_run or args.action == "context"))
         elif args.action == "review":

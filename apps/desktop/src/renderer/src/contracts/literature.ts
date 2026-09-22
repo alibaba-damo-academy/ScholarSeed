@@ -75,6 +75,11 @@ export interface LiteratureFacets {
   collections: LiteratureFacet[]; tags: LiteratureTagFacet[]; item_types: LiteratureFacet[]
   publications: LiteratureFacet[]; years: Array<{ value: number; count: number }>
 }
+/**
+ * 侧栏标签云的作用域 facet。与 LiteratureFacets 分开, 因为那一份的 collections 同时
+ * 喂着分类树, 不能按分类收窄; 这一份的标签计数按分类收敛并按计数降序。
+ */
+export interface LiteratureTagFacets { tags: LiteratureTagFacet[] }
 export interface LiteratureProject {
   id: string; name: string; count: number; collections: LiteratureFacet[]
 }

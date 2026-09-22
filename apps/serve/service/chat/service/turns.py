@@ -48,9 +48,11 @@ from service.chat.constants import (
 from service.chat.persistence.catalog import (
     QUEUE_SUBMITTABLE_STATES,
     QueuedMessageState,
+    SessionCatalogStore,
     SessionQueueCapacityError,
     SessionStateConflictError,
 )
+from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.activation import ACTIVATION_SAFE_ERRORS, SessionActivationError
 from service.chat.runtime.live import LiveSession
 from service.chat.runtime.projection import queued_message_payload
@@ -97,6 +99,11 @@ RESOURCE_REVIEW_REQUIRED = "resource_review_required"
 SESSION_NOT_LIVE = "session_not_live"
 QUEUED_MESSAGE_NOT_SENDABLE = "queued_message_not_sendable"
 QUEUED_MESSAGE_CONFLICT = "queued_message_conflict"
+QUEUED_MESSAGE_NOT_EDITABLE = "queued_message_not_editable"
+QUEUED_MESSAGE_NOT_FOUND = "queued_message_not_found"
+SESSION_NOT_FOUND = "session_not_found"
+QUEUE_DELETED_REASON = "deleted"
+HTTP_OK = 200
 TURN_RESULT_SAFE_ERRORS = ACTIVATION_SAFE_ERRORS | frozenset(
     {
         TURN_INPUT_INVALID,
@@ -166,6 +173,8 @@ class TurnService:
         context_source: AssistantTurnContextSource | None = None,
         deliveries: ResourceDeliveryService | None = None,
         review_batches: ResourceReviewAdmission | None = None,
+        catalog: SessionCatalogStore | None = None,
+        events: ProductEventStore | None = None,
     ) -> None:
         self._sessions = sessions
         self._logger = logger
@@ -173,6 +182,8 @@ class TurnService:
         self._context_source = context_source
         self._deliveries = deliveries
         self._review_batches = review_batches
+        self._catalog = catalog
+        self._events = events
 
     def bind_context_source(self, source: AssistantTurnContextSource) -> None:
         """在应用组合阶段绑定唯一的产品上下文来源。"""
@@ -608,32 +619,71 @@ class TurnService:
     ) -> tuple[dict[str, Any], int]:
         live = self._sessions.get(session_id)
         if live is None:
-            return {"ok": False, "error": "session_not_live"}, HTTP_NOT_FOUND
+            catalog = self._catalog
+            session = catalog.get(session_id) if catalog is not None else None
+            if session is None or catalog is None:
+                return {"ok": False, "error": SESSION_NOT_FOUND}, HTTP_NOT_FOUND
+            payload, status = self._delete_persisted_queue(catalog, session_id, queued_message_id)
+            if (
+                payload["ok"]
+                and self._events is not None
+                and self._events.by_key(session_id, f"queue:{queued_message_id}:deleted") is None
+            ):
+                self._events.append(
+                    session_id=session_id,
+                    runtime_id=session.runtime_id,
+                    vendor_thread_id=session.vendor_thread_id or "",
+                    vendor_turn_id=None,
+                    vendor_item_id=None,
+                    kind=PRODUCT_EVENT_MESSAGE_REMOVED,
+                    payload={"queued_message_id": queued_message_id, "reason": QUEUE_DELETED_REASON},
+                    idempotency_key=f"queue:{queued_message_id}:deleted",
+                )
+            return payload, status
         waiting_task: asyncio.Task[TurnResult] | None = None
         async with live.lifecycle_lock:
-            queued = live.catalog.queued_message(session_id, queued_message_id)
-            if not live.catalog.delete_queued_message(session_id, queued_message_id):
-                return {
-                    "ok": False,
-                    "error": "queued_message_not_editable",
-                }, HTTP_CONFLICT
+            if self._sessions.get(session_id) is not live:
+                return await self.delete_queued(session_id, queued_message_id)
+            payload, status = self._delete_persisted_queue(
+                live.catalog, session_id, queued_message_id
+            )
+            if not payload["ok"]:
+                return payload, status
             if live.waiting_request_id == queued_message_id:
                 waiting_task = live.resource_task
                 if waiting_task is not None:
                     waiting_task.cancel()
-            if queued is not None:
-                client_turn_id = str(queued.body.get("client_user_message_id") or "")
-                if client_turn_id:
-                    self._discard_queued_context(live, client_turn_id)
         if waiting_task is not None:
             await asyncio.gather(waiting_task, return_exceptions=True)
         await self._drain_next(live)
-        await live.publish(
-            PRODUCT_EVENT_MESSAGE_REMOVED,
-            {"queued_message_id": queued_message_id, "reason": "deleted"},
-            idempotency_key=f"queue:{queued_message_id}:deleted",
-        )
-        return {"ok": True, "queued_message_id": queued_message_id}, 200
+        if (
+            self._events is None
+            or self._events.by_key(session_id, f"queue:{queued_message_id}:deleted") is None
+        ):
+            await live.publish(
+                PRODUCT_EVENT_MESSAGE_REMOVED,
+                {"queued_message_id": queued_message_id, "reason": QUEUE_DELETED_REASON},
+                idempotency_key=f"queue:{queued_message_id}:deleted",
+            )
+        return payload, status
+
+    def _delete_persisted_queue(
+        self,
+        catalog: SessionCatalogStore,
+        session_id: str,
+        queued_message_id: str,
+    ) -> tuple[dict[str, Any], int]:
+        queued = catalog.queued_message(session_id, queued_message_id)
+        if queued is None:
+            return {"ok": False, "error": QUEUED_MESSAGE_NOT_FOUND}, HTTP_NOT_FOUND
+        if not catalog.delete_queued_message(session_id, queued_message_id):
+            queued = catalog.queued_message(session_id, queued_message_id)
+            if queued is None or queued.state is not QueuedMessageState.CANCELLED:
+                return {"ok": False, "error": QUEUED_MESSAGE_NOT_EDITABLE}, HTTP_CONFLICT
+        client_turn_id = str(queued.body.get("client_user_message_id") or "")
+        if client_turn_id:
+            self._finalize_context(session_id, client_turn_id, AssistantTurnFinalization.DISCARDED)
+        return {"ok": True, "queued_message_id": queued_message_id}, HTTP_OK
 
     async def cancel_pending_locked(self, session_id: str) -> None:
         """Settle unsent work before termination; the caller owns lifecycle_lock."""
@@ -1101,10 +1151,10 @@ class TurnService:
         }, status
 
     def _release_queued_context(self, live: LiveSession, client_turn_id: str) -> None:
-        self._finalize_context(live, client_turn_id, AssistantTurnFinalization.REJECTED)
+        self._finalize_context(live.id, client_turn_id, AssistantTurnFinalization.REJECTED)
 
     def _discard_queued_context(self, live: LiveSession, client_turn_id: str) -> None:
-        self._finalize_context(live, client_turn_id, AssistantTurnFinalization.DISCARDED)
+        self._finalize_context(live.id, client_turn_id, AssistantTurnFinalization.DISCARDED)
 
     @staticmethod
     def _with_context(
@@ -1343,7 +1393,7 @@ class TurnService:
                 error=runtime_result.safe_error,
             )
             self._finalize_context(
-                live,
+                live.id,
                 turn_input.client_user_message_id,
                 self._context_outcome(outcome),
             )
@@ -1376,7 +1426,7 @@ class TurnService:
                     live, turn_input.client_user_message_id, TURN_OUTCOME_UNCONFIRMED, unknown=True
                 )
             self._finalize_context(
-                live,
+                live.id,
                 turn_input.client_user_message_id,
                 self._context_outcome(
                     runtime_result.outcome if runtime_result is not None else None
@@ -1420,7 +1470,7 @@ class TurnService:
                 runtime_result.outcome if runtime_result is not None else None,
                 rejected=rejected,
             )
-            self._finalize_context(live, turn_input.client_user_message_id, context_outcome)
+            self._finalize_context(live.id, turn_input.client_user_message_id, context_outcome)
             if live.terminating or live.terminated:
                 result = TurnResult(
                     turn_id=turn_input.client_user_message_id,
@@ -1548,7 +1598,7 @@ class TurnService:
 
     def _finalize_context(
         self,
-        live: LiveSession,
+        session_id: str,
         client_turn_id: str,
         outcome: AssistantTurnFinalization,
     ) -> None:
@@ -1556,7 +1606,7 @@ class TurnService:
             return
         try:
             self._context_source.finalize(
-                session_id=live.id,
+                session_id=session_id,
                 client_turn_id=client_turn_id,
                 outcome=outcome,
             )
@@ -1564,7 +1614,7 @@ class TurnService:
             self._logger.error(
                 ASSISTANT_CONTEXT_FINALIZE_FAILED,
                 extra={
-                    "session_id": live.id,
+                    "session_id": session_id,
                     "client_turn_id": client_turn_id,
                     "outcome": outcome.value,
                     "failure_type": type(exc).__name__,

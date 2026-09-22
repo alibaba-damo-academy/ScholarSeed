@@ -33,8 +33,24 @@ import { LineTimestamper, RotatingFileLog } from './logfile'
 import type { BackendFailure } from './failure'
 import { projectCodexRuntimeEnvironment } from './runtime'
 import { bundledCodex, resolveVendoredCodex } from '../../runtime/codex.cjs'
+import {
+  APP_COMPONENTS_FILENAME,
+  COMPONENTS_DIRNAME,
+  PYLIBS_DIRNAME,
+  PYTHON_KIND,
+  RUNTIME_DIRNAME,
+  parseAppComponents,
+  storeComponentDirectory
+} from '../../runtime/components.cjs'
 import { skillPythonLauncherPath, writeSkillPythonLauncher } from '../../runtime/python.cjs'
 import { bundledTexlive, resolveVendoredTexlive } from '../../runtime/texlive.cjs'
+import {
+  ensureComponents,
+  persistComponentLog,
+  sweepUnreferencedComponents
+} from './components'
+import type { ProvisionedComponents } from './components'
+import { isFirstRun, writeStartupMarker } from './startupmarker'
 
 export interface BackendHandle {
   port: number
@@ -72,6 +88,12 @@ interface BackendPaths {
   rendererDist: string | null
   hookBin: string | null
   skillBin: string
+  /**
+   * win32 组件化布局（proposal 108 §7）：包内没有松散 python/texlive 树，解释器与
+   * TeX 引擎在启动前由组件存储 provision 到 `<SCHOLARSEED_HOME>/runtime/`。此字段
+   * 非空时 python 指向组件仓库的期望路径，`startBackend` 必须先 ensureComponents。
+   */
+  componentProvision?: { backendDirectory: string; storeRoot: string }
 }
 
 // Prototype fallback for the packaged app on the build machine: if no relocatable
@@ -103,7 +125,14 @@ const PACKAGED_DEFAULT_WORKSPACE_NAME = 'ScholarSeed'
 // 生成 .scholarseed、内容库 seed 整棵仓库树)。dev 默认隔离到仓库内 tmp/ (scratch 约定,
 // 已 gitignore), 既不污染仓库本体也不碰打包版的真实用户数据。
 const DEV_DEFAULT_WORKSPACE_SUBPATH = ['tmp', 'desktop-workspace'] as const
+// Steady-state budget: the /api/healthz readiness contract (see HEALTH_PROBE_TIMEOUT_MS)
+// plus spawn latency, with margin.
 const HEALTH_TIMEOUT_MS = 45_000
+// First launch of a build (install or update): Windows Defender's on-access scan reads the
+// bundled Python environment file by file on first exec, so a *live* backend can need minutes
+// before it binds. A dead backend still fails fast — the health wait races process exit, and
+// the marker (see startupmarker.ts) keeps this budget off steady-state launches.
+const HEALTH_TIMEOUT_FIRST_RUN_MS = 300_000
 // /api/healthz includes the Codex version and login preflight. Each vendor command has a
 // 10-second budget and the two commands run sequentially, so a desktop probe must outlive
 // that readiness contract. A shorter HTTP timeout repeatedly cancels a healthy cold start.
@@ -130,6 +159,7 @@ const SCHOLARSEED_CODEX_EXECUTABLE_ENV = 'SCHOLARSEED_CODEX_EXECUTABLE'
 const SCHOLARSEED_PYTHON_ENV = 'SCHOLARSEED_PYTHON'
 const PYTHON_DONT_WRITE_BYTECODE_ENV = 'PYTHONDONTWRITEBYTECODE'
 const PATH_ENV = 'PATH'
+const PYTHONPATH_ENV = 'PYTHONPATH'
 const ELECTRON_EXECUTABLE_ENV = 'SCHOLARSEED_ELECTRON_EXECUTABLE'
 // Absolute path to the packaged product-shell directory (backend/bin/). serve
 // composition_ prefers this over PATH scanning when spawning subprocess
@@ -182,6 +212,30 @@ function resolveBackendPaths(): BackendPaths {
     const bundledPy = join(bundled, ...bundledPython)
     const hookBin = join(bundled, HOOK_BIN_DIR)
     const bundledNode = join(hookBin, NODE_SHIM)
+    // win32 组件化载荷：backend/components/app-components.json 存在即走组件仓库寻址；
+    // SCHOLARSEED_PYTHON 显式覆盖时保持原语义（不 provision，直接用它）。
+    const manifestPath = join(bundled, COMPONENTS_DIRNAME, APP_COMPONENTS_FILENAME)
+    if (process.platform === 'win32' && !process.env[SCHOLARSEED_PYTHON_ENV] && existsSync(manifestPath)) {
+      const manifest = parseAppComponents(readFileSync(manifestPath, 'utf8'))
+      if (manifest) {
+        const storeRoot = join(desktopHome(), RUNTIME_DIRNAME)
+        const pythonComponent = manifest.components.find((component) => component.kind === PYTHON_KIND)
+        if (pythonComponent) {
+          const componentRoot = storeComponentDirectory(
+            storeRoot, pythonComponent.kind, manifest.target, pythonComponent.contentId)
+          return {
+            python: join(componentRoot, ...pythonComponent.entry.split('/')),
+            cwd: process.env.SCHOLARSEED_REPO || bundled,
+            rendererDist: process.env.SCHOLARSEED_RENDERER_DIST || join(process.resourcesPath, 'renderer'),
+            hookBin: existsSync(bundledNode) ? hookBin : null,
+            skillBin: hookBin,
+            componentProvision: { backendDirectory: bundled, storeRoot }
+          }
+        }
+      }
+      // 清单缺失/非法不在这里静默兜底：落到下方松散树检查（必然 miss）→ REPO_FALLBACK →
+      // 打包机上不存在 → inspectPython/existsSync 用明确错误暴露构建缺陷。
+    }
     const hasBundled = existsSync(bundledPy)
     return {
       python: process.env[SCHOLARSEED_PYTHON_ENV] || (hasBundled ? bundledPy : join(REPO_FALLBACK, ...venvPython)),
@@ -364,7 +418,40 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     handle.port = port
     handle.baseUrl = baseUrl
 
-    const { python, cwd, rendererDist, hookBin, skillBin } = resolveBackendPaths()
+    const backendPaths = resolveBackendPaths()
+    const { python, cwd, rendererDist, hookBin, skillBin } = backendPaths
+    // 组件化布局：解释器/TeX 在组件仓库里，启动前 provision（命中即毫秒级返回；
+    // 首启展开以分钟计，事件落 logs/components.log）。失败 = 启动失败，fail-closed，
+    // 绝不回落宿主 Python（AGENTS.md 硬约束）。
+    let provisionedComponents: ProvisionedComponents | null = null
+    if (backendPaths.componentProvision) {
+      const { backendDirectory, storeRoot } = backendPaths.componentProvision
+      const componentLog = (line: string): void => {
+        log(`[shell] ${line}`)
+        persistComponentLog(join(desktopHome(), LOGS_DIRNAME), line)
+      }
+      try {
+        provisionedComponents = await ensureComponents({
+          backendDirectory,
+          storeRoot,
+          log: componentLog
+        })
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        handle.error = { kind: 'startupFailed', detail: `component provisioning failed: ${detail}` }
+        log(`[shell] ERROR component provisioning failed: ${detail}\n`)
+        return false
+      }
+      // GC 在关键路径之外：只回收未被本轮清单引用的组件，best-effort。
+      const referenced = provisionedComponents.manifest.components.map((component) => component.contentId)
+      setTimeout(() => {
+        try {
+          sweepUnreferencedComponents(storeRoot, referenced, componentLog)
+        } catch {
+          /* GC 失败只影响磁盘占用 */
+        }
+      }, 0)
+    }
     if (!existsSync(python)) {
       handle.error = { kind: 'pythonMissing', path: python }
       log(`[shell] ERROR python not found: ${python}\n`)
@@ -421,7 +508,9 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       : ''
     let codexExecutable = bundledCodexExecutable
     let texliveExecutableDirectory: string | null = app.isPackaged
-      ? bundledTexlive(process.resourcesPath)
+      ? (provisionedComponents
+        ? provisionedComponents.texliveBinDirectory
+        : bundledTexlive(process.resourcesPath))
       : null
     if (vendoredRuntimes) {
       const [codexResolution, texliveResolution] = await vendoredRuntimes
@@ -511,6 +600,9 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     const env: NodeJS.ProcessEnv = {
       ...browserEnvironment(codexRuntime.environment, process.resourcesPath, python, app.isPackaged),
       ...(app.isPackaged ? { [PYTHON_DONT_WRITE_BYTECODE_ENV]: '1' } : {}),
+      // 组件化布局：产品代码在 backend/pylibs（随应用版本走），解释器/第三方依赖在组件仓库
+      // （随锁文件走）。serve 及其子进程经 PYTHONPATH 解析产品模块。
+      ...(provisionedComponents ? { [PYTHONPATH_ENV]: join(cwd, PYLIBS_DIRNAME) } : {}),
       [PATH_ENV]: executablePath,
       PYTHONUNBUFFERED: '1',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
@@ -558,8 +650,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       resolveExit({ code, signal })
     })
 
+    const firstRun = isFirstRun(desktopHome(), app.getVersion())
+    const healthBudget = firstRun ? HEALTH_TIMEOUT_FIRST_RUN_MS : HEALTH_TIMEOUT_MS
+    log(`[shell] health budget=${healthBudget}ms (first-run=${firstRun})\n`)
     const startup = await Promise.race([
-      waitForHealth(baseUrl, HEALTH_TIMEOUT_MS, log).then((ok) => ({ kind: 'health' as const, ok })),
+      waitForHealth(baseUrl, healthBudget, log).then((ok) => ({ kind: 'health' as const, ok })),
       handle.exited.then((exit) => ({ kind: 'exit' as const, exit }))
     ])
     if (startup.kind === 'exit') {
@@ -570,6 +665,11 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
     if (!startup.ok) {
       handle.error = { kind: 'healthTimeout' }
       return false
+    }
+    try {
+      writeStartupMarker(desktopHome(), app.getVersion())
+    } catch (error) {
+      log(`[shell] WARN startup marker not written: ${String(error)}\n`)
     }
     return true
   })().catch((error: unknown) => {

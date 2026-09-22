@@ -7,6 +7,8 @@
  * **不再按扩展名自行判断**（架构文档 §4.3）。这样"能不能编辑"只有一处答案。
  */
 
+import type { ResourceCapability } from './resources.ts'
+
 /** Viewer 种类。与后端 `ViewerKind` 同名。 */
 export { resourceEditorHasChanges, reconcileResourceEditors } from '../features/workbench/workspace.ts'
 
@@ -58,6 +60,7 @@ export interface OpenDocumentResult {
   content_url: string
   asset_id: string | null
   source_state: 'available' | 'missing' | 'authorization_required' | 'conflict' | null
+  versioning: ResourceCapability | null
 }
 
 /**

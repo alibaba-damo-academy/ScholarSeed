@@ -22,7 +22,9 @@ const {
   frozenProductConfiguration,
   installerArtifacts,
   localDmgbuild,
-  writeBuilderConfiguration
+  writeBuilderConfiguration,
+  resolveNsisConfiguration,
+  payloadStatistics
 } = require('./build.cjs')
 const {
   adHocOptions,
@@ -111,9 +113,13 @@ test('macOS development protocol registration uses a stable checkout-specific bu
 const ROOT_PACKAGE = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'))
 const WORKSPACE_SOURCE = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'workspace.cjs'), 'utf8')
 const BUNDLE_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, 'bundle.cjs'), 'utf8')
+const PROBE_SOURCE = fs.readFileSync(path.join(__dirname, 'probe.cjs'), 'utf8')
 test('backend bundling uses current runtime and product configuration owners', () => {
   assert.ok(BUNDLE_BACKEND_SOURCE.includes("'runtime', 'packages/runtime'"))
-  assert.ok(BUNDLE_BACKEND_SOURCE.includes('"scholarseed_runtime"'))
+  // 产品模块清单的唯一载体已移入 scripts/probe.cjs（bundle 构建期与 verify 包内验证共用），
+  // bundle.cjs 必须真的执行这份探针。
+  assert.ok(PROBE_SOURCE.includes('"scholarseed_runtime"'))
+  assert.ok(BUNDLE_BACKEND_SOURCE.includes('RUNTIME_PROBE_SCRIPT'))
   assert.ok(!BUNDLE_BACKEND_SOURCE.includes('packages/damoagent'))
   assert.ok(!BUNDLE_BACKEND_SOURCE.includes('"damoagent"'))
 })
@@ -121,6 +127,7 @@ const VERIFY_SOURCE = fs.readFileSync(path.join(__dirname, 'verify.cjs'), 'utf8'
 const BUILD_SOURCE = fs.readFileSync(path.join(__dirname, 'build.cjs'), 'utf8')
 const DESKTOP_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'backend.ts'), 'utf8')
 const UPDATER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'updater.ts'), 'utf8')
+const UPDATE_CONTRACT_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'updates.ts'), 'utf8')
 const AUTHENTICODE_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'authenticode.ts'), 'utf8')
 const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'installer.nsh'), 'utf8')
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
@@ -141,7 +148,7 @@ const REVIEWED_BINARIES = {
   codex: {
     executable_sha256: 'a'.repeat(64),
     reported_version: '0.999.0',
-    source: { package: '@openai/codex', distribution: 'git-lfs',
+    source: { package: '@openai/codex', distribution: 'verified-download',
       archive_sha256: 'b'.repeat(64), integrity: 'sha512-fixture' }
   }
 }
@@ -423,10 +430,19 @@ test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdl
   assert.match(UPDATER_SOURCE, /classifyAuthenticodeStatus\(status\)/)
   assert.match(UPDATER_SOURCE, /publisherSubjectsMatch\(subject, expectedPublisher\)/)
   assert.doesNotMatch(UPDATER_SOURCE, /subject !== expectedPublisher/)
-  // 启动 NSIS 仍不经 shell、参数固定。
-  assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENTS = \['--updated', '\/S', '--force-run'\]/)
+  // 启动 NSIS 仍不经 shell、参数由常量拼装（proposal 108 §5.2 起为新握手协议：--updated +
+  // /SCHOLARSEED_UPDATE_ID=<uuid>，不再传 /S 与 --force-run——/S 会抑制进度页，--force-run 会让
+  // installSection 的 isForceRun&&Silent 分支成为第二个拉起者）。旧断言钉死的三元组已被协议取代，
+  // 这里替换为同等强度的新不变量：参数形态、env 交接、commit 前置、以及「新客户端永不再传
+  // /S、--force-run」的否定断言（带引号字面量形态，避开中文注释里的提及）。
+  assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENT = '--updated'/)
+  assert.match(UPDATER_SOURCE, /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT, `\$\{UPDATE_ID_ARGUMENT_PREFIX\}\$\{updateId\}`\]/)
+  assert.match(UPDATER_SOURCE, /\[HANDSHAKE_HOME_ENV\]: desktopHome\(\)/)
+  assert.match(UPDATER_SOURCE, /\[HANDSHAKE_NONCE_ENV\]: request\.nonce/)
+  assert.match(UPDATER_SOURCE, /publishHandshakeDecision\(directory, request, DECISION_COMMIT, log\)/)
+  assert.doesNotMatch(UPDATER_SOURCE, /'\/S'/)
+  assert.doesNotMatch(UPDATER_SOURCE, /'--force-run'/)
   assert.match(UPDATER_SOURCE, /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/)
-  assert.match(UPDATER_SOURCE, /spawn\(installer, WINDOWS_UPDATE_ARGUMENTS/)
   assert.doesNotMatch(UPDATER_SOURCE, /spawn\(installer,[\s\S]{0,160}shell:/)
 })
 test('Windows subprocess output is decoded by console code page, not blindly as UTF-8', () => {
@@ -474,6 +490,86 @@ test('Windows update recreates a missing desktop shortcut (customInstall safety 
   assert.match(INSTALLER_NSH, /\$\{ifNot\} \$\{FileExists\} "\$newDesktopLink"/)
   assert.match(INSTALLER_NSH, /CreateShortCut "\$newDesktopLink"/)
   assert.match(INSTALLER_NSH, /CreateShortCut "\$newStartMenuLink"/)
+})
+
+test('Windows installer.nsh carries the update handshake contract (proposal 108 P0)', () => {
+  // 源码形态契约（同 customInstall 兜底的钉法）：运行时行为待 Windows 真机出包验证，
+  // 但这些结构一旦漂移，握手/单拉起/legacy 兼容会静默失效。
+  // 1. customInit 接管握手；协议参数缺失 → legacy（旧客户端 /S --force-run 路径保留）。
+  assert.match(INSTALLER_NSH, /!macro customInit\r?\n\s*Call ssHandshakeInit/)
+  assert.match(INSTALLER_NSH, /StrCpy \$ssHandshakeMode "legacy"/)
+  assert.match(INSTALLER_NSH, /\$\{GetOptions\} \$R0 "\$\{SS_UPDATE_ID_OPTION\}" \$ssUpdateId/)
+  // 2. updateId 过 UUID 形状闸后才参与路径拼接（防路径穿越，与 Node 侧同判据）。
+  assert.match(INSTALLER_NSH, /Call ssValidateUuid\r?\n\s*IfErrors ss_init_fail_uuid/)
+  // 3. 握手文件是 UTF-16LE（不依赖系统代码页，bug 87108457 同源纪律）。写侧带 /BOM；
+  // 读侧不带 —— FileReadUTF16LE 没有 /BOM 旗标（真机 makensis 验证，267a5d905 前身修复）。
+  assert.match(INSTALLER_NSH, /FileReadUTF16LE \$R2 \$R4/)
+  assert.doesNotMatch(INSTALLER_NSH, /FileReadUTF16LE \/BOM/)
+  assert.match(INSTALLER_NSH, /FileWriteUTF16LE \/BOM \$R2 "schemaVersion=/)
+  // NSIS 无内建 $PID：安装器进程号必须显式 GetCurrentProcessId 取得。
+  assert.match(INSTALLER_NSH, /GetCurrentProcessId\(\) i \.r0/)
+  assert.match(INSTALLER_NSH, /installerPid=\$ssInstallerPid/)
+  // reparse 拒绝走 FileFunc 宏形式（原生指令形式在真机上不成立）。
+  assert.match(INSTALLER_NSH, /\$\{GetFileAttributes\} "\$R1" "REPARSE_POINT" \$R6/)
+  // 4. cancel 与决策超时都必须在卸载前 Quit（绝不带活流程进 installSection）。
+  assert.match(INSTALLER_NSH, /ss_decision_cancel:[\s\S]{0,400}?Quit/)
+  assert.match(INSTALLER_NSH, /ss_decision_timeout:[\s\S]{0,600}?Quit/)
+  // 5. 旧进程退出超时必须中止且不强杀：等待循环里不得出现任何 kill 原语。
+  assert.match(INSTALLER_NSH, /ss_init_fail_oldproc:[\s\S]{0,600}?Quit/)
+  assert.doesNotMatch(INSTALLER_NSH, /nsProcess|taskkill|TerminateProcess/)
+  // 6. 自动拉起唯一所有者：ssLaunchUpdatedAppOnce（单次守卫 + ExecShellAsUser 降权拉起真实 exe）。
+  assert.match(INSTALLER_NSH, /StrCmp \$ssLaunchAttempted "1" ss_launch_done/)
+  assert.match(INSTALLER_NSH, /\$\{StdUtils\.ExecShellAsUser\} \$0 "\$appExe" "open" "--updated --scholarseed-update-id=\$ssUpdateId"/)
+  assert.match(INSTALLER_NSH, /!define MUI_PAGE_CUSTOMFUNCTION_PRE ssFinishPre/)
+  // 7. customInstall 只置成功标志，绝不自己拉起（否则出现第二个启动者）。
+  // 行首锚定：文件头注释里也提到 "!macro customInstall" 字样，不能抢先命中。
+  const customInstall = INSTALLER_NSH.match(/\n!macro customInstall\r?\n([\s\S]*?)\n!macroend/)
+  assert.ok(customInstall, 'customInstall macro not found')
+  assert.match(customInstall[1], /StrCpy \$ssInstallComplete "1"/)
+  assert.doesNotMatch(customInstall[1], /Exec/)
+  // 8. install.log 行是 ASCII JSON、与 update.log 共享 updateId。
+  assert.match(INSTALLER_NSH, /"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampUtc":"/)
+  assert.match(INSTALLER_NSH, /FileWrite \$ssLogHandle "\$ssUpdateId"/)
+  // 8b. 2026-09-22 真机 install.log 恒 0 字节后的加固形态（运行时待 Windows 出包验证）：
+  // 句柄用具名 Var 不借 $9；20 个寄存器全自保存（GetTime 会扫 $0-$9/$R0-$R9，扫掉调用方的
+  // $R1 握手目录就是静默错写）；目录已存在跳过 CreateDirectory；时间戳分段写，杜绝
+  // "$ssTimeDayT" 这种 T/Z 被并进变量名（最长标识符解析）展开成空串的串。
+  const ssLogEvent = INSTALLER_NSH.match(/\n\s*Function ssLogEvent\r?\n([\s\S]*?)\n\s*FunctionEnd/)
+  assert.ok(ssLogEvent, 'ssLogEvent function not found')
+  assert.match(ssLogEvent[1], /FileOpen \$ssLogHandle/)
+  assert.match(ssLogEvent[1], /FileWrite \$ssLogHandle /)
+  assert.doesNotMatch(ssLogEvent[1], /FileOpen \$9 |FileWrite \$9 |FileClose \$9/)
+  assert.match(ssLogEvent[1], /Push \$R9/)
+  assert.match(ssLogEvent[1], /Pop \$0\s*\r?\n\s*FunctionEnd|Pop \$0\s*$/)
+  assert.match(ssLogEvent[1], /IfFileExists "\$ssHome\\logs" ss_log_dir_ok/)
+  assert.doesNotMatch(ssLogEvent[1], /\$ssTimeDayT|\$ssTimeSecondZ/)
+  // 8c. Node 侧把 install.log 字节数记进 update.log：安装器日志静默必须从现场日志可见。
+  assert.match(UPDATER_SOURCE, /install\.log bytes=\$\{installLogBytes\(\)\}/)
+  assert.match(UPDATER_SOURCE, /function installLogBytes\(\): number/)
+  // 9. 协议模式跳掉 assisted 非静默必弹的「安装模式」选择页（2026-09-22 真机事故：只不传 /S
+  //    而不跳页时，自动更新停在该页等人工点击，安装始终没发生）。模板在页 PRE 里给的钩子
+  //    customInstallMode 置 isForceCurrentInstall 走 setInstallModePerUser+Abort 跳页分支；
+  //    仅当确有 per-user 旧安装时才强制（否则回退模板默认页），卸载器构建不得引用握手 Var。
+  const customInstallMode = INSTALLER_NSH.match(/\n\s*!macro customInstallMode\r?\n([\s\S]*?)\n\s*!macroend/)
+  assert.ok(customInstallMode, 'customInstallMode macro not found')
+  assert.match(customInstallMode[1], /!ifndef BUILD_UNINSTALLER/)
+  assert.match(customInstallMode[1], /\$ssHandshakeMode == "protocol"/)
+  assert.match(customInstallMode[1], /\$hasPerUserInstallation == "1"/)
+  assert.match(customInstallMode[1], /StrCpy \$isForceCurrentInstall "1"/)
+})
+test('the updater refuses to spawn a second installer while a previous one is alive', () => {
+  // 2026-09-22 真机事故：重拉的客户端对着还挂着的安装器再 spawn 一个，被模板
+  // ALLOW_ONLY_ONE_INSTALLER_INSTANCE 的 CreateMutex 命中后 Abort（退出码 2、无 ready.ini），
+  // 用户拿到一张「更新安装失败」卡，而真安装器窗口还停在向导页等点击。闸门 = 握手目录里
+  // ready.ini 的 installerPid + 创建时刻双判据（PID 被复用即视为已退，见 handshake.ts），
+  // 命中时回报独立分类，而不是笼统失败诱导用户对着互斥量重试。
+  assert.match(UPDATER_SOURCE, /async function findRunningProtocolInstaller/)
+  assert.match(UPDATER_SOURCE, /readyPointsToLiveProcess\(record, Number\(record\.installerPid\), low, high\)/)
+  assert.match(UPDATER_SOURCE, /event: 'concurrent-installer'/)
+  assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: 'install_already_running' \}/)
+  // 分类三层齐全：契约类型、主进程标注、渲染层文案映射，缺一层就退回笼统「安装失败」。
+  assert.match(UPDATE_CONTRACT_SOURCE, /\| 'install_already_running'/)
+  assert.match(UPDATE_FEATURE_SOURCE, /install_already_running/)
 })
 test('Windows updater command parses as PowerShell before signature verification', {
   skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser'
@@ -710,8 +806,10 @@ test('bundled workspace distributions are installed only from immutable wheels',
   assert.match(BUNDLE_BACKEND_SOURCE, /--no-sources/)
   assert.match(BUNDLE_BACKEND_SOURCE, /const wheels = \[\]/)
   assert.doesNotMatch(BUNDLE_BACKEND_SOURCE, /uv_bin" pip install[\s\S]*"\$pkg"/)
-  assert.match(BUNDLE_BACKEND_SOURCE, /__editable__/)
-  assert.match(BUNDLE_BACKEND_SOURCE, /direct_url\.json/)
+  // editable 残留断言随探针脚本移入 probe.cjs（bundle.cjs 经 RUNTIME_PROBE_SCRIPT 执行）
+  assert.match(PROBE_SOURCE, /__editable__/)
+  assert.match(PROBE_SOURCE, /direct_url\.json/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /RUNTIME_PROBE_SCRIPT/)
   assert.doesNotMatch(BUNDLE_BACKEND_SOURCE, /shell: process\.platform/)
 })
 test('artifact verification imports the packaged runtime and starts its real health endpoint', () => {
@@ -999,8 +1097,8 @@ test('Intel macOS uses the x64 Electron Builder architecture and the Intel runti
   assert.equal(selected.triple, 'x86_64-apple-darwin')
   assert.equal(selected.installer, 'dmg')
 })
-test('the frozen Office runtime asset set is complete and digest-verified', () => {
-  const manifest = verifyOfficeAssets(path.join(__dirname, '..'))
+test('the frozen Office runtime asset set is complete and digest-verified', async () => {
+  const manifest = await verifyOfficeAssets(path.join(__dirname, '..'))
   assert.equal(manifest.build_id, 'zeta-24-2-20250513')
   assert.equal(OFFICE_BUILD_DIRECTORY, 'zeta-20250513')
   assert.deepEqual(Object.keys(manifest.files).sort(), [
@@ -1041,6 +1139,101 @@ test('local signing preserves only reviewed upstream signed runtimes', () => {
   assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/codex-runtime/bin/codex-code-mode-host`), true)
   assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/bin/rg`), false)
 })
+test('NSIS useZip 与 differentialPackage 必须成对，缺一半拒绝构建（proposal 108 §6）', () => {
+  // 默认：package.json 现状原样通过，不含 useZip
+  const current = resolveNsisConfiguration(PACKAGE.build, {})
+  assert.equal(current.shortcutName, PACKAGE.build.nsis.shortcutName)
+  assert.equal(Object.hasOwn(current, 'useZip'), false)
+  // 实验开关 =1：成对写入，其余键保留
+  const zip = resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: '1' })
+  assert.equal(zip.useZip, true)
+  assert.equal(zip.differentialPackage, false)
+  assert.equal(zip.shortcutName, PACKAGE.build.nsis.shortcutName)
+  // 开关取值非法
+  assert.throws(() => resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: 'yes' }),
+    /accepts only "1"/)
+  // 单独 useZip = 不可安装产物（7z 字节被命名成 app-64.zip），必须拒绝
+  assert.throws(
+    () => resolveNsisConfiguration({ nsis: { useZip: true } }, {}),
+    /app-64\.zip/)
+  // differentialPackage:true 视同缺失
+  assert.throws(
+    () => resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: true } }, {}),
+    /app-64\.zip/)
+  // 成对出现放行；显式关闭 useZip 不受影响
+  assert.equal(resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: false } }, {}).useZip, true)
+  assert.equal(resolveNsisConfiguration({ nsis: { useZip: false } }, {}).useZip, false)
+})
+
+test('生成的 electron-builder.json 携带解析后的 NSIS 配置且不引入 useZip 默认值', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-nsis-config-'))
+  try {
+    const context = {
+      runDirectory: directory,
+      resourceRoot: path.join(directory, 'resources'),
+      output: path.join(directory, 'artifacts'),
+      productName: 'ScholarSeed'
+    }
+    const filename = writeBuilderConfiguration(context, {
+      version: '0.1.1', type: 'dev', platform: 'win32', arch: 'x86_64', lane: 'local',
+      signed: false, candidate: false, target: require('./target.cjs').target('win32', 'x86_64')
+    })
+    const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
+    assert.equal(Object.hasOwn(config.nsis, 'useZip'), false)
+    assert.equal(config.nsis.shortcutName, PACKAGE.build.nsis.shortcutName)
+    assert.deepEqual(context.nsis, config.nsis)
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('Windows 载荷统计只数 win-unpacked 的常规文件', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-payload-'))
+  try {
+    const unpacked = path.join(directory, 'win-unpacked')
+    fs.mkdirSync(path.join(unpacked, 'resources', 'backend'), { recursive: true })
+    fs.writeFileSync(path.join(unpacked, 'ScholarSeed.exe'), 'x'.repeat(10))
+    fs.writeFileSync(path.join(unpacked, 'resources', 'backend', 'python.exe'), 'y'.repeat(7))
+    const args = { platform: 'win32', stage: 'nsis' }
+    assert.deepEqual(payloadStatistics({ output: directory }, args),
+      { root: 'win-unpacked', files: 2, bytes: 17 })
+    assert.equal(payloadStatistics({ output: directory }, { platform: 'darwin', stage: 'dmg' }), null)
+    assert.equal(payloadStatistics({ output: directory }, { platform: 'win32', stage: 'backend' }), null)
+    assert.equal(payloadStatistics({ output: path.join(directory, 'missing') }, args), null)
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('Windows 组件化载荷链路接线契约（proposal 108 §7，P2a）', () => {
+  // 构建侧：产品 wheel 不进组件树；contentId 由冻结输入派生；松散树在打包证据冻结后删除。
+  assert.match(BUNDLE_BACKEND_SOURCE, /writeProductLibraries\(run, python, wheels, pylibs\)/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /derivePythonContentId\(/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /deriveTexliveContentId\(/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /context\.runtime\.sha256/)
+  // 组件树纯净性探针：产品发行物泄漏进 site-packages 必须构建失败
+  assert.match(BUNDLE_BACKEND_SOURCE, /SCHOLARSEED_PRODUCT_LIBS: pylibs/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /RUNTIME_PROBE_SCRIPT/)
+  // 打包顺序：packWindowsComponents 只在 dependencies verify 与锁拷贝之后被调用
+  const packCall = BUILD_SOURCE.indexOf('context.components = packWindowsComponents')
+  const verifierCall = BUILD_SOURCE.indexOf("'verify',")
+  assert.ok(packCall > -1 && verifierCall > -1 && packCall > verifierCall,
+    'component packing must run after the dependency verifier')
+  // 产品步骤在 win32 换 -s -B + PYTHONPATH（-I 会忽略 PYTHONPATH，产品模块将不可导入）
+  assert.match(BUILD_SOURCE, /const productFlags = args\.platform === 'win32' \? \['-s', '-B'\] : \['-I', '-B'\]/)
+  // 包内验证：组件布局走摘要链 + 松散树必须不存在
+  assert.match(VERIFY_SOURCE, /verifyComponentContent/)
+  assert.match(VERIFY_SOURCE, /must not keep a loose/)
+  assert.match(VERIFY_SOURCE, /appComponentsSha256/)
+  // 启动侧：provision 先于 python 存在性检查；TeX 目录来自组件仓库；PYTHONPATH 注入 pylibs；
+  // 失败 fail-closed（startupFailed），不得回落宿主 Python。
+  const backendProvision = DESKTOP_BACKEND_SOURCE.indexOf('await ensureComponents(')
+  const backendExists = DESKTOP_BACKEND_SOURCE.indexOf('if (!existsSync(python)) {')
+  assert.ok(backendProvision > -1 && backendExists > -1 && backendProvision < backendExists,
+    'component provisioning must complete before the python existence gate')
+  assert.match(DESKTOP_BACKEND_SOURCE, /provisionedComponents\.texliveBinDirectory/)
+  assert.match(DESKTOP_BACKEND_SOURCE, /\[PYTHONPATH_ENV\]: join\(cwd, PYLIBS_DIRNAME\)/)
+  assert.match(DESKTOP_BACKEND_SOURCE, /component provisioning failed/)
+  // SCHOLARSEED_PYTHON 显式覆盖优先于组件寻址（既有逃生门语义不变）
+  assert.match(DESKTOP_BACKEND_SOURCE, /!process\.env\[SCHOLARSEED_PYTHON_ENV\] && existsSync\(manifestPath\)/)
+})
+
 test('distribution builder configuration never downgrades Developer ID discovery to ad-hoc signing', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-builder-distribution-'))
   try {

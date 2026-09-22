@@ -52,6 +52,7 @@ from service.settings.capabilities import (
     IMAGE_MODALITY,
     INPUT_MODALITIES_KEY,
     MAX_OUTPUT_TOKENS_KEY,
+    MODALITY_KINDS,
     PDF_INPUT_KEY,
     PDF_MODALITY,
     REASONING_EFFORTS_KEY,
@@ -360,6 +361,7 @@ class ModelService:
                 for item in models:
                     if item.get("profile_id") == profile_id:
                         native = offered.get(item["model_id"], {})
+                        item.update(_subscription_directory_capability(native))
                         if native.get("reasoning_efforts") is not None:
                             item["reasoning_efforts"] = native.get("reasoning_efforts")
                         # Keep the declared form alongside the legacy effort list so the
@@ -583,6 +585,22 @@ class ModelService:
                 row = fallback
                 model_key = str(fallback["key"])
         if row.get("billing") == SUBSCRIPTION_BILLING:
+            profile = self._profiles.profile(
+                str(row.get("profile_id") or ""), owner_id=self._owner_id(user_id)
+            )
+            if isinstance(profile, Mapping):
+                snapshot = profile.get(MODEL_DIRECTORY_KEY)
+                if isinstance(snapshot, Mapping):
+                    native = next(
+                        (
+                            item
+                            for item in snapshot.get("models") or ()
+                            if isinstance(item, Mapping)
+                            and str(item.get(MODEL_ID_KEY) or "") == row.get("model_id")
+                        ),
+                        {},
+                    )
+                    row.update(_subscription_directory_capability(native))
             return {
                 "key": model_key,
                 "billing": SUBSCRIPTION_BILLING,
@@ -633,8 +651,8 @@ class ModelService:
             "headers": headers,
             "wire_api": wire,
             "model": wire_model_name(str(effective.get("model_name") or "")),
-            "image_input": effective.get("image_input") is True,
-            "pdf_input": effective.get("pdf_input") is True,
+            "image_input": row.get("image_input") is True,
+            "pdf_input": row.get("pdf_input") is True,
             "context_window": row.get("context_window"),
             # 出站思考参数按这条坐标的声明生成，所以形态与 provider 家族要一起带下去；
             # 让 transport 自己按模型名判，就是回到 proposal 78 I1 否决掉的那套做法。
@@ -1120,7 +1138,9 @@ def _personal_capability(
     厂商默认；未命中受信端点的字段仍按未确认收敛（fail-closed）。
     """
 
-    trusted_endpoint = uses_vendor_capability_registry(str(profile.get("base_url") or ""))
+    trusted_endpoint = is_oauth_connection(profile) or uses_vendor_capability_registry(
+        str(profile.get("base_url") or "")
+    )
     registry_capability = bundled_registry().lookup(model_id) if trusted_endpoint else None
     vendor = (
         registry_capability
@@ -1172,6 +1192,15 @@ def _personal_capability(
     if hint:
         out[CAPABILITY_HINT_KEY] = hint
     return out
+
+
+def _subscription_directory_capability(native: Mapping[str, Any]) -> dict[str, Any]:
+    """Project modalities declared by the authenticated provider model directory."""
+
+    modalities = _declared_list(native, INPUT_MODALITIES_KEY)
+    if not modalities or any(modality not in MODALITY_KINDS for modality in modalities):
+        return {}
+    return {INPUT_MODALITIES_KEY: modalities, **modality_flags(modalities)}
 
 
 def _declared_list(entry: Mapping[str, Any], key: str) -> list[str] | None:

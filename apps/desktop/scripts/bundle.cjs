@@ -1,9 +1,33 @@
 const fs = require('node:fs')
 const crypto = require('node:crypto')
 const path = require('node:path')
-const { spawnSync } = require('node:child_process')
-const { stageVerifiedTexlive } = require('../runtime/texlive.cjs')
-const { writeSkillPythonLauncher } = require('../runtime/python.cjs')
+const { execFileSync, spawnSync } = require('node:child_process')
+const { PLATFORM_DIRECTORY, stageVerifiedTexlive } = require('../runtime/texlive.cjs')
+const { SKILL_PYTHON_MODULE, skillPythonLauncherPath, writeSkillPythonLauncher } = require('../runtime/python.cjs')
+const { nativeTar, verifyPython } = require('../../../scripts/python.cjs')
+const { ensureRipgrep } = require('../../../scripts/ripgrep.cjs')
+const { RUNTIME_PROBE_SCRIPT } = require('./probe.cjs')
+const {
+  APP_COMPONENTS_FILENAME,
+  COMPONENTS_DIRNAME,
+  PYLIBS_DIRNAME,
+  PYTHON_ENTRY_RELATIVE,
+  PYTHON_KIND,
+  PYTHON_TREE_DIRNAME,
+  TEXLIVE_BIN_PARENT_RELATIVE,
+  TEXLIVE_KIND,
+  TEXLIVE_TREE_DIRNAME,
+  appComponentsManifest,
+  componentArchiveName,
+  componentTarget,
+  consoleScriptLauncherCommand,
+  derivePythonContentId,
+  deriveTexliveContentId,
+  packComponentArchive,
+  sha256FileSync,
+  skillPythonLauncherCommand,
+  writeProductLibraries
+} = require('../runtime/components.cjs')
 
 const PROJECTS = [
   ['runtime', 'packages/runtime'],
@@ -84,9 +108,19 @@ async function bundle(context, target, environment) {
   })
   run(python, ['-I', '-B', helper, 'snapshot', '--plan', plan, '--requirements', requirements, '--output', inventory,
     ...wheels.flatMap(wheel => ['--wheel', wheel])], { env: environment })
-  run(uv, ['pip', 'install', '--python', python, '--no-deps', '--no-index', ...wheels], {
-    cwd: wheelsRoot, env: environment
-  })
+  // win32 组件化（proposal 108 §7.1）：产品 wheel 不进组件树，解包进 backend/pylibs，
+  // 运行期经 PYTHONPATH 注入。组件内容 = 解释器 + 第三方 site-packages，只随
+  // python 归档/requirements/lock 这些冻结输入变化 —— 否则每改一次后端 contentId 就变、
+  // 组件永不命中。
+  const componentsEnabled = process.platform === 'win32'
+  const pylibs = path.join(backend, PYLIBS_DIRNAME)
+  if (componentsEnabled) {
+    writeProductLibraries(run, python, wheels, pylibs)
+  } else {
+    run(uv, ['pip', 'install', '--python', python, '--no-deps', '--no-index', ...wheels], {
+      cwd: wheelsRoot, env: environment
+    })
+  }
   fs.copyFileSync(helper, path.join(backend, VERIFIER_FILENAME))
   const evidence = JSON.parse(fs.readFileSync(inventory, 'utf8'))
   context.pythonDependencies = {
@@ -97,21 +131,20 @@ async function bundle(context, target, environment) {
     distributions: Object.keys(evidence.packages).length
   }
 
-  run(python, ['-I', '-B', '-c', [
-    'import importlib, json, pathlib, sysconfig',
-    'root = pathlib.Path(sysconfig.get_path("purelib")).resolve()',
-    'names = ("scholarseed_runtime", "damoatrace", "service.cli.serve", "scholarseed_codex")',
-    'assert not list(root.glob("__editable__*")) and not list(root.glob("*.egg-link"))',
-    'assert not any(json.loads(item.read_text()).get("dir_info", {}).get("editable") is True for item in root.glob("*.dist-info/direct_url.json"))',
-    'assert all(pathlib.Path(importlib.import_module(name).__file__).resolve().is_relative_to(root) for name in names)'
-  ].join('; ')], { env: environment })
+  // 布局探针与 verify.cjs 的包内验证共用同一份脚本文本（scripts/probe.cjs）：产品模块
+  // 必须落在正确的根、site-packages 无 editable 残留；win32 还证明产品发行物没有泄漏进
+  // 组件树（组件命中语义的前提）。
+  run(python, componentsEnabled ? ['-s', '-B', '-c', RUNTIME_PROBE_SCRIPT] : ['-I', '-B', '-c', RUNTIME_PROBE_SCRIPT], {
+    cwd: backend,
+    env: componentsEnabled
+      ? { ...environment, PYTHONPATH: pylibs, SCHOLARSEED_PRODUCT_LIBS: pylibs }
+      : environment
+  })
   fs.rmSync(wheelsRoot, { recursive: true, force: true })
 
   fs.mkdirSync(bin, { recursive: true })
-  const rg = path.join(context.repo, 'scripts', 'vendor', 'ripgrep', target.triple, target.ripgrepName)
-  const checksum = fs.readFileSync(`${rg}.sha256`, 'utf8').trim().split(/\s+/)[0]
-  const actual = crypto.createHash('sha256').update(fs.readFileSync(rg)).digest('hex')
-  if (checksum !== actual) throw new Error('vendored ripgrep checksum is invalid')
+  const ripgrep = await ensureRipgrep(context.repo, target.platform, target.arch)
+  const rg = ripgrep.executable
   fs.copyFileSync(rg, path.join(bin, target.ripgrepName))
   if (process.platform !== 'win32') fs.chmodSync(path.join(bin, target.ripgrepName), 0o755)
   fs.cpSync(context.binaries.codex.root, path.join(backend, 'codex-runtime'), { recursive: true })
@@ -121,6 +154,27 @@ async function bundle(context, target, environment) {
   // every declared engine is executable, and probes the reported versions.
   context.texlive = await stageVerifiedTexlive(backend, path.resolve(__dirname, '..'),
     target.platform, target.arch)
+  if (componentsEnabled) {
+    // contentId 由决定组件内容的冻结输入派生（内容寻址，跨构建可复现）；packWindowsComponents
+    // 在所有需要松散树的验证步骤之后才真正打包并删除它们。
+    const componentTargetName = componentTarget('win32', process.arch)
+    context.componentPlan = {
+      target: componentTargetName,
+      pythonContentId: derivePythonContentId({
+        target: componentTargetName,
+        pythonArchiveSha256: context.runtime.sha256,
+        requirementsSha256: context.pythonDependencies.requirements_sha256,
+        lockSha256: context.pythonDependencies.lock_sha256,
+        binaryPackages: BINARY_PACKAGES
+      }),
+      texliveContentId: deriveTexliveContentId({
+        target: componentTargetName,
+        archiveSha256: context.texlive.sha256,
+        texlive: context.texlive.texlive
+      }),
+      texliveExecutables: context.texlive.executables
+    }
+  }
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(bin, 'node.cmd'),
       '@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%SCHOLARSEED_ELECTRON_EXECUTABLE%" %*\r\n')
@@ -129,8 +183,75 @@ async function bundle(context, target, environment) {
     fs.copyFileSync(path.join(__dirname, 'node.sh'), path.join(bin, 'node'))
     fs.chmodSync(path.join(bin, 'node'), 0o755)
   }
-  writeConsoleScriptShells(python, bin, target)
-  writeSkillPythonLauncher(bin, python, target.platform)
+  writeConsoleScriptShells(python, bin, target,
+    componentsEnabled ? { pylibs, plan: context.componentPlan } : null)
+  if (componentsEnabled) {
+    fs.writeFileSync(skillPythonLauncherPath(bin, 'win32'),
+      skillPythonLauncherCommand(context.componentPlan.target,
+        context.componentPlan.pythonContentId, SKILL_PYTHON_MODULE))
+  } else {
+    writeSkillPythonLauncher(bin, python, target.platform)
+  }
+}
+
+/**
+ * win32 组件化收尾（build.cjs 在所有需要松散 python/texlive 树的验证步骤之后调用）：
+ * 冻结构建期运行证据 → 打组件 zip → 写 app-components.json → 删除松散树。包内从此只有
+ * 组件载荷；安装后的运行期展开与命中判定归 Desktop 的组件存储（src/main/components.ts）。
+ */
+function packWindowsComponents(context, args, environment) {
+  const plan = context.componentPlan
+  if (!plan) throw new Error('win32 packaging requires the component plan produced by bundle()')
+  const backend = resourcePath(context.resourceRoot, 'backend')
+  const python = resourcePath(backend, args.target.pythonRelative)
+  const pylibs = path.join(backend, PYLIBS_DIRNAME)
+  const probe = JSON.parse(execFileSync(python, ['-s', '-B', '-c', RUNTIME_PROBE_SCRIPT], {
+    cwd: backend,
+    encoding: 'utf8',
+    env: {
+      ...environment,
+      PYTHONPATH: pylibs,
+      SCHOLARSEED_PRODUCT_LIBS: pylibs,
+      SCHOLARSEED_PRODUCT_MANIFEST: context.product.path
+    }
+  }).trim())
+  const pythonEvidence = verifyPython(python, context.runtime)
+  const componentsDirectory = path.join(backend, COMPONENTS_DIRNAME)
+  fs.mkdirSync(componentsDirectory, { recursive: true })
+  const tar = nativeTar()
+  const pythonArchive = path.join(componentsDirectory, componentArchiveName(PYTHON_KIND, plan.pythonContentId))
+  const texliveArchive = path.join(componentsDirectory, componentArchiveName(TEXLIVE_KIND, plan.texliveContentId))
+  packComponentArchive(backend, PYTHON_TREE_DIRNAME, pythonArchive, tar)
+  packComponentArchive(backend, TEXLIVE_TREE_DIRNAME, texliveArchive, tar)
+  const manifest = appComponentsManifest(plan.target, [
+    {
+      kind: PYTHON_KIND,
+      contentId: plan.pythonContentId,
+      archive: path.basename(pythonArchive),
+      archiveSha256: sha256FileSync(pythonArchive),
+      archiveBytes: fs.statSync(pythonArchive).size,
+      entry: PYTHON_ENTRY_RELATIVE
+    },
+    {
+      kind: TEXLIVE_KIND,
+      contentId: plan.texliveContentId,
+      archive: path.basename(texliveArchive),
+      archiveSha256: sha256FileSync(texliveArchive),
+      archiveBytes: fs.statSync(texliveArchive).size,
+      entry: `${TEXLIVE_BIN_PARENT_RELATIVE}/bin/${PLATFORM_DIRECTORY.win32}`,
+      executables: plan.texliveExecutables
+    }
+  ])
+  const manifestPath = path.join(componentsDirectory, APP_COMPONENTS_FILENAME)
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  fs.rmSync(path.join(backend, PYTHON_TREE_DIRNAME), { recursive: true, force: true })
+  fs.rmSync(path.join(backend, TEXLIVE_TREE_DIRNAME), { recursive: true, force: true })
+  return {
+    target: plan.target,
+    appComponentsSha256: sha256FileSync(manifestPath),
+    components: manifest.components,
+    buildTime: { imports: probe, python: pythonEvidence }
+  }
 }
 
 // uv/pip generate installer-native launchers next to the interpreter:
@@ -145,7 +266,7 @@ async function bundle(context, target, environment) {
 // keep the `backend/` layout intact. The uv-generated launchers stay in place
 // to preserve `python-dependencies.json` inventory; PATH ordering makes ours
 // win at resolution time.
-function writeConsoleScriptShells(python, bin, target) {
+function writeConsoleScriptShells(python, bin, target, component) {
   // pythonRelative is layout-anchored ("python/bin/python3" | "python/python.exe"),
   // so python is at <backend>/python/{bin/python3 | python.exe}. The dist-info
   // tree sits under python/lib/pythonX.Y/site-packages (POSIX) or
@@ -157,6 +278,8 @@ function writeConsoleScriptShells(python, bin, target) {
     : path.dirname(python) // python/python.exe → python/
   const siteRelative = isPosixLayout ? 'lib' : 'Lib/site-packages'
   const sitePackagesRoots = discoverSitePackagesRoots(pythonHome, siteRelative)
+  // win32 组件化：产品发行物的 dist-info 在 pylibs，console_scripts 也要从那里收集。
+  if (component) sitePackagesRoots.push(component.pylibs)
   const commands = collectConsoleScripts(sitePackagesRoots)
   for (const [name, entry] of Object.entries(commands)) {
     // pip's entry-point contract is `module:function`; the launcher must call
@@ -165,14 +288,18 @@ function writeConsoleScriptShells(python, bin, target) {
     // dispatches to the same function — not guaranteed for new dependencies.
     const pyLaunch = `import sys; from ${entry.module} import ${entry.function} as _entry; sys.exit(_entry())`
     if (process.platform === 'win32') {
-      const cmd = [
-        '@echo off',
-        'setlocal',
-        'set "SCHOLARSEED_BRIDGE_DIR=%~dp0"',
-        'if "%SCHOLARSEED_BRIDGE_DIR:~-1%"=="\\" set "SCHOLARSEED_BRIDGE_DIR=%SCHOLARSEED_BRIDGE_DIR:~0,-1%"',
-        `"%~dp0..\\python\\python.exe" -c "${pyLaunch}" %*`,
-        ''
-      ].join('\r\n')
+      // 组件化布局下解释器在用户 home 的组件仓库，launcher 经 env 寻址并注入 pylibs；
+      // 传统布局保留相对寻址（backend/ 内自洽）。
+      const cmd = component
+        ? consoleScriptLauncherCommand(component.plan.target, component.plan.pythonContentId, pyLaunch)
+        : [
+          '@echo off',
+          'setlocal',
+          'set "SCHOLARSEED_BRIDGE_DIR=%~dp0"',
+          'if "%SCHOLARSEED_BRIDGE_DIR:~-1%"=="\\" set "SCHOLARSEED_BRIDGE_DIR=%SCHOLARSEED_BRIDGE_DIR:~0,-1%"',
+          `"%~dp0..\\python\\python.exe" -c "${pyLaunch}" %*`,
+          ''
+        ].join('\r\n')
       fs.writeFileSync(path.join(bin, `${name}.cmd`), cmd)
     } else {
       const shell = [
@@ -255,4 +382,5 @@ function parseEntryPoints(source) {
   return groups
 }
 
-module.exports = { bundle, REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME }
+module.exports = { bundle, packWindowsComponents, BINARY_PACKAGES,
+  REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME }

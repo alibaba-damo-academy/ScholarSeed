@@ -3,6 +3,7 @@
 import type { HistoryMessageReference, HistoryResult, HistoryTurn, ProductEvent } from './api'
 import type { ConvItem, ModelRun, DisplayCardData, MessageReference, SessionArtifact, TurnOwned } from './model'
 import type { AssistantContextRef } from './contracts/assistant'
+import type { DisplayCardSupersessionPosition } from './contracts/features'
 import { describeTurnFailure, sameTurnFailureMessage } from './failures.ts'
 import { projectHilCard, hilEventResolution } from './hil.ts'
 
@@ -1196,18 +1197,33 @@ export function projectDisplayCardEvent(items: ConvItem[], event: DisplayCardEve
 /** Keep durable card history while projecting only the latest snapshot for a feature-owned key. */
 export function latestDisplayCardItems(
   items: readonly ConvItem[],
-  keyFor: (card: DisplayCardData) => string | null
+  keyFor: (card: DisplayCardData) => string | null,
+  positionFor?: (card: DisplayCardData) => DisplayCardSupersessionPosition | undefined
 ): ConvItem[] {
-  const seen = new Set<string>()
-  return [...items].reverse().filter((item) => {
-    if (item.kind !== 'display_card') return true
+  const groups = new Map<string, { anchor: number; latest: number }>()
+  const identities = items.map((item, index) => {
+    if (item.kind !== 'display_card') return null
     const key = keyFor(item.card)
-    if (!key) return true
+    if (!key) return null
     const identity = `${item.card.type}\0${key}`
-    if (seen.has(identity)) return false
-    seen.add(identity)
-    return true
-  }).reverse()
+    const existing = groups.get(identity)
+    groups.set(identity, {
+      anchor: positionFor?.(item.card) === 'first' ? existing?.anchor ?? index : index,
+      latest: index
+    })
+    return identity
+  })
+  return items.flatMap((item, index): ConvItem[] => {
+    const identity = identities[index]
+    if (identity === null) return [item]
+    const group = groups.get(identity)!
+    if (index !== group.anchor) return []
+    const latest = items[group.latest]
+    // Anchor metadata belongs to the display row; card identity still addresses the latest receipt.
+    return item.kind === 'display_card' && latest.kind === 'display_card'
+      ? [{ ...item, card: latest.card }]
+      : [item]
+  })
 }
 
 

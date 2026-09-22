@@ -38,6 +38,7 @@ from service.literature.service.analysis import (
     AnalysisRequest,
     InterpretationSegment,
     PreparedAnalysis,
+    ResponseLanguage,
     TranslationDirection,
     compile_interpretation_reduction,
     interpretation_input_limit,
@@ -179,6 +180,50 @@ class PdfAnalysisContracts(unittest.TestCase):
         self.assertEqual(prepared.compiled.attachments[0].media_type, "image/png")
         self.assertTrue(prepared.crop.startswith("data:image/png;base64,"))
 
+    def test_explanations_compile_explicit_response_language(self):
+        document = pdf_fixture.open()
+        page = document.new_page()
+        page.insert_text((72, 72), "Attention removes recurrence.")
+        payload = document.tobytes()
+        document.close()
+        repository = Mock()
+        repository.get.return_value = Mock(title="Paper")
+        pdf = Mock()
+        pdf.read.return_value = (payload, "application/pdf")
+
+        interpretation = prepare(
+            AnalysisRequest(
+                literature_id="paper",
+                model_key="model",
+                kind=ActionKind.INTERPRETATION,
+                response_language=ResponseLanguage.ENGLISH,
+                client_action_id="interpretation",
+                client_attempt_id="interpretation-attempt",
+            ),
+            repository,
+            pdf,
+        )
+        figure = prepare(
+            AnalysisRequest(
+                literature_id="paper",
+                model_key="vision-model",
+                kind=ActionKind.FIGURE,
+                response_language=ResponseLanguage.ENGLISH,
+                rect=(0.05, 0.05, 0.5, 0.3),
+                client_action_id="figure",
+                client_attempt_id="figure-attempt",
+            ),
+            repository,
+            pdf,
+        )
+
+        for compiled in (interpretation.compiled, figure.compiled):
+            self.assertIsNotNone(compiled)
+            self.assertIn("Use English for every generated", compiled.instructions)
+            self.assertIn('"response_language": "en"', compiled.input_text)
+        self.assertNotIn("中文全文总结", interpretation.compiled.instructions)
+        self.assertNotIn("中文 Markdown", figure.compiled.instructions)
+
     def test_document_actions_use_extracted_pages_without_pdf_attachment(self):
         document = pdf_fixture.open()
         for text in ("First page", "Second page"):
@@ -251,6 +296,7 @@ class PdfAnalysisContracts(unittest.TestCase):
                 literature_id="paper",
                 model_key="model",
                 kind=ActionKind.INTERPRETATION,
+                response_language=ResponseLanguage.ENGLISH,
                 client_action_id="interpretation",
                 client_attempt_id="interpretation-attempt",
             ),
@@ -264,6 +310,7 @@ class PdfAnalysisContracts(unittest.TestCase):
         observed_pages = []
         for segment in prepared.segments:
             self.assertLessEqual(len(segment.compiled.input_text), 4_000)
+            self.assertIn("Use English for every generated", segment.compiled.instructions)
             segment_pages = json.loads(segment.compiled.input_text)["document_pages"]
             observed_pages.extend(page["page"] for page in segment_pages)
             self.assertEqual(segment.first_page, segment_pages[0]["page"])
@@ -275,6 +322,7 @@ class PdfAnalysisContracts(unittest.TestCase):
             literature_id="paper",
             model_key="model",
             kind=ActionKind.INTERPRETATION,
+            response_language=ResponseLanguage.ENGLISH,
             client_action_id="interpretation",
             client_attempt_id="interpretation-attempt",
         )
@@ -299,6 +347,7 @@ class PdfAnalysisContracts(unittest.TestCase):
         }
         groups = partition_interpretation_summaries(prepared, [summary])
         compiled = compile_interpretation_reduction(prepared, groups[0])
+        self.assertIn("Use English for every generated", compiled.instructions)
         self.assertEqual(
             json.loads(compiled.input_text)["segment_summaries"][0]["claims"][0]["evidence"],
             [{"page": 2, "quote": "q"}],

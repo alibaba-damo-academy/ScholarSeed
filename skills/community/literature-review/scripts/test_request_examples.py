@@ -41,6 +41,45 @@ class RequestExampleTest(unittest.TestCase):
             count+=1
         self.assertGreaterEqual(count,6)
 
+    def test_template_type_errors_are_specific_in_configure_and_approve(self):
+        from input_contracts import input_error
+        from operator_cli import review_packet,approve
+        f=self.fixture()
+        with self.assertRaises(ValueError) as error:
+            configure(f.ws,{'publication':{'template':{'type':'ctexart'}}})
+        report=input_error('writing.configure',error.exception)
+        self.assertEqual(report['field'],'publication.template')
+        self.assertEqual(report['expected_type'],'string')
+        choices={'formats':['latex_pdf'],'templates':[{'id':'neurips','usable':True}],
+                 'citation_styles':[{'id':'numeric','usable':True}]}
+        with patch('operator_cli.publication_options',return_value=choices):
+            packet=review_packet(f.ws)
+            self.assertEqual(packet['confirmation']['state'],'auto')
+            with self.assertRaises(ValueError) as error:
+                approve(f.ws,{'packet_id':packet['packet_id'],'user_response':'Confirmed.',
+                              'publication':{'template':{'type':'neurips'}}})
+        report=input_error('writing.approve',error.exception)
+        self.assertEqual(report['field'],'publication.template')
+        self.assertFalse((f.ws/'04_outline/approval.json').exists())
+
+    def test_verbatim_sources_and_contiguous_rule_match_documentation(self):
+        from task_contract import validate_request
+        from input_contracts import input_error
+        data={'intent':'至少一张图，并包含一张比较表。',
+              'user_instructions':'用中文写作。','user_requests':['正文限定三千字。'],
+              'effective_requirements':'派生的新表述。'}
+        for quote in ('至少一张图','用中文写作','正文限定三千字'):
+            value={**data,'constraints':[{'id':'c','kind':'other','value':'Actual requirement','verbatim':quote}]}
+            self.assertEqual(validate_request(value)['constraints'][0]['verbatim'],quote)
+        for quote in ('至少一张图；一张比较表','至少 一张图','派生的新表述'):
+            with self.assertRaises(ValueError) as error:
+                validate_request({**data,'constraints':[{'id':'c','kind':'other','value':'Requirement','verbatim':quote}]})
+            report=input_error('writing.configure',error.exception)
+            self.assertEqual(report['field'],'constraints[0].verbatim')
+            self.assertIn('user_requests[]',report['quote_sources'])
+        shape_error=input_error('writing.configure',ValueError('constraints/0: expected id, kind, value, verbatim'))
+        self.assertEqual(shape_error['field'],'constraints')
+
     def test_complete_outline_example_is_accepted(self):
         value=description('outline.configure')['examples'][0]
         f=self.fixture()

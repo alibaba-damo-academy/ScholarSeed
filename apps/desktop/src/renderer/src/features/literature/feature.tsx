@@ -14,7 +14,7 @@ import { LiteratureSearchTab } from './Search'
 import { literatureRetrievalAuthorization, literatureReviewInteraction } from './interaction'
 import { LiteratureNotesPanel, LiteratureNotesTitle } from './ReaderNotes'
 import { LITERATURE_NOTES_PANEL_ID, literatureIdFromDocument } from './note'
-import { reviewSupersessionKey } from './projection'
+import { reviewSupersessionKey, searchSupersessionKey } from './projection'
 
 const LITERATURE_REFERENCES_CARD = 'literature-references'
 
@@ -48,7 +48,13 @@ export function literatureFeature(): FeatureModule {
       type: 'literature-review',
       supersessionKey: reviewSupersessionKey,
       render: ({ content }) => <LiteratureReviewCard content={content} />
-    }, { type: 'literature-search', presentedArtifacts: literatureResultArtifacts, render: ({ content, cardId }) => <LiteratureResults content={content} cardId={cardId} /> }, {
+    }, {
+      type: 'literature-search',
+      supersessionKey: searchSupersessionKey,
+      supersessionPosition: 'first',
+      presentedArtifacts: literatureResultArtifacts,
+      render: ({ content, cardId }) => <LiteratureResults content={content} cardId={cardId} />
+    }, {
       type: LITERATURE_REFERENCES_CARD,
       render: ({ content }) => <LiteratureReferences content={content} />
     }],

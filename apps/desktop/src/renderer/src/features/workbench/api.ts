@@ -360,7 +360,7 @@ export async function loadDocument(source: DocumentSource): Promise<DocumentLoad
           subject_id: projection.asset_id
         } : undefined
       }
-      const versionState = await loadVersionCapability(resolvedSource)
+      const versionState = projection.versioning
       return {
         documentId: documentIdFor(resolvedSource),
         source: resolvedSource,

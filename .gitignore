@@ -55,6 +55,13 @@ htmlcov/
 playwright-report/
 test-results/
 blob-report/
+/scripts/vendor/python-build-standalone/*.tar.gz
+/scripts/vendor/codex/*.tgz
+/scripts/vendor/texlive/*.tar.gz
+/scripts/vendor/ripgrep/*/rg
+/scripts/vendor/ripgrep/*/rg.exe
+/apps/desktop/src/renderer/public/office/**/soffice.wasm
+/apps/desktop/src/renderer/public/office/**/soffice.data
 .env
 .env.*
 !.env.example

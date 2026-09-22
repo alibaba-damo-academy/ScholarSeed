@@ -212,10 +212,14 @@ export interface AssistantSourceContribution {
   }>
 }
 
+export type DisplayCardSupersessionPosition = 'first' | 'latest'
+
 export interface DisplayCardContribution {
   type: string
   /** Newer cards with the same key replace older snapshots in the visible transcript. */
   supersessionKey?: (content: Record<string, unknown>) => string | null
+  /** Keep the first display anchor when updating a card; defaults to the latest position. */
+  supersessionPosition?: DisplayCardSupersessionPosition
   /** Supporting artifacts already accessible through this card. */
   presentedArtifacts?: (content: Record<string, unknown>) => readonly string[]
   render: (props: {

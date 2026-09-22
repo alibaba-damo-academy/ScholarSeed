@@ -6,11 +6,13 @@ import { Button, Card, CardContent, CardHeader, CardTitle, CopyButton, HoverCard
 import { FloatingWindow } from '../../../components/primitive/FloatingWindow'
 import { Markdown } from '../../../components/primitive/Markdown'
 import { writeClipboard } from '../../../components/primitive/clipboard'
+import { ModelMenu } from '../../../components/business/ModelMenu'
 import { PromptSettingsGuide } from '../../../components/business/PromptSettingsGuide'
 import { Icon } from '../../../icons'
 import { focusComposer } from '../../../reference'
 import { useApp } from '../../../store'
 import { requestModelKey } from '../../../catalog'
+import type { ModelInfo } from '../../../api'
 import { useSelectionActionContribution } from '../actions'
 import { evidencePages } from './evidence'
 import { Summary } from './Summary'
@@ -21,7 +23,7 @@ import { pdfAiCaughtFailure, pdfAiFailure, pdfAiFailureRecovery, pdfAiFailureTex
 import { mergeTranslationResult, nextTranslationPage } from './sequence'
 import { PdfPanel } from './Panel'
 import type { PdfSelection, TranslationDirection, TranslationSentence } from './analysis'
-import { PDF_AI_PREFIX, invokeFigure, pdfAiApi, type PdfAction, type PdfAiContent, type PdfAiRequest, type PdfAiResult, type PdfAiTask } from './analysis'
+import { PDF_AI_PREFIX, invokeFigure, pdfAiApi, pdfResponseLanguage, type PdfAction, type PdfAiContent, type PdfAiRequest, type PdfAiResult, type PdfAiTask } from './analysis'
 
 const SELECTION_PROMPTS: Partial<Record<PdfAction, SelectionPromptAction>> = { selection_translation: 'translate', selection_explanation: 'explain', figure_explanation: 'figure' }
 const REPLACEABLE_ACTIONS = new Set<PdfAction>(['selection_translation', 'selection_explanation', 'figure_explanation'])
@@ -32,6 +34,8 @@ const FIGURE_GUIDE_SOURCE_WIDTH_PX = 700
 const FIGURE_GUIDE_SCALE = 4 / 7
 const FIGURE_GUIDE_WIDTH_PX = FIGURE_GUIDE_SOURCE_WIDTH_PX * FIGURE_GUIDE_SCALE
 const FIGURE_GUIDE_VIEWPORT_GUTTER_PX = 32
+const LITERATURE_MODEL_ACTIONS = new Set<PdfAction>(['document_translation', 'interpretation', 'figure_explanation'])
+const MULTIMODAL_MODEL_FILTER = (model: ModelInfo): boolean => model.image_input === true
 interface Job { task?: PdfAiTask; pending?: boolean; error?: PdfAiFailure; failed?: boolean }
 interface FigureRegion { page: number; rect: number[] }
 const jobBusy = (job?: Job): boolean => Boolean(job?.pending || job?.task?.status === 'pending' || job?.task?.status === 'running')
@@ -81,7 +85,7 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
   onExclusiveSurfaceOpen: () => void
 }) {
   const { state, act: actions } = useApp()
-  const { t } = useTranslation('pdf')
+  const { t, i18n } = useTranslation('pdf')
   const { t: workbenchText } = useTranslation('workbench')
   const LABELS: Record<PdfAction, string> = {
     document_translation: t('reading.actions.document_translation'),
@@ -102,6 +106,7 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
   const [figureGuideOpen, setFigureGuideOpen] = useState(false)
   const exitFigureSelection = useCallback((): void => { setFigure(false); setFigureGuideOpen(false) }, [])
   const figureAbort = useRef<AbortController | null>(null)
+  const lastFigureRegion = useRef<FigureRegion | null>(null)
   const [figureText, setFigureText] = useState('')
   const [automaticTranslation, setAutomaticTranslation] = useState(false)
   const [translationAnchorPage, setTranslationAnchorPage] = useState(page)
@@ -122,7 +127,17 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
   const lastRequest = { current: floating ? requests.current[floating] : undefined }
   const isBusy = (kind: PdfAction): boolean => jobBusy(jobsRef.current[kind])
   const busy = floating ? isBusy(floating) : false
-  const identity = JSON.stringify([literatureId, projectId, assetId, path, revision])
+  const assistantModelKey = requestModelKey(state.catalog.models, state.model, state.activeSession, state.threads)
+  const actionModelKey = (kind: PdfAction): string => (
+    LITERATURE_MODEL_ACTIONS.has(kind)
+      ? state.literatureAiModels[kind as keyof typeof state.literatureAiModels] || assistantModelKey
+      : assistantModelKey
+  )
+  const figureModel = state.catalog.models.find(model => model.key === actionModelKey('figure_explanation'))
+  const figureModelSupportsImageInput = Boolean(figureModel && !figureModel.disabled && figureModel.image_input === true)
+  const responseLanguage = pdfResponseLanguage(i18n.resolvedLanguage || i18n.language)
+  const identity = JSON.stringify([literatureId, projectId, assetId, path, revision, responseLanguage])
+  const selectionIdentity = JSON.stringify(selection)
   const currentIdentity = useRef(identity)
   const loadSequence = useRef(0)
   currentIdentity.current = identity
@@ -130,14 +145,20 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
     if (!literatureId) return
     const sequence = ++loadSequence.current
     const data = await pdfAiApi<Record<string, PdfAiResult>>(`/api/literature/${encodeURIComponent(literatureId)}/ai/results?source_revision=${encodeURIComponent(revision)}`)
+    if (data.interpretation && data.interpretation.response_language !== responseLanguage) delete data.interpretation
     if (currentIdentity.current === identity && sequence === loadSequence.current) setResults(data)
   }
   useEffect(() => {
     figureAbort.current?.abort()
     figureAbort.current = null
-    setResults({}); jobsRef.current = {}; setJobs({}); requests.current = {}; submissions.current = {}; setCropPreview(''); setFigureText(''); setFigure(false); setFigureGuideOpen(false); setFloating(null); setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]); setAnnotatedResult(''); setAutomaticTranslation(false); setTranslationAnchorPage(page); setPanel(null); setPanelExpanded(false)
+    setResults({}); jobsRef.current = {}; setJobs({}); requests.current = {}; submissions.current = {}; lastFigureRegion.current = null; setCropPreview(''); setFigureText(''); setFigure(false); setFigureGuideOpen(false); setFloating(null); setSelectionExplanationOpen(false); setSelectionExplanationDraft(''); setSelectionExplanationSnapshot([]); setAnnotatedResult(''); setAutomaticTranslation(false); setTranslationAnchorPage(page); setPanel(null); setPanelExpanded(false)
     return () => figureAbort.current?.abort()
   }, [identity])
+  useEffect(() => {
+    setSelectionExplanationOpen(false)
+    setSelectionExplanationDraft('')
+    setSelectionExplanationSnapshot([])
+  }, [selectionIdentity])
   useEffect(() => { if (active) void load().catch(() => {}) }, [active, identity])
   useEffect(() => {
     if (!active) return undefined
@@ -183,11 +204,12 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
     const request: PdfAiRequest = {
       instruction: retry ? retry.instruction : instruction ?? (SELECTION_PROMPTS[kind] ? state.selectionPrompts[SELECTION_PROMPTS[kind]!] : undefined),
       literature_id: literatureId, path, asset_id: assetId, project_id: projectId, revision,
-      model_key: requestModelKey(state.catalog.models, state.model, state.activeSession, state.threads), kind, module,
+      model_key: actionModelKey(kind), kind, module,
       page: requestedPage ?? region?.page ?? selected[0]?.page ?? page, text: selected.map(value => value.text).join('\n'),
       rect: region?.rect, quads: selected.filter(value => value.page === (selected[0]?.page ?? page)).flatMap(value => value.quads),
       ...(retry ? { page: retry.page, text: retry.text, rect: retry.rect, quads: retry.quads } : {}),
-      client_action_id: crypto.randomUUID(), client_attempt_id: crypto.randomUUID(), target_language: language
+      client_action_id: crypto.randomUUID(), client_attempt_id: crypto.randomUUID(), target_language: language,
+      response_language: responseLanguage
     }
     requests.current[kind] = request
     const isCurrent = (): boolean => currentIdentity.current === identity && requests.current[kind] === request
@@ -319,7 +341,7 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
     {busy && <div role="status" className="flex items-center justify-between p-3 text-sm"><span>{progressText}</span><Button variant="ghost" size="sm" disabled={kind !== 'figure_explanation' && !task?.task_id} onClick={() => void cancel(kind)}>{t('reading.cancel')}</Button></div>}
     {task?.status === 'completed' && <p role="status" className="px-4 py-2 text-sm text-[var(--vds-text-tertiary)]">{t('reading.completed')}</p>}
     {task?.status === 'cancelled' && <p role="status" className="p-3">{t('reading.cancelled')}</p>}
-    {(error || failed) && <div role="alert" className="p-4 text-sm text-[var(--vds-text-secondary)]"><p className="whitespace-pre-wrap">{error ? pdfAiFailureText(error, t) : t('reading.failed')}</p><div className="mt-2 flex gap-2">{recovery.configure && <Button size="sm" variant="outline" onClick={() => actions.openSettings('models')}>{t('reading.configure')}</Button>}{recovery.reselect && <Button size="sm" variant="outline" onClick={() => setFloating(null)}>{t('reading.reselect')}</Button>}{recovery.retry && <Button size="sm" variant="outline" disabled={busy} onClick={() => { const request = requests.current[kind]; if (request) void run(request.kind, request.module, undefined, request) }}>{t('reading.retry')}</Button>}</div></div>}
+    {(error || failed) && <div role="alert" className="p-4 text-sm text-[var(--vds-text-secondary)]"><p className="whitespace-pre-wrap">{error ? pdfAiFailureText(error, t) : t('reading.failed')}</p><div className="mt-2 flex gap-2">{recovery.configure && <Button size="sm" variant="outline" onClick={() => actions.openSettings('models')}>{t('reading.configure')}</Button>}{recovery.reselect && <Button size="sm" variant="outline" onClick={() => setFloating(null)}>{t('reading.reselect')}</Button>}{recovery.retry && <Button size="sm" variant="outline" disabled={busy} onClick={() => { const request = requests.current[kind]; if (request) void run(request.kind, request.module, undefined, request); else if (kind === 'figure_explanation' && lastFigureRegion.current) startFigure(lastFigureRegion.current) }}>{t('reading.retry')}</Button>}</div></div>}
     {notice && <p role="status" className="p-3 text-sm">{t('reading.unlocated')}</p>}
   </> }
   const floatingResult = floating && !busy ? results[floating] : undefined
@@ -444,6 +466,16 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
   const startFigure = (region: FigureRegion): void => {
     clearFigureResult()
     setFigureGuideOpen(false)
+    lastFigureRegion.current = region
+    if (!figureModelSupportsImageInput) {
+      updateJob('figure_explanation', {
+        error: { code: 'pdf_ai_image_input_unsupported', diagnostic: '' },
+        failed: true,
+        pending: false,
+        task: { task_id: '', status: 'failed' }
+      })
+      return
+    }
     void run('figure_explanation', 'all', region)
   }
   const selectFigure = (selectedPage: number, rect: number[]): void => {
@@ -503,6 +535,19 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
     focusComposer()
   }
   const canAnalyzeSelection = Boolean(literatureId || (projectId && path))
+  const modelControl = (kind: 'document_translation' | 'interpretation' | 'figure_explanation', multimodal = false): React.JSX.Element => (
+    <div className="min-w-0 max-w-[220px]">
+      <ModelMenu
+        compact
+        independent
+        modelFilter={multimodal ? MULTIMODAL_MODEL_FILTER : undefined}
+        modelKey={actionModelKey(kind)}
+        onModelSelect={model => actions.setLiteratureAiModel(kind, model.key)}
+        showEffort={false}
+        testIdPrefix={`pdf-${kind}-model`}
+      />
+    </div>
+  )
   return {
     panel, figure, exitFigureSelection, setFigureGuideOpen, setPanel: selectPanel,
     canAnalyzeSelection,
@@ -520,7 +565,7 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
       closeLabel={t('reading.close')}
       expanded={panelExpanded}
       footer={panel === 'interpretation' ? <footer className="border-t border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-3"><Button className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={openInterpretationChat}>{t('reading.chat')}</Button></footer> : undefined}
-      headerAction={panel === 'document_translation' ? languageControl('document_translation') : summary?.contribution ? <Button variant="outline" size="sm" disabled={isBusy(panel)} onClick={() => void run(panel)}>{t('reading.regenerate')}</Button> : undefined}
+      headerAction={<div className="flex min-w-0 items-center gap-2">{modelControl(panel as 'document_translation' | 'interpretation')}{panel === 'document_translation' ? languageControl('document_translation') : summary?.contribution ? <Button variant="outline" size="sm" disabled={isBusy(panel)} onClick={() => void run(panel)}>{t('reading.regenerate')}</Button> : null}</div>}
       icon={<Icon name={panel === 'document_translation' ? 'globe' : 'sparkle'} size={16} />}
       testId="pdf-reading-panel"
       title={LABELS[panel]}
@@ -529,10 +574,10 @@ export function usePdfAnalysis({ active, literatureId, title, path, assetId, pro
     >
       {panel === 'interpretation' ? <>{feedback(panel)}{summary?.contribution ? <Summary value={summary} onSource={onLocate} /> : !isBusy('interpretation') && <div className="grid gap-5 p-5"><div className="grid gap-2"><h3 className="m-0 text-lg font-semibold">{t('reading.introTitle')}</h3><p className="m-0 text-[var(--vds-text-tertiary)]">{t('reading.introDescription')}</p></div>{interpretationCanGenerate && <Button data-testid="pdf-generate-summary" className="w-full" icon={<Icon name="sparkle" size={16} />} onClick={() => void run('interpretation')}>{t('reading.generateSummary')}</Button>}</div>}</> : <div className="grid gap-3 p-3">{Array.from({ length: pageCount }, (_, index) => translationCard(index + 1))}</div>}
     </PdfPanel> : null,
-    floating: floating ? <FloatingWindow key={floating} initialSize={floating === 'figure_explanation' ? FIGURE_WINDOW_SIZE : undefined} title={LABELS[floating]} onClose={() => { setFloating(null); if (floating === 'figure_explanation') { void cancel('figure_explanation'); exitFigureSelection() } }} footer={<>{floating === 'figure_explanation' && <div className="mr-auto"><Button variant="outline" icon={<Icon name="image" size={14} />} onClick={() => { void cancel('figure_explanation'); setFloating(null); onExclusiveSurfaceOpen(); setFigure(true) }}>{t('reading.continueSelecting')}</Button></div>}{floating !== 'figure_explanation' && canAnnotate ? <Button variant="outline" size="sm" icon={annotationIdentity === annotatedResult ? <Check size={14} /> : <Icon name="annotation" size={14} />} loading={annotating} disabled={!floatingResult || busy || annotating || annotationIdentity === annotatedResult} onClick={() => void addResultComment()}>{t(annotationIdentity === annotatedResult ? 'reading.addedToAnnotation' : 'reading.addToAnnotation')}</Button> : null}<CopyButton key={floatingResult?.text ?? figureText} value={floatingResult?.text ?? figureText} writeText={writeClipboard} disabled={!floatingResult && !figureText} size="sm" variant="ghost" icon={<Icon name="copy" size={14} />} />{floating !== 'figure_explanation' && <Button disabled={!floatingResult} size="sm" variant="primary" icon={<Icon name="talk" size={14} />} onClick={quote}>{t('reading.ask')}</Button>}</>}>
+    floating: floating ? <FloatingWindow key={floating} initialSize={floating === 'figure_explanation' ? FIGURE_WINDOW_SIZE : undefined} title={LABELS[floating]} onClose={() => { setFloating(null); if (floating === 'figure_explanation') { void cancel('figure_explanation'); exitFigureSelection() } }} footer={<>{floating === 'figure_explanation' && <div className="mr-auto flex min-w-0 items-center gap-2"><Button variant="outline" icon={<Icon name="image" size={14} />} onClick={() => { void cancel('figure_explanation'); setFloating(null); onExclusiveSurfaceOpen(); setFigure(true) }}>{t('reading.continueSelecting')}</Button><span className="shrink-0 text-xs text-[var(--vds-text-tertiary)]">{t('reading.currentModel')}</span>{modelControl('figure_explanation', true)}</div>}{floating !== 'figure_explanation' && canAnnotate ? <Button variant="outline" size="sm" icon={annotationIdentity === annotatedResult ? <Check size={14} /> : <Icon name="annotation" size={14} />} loading={annotating} disabled={!floatingResult || busy || annotating || annotationIdentity === annotatedResult} onClick={() => void addResultComment()}>{t(annotationIdentity === annotatedResult ? 'reading.addedToAnnotation' : 'reading.addToAnnotation')}</Button> : null}<CopyButton key={floatingResult?.text ?? figureText} value={floatingResult?.text ?? figureText} writeText={writeClipboard} disabled={!floatingResult && !figureText} size="sm" variant="ghost" icon={<Icon name="copy" size={14} />} />{floating !== 'figure_explanation' && <Button disabled={!floatingResult} size="sm" variant="primary" icon={<Icon name="talk" size={14} />} onClick={quote}>{t('reading.ask')}</Button>}</>}>
       {floating === 'selection_translation' && <section className="cursor-text select-text border-b border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-5"><div className="mb-2 flex items-center justify-between"><p className="text-sm text-[var(--vds-text-tertiary)]">{t('reading.source')}</p>{languageControl('selection_translation')}</div><p>{translationSource}</p></section>}
       <div className={floating === 'figure_explanation' ? 'flex h-full min-h-0 flex-col' : ''}>
-        {floating === 'figure_explanation' && <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">{floatingResult || busy || cropPreview || jobs.figure_explanation?.error ? <Card padding="sm"><CardHeader><CardTitle>{floatingResult ? t('reading.figureResult', { page: floatingResult.page }) : t('reading.figureResultPending')}</CardTitle></CardHeader><CardContent>{(floatingResult?.crop || cropPreview) && <Crop image={floatingResult?.crop ?? cropPreview} page={floatingResult?.page ?? lastRequest.current?.page ?? page} />}{(floatingResult?.text || figureText) && <div className="mt-3 cursor-text select-text text-sm leading-8"><Markdown text={floatingResult?.text ?? figureText} /></div>}{feedback('figure_explanation')}<PromptSettingsGuide className="mt-3 border-t border-[var(--vds-divider-default)] pt-3" prefix={t('reading.figurePromptGuide')} linkLabel={t('reading.promptSettings')} suffix={t('reading.promptGuideSuffix')} /></CardContent></Card> : <p className="text-xs text-[var(--vds-text-tertiary)]">{t('reading.selectionScope')}</p>}</div>}
+        {floating === 'figure_explanation' && <div className="min-h-0 flex-1 space-y-3 overflow-auto p-4">{floatingResult || busy || cropPreview || jobs.figure_explanation?.error || jobs.figure_explanation?.failed ? <Card padding="sm"><CardHeader><CardTitle>{floatingResult ? t('reading.figureResult', { page: floatingResult.page }) : t('reading.figureResultPending')}</CardTitle></CardHeader><CardContent>{(floatingResult?.crop || cropPreview) && <Crop image={floatingResult?.crop ?? cropPreview} page={floatingResult?.page ?? lastRequest.current?.page ?? page} />}{(floatingResult?.text || figureText) && <div className="mt-3 cursor-text select-text text-sm leading-8"><Markdown text={floatingResult?.text ?? figureText} /></div>}{feedback('figure_explanation')}<PromptSettingsGuide className="mt-3 border-t border-[var(--vds-divider-default)] pt-3" prefix={t('reading.figurePromptGuide')} linkLabel={t('reading.promptSettings')} suffix={t('reading.promptGuideSuffix')} /></CardContent></Card> : <p className="text-xs text-[var(--vds-text-tertiary)]">{t('reading.selectionScope')}</p>}</div>}
         {floating !== 'figure_explanation' && <div className="min-h-0 flex-1 overflow-auto">{feedback(floating)}<div className="cursor-text select-text p-5 text-sm leading-8">
           <h3 className="mb-3 font-semibold">{floating === 'selection_translation' ? t('reading.translation') : ''}</h3>
           {floating === 'selection_translation' && floatingResult?.blocks ? <Translation sentences={floatingResult.blocks} active={activeSentence} onSelect={sentence => selectSentence(sentence, floatingResult.page)} /> : floatingResult ? output(floatingResult, true) : <p className="text-xs text-[var(--vds-text-tertiary)]">{t('reading.selectionScope')}</p>}

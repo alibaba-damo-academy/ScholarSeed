@@ -34,7 +34,7 @@ main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格
 
 最低要求：
 
-- Codex Desktop 或支持 skills、subagent 和 `request_user_input` 的 Codex 运行环境；
+- Codex Desktop 或支持 skills、subagent，并能通过当前模式可用的交互工具或普通对话取得用户真实回复的运行环境；`request_user_input` 不是必需工具；
 - 绑定的 Python 3.12.x；其他版本须另行验证；
 - 环境提供的可用 runtime client，或独立运行时的 OpenAI-compatible 文本模型网关
   与 `SCHOLARSEED_ACCOUNT_TOKEN`；
@@ -52,7 +52,7 @@ main直接编辑v2及其依赖文件，统一运行 `workflow publish`。JSON格
 
 TeX 建议安装 MacTeX 或 BasicTeX 后补齐 `bibtex`、CTeX 和所需字体。Debian/Ubuntu 通常需要 `texlive-xetex`、`texlive-latex-extra`、`texlive-lang-chinese`、`texlive-pictures` 和常用字体包。
 
-Python 包统一记录在 `requirements.txt`，产品构建将审查过的依赖装入产品 Python，无需激活用户环境。
+Python 包统一记录在 `requirements.txt`，由产品构建安装到产品 Python，技能运行时不创建独立 `.venv`。
 
 ## 从压缩包安装
 
@@ -67,10 +67,24 @@ cd ~/.codex/skills/literature-review
 ./scripts/setup
 ```
 
-`./scripts/setup` 会验证产品 Python 及依赖，并在配置文件缺失时从样例生成。内部发行包已经包含打包机器当前使用的配置；安装后确认或按目标机器需要调整：
+`./scripts/setup` 验证产品 Python 及已安装依赖，不安装或升级包。内部发行包已经包含打包机器当前使用的配置；安装后确认或按目标机器需要调整：
 
 - `config/model_config.fast.json`：文本与可选 IdeaLab 图片模型的默认 URL 和模型参数；
 - `config/endpoints.json`：SLR 全文获取与上传端点。
+
+Windows 原生使用 Python 3.12，无需 Bash 或激活虚拟环境。在 PowerShell 中从 skill 目录执行：
+
+```powershell
+.\scripts\setup.cmd
+.\scripts\slr.cmd doctor --no-network --json
+.\scripts\slr.cmd init --workspace 'C:\Reviews\我的综述' --intent '实际研究请求'
+```
+
+首次 doctor 可在依赖未安装时运行，报告实际系统、架构、Python、可用输出能力和修复命令。缺少运行环境时修复 ScholarSeed 产品安装；`SCHOLARSEED_PYTHON` 由产品入口指定。`setup.py` 只验证当前产品环境，不创建私有虚拟环境。
+
+`init` 返回 `runtime.cli.argv` 及 PowerShell/CMD/POSIX 写法；后续主代理和子代理复用该命令，避免自行拼接路径。Windows 工作区另有 `slr.cmd` 快捷入口。仅需诊断已有绑定时，运行 `doctor --workspace <工作区> --no-network --json`。WSL 使用其 Linux Python 与 Linux 路径，不能复用 Windows 虚拟环境。
+
+PDF 需要目标机器的 TeX 工具链（Windows 可使用 TeX Live 或 MiKTeX）及对应中文/模板包；doctor 分别报告中英文 PDF 与 Markdown 能力。AS 仍独立安装和诊断，SLR 不修改其配置。自动测试使用假模型和本地材料，不需要模型服务凭据；它们不能代替真实产品与 Windows 验收。
 
 模型凭据不写入 skill config。文本模型读取 `SCHOLARSEED_ACCOUNT_TOKEN`；图片模型优先读取
 `IMAGE_API_KEY`，缺失或为空时降级读取 `SCHOLARSEED_ACCOUNT_TOKEN`。两个 URL 环境变量
@@ -157,7 +171,7 @@ Balanced。新检索结果缺摘要、作者或年份时排除并报告缺口，
 脚本自动应用修复形成v2。
 大纲展示为“1–2句话概括需求和个性化要求 → 缩进目录及挂载caption → 询问引用格式与模板”；
 已有选择或自动执行授权可复用。出版对当前源码提供非阻塞内容诊断，PDF编译失败
-需修复；main查看前三页并直接编辑v2，不重生成已完成章节。详细口径见
+需修复；main查看首页及图表实际所在页（含跨页表格续页）并直接编辑v2，不重生成已完成章节。详细口径见
 SKILL.md 的出版与检查说明。
 
 一次完整运行使用独立 workspace：
@@ -169,7 +183,7 @@ SKILL.md 的出版与检查说明。
 04_outline/     大纲、确认包、真实决定及派生出版规格
 05_generation/  chapters/ 原生章节、完整v1、delta、可编辑v2、图表及出版依赖
 06_output/      survey.pdf 或 survey.md
-07_verifier/    当前源码诊断、编译结果与前三页图像
+07_verifier/    当前源码诊断、编译结果与首页/图表页图像
 _logs/          请求和阶段日志
 ```
 
@@ -228,7 +242,7 @@ scholarseed-bridge literature review --json '{"workspace":"my-survey","checkpoin
 以上是接口索引，不是无条件顺序执行的脚本：确认要基于真实用户回复；已有
 自动授权无需 approve；无图任务跳过制图；有图任务在 prepare 后并发启动。
 首次出版和修改v2后的再次出版都只需 `workflow publish`，它包含检查、编译导出和
-前三页渲染。维护诊断时可以单独调用 `manuscript publish` 或 `run verify_postcheck`，
+首页及图表页渲染，跨页表格覆盖全部续页。返回的 `inspection_scope` 包含实际 PDF 页码、图表标签与图片路径；定位不完整会明确报告。维护诊断时可以单独调用 `manuscript publish` 或 `run verify_postcheck`，
 但它们是工作流子步骤，不是运行完 `workflow publish` 后还要追加的常规步骤。
 从原始 skill 入口调用时仍可显式传 `--workspace`。短入口绑定一个工作区和
 skill 版本，不依赖跨工具调用保留 cd 或 export。
@@ -327,7 +341,7 @@ shasum -a 256 -c PACKAGE-MANIFEST.sha256
 
 ## 常见问题
 
-- `scholarseed-skill-python is unavailable`：从 ScholarSeed Desktop 或 `scholarseed-serve` 启动该技能。
+- `scholarseed-skill-python is unavailable`：从 ScholarSeed Desktop 或 Serve 启动。
 - doctor 报 `SCHOLARSEED_ACCOUNT_TOKEN` `MISS`：在启动 Codex 前导出文本 token；
   图片默认可复用该 token，也可以单独设置优先级更高的 `IMAGE_API_KEY`；
   provider URL `MISS` 则设置对应 URL 环境变量或修正 config 默认值。
@@ -367,7 +381,7 @@ searcher 和 figure-planner 两个角色。保留的底层兼容接口不进入�
 
 main直接修改v2及其实际依赖文件中的一切论文问题；无需同步JSON、accept或
 管理恢复状态。唯一常用出版命令为 `workflow publish`：当前源码诊断、编译导出、
-渲染前三页。旧大纲差异仅提示，编译失败需修复；后续出版永不重新装配覆盖v2。
+渲染首页及图表实际所在页。旧大纲差异仅提示，编译失败需修复；后续出版永不重新装配覆盖v2。
 历史工作区不批量改名，需将已知最终旧稿显式导入新出版工作区。
 
 生成、恢复和v2直接编辑规则统一见 SKILL.md。
@@ -385,3 +399,18 @@ main直接修改v2及其实际依赖文件中的一切论文问题；无需同�
 
 导入的 PDF 与 PaperHub 下载共用工作区缓存和后续解析→paper card→大纲→写作
 流程，不上传文件。来源和元数据缺失均显式记录。本地导入字段可查询 `papers import-local --describe-input`；缺少可用文本时明确报错，不补抓摘要。
+
+## 仓库集成与平台验证
+
+本次导入上游 2026.09.22.1，产品版本为 2026.9.22+1。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
+
+| 行为 | macOS | Windows |
+|---|---|---|
+| 入口 | scripts/slr | scripts/slr.cmd |
+| Python 与准入 | 产品解释器执行 service.cli.skill_python | 相同，使用 argv 或产品 cmd 入口 |
+| 工作区锁 | filelock 的系统锁 | filelock 的系统锁 |
+| 超时清理 | POSIX 进程组 | Windows Job Object / taskkill |
+| 中文字体 | TeX Fandol | TeX Fandol |
+| 源码换行 | LF | Git 保留 LF，生成的工作区 cmd 使用 CRLF |
+
+源码字节哈希以 LF 为准，避免跨平台 checkout 改变清单。运行技能 test_*.py、保留的 smoke_publication.py、产品 prebundle/依赖契约，再从实际 Desktop 触发技能。每个平台分别记录真实结果；本机测试不代表另一个平台通过。

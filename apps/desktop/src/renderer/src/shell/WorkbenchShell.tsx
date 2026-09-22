@@ -35,7 +35,7 @@ import {
 
 const MODULE_PANEL_WIDTH_STORAGE_KEY = 'scholarseed.modulePanel.width'
 const AI_PANEL_WIDTH_STORAGE_KEY = 'scholarseed.aiPanel.width'
-const AI_PANEL_DEFAULT_WIDTH = 320
+const AI_PANEL_DEFAULT_WIDTH = '26vw'
 const AI_PANEL_MIN_WIDTH = 320
 const AI_PANEL_MAX_WIDTH_PERCENT = 55
 const MAIN_WORKBENCH_MIN_WIDTH = 160
@@ -46,15 +46,17 @@ function readStoredModulePanelWidth(): number {
   return raw ? parseModulePanelWidth(raw) : MODULE_PANEL_DEFAULT_WIDTH
 }
 
-function readStoredAiPanelWidth(): number {
+function readStoredAiPanelWidth(): string {
   const raw = window.localStorage.getItem(AI_PANEL_WIDTH_STORAGE_KEY)
   const parsed = raw ? Number.parseFloat(raw) : Number.NaN
-  return Number.isFinite(parsed) ? Math.max(parsed, AI_PANEL_MIN_WIDTH) : AI_PANEL_DEFAULT_WIDTH
+  return Number.isFinite(parsed)
+    ? modulePanelWidthCss(Math.max(parsed, AI_PANEL_MIN_WIDTH))
+    : AI_PANEL_DEFAULT_WIDTH
 }
 
 function parseAiPanelWidth(width: string): number {
   const parsed = Number.parseFloat(width.replace(MODULE_PANEL_WIDTH_UNIT, ''))
-  return Number.isFinite(parsed) ? Math.max(parsed, AI_PANEL_MIN_WIDTH) : AI_PANEL_DEFAULT_WIDTH
+  return Number.isFinite(parsed) ? Math.max(parsed, AI_PANEL_MIN_WIDTH) : AI_PANEL_MIN_WIDTH
 }
 
 function renderMainWorkbench(): React.JSX.Element {
@@ -103,7 +105,7 @@ function renderMainSurface(
   aiPanelOpen: boolean,
   aiPanelDocked: boolean,
   aiPanelCover: boolean,
-  aiPanelWidth: number,
+  aiPanelWidth: string,
   onAiPanelWidthChange: (width: string) => void,
   onAiPanelWidthChangeEnd: (width: string) => void
 ): React.JSX.Element {
@@ -120,7 +122,7 @@ function renderMainSurface(
       <ResizablePanel
         aria-label={resizeAssistantLabel}
         className={`vds-ai-panel-resizable min-h-0 flex-1 [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-x-auto [&>.vds-resizable-split__panel--left_.vds-workbench-body]:overflow-y-hidden${dockedAiPanel ? ' [background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-header-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-header-height),transparent_0)]' : ''}`}
-        defaultRightWidth={`${aiPanelWidth}${MODULE_PANEL_WIDTH_UNIT}`}
+        defaultRightWidth={aiPanelWidth}
         isCollapsed={!dockedAiPanel}
         leftPanel={mainColumn}
         minLeftWidth={MAIN_WORKBENCH_MIN_WIDTH}
@@ -174,11 +176,11 @@ export function WorkbenchShell(): React.JSX.Element {
   }
   const persistAiPanelWidth = (width: string): void => {
     const nextWidth = parseAiPanelWidth(width)
-    aiPanelWidthRef.current = nextWidth
+    aiPanelWidthRef.current = modulePanelWidthCss(nextWidth)
   }
   const commitAiPanelWidth = (width: string): void => {
     const nextWidth = parseAiPanelWidth(width)
-    aiPanelWidthRef.current = nextWidth
+    aiPanelWidthRef.current = modulePanelWidthCss(nextWidth)
     window.localStorage.setItem(AI_PANEL_WIDTH_STORAGE_KEY, String(nextWidth))
   }
 

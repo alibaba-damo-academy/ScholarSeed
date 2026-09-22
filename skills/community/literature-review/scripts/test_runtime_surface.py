@@ -52,8 +52,10 @@ class CurrentSurfaceTest(unittest.TestCase):
             (workspace / '.slr-binding.json').write_text(json.dumps(binding))
             with patch('workspace_entry.sys.argv', ['workspace_entry.py', str(workspace), 'info']), \
                  patch('workspace_entry._activate') as activate, \
-                 patch('workspace_entry.os.execv') as dispatch:
-                workspace_entry.main()
+                 patch('workspace_entry.subprocess.call', return_value=0) as dispatch:
+                with self.assertRaises(SystemExit) as result:
+                    workspace_entry.main()
+                self.assertEqual(result.exception.code, 0)
             activate.assert_called_once_with(workspace.resolve(), binding, ROOT, binding['version'])
             dispatch.assert_called_once()
 

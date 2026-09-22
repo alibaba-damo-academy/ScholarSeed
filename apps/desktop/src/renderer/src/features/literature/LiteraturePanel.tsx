@@ -20,7 +20,8 @@ import {
 import type {
   LiteratureCounts,
   LiteratureFacets,
-  LiteratureProject
+  LiteratureProject,
+  LiteratureTagFacet
 } from '../../contracts/literature'
 import {
   Alert,
@@ -76,7 +77,8 @@ import {
   deleteLiteratureTag,
   getLiteratureCounts,
   getLiteratureFacets,
-  getLiteratureProjects
+  getLiteratureProjects,
+  getLiteratureTagFacets
 } from './api'
 import { catalogue, useCatalogue } from './catalog'
 import { CollectionEditor, type CollectionEditTarget } from './Collection'
@@ -98,6 +100,24 @@ const EMPTY_FACETS: LiteratureFacets = {
   item_types: [],
   publications: [],
   years: []
+}
+/**
+ * 把 query 里已不在当前作用域标签云中的 tag_id 收敛掉。
+ *
+ * 来源是 catalogue.scope() 的作用域存档: 在全览与项目文献库之间切走再切回来会整份
+ * 恢复 query, 如果其中某个标签在这期间被删了, 交集筛选会让列表恒为空, 而侧栏根本
+ * 没有对应 chip, 用户无从取消 —— 只能靠点一次分类或「全部」才能解开。
+ *
+ * 读 getSnapshot() 而不是闭包里的 query: 这个收敛必须发生在 facet 落地那一刻的最新
+ * 状态上, 又不能把 tag_id 放进 effect 的 deps (否则每点一次标签都白跑一次 facet)。
+ */
+function pruneStaleTags(visible: LiteratureTagFacet[]): void {
+  const current = catalogue.getSnapshot().query.tag_id ?? []
+  if (current.length === 0) return
+  const ids = new Set(visible.map((tag) => tag.id))
+  const next = current.filter((id) => ids.has(id))
+  if (next.length === current.length) return
+  catalogue.filter({ tag_id: next.length > 0 ? next : undefined })
 }
 const PANEL_COLLAPSIBLE_CLASS_NAME =
   'grid gap-2 border-0 bg-transparent p-0 shadow-none'
@@ -129,7 +149,7 @@ export function LiteraturePanel(): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const projectId = state.homeSelectedProjectId ?? undefined
-  const { query, reload } = useCatalogue()
+  const { query, reload, panelReload } = useCatalogue()
   const [joinFlash, setJoinFlash] = useState<CreatedCollectionNotice | null>(null)
   useEffect(() => onJoinedCollectionCreated(notice => {
     if (projectId && notice.projectId !== projectId) return
@@ -140,6 +160,8 @@ export function LiteraturePanel(): React.JSX.Element {
   }), [projectId])
   const [counts, setCounts] = useState(EMPTY_COUNTS)
   const [facets, setFacets] = useState(EMPTY_FACETS)
+  /** 标签云单独存一份 facet: facets.tags 是全量标签, 归打标签用, 计数不按分类收敛。 */
+  const [scopedTags, setScopedTags] = useState<LiteratureTagFacet[]>([])
   const [projects, setProjects] = useState<LiteratureProject[]>([])
   const [expandedProjects, setExpandedProjects] = useSidebarSet('projects')
   const [expandedCollections, setExpandedCollections] = useSidebarSet('collections')
@@ -173,6 +195,21 @@ export function LiteraturePanel(): React.JSX.Element {
     act.activateTab('literature')
     catalogue.query(patch)
   }
+  /**
+   * 标签多选: 点一下加进过滤条件, 再点一下撤掉, 一个都不留就是不过滤。
+   *
+   * 走 catalogue.filter() 而不是 selectLiteratureScope(): 后者底层是 query(), 会清掉
+   * 列表勾选与已打开的文献。标签是在既有勾选上附加过滤条件, 不是换一个作用域 ——
+   * 用户常常先勾一批文献再用标签收窄视图。换分类/换项目仍然走 query(), 照旧清勾选。
+   */
+  const toggleLiteratureTag = (id: string): void => {
+    act.activateTab('literature')
+    const current = query.tag_id ?? []
+    const next = current.includes(id)
+      ? current.filter((value) => value !== id)
+      : [...current, id]
+    catalogue.filter({ tag_id: next.length > 0 ? next : undefined })
+  }
 
   useEffect(() => {
     let active = true
@@ -194,7 +231,51 @@ export function LiteraturePanel(): React.JSX.Element {
     return () => {
       active = false
     }
-  }, [query.q, reload, projectId])
+  }, [query.q, reload, panelReload, projectId])
+  /**
+   * 标签云的作用域 facet: 全库标签都列出, 计数按当前分类收敛并按计数降序。
+   *
+   * 与上面那份 facets 分开取, 因为那份的 collections 还喂着分类树, 一旦按分类收窄,
+   * 返回的 collections 只剩选中子树, 整棵树会当场塌掉。
+   *
+   * 作用域必须逐项照抄列表的 query, 尤其是 project_id 要取 query.project_id 而不是
+   * 面板的 projectId: 后者是 homeSelectedProjectId, 只有在全览与项目文献库之间切换
+   * 时才变; 而在全览里点侧栏的项目行只写 query.project_id, 用面板作用域会让标签
+   * 计数退回全库, 和列表各说各话。
+   *
+   * deps 刻意不含 q (搜索与标签筛选互不相干, 是既定口径) 也不含 tag_id (多标签取
+   * 交集, 被选中的维度不能过滤自己的 facet; 而且每点一次标签就重取一遍纯属白跑)。
+   */
+  useEffect(() => {
+    let active = true
+    getLiteratureTagFacets({
+      collection_id: query.collection_id,
+      project_id: query.project_id,
+      recent: query.recent,
+      without_collection: query.without_collection,
+      without_project: query.without_project
+    })
+      .then((value) => {
+        if (!active) return
+        setScopedTags(value.tags)
+        pruneStaleTags(value.tags)
+      })
+      .catch(() => {
+        // 失败时清空而不是留着上一个作用域的标签: 挂着别处的计数比空着更误导。
+        if (active) setScopedTags([])
+      })
+    return () => {
+      active = false
+    }
+  }, [
+    query.collection_id,
+    query.project_id,
+    query.recent,
+    query.without_collection,
+    query.without_project,
+    reload,
+    panelReload
+  ])
 
   useEffect(() => {
     if (!joinFlash) return
@@ -427,9 +508,10 @@ export function LiteraturePanel(): React.JSX.Element {
           : [])
       ]
     })
-  const visibleTags = facets.tags.filter((tag) =>
+  const visibleTags = scopedTags.filter((tag) =>
     tag.name.toLocaleLowerCase().includes(tagSearch.trim().toLocaleLowerCase())
   )
+  const activeTagIds = new Set(query.tag_id ?? [])
   const openCreate = (target: CreateTarget): void => {
     setCreateTarget(target)
     setCreateName('')
@@ -1012,7 +1094,10 @@ export function LiteraturePanel(): React.JSX.Element {
           </div>
           {tagsOpen && (
             <div className="lit-tags">
-              <div className="lit-tag-cloud">
+              <div
+                className="lit-tag-cloud"
+                data-tag-filter={query.tag_id?.length ? 'active' : undefined}
+              >
                 {tagCreateOpen ? (
                   <div className="w-1/2 min-w-0">
                     <Input
@@ -1096,6 +1181,7 @@ export function LiteraturePanel(): React.JSX.Element {
                     )}
                     {visibleTags.map((item) => (
                       <Tag
+                        aria-pressed={activeTagIds.has(item.id)}
                         color={
                           semanticTagColor(item.color) ??
                           semanticTagColorFor(item.id)
@@ -1103,18 +1189,14 @@ export function LiteraturePanel(): React.JSX.Element {
                         className="cursor-pointer [&_.vds-tag__close]:pointer-events-none [&_.vds-tag__close]:opacity-0 hover:[&_.vds-tag__close]:pointer-events-auto hover:[&_.vds-tag__close]:opacity-100 focus:[&_.vds-tag__close]:pointer-events-auto focus:[&_.vds-tag__close]:opacity-100 focus-within:[&_.vds-tag__close]:pointer-events-auto focus-within:[&_.vds-tag__close]:opacity-100"
                         key={item.id}
                         role="button"
+                        selected={activeTagIds.has(item.id)}
                         tabIndex={0}
                         closeLabel={t('panel.deleteTag', { name: item.name })}
-                        onClick={() =>
-                          selectLiteratureScope({ ...clear, tag_id: [item.id] })
-                        }
+                        onClick={() => toggleLiteratureTag(item.id)}
                         onKeyDown={(event) => {
                           if (event.key === 'Enter' || event.key === ' ') {
                             event.preventDefault()
-                            selectLiteratureScope({
-                              ...clear,
-                              tag_id: [item.id]
-                            })
+                            toggleLiteratureTag(item.id)
                           }
                         }}
                         onClose={() =>

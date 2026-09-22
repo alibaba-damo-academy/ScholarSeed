@@ -22,8 +22,10 @@ def describe_input(operation,workspace=None):
     from local_papers import LOCAL_FILE_FIELDS
     result={'status':'SUCCESS','operation':operation,'read_only':True,
             'examples':examples(operation),
+            'schema_note':'fields/node/asset describe inputs; these metadata objects are not request payloads. Use the JSON shapes in examples.',
             'example_policy':'Examples describe shapes, not new requirements. Use real user quotes, IDs, files and task scope; preserve existing follow-up history and constraints.'}
     publication={'format':['latex_pdf','markdown'],'template':{'type':'string','allowed':['ctexart','neurips'],
+                 'example':'ctexart','value_note':'Pass the string itself, e.g. "template":"ctexart"; never {"type":"ctexart"}.',
                  'by_language':{'CHINESE':'ctexart','ENGLISH':'neurips'}},
                  'citation_style':['numeric','author_year','ieee','acm']}
     asset={'required':['purpose','content_plan','caption_draft','paper_ids'],
@@ -53,7 +55,7 @@ def describe_input(operation,workspace=None):
           'publication':publication,'local_pdfs':{'type':'array of paths or per-file objects','allowed_file_fields':sorted(LOCAL_FILE_FIELDS)},
           'constraints':{'type':'array; replaces the entire current constraint list',
                          'required':['id','kind','value','verbatim'],'id':'unique nonempty string',
-                         'kind':sorted(KINDS),'verbatim':'exact span of a recorded user request',
+                         'kind':sorted(KINDS),'verbatim':'string: an exact contiguous substring of intent, user_instructions, or one user_requests entry; no concatenation, paraphrasing, punctuation/whitespace changes, or quotation from effective_requirements',
                          'values':{'required_section / forbidden_section':{'title':'nonempty string','role':sorted(ROLES),'position':'first, last, any, after:<title>; role/position optional'},
                                    'figure_count / table_count / total_citations':'object with nonnegative min and/or max',
                                    'min_papers_per_section / min_paper_citations':'nonnegative integer',
@@ -61,6 +63,10 @@ def describe_input(operation,workspace=None):
                                    'excluded_topic / angle / other':'nonempty string'}}}
         assert set(fields)==REQUEST_FIELDS
         result.update(fields=fields,required=[],merge_policy='publication/retrieval merge immediate keys; other supplied fields replace; original intent/history must be preserved',
+                      verbatim_example={'source':'至少一张图，并包含一张比较表。',
+                                        'valid':['至少一张图','一张比较表','至少一张图，并包含一张比较表。'],
+                                        'invalid':'至少一张图；一张比较表',
+                                        'reason':'The invalid value joins noncontiguous spans with a punctuation mark absent from the source. Use separate constraints or one complete original span.'},
                       strategy_note='whole is a legacy value; both values use the same native chapter/delta pipeline')
     elif operation=='writing.approve':
         result.update(required=['packet_id','user_response'],fields={k:{
@@ -87,7 +93,7 @@ def describe_input(operation,workspace=None):
                         'kind':['concept','notation','problem','evaluation','protocol'],'requirement':'nonempty string',
                         'owner_section_id':'existing nonterminal section/subsection ID','paper_ids':'optional selected IDs'},
           asset=asset,
-          ownership='Nest assets under their owner. Root assets only for an unsectioned component. F/T IDs are unique.',
+          ownership='Nest assets under their owner. A chapter-owned asset may appear in that chapter or its subsections; a subsection-owned asset must stay within that subsection, not a sibling or another chapter. Ownership follows source structure, not the PDF float page. Root assets only for an unsectioned component. F/T IDs are unique.',
           next_action='Main edits the current complete outline and submits outline configure --request FILE; this validates without an LLM. Do not rerun outline generate for revisions.')
     elif operation=='figures.plan':
         from validate_figures_meta import (_VALID_MODES,_VALID_IMAGE_SIZES,_CHART_SPEC_REQUIRED,
@@ -140,8 +146,17 @@ def input_error(operation,error):
     result['describe_input']='slr '+operation.replace('.',' ')+' --describe-input'
     result['next_action']='Correct the named input; query describe_input only if its shape is unclear.'
     sample=examples(operation)[0]
+    if operation in ('writing.configure','writing.approve') and message.startswith('publication.template'):
+        result.update(field='publication.template',expected_type='string',allowed=['ctexart','neurips'],
+                      example={'publication':{'template':'ctexart'}},
+                      next_action='Use a template string supported by the current language/environment; do not wrap it in a type object.')
+        return result
     if operation=='writing.configure':
-        if 'time_range' in message or 'year' in message:
+        if index:=re.search(r'constraints/(\d+)(?:/verbatim:|: verbatim\b)',message):
+            result.update(field=f'constraints[{index[1]}].verbatim',
+                          quote_sources=['intent','user_instructions','user_requests[]'],
+                          next_action='Copy one exact contiguous original span. For separated requirements, use separate constraints or quote the complete original passage; never join or rewrite fragments.')
+        elif 'time_range' in message or 'year' in message:
             result.update(field='retrieval.time_range',example={'retrieval':{'time_range':{'start_year':2010,'end_year':2020}}})
         elif 'corpus' in message:
             result.update(field='retrieval.corpus_size',example={'retrieval':{'corpus_size':{'target':40}}})

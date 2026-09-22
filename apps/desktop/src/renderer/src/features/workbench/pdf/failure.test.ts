@@ -52,6 +52,23 @@ test('every backend PDF application error code has a translation in both languag
   }
 })
 
+test('image capability failures tell users to switch to a multimodal model in both languages', async () => {
+  const expected = {
+    zh: '当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。',
+    en: 'The current model does not support image input. Switch to a multimodal model that supports images, then try again.'
+  }
+  for (const language of ['zh', 'en'] as const) {
+    const i18n = await translator(language)
+    assert.equal(
+      pdfAiFailureText(
+        { code: 'pdf_ai_image_input_unsupported', diagnostic: '' },
+        i18n.getFixedT(null, 'pdf')
+      ),
+      expected[language]
+    )
+  }
+})
+
 test('unknown provider errors and known application errors preserve diagnostics verbatim', async () => {
   const i18n = await translator('en')
   const diagnostic = '供应商 <response> & details\n  original whitespace  '

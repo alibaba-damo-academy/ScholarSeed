@@ -39,6 +39,7 @@
     "explain": "解释",
     "translate": "翻译",
     "figure": "图表解释",
+    "figureUnavailable": "当前模型未声明支持图片输入，请切换支持图片的模型。",
     "figureGuide": {
       "title": "图表解释",
       "description": "框选图片、表格或图形，获取解释。",
@@ -52,6 +53,7 @@
     "figureResult": "选区 · 第 {{page}} 页",
     "figureResultPending": "选区 · 正在解释…",
     "continueSelecting": "继续框选",
+    "currentModel": "当前模型",
     "regenerate": "重新生成",
     "generateSummary": "生成阅读总结",
     "close": "关闭阅读面板",
@@ -125,13 +127,14 @@
       "translation_sentence_incomplete": "逐句译文不完整，请重试。",
       "task_missing": "任务不存在",
       "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
-      "image_input_unsupported": "当前模型未声明支持图片输入，请在设置 → 模型服务确认能力或切换模型。",
+      "image_input_unsupported": "当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。",
       "generation_failed": "生成失败，请检查模型连接并重试。",
       "literature_deleted": "文献已删除，本次结果不再写入。",
       "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
       "execution_failed": "生成失败，旧结果已保留，请重试。",
       "preparation_failed": "无法准备阅读任务，请检查文献和模型设置后重试。",
       "operation_busy": "当前操作已有生成任务；其他 AI 操作仍可使用。",
+      "figure_stream_required": "图表解释需要使用流式接口，请更新客户端后重试。",
       "source_invalid": "请选择有效的项目 PDF 文件进行图表解释。"
     },
     "errorDiagnostic": "{{message}}\n{{detail}}"

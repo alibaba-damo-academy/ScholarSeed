@@ -65,10 +65,12 @@ class LiteratureReviewContract(unittest.TestCase):
         skill = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")
         intake = "writing configure --request"
         after_outline = "outline review-packet"
-        output_question = "Ask for citation format and template together"
+        output_question = "Follow `confirmation.state`"
 
         self.assertIn(intake, skill)
         self.assertLess(skill.index(after_outline), skill.index(output_question))
+        self.assertIn("`required` needs a real confirmation", skill)
+        self.assertIn("Configured publication settings alone do not establish user approval", skill)
         self.assertNotIn(intake, prompt)
         self.assertNotIn(output_question, prompt)
 
@@ -222,6 +224,26 @@ class LiteratureReviewContract(unittest.TestCase):
             [check.title for check in prepared.card.checks],
             [CHECK_LABELS[name] for name in ("cite_sync", "page_render", "deliverable")],
         )
+
+    def test_new_publication_checks_preserve_failure_and_partial_page_scope(self) -> None:
+        self.write(GENERATION, {"status": "FAILED"})
+        self.write(
+            POSTCHECK,
+            {
+                "status": "FAILED",
+                "checks": [
+                    {"id": "unknown_citations", "status": "SUCCESS"},
+                    {"id": "bibliography_ownership", "status": "FAILED"},
+                    {"id": "bibliography_definitions", "status": "FAILED"},
+                    {"id": "visual_inspection_scope", "status": "WARNING"},
+                ],
+                "visual_review_required": True,
+                "pages_to_read": ["partial-page.png"],
+            },
+        )
+        card = prepare_review(self.root, "survey", "result").card
+        self.assertEqual(card.status, "failed")
+        self.assertEqual([check.verdict for check in card.checks], ["FAIL", "WARN", "FAIL"])
 
     def retrieval_payload(self) -> dict[str, str]:
         run_id = "review-run"

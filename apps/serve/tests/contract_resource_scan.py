@@ -140,10 +140,14 @@ def main() -> int:
         with patch("service.content.service.enumeration.os.walk") as recursive_scan:
             selected_entries = content.resource_entries(
                 project.id,
-                ("resources/notes.md", "resources/escaped.md"),
+                (
+                    "resources/notes.md",
+                    "resources/.cache/state.json",
+                    "resources/escaped.md",
+                ),
             )
         check(
-            "selected resource inspection avoids recursive scans and rejects escaped files",
+            "selected resource inspection preserves scan visibility without recursive scans",
             tuple(entry.path for entry in selected_entries) == ("resources/notes.md",)
             and recursive_scan.call_count == 0,
         )

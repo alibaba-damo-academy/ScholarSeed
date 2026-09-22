@@ -270,6 +270,8 @@ export function updateFailureText(
   if (failure.fallback === 'install_verify_unavailable') return t('update.installVerifyUnavailable')
   if (failure.fallback === 'install_signature_untrusted') return t('update.installSignatureUntrusted')
   if (failure.fallback === 'install_signature_indeterminate') return t('update.installSignatureIndeterminate')
+  // 上一轮安装器还活着：重试只会被安装器互斥量 Abort，文案说明在等什么而不是报失败。
+  if (failure.fallback === 'install_already_running') return t('update.installAlreadyRunning')
   // 笼统 fallback 或拿不到诊断原文时退回通用说法：安装类走 account 命名空间那句既有文案，其余按检查失败报。
   if (failure.fallback || !failure.message) {
     return failure.origin === 'install'

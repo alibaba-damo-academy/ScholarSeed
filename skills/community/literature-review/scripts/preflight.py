@@ -44,6 +44,7 @@ import socket
 import subprocess
 import sys
 from urllib.parse import urlparse
+from platform_runtime import runtime_info, command_spec, discover_python
 
 MIN_PYTHON = (3, 12)
 RECOMMENDED_PYTHON = (3, 12)
@@ -70,6 +71,7 @@ PACKAGES = [
     ("PIL", "Pillow", True,
      "required deterministic vertical cropping and bottom-right watermarking before generated images can be published"),
     ("pysbd", "pysbd", True, "sentence segmentation in the current full-text parser"),
+    ("filelock", "filelock", True, "cross-platform workspace operation locks"),
 ]
 
 # (binary, required?, what breaks without it)
@@ -109,21 +111,22 @@ class Report:
         return [i for i in self.items if not i["required"] and not i["ok"]]
 
 
-def check_python(rep: Report) -> None:
+def check_python(rep: Report, workspace_python=None) -> None:
     v = sys.version_info
-    declared = os.getenv('SCHOLARSEED_PYTHON')
-    executable = pathlib.Path(sys.executable).resolve()
-    same_product = declared is None or executable == pathlib.Path(declared).resolve()
-    rep.add('runtime', 'product Python 3.12.x', v[:2] == (3, 12) and same_product, True,
+    expected = _slr_paths.HOME / '.venv'
+    explicit=workspace_python or os.environ.get('SCHOLARSEED_PYTHON')
+    bound=(explicit is None or
+           bool(explicit and pathlib.Path(explicit).absolute()==pathlib.Path(sys.executable).absolute()))
+    rep.add('runtime', 'bound Python 3.12.x', v[:2]==(3,12) and bound, True,
             detail=f'{sys.executable}: {v.major}.{v.minor}.{v.micro}',
-            hint='launch from ScholarSeed Desktop or scholarseed-serve')
+            hint='launch from ScholarSeed Desktop or Serve with its product Python')
 
 
 def check_packages(rep: Report) -> None:
     for module, pip_name, required, why in PACKAGES:
         run = subprocess.run([sys.executable,'-c',f'import {module}'],capture_output=True,text=True,timeout=30)
         rep.add('packages',pip_name,run.returncode==0,required,
-                detail='' if run.returncode==0 else run.stderr[-500:], hint=f'install {pip_name} in the product environment')
+                detail='' if run.returncode==0 else run.stderr[-500:], hint=f'install {pip_name} in the bound environment')
     code = "import sys; sys.path[:0] = " + repr([str(_slr_paths.HOME/'lib'),str(_slr_paths.HOME/'scripts'),str(_slr_paths.HOME/'scripts/generation')]) + "; import slr_paths; slr_paths.bootstrap(str(" + repr(str(_slr_paths.HOME/'scripts/slr.py')) + ")); import manuscript, scripted_generation, manuscript_publication, workflow"
     run = subprocess.run([sys.executable,'-c',code],capture_output=True,text=True,timeout=30)
     rep.add('runtime','required pipeline imports',run.returncode==0,True,detail=run.stderr[-800:])
@@ -134,7 +137,7 @@ def check_binaries(rep: Report) -> None:
         found = shutil.which(binary) is not None
         rep.add("latex", binary, found, required,
                 detail="" if found else why,
-                hint="install a TeX distribution (TeX Live / MacTeX); on Debian "
+                hint="install a TeX distribution (TeX Live / MiKTeX on Windows, MacTeX on macOS); on Debian "
                      "the survey path also needs texlive-lang-chinese and "
                      "texlive-pictures")
     if not any(shutil.which(b) for b in ("xelatex", "pdflatex")):
@@ -145,6 +148,20 @@ def check_binaries(rep: Report) -> None:
                        "end of generation")
 
     rep.add("pdf tools", "pandoc", True, False, detail=PANDOC_NOTE)
+    resources=['ctexart.cls','xeCJK.sty','fontspec.sty','tabularx.sty','booktabs.sty',
+               'forest.sty','natbib.sty','caption.sty','longtable.sty']
+    if os.name=='nt':
+        resources += ['FandolSong-Regular.otf','FandolHei-Regular.otf',
+                      'FandolKai-Regular.otf','FandolFang-Regular.otf']
+    for resource in resources:
+        found=False
+        if shutil.which('kpsewhich'):
+            try:
+                result=subprocess.run(['kpsewhich',resource],capture_output=True,encoding='utf-8',errors='replace',timeout=10)
+                found=result.returncode==0 and bool(result.stdout.strip())
+            except (OSError,subprocess.SubprocessError):
+                pass
+        rep.add('latex resources',resource,found,False,hint='install the missing package in the active TeX distribution')
 
 
 # Values that are obviously templates rather than real settings. A run that
@@ -500,12 +517,30 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", dest="as_json")
     ap.add_argument("--no-network", action="store_true",
                     help="skip endpoint reachability probes")
+    ap.add_argument('--workspace',default=os.environ.get('SLR_WORKSPACE'))
     args = ap.parse_args()
 
     profile = args.profile or _slr_paths.resolve_profile()
 
     rep = Report()
-    check_python(rep)
+    environment=runtime_info(_slr_paths.HOME,args.workspace)
+    workspace_python=None
+    if args.workspace:
+        try:
+            bound=discover_python(_slr_paths.HOME,workspace=args.workspace)
+            binding_path=pathlib.Path(args.workspace)/'.slr-binding.json'
+            binding=json.loads(binding_path.read_text(encoding='utf-8'))
+            valid=(binding.get('skill')==str(_slr_paths.HOME)
+                   and binding.get('version')==(_slr_paths.HOME/'VERSION').read_text().strip()
+                   and binding.get('platform',sys.platform)==sys.platform
+                   and binding.get('workspace',str(pathlib.Path(args.workspace).resolve()))==str(pathlib.Path(args.workspace).resolve())
+                   and pathlib.Path(bound['python']).absolute()==pathlib.Path(sys.executable).absolute())
+            rep.add('runtime','workspace binding',valid,True,detail=str(binding_path),
+                    hint='restore the bound skill, workspace path and Python')
+            if valid:workspace_python=bound['python']
+        except (OSError,ValueError,KeyError) as exc:
+            rep.add('runtime','workspace binding',False,True,detail=str(exc))
+    check_python(rep,workspace_python)
     check_packages(rep)
     check_binaries(rep)
     check_templates(rep)
@@ -515,12 +550,23 @@ def main() -> int:
     check_endpoints(rep, network=not args.no_network)
     check_agentic_search_skill(rep)
     check_audit(rep)
+    available=lambda name: any(i['name']==name and i['ok'] for i in rep.items)
+    common_pdf=('bibtex','tabularx.sty','booktabs.sty','forest.sty','natbib.sty','caption.sty','longtable.sty')
+    chinese_fonts=('FandolSong-Regular.otf','FandolHei-Regular.otf','FandolKai-Regular.otf','FandolFang-Regular.otf') if os.name=='nt' else ()
+    capabilities={'markdown':not rep.blocking,
+                  'pdf_english':not rep.blocking and all(available(n) for n in ('pdflatex',*common_pdf)),
+                  'pdf_chinese':not rep.blocking and all(available(n) for n in ('xelatex','ctexart.cls','xeCJK.sty','fontspec.sty',*common_pdf,*chinese_fonts)),
+                  'pdf_render':available('pypdfium2') and available('pypdf'),
+                  'search_skill_discoverable':available('independent agentic-search skill')}
+    environment['setup']=command_spec([sys.executable,'-X','utf8',str(_slr_paths.HOME/'scripts/setup.py')])
 
     if args.as_json:
         print(json.dumps({"profile": profile,
                           "ready": not rep.blocking,
+                          "runtime":environment,"capabilities":capabilities,
                           "items": rep.items}, indent=2, ensure_ascii=False))
     else:
+        print(json.dumps({'runtime':environment,'capabilities':capabilities},ensure_ascii=False,indent=2))
         render(rep, profile)
     return 1 if rep.blocking else 0
 

@@ -8,8 +8,10 @@ import { createRuntime } from './fixtures/runtime'
 
 const PROJECT_NAME = '划词验收'
 const SOURCE_PATH = 'resources/selection.md'
+const PDF_SOURCE_PATH = 'resources/selection.pdf'
 const SOURCE_NAME = 'selection.md'
 const SOURCE_TEXT = 'Verified selection evidence.'
+const SECOND_SOURCE_TEXT = 'Fresh selection evidence.'
 
 test('short Markdown selection keeps its first block and scroll state stable', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
@@ -248,7 +250,9 @@ test('selection AI actions show optional input and prompt settings guidance', as
     const pdf = await PDFDocument.create()
     pdf.setTitle('Optional prompt paper')
     const font = await pdf.embedFont(StandardFonts.Helvetica)
-    pdf.addPage([612, 792]).drawText(SOURCE_TEXT, { x: 50, y: 650, size: 12, font })
+    const pdfPage = pdf.addPage([612, 792])
+    pdfPage.drawText(SOURCE_TEXT, { x: 50, y: 650, size: 12, font })
+    pdfPage.drawText(SECOND_SOURCE_TEXT, { x: 50, y: 620, size: 12, font })
     const pdfBytes = await pdf.save()
     const imported = await page.request.post(`${await apiBase(page)}/api/v1/imports/pdf`, {
       multipart: { file: { name: 'optional-prompt-paper.pdf', mimeType: 'application/pdf', buffer: Buffer.from(pdfBytes) } }
@@ -261,14 +265,26 @@ test('selection AI actions show optional input and prompt settings guidance', as
     await expect(paper).toBeVisible()
     await paper.click()
     await page.getByRole('button', { name: '打开', exact: true }).click()
-    const pdfText = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: SOURCE_TEXT }).first()
-    await expect(pdfText).toBeVisible()
-    const selectionBounds = await pdfText.boundingBox()
-    if (!selectionBounds) throw new Error('PDF selection text unavailable')
-    await page.mouse.move(selectionBounds.x + 1, selectionBounds.y + selectionBounds.height / 2)
-    await page.mouse.down()
-    await page.mouse.move(selectionBounds.x + selectionBounds.width - 1, selectionBounds.y + selectionBounds.height / 2, { steps: 20 })
-    await page.mouse.up()
+    const selectPdfSourceText = async (text: string): Promise<void> => {
+      const pdfText = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: text }).first()
+      await expect(pdfText).toBeVisible()
+      const selectionBounds = await pdfText.boundingBox()
+      if (!selectionBounds) throw new Error('PDF selection text unavailable')
+      await page.mouse.move(selectionBounds.x + 1, selectionBounds.y + selectionBounds.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(selectionBounds.x + selectionBounds.width - 1, selectionBounds.y + selectionBounds.height / 2, { steps: 20 })
+      await page.mouse.up()
+    }
+    await selectPdfSourceText(SOURCE_TEXT)
+    const pdfSelectionToolbar = page.getByTestId('selection-action-host')
+    await pdfSelectionToolbar.getByRole('button', { name: 'AI 解释', exact: true }).click()
+    await expect(pdfSelectionToolbar.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toBeVisible()
+    await page.getByTestId('pdf-page-1').click({ position: { x: 20, y: 20 } })
+    await expect(pdfSelectionToolbar).toHaveCount(0)
+    await selectPdfSourceText(SECOND_SOURCE_TEXT)
+    await expect(pdfSelectionToolbar).toHaveAttribute('data-state', 'collapsed')
+    await expect(pdfSelectionToolbar.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-explain-reset.png') })
     await page.getByRole('button', { name: '添加高亮', exact: true }).first().click()
     const savedMark = page.locator('[data-testid^="pdf-mark-"]').first()
     await expect(savedMark).toBeVisible()
@@ -280,6 +296,55 @@ test('selection AI actions show optional input and prompt settings guidance', as
     await expect(inspector.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toHaveValue('')
     await expect(inspector.getByRole('button', { name: 'AI 提示词设置', exact: true })).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-annotation-explain-optional.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('project PDF selection AI closes without restoring the legacy input', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    const project = await page.evaluate(async ({ base, name }) => {
+      const response = await fetch(`${base}/api/content/projects`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      })
+      if (!response.ok) throw new Error(`project_create_${response.status}`)
+      return response.json() as Promise<{ root: string }>
+    }, { base: await apiBase(page), name: `${PROJECT_NAME}PDF浮窗关闭` })
+    const pdf = await PDFDocument.create()
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    const pdfPage = pdf.addPage([612, 792])
+    pdfPage.drawText(SOURCE_TEXT, { x: 50, y: 650, size: 12, font })
+    writeFileSync(join(project.root, PDF_SOURCE_PATH), await pdf.save())
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${PROJECT_NAME}PDF浮窗关闭`).click()
+    await page.getByTestId('activity-resource').click()
+    await page.getByTestId('resource-refresh').click()
+    await page.getByTestId(`tree-${PDF_SOURCE_PATH}`).click()
+    const pdfText = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: SOURCE_TEXT }).first()
+    await expect(pdfText).toBeVisible()
+    const selectionBounds = await pdfText.boundingBox()
+    if (!selectionBounds) throw new Error('PDF selection text unavailable')
+    await page.mouse.move(selectionBounds.x + 1, selectionBounds.y + selectionBounds.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(selectionBounds.x + selectionBounds.width - 1, selectionBounds.y + selectionBounds.height / 2, { steps: 20 })
+    await page.mouse.up()
+    await page.getByTestId('selection-action-host').getByRole('button', { name: 'AI 解释', exact: true }).click()
+    const suggestion = page.getByTestId('resource-ai-suggestion')
+    await expect(suggestion.getByRole('textbox', { name: '补充说明（选填）', exact: true })).toBeFocused()
+    await page.getByTestId('pdf-page-1').click({ position: { x: 20, y: 20 } })
+    await expect(suggestion).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-selection-ai-dismissed.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()

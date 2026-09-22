@@ -403,23 +403,6 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
             </div>
             {candidates.length > 0 ? (
               <div className="flex min-w-0 items-center gap-[var(--vds-space-3)]">
-                <span className="shrink-0 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-tertiary)]">
-                  {t('webSearch.importTo')}
-                </span>
-                <Button
-                  className="max-w-56 min-w-0"
-                  data-testid="web-search-import-target"
-                  disabled={!project || search.importing}
-                  icon={<Icon name="folder" size={13} />}
-                  onClick={openImportDialog}
-                  title={importParent ? t('webSearch.destination', { path: importParent }) : t('webSearch.library')}
-                  variant="outline"
-                >
-                  <span className="truncate">
-                    {importParent ? t('webSearch.destination', { path: importParent }) : t('webSearch.library')}
-                  </span>
-                  <Icon name="chevron-down" size={12} />
-                </Button>
                 <Button
                   data-testid="web-search-save"
                   disabled={!project || selectedCandidates.length === 0}

@@ -24,11 +24,14 @@ import {
   recentLiteratureEqual,
   sanitizeShortcutOverrides,
   recentSessionsEqual,
+  sanitizeLiteratureAiModels,
   touchRecentFile,
   touchRecentLiterature,
   touchRecentSession,
   type PreferenceShortcutBinding,
   type PreferenceShortcutOverrides,
+  type LiteratureAiModelAction,
+  type LiteratureAiModelPreferences,
   type RecentFileEntry,
   type RecentLiteratureEntry,
   type RecentSessionEntry
@@ -37,6 +40,7 @@ import { setActiveShortcutOverrides, type ShortcutCommandId } from './shortcuts'
 import { registerLiteratureOpenRecorder } from './features/literature/catalog'
 import {
   CollaborationMode,
+  DEFAULT_GLOBAL_PERMISSION_MODE,
   GlobalPermissionMode,
   ModelInfo,
   ModelsResp,
@@ -83,6 +87,7 @@ import {
   assistantContextFailure,
   AiContextSource,
   AiPanelState,
+  beginContextCandidateLoad,
   mergeContextCandidates,
   AssistantContextError,
   INITIAL_AI_PANEL_STATE
@@ -192,7 +197,9 @@ import {
   withResourceChildren
 } from './features/resources/state'
 import {
+  beginResourceTreeReload,
   expandedResourceAncestors,
+  finishResourceTreeReload,
   materializeResourcePath,
   relocateExpandedResourcePaths,
   relocateResourcePath,
@@ -210,6 +217,7 @@ import {
 } from './features/resources/search'
 import { runWebSearchRoute } from './features/resources/driver'
 import { resolveDocumentLocation, type DocumentSource, type LocatedDocumentSource } from './features/workbench/api'
+import { resolveDocumentWorkspaceProject } from './features/workbench/scope'
 import { documentWorkspaces, type DocumentNavigationView, type DocumentTab } from './features/workbench/workspace'
 import {
   closeTab,
@@ -334,6 +342,13 @@ export interface TurnLaunch {
   optimisticUserMessage: Extract<ConvItem, { kind: 'user' }>
 }
 
+export interface LanguageSwitchState {
+  target: Lang
+  dirtyCount: number
+  saving: boolean
+  failure: 'save' | 'preferences' | null
+}
+
 /**
  * The model catalogue is one source of truth in the store: the composer's model
  * pill and the settings panel's connection section both read it, so switching a
@@ -399,6 +414,8 @@ export interface AppState {
   onboarding: OnboardingPreferences
   theme: Theme
   lang: Lang
+  editorRuntimeRevision: number
+  languageSwitch: LanguageSwitchState | null
   sidebarOpen: boolean
   /** Whether the first durable session snapshot has seeded the local read ledger. */
   sessionActivityInitialized: boolean
@@ -406,6 +423,7 @@ export interface AppState {
   sessionActivitySeen: Record<string, number>
   selectionPrompts: SelectionPrompts
   reasoningPreferences: Record<string, string>
+  literatureAiModels: LiteratureAiModelPreferences
   desktopNotifications: boolean
   soundAlerts: boolean
   autoSave: boolean
@@ -663,10 +681,13 @@ const INITIAL: AppState = {
   selectionPrompts: sanitizeSelectionPrompts(INITIAL_PREFERENCES.selectionPrompts),
   theme: INITIAL_PREFERENCES.theme,
   lang: INITIAL_PREFERENCES.language,
+  editorRuntimeRevision: 0,
+  languageSwitch: null,
   sidebarOpen: INITIAL_PREFERENCES.sidebarOpen,
   sessionActivityInitialized: INITIAL_PREFERENCES.sessionActivityInitialized,
   sessionActivitySeen: INITIAL_PREFERENCES.sessionActivitySeen,
   reasoningPreferences: INITIAL_PREFERENCES.reasoningPreferences ?? {},
+  literatureAiModels: INITIAL_PREFERENCES.literatureAiModels,
   desktopNotifications: INITIAL_PREFERENCES.desktopNotifications,
   soundAlerts: INITIAL_PREFERENCES.soundAlerts,
   autoSave: INITIAL_PREFERENCES.autoSave,
@@ -680,7 +701,7 @@ const INITIAL: AppState = {
   notifPanelOpen: false,
   model: '',
   collaborationMode: 'default',
-  globalPermissionMode: 'ask',
+  globalPermissionMode: DEFAULT_GLOBAL_PERMISSION_MODE,
   defaultWorkflowEnabled: true,
   defaultAutoReviewEnabled: true,
   workdir: DEFAULT_WORKDIR.name,
@@ -1053,8 +1074,11 @@ function restoreScopeConversation(
 export interface Actions extends AssistantIngress {
   /** 外观与界面语言（PRD「偏好设置」）。两者都落盘，重启后保持。 */
   saveSelectionPrompts: (prompts: SelectionPrompts) => Promise<void>
+  setLiteratureAiModel: (action: LiteratureAiModelAction, modelKey: string) => void
   setTheme: (theme: Theme) => void
   setLang: (lang: Lang) => void
+  confirmLanguageSwitch: () => Promise<void>
+  cancelLanguageSwitch: () => void
   setAutoSave: (enabled: boolean) => void
   setFormatOnSave: (enabled: boolean) => void
   setEditorWordWrap: (enabled: boolean) => void
@@ -1369,6 +1393,7 @@ export function StoreProvider({
 }): React.JSX.Element {
   const { i18n: resourceI18n } = useTranslation('resources')
   const { t: assistantText } = useTranslation('assistant')
+  const { t: literatureText } = useTranslation('literature')
   const [state, setState] = useState<AppState>(() => ({
     ...INITIAL,
     aiPanel: {
@@ -1414,6 +1439,8 @@ export function StoreProvider({
             current.recentSessions,
             value.recentSessions
           )
+          const literatureAiModels = sanitizeLiteratureAiModels(value.literatureAiModels)
+          const sameLiteratureAiModels = JSON.stringify(current.literatureAiModels) === JSON.stringify(literatureAiModels)
           if (
             onboardingEqual(current.onboarding, value.onboarding) &&
             current.lang === value.language &&
@@ -1422,7 +1449,8 @@ export function StoreProvider({
             sameRecentFiles &&
             sameRecentLiterature &&
             sameShortcutOverrides &&
-            sameRecentSessions
+            sameRecentSessions &&
+            sameLiteratureAiModels
           ) return current
           setActiveShortcutOverrides(shortcutOverrides)
           return {
@@ -1444,7 +1472,10 @@ export function StoreProvider({
               : shortcutOverrides,
             recentSessions: sameRecentSessions
               ? current.recentSessions
-              : value.recentSessions
+              : value.recentSessions,
+            literatureAiModels: sameLiteratureAiModels
+              ? current.literatureAiModels
+              : literatureAiModels
           }
         })
       },
@@ -1462,6 +1493,17 @@ export function StoreProvider({
 
   const stateRef = useRef(state)
   stateRef.current = state
+
+  const switchEditorLanguage = useCallback(async (language: Lang): Promise<boolean> => {
+    await preferenceWriter.current!.submit({ language })
+    if (preferenceWriter.current!.current().language !== language) return false
+    setState((current) => ({
+      ...current,
+      editorRuntimeRevision: current.editorRuntimeRevision + 1,
+      languageSwitch: null
+    }))
+    return true
+  }, [])
 
   // 文献列表/阅读器/全局搜索的「打开」都汇到 catalog recorder 与下面两个
   // action；MRU 只在这里落 state，避免各调用点重复记时间戳。
@@ -1526,6 +1568,7 @@ export function StoreProvider({
       sessionActivityInitialized: state.sessionActivityInitialized,
       sessionActivitySeen: state.sessionActivitySeen,
       reasoningPreferences: state.reasoningPreferences,
+      literatureAiModels: state.literatureAiModels,
       desktopNotifications: state.desktopNotifications,
       soundAlerts: state.soundAlerts,
       autoSave: state.autoSave,
@@ -1548,6 +1591,7 @@ export function StoreProvider({
     state.sessionActivityInitialized,
     state.sessionActivitySeen,
     state.reasoningPreferences,
+    state.literatureAiModels,
     state.recentFiles,
     state.recentLiterature,
     state.recentSessions,
@@ -1921,8 +1965,64 @@ export function StoreProvider({
 
   const act = useMemo<Actions>(() => ({
     saveSelectionPrompts: (selectionPrompts) => preferenceWriter.current!.submit({ selectionPrompts }),
+    setLiteratureAiModel: (action, modelKey) => setState((current) => {
+      const literatureAiModels = sanitizeLiteratureAiModels({
+        ...current.literatureAiModels,
+        [action]: modelKey
+      })
+      void preferenceWriter.current!.submit({ literatureAiModels })
+      return { ...current, literatureAiModels }
+    }),
     setTheme: (theme) => setState((current) => (current.theme === theme ? current : { ...current, theme })),
-    setLang: (lang) => { void preferenceWriter.current!.submit({ language: lang }) },
+    setLang: (lang) => {
+      if (lang === stateRef.current.lang) return
+      const dirtyCount = documentWorkspaces.dirtyEditorCount()
+      if (dirtyCount > 0) {
+        setState((current) => ({
+          ...current,
+          accountMenuOpen: false,
+          languageSwitch: {
+            target: lang,
+            dirtyCount,
+            saving: false,
+            failure: null
+          }
+        }))
+        return
+      }
+      void switchEditorLanguage(lang)
+    },
+    confirmLanguageSwitch: async () => {
+      const pending = stateRef.current.languageSwitch
+      if (!pending || pending.saving) return
+      setState((current) => current.languageSwitch ? {
+        ...current,
+        languageSwitch: { ...current.languageSwitch, saving: true, failure: null }
+      } : current)
+      if (!await documentWorkspaces.saveEditors()) {
+        setState((current) => current.languageSwitch ? {
+          ...current,
+          languageSwitch: {
+            ...current.languageSwitch,
+            dirtyCount: documentWorkspaces.dirtyEditorCount(),
+            saving: false,
+            failure: 'save'
+          }
+        } : current)
+        return
+      }
+      if (!await switchEditorLanguage(pending.target)) {
+        setState((current) => current.languageSwitch ? {
+          ...current,
+          languageSwitch: {
+            ...current.languageSwitch,
+            saving: false,
+            failure: 'preferences'
+          }
+        } : current)
+      }
+    },
+    cancelLanguageSwitch: () => setState((current) => ({ ...current, languageSwitch: null })),
     setAutoSave: (autoSave) => setState((current) => current.autoSave === autoSave ? current : { ...current, autoSave }),
     setFormatOnSave: (formatOnSave) => setState((current) => current.formatOnSave === formatOnSave ? current : { ...current, formatOnSave }),
     setEditorWordWrap: (editorWordWrap) => setState((current) => current.editorWordWrap === editorWordWrap ? current : { ...current, editorWordWrap }),
@@ -2558,24 +2658,21 @@ export function StoreProvider({
       const generation = resourceTreeReloadSeq.current
       setState((current) => ({
         ...current,
-        resource: { ...current.resource, loadState: 'loading' }
+        resource: beginResourceTreeReload(current.resource)
       }))
       const [result, roots] = await Promise.all([
         fetchResourceTree(project),
         project ? listExternalRoots(project) : Promise.resolve(null)
       ])
-      if (generation !== resourceTreeReloadSeq.current) return false
+      if (generation !== resourceTreeReloadSeq.current || project !== stateRef.current.homeSelectedProjectId) return false
       setState((current) => ({
         ...current,
-        resource: {
-          ...current.resource,
-          tree: result?.nodes ?? [],
-          rootTotal: result?.total ?? 0,
-          root: result?.root ?? current.resource.root,
-          loadState: result ? 'ready' : 'error'
-        }
+        resource: finishResourceTreeReload(current.resource, result)
       }))
-      if (!result || (project && !roots)) return false
+      if (!result || (project && !roots)) {
+        actRef.current.noticeResource('error', { key: 'panel.loadFailed' })
+        return false
+      }
       // 整树刷新只回浅层，用户已经展开的深层目录会在树里变空 —— 展开态还在、内容没了。
       // 补丁必须在**刚拿回来的**浅树上算: setState 是异步的, 此时 stateRef 还是那棵
       // 已经补全过的旧树, 照它判断会得出「都已投影完整」而一处也不补。
@@ -2584,7 +2681,7 @@ export function StoreProvider({
         expandedOverride ?? stateRef.current.resource.expanded,
         project
       )
-      if (generation !== resourceTreeReloadSeq.current) return false
+      if (generation !== resourceTreeReloadSeq.current || project !== stateRef.current.homeSelectedProjectId) return false
       if (!patches.length) return true
       setState((current) => ({
         ...current,
@@ -3713,15 +3810,7 @@ export function StoreProvider({
       assistantContextCandidateSeq.current = requestSeq
       setState((current) => ({
         ...current,
-        aiPanel: {
-          ...current.aiPanel,
-          open: true,
-          contextPickerOpen: true,
-          contextPickerSource: source,
-          contextCandidates: [],
-          contextCandidatesLoading: true,
-          contextError: null
-        }
+        aiPanel: beginContextCandidateLoad(current.aiPanel, source)
       }))
       const unavailable = (kind: ContextRefKind): string | undefined => {
         const capability = snapshot.aiPanel.capabilities.find((item) => item.name === kind)
@@ -4574,7 +4663,12 @@ export function StoreProvider({
     openLiteratureAttachment: async (id, attachmentId, page, options) => {
       // stateRef 在 React 批处理下滞后于 setState；链式调用时用调用方
       // 显式传入的作用域，避免守卫拿旧值误判「项目已切换」而静默返回。
-      const project = options?.projectId ?? stateRef.current.homeSelectedProjectId
+      const current = stateRef.current
+      const project = resolveDocumentWorkspaceProject(
+        current.homeSelectedProjectId,
+        assistantProject(current).projectId,
+        options?.projectId
+      )
       actRef.current.patchLiterature({ rowMenu: null })
       let detail: LiteratureDetail
       try {
@@ -4586,7 +4680,11 @@ export function StoreProvider({
       const attachment = attachmentId
         ? detail.attachments.find((candidate) => candidate.id === attachmentId)
         : detail.primary_attachment
-      if (stateRef.current.homeSelectedProjectId !== project) return
+      const latest = stateRef.current
+      if (resolveDocumentWorkspaceProject(
+        latest.homeSelectedProjectId,
+        assistantProject(latest).projectId
+      ) !== project) return
       if (!attachment) {
         actRef.current.noticeLiterature('error', '附件当前不可用：attachment_unavailable')
         return
@@ -4599,15 +4697,20 @@ export function StoreProvider({
       // 附件统一由 Workbench 打开；文献域只附带稳定的条目/附件身份。
       // PDF 选区组件会使用该身份，图片和不支持格式则由各自 viewer 处理。
       const workspace = documentWorkspaces.forProject(project)
-      void workspace.open({
-        kind: 'literature',
-        literatureId: id,
-        attachmentId: attachment.id,
-        recordTarget: attachment.record_target,
-        path: attachment.name,
-        mediaType: attachment.media_type
-      }, 'edit', attachmentTitle).then((tabId) => {
-        if (stateRef.current.homeSelectedProjectId !== project) return
+      try {
+        const tabId = await workspace.open({
+          kind: 'literature',
+          literatureId: id,
+          attachmentId: attachment.id,
+          recordTarget: attachment.record_target,
+          path: attachment.name,
+          mediaType: attachment.media_type
+        }, 'edit', attachmentTitle)
+        const latest = stateRef.current
+        if (resolveDocumentWorkspaceProject(
+          latest.homeSelectedProjectId,
+          assistantProject(latest).projectId
+        ) !== project) return
         setState((current) => ({ ...current, activeTab: tabId }))
         const tab = workspace.getSnapshot().tabs[tabId]
         workspace.setTabViewState(tabId, {
@@ -4619,7 +4722,15 @@ export function StoreProvider({
             title: detail.title
           }
         })
-      })
+      } catch (error) {
+        actRef.current.noticeLiterature('error', literatureText('attachment.openFailed'))
+        console.error('[literature] attachment open failed', {
+          attachmentId: attachment.id,
+          error,
+          literatureId: id,
+          projectId: project
+        })
+      }
     },
     closeLiteratureAttachment: (id, attachmentId) => {
       // 标签可能开在别的项目工作区里(文献是全库维度), 交给注册表全量收口。
@@ -4926,7 +5037,7 @@ export function StoreProvider({
           : current.threads
       }
     })
-  }), [assistantSources, persistAssistantContext, resourceI18n, revealResourceTreePath, runTranslation, showAnswerAnnotationMutationFailure, showAnswerAnnotationRemoveFailure, syncResourceContext])
+  }), [assistantSources, literatureText, persistAssistantContext, resourceI18n, revealResourceTreePath, runTranslation, showAnswerAnnotationMutationFailure, showAnswerAnnotationRemoveFailure, switchEditorLanguage, syncResourceContext])
 
   // 资料库的异步动作会互相调用（例如写完重拉树、失败出提示）。
   // act 本身是 useMemo 对象字面量，在其内部引用自己会抱到未初始化的绑定，

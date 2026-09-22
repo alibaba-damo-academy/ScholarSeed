@@ -320,6 +320,204 @@ test('project registry isolates tabs, layout, focus, and dirty sessions for iden
   assert.equal(registry.forProject('project-one').getSnapshot().sessions[firstSession].dirty, true)
 })
 
+test('project registry counts and saves dirty Monaco documents across every instantiated project', async () => {
+  const commits: string[] = []
+  const base = loader()
+  const registry = new DocumentWorkspaceRegistry({
+    ...base,
+    async commit(requested, bytes, revision) {
+      commits.push(`${requested.kind === 'project' ? requested.project : requested.kind}:${requested.path}`)
+      return base.commit(requested, bytes, revision)
+    }
+  })
+  const first = registry.forProject('project-one')
+  const second = registry.forProject('project-two')
+  const firstTab = await first.open({ ...source, project: 'project-one' }, 'edit')
+  const secondTab = await second.open({ ...source, project: 'project-two' }, 'edit')
+  first.updateText(first.getSnapshot().tabs[firstTab].sessionId, '# first draft')
+  second.updateText(second.getSnapshot().tabs[secondTab].sessionId, '# second draft')
+
+  assert.equal(registry.dirtyEditorCount(), 2)
+  assert.equal(await registry.saveEditors(), true)
+  assert.deepEqual(commits, [
+    'project-one:notes/readme.md',
+    'project-two:notes/readme.md'
+  ])
+  assert.equal(registry.dirtyEditorCount(), 0)
+})
+
+test('project registry refuses editor reload preparation when any dirty Monaco document cannot save', async () => {
+  const base = loader()
+  const registry = new DocumentWorkspaceRegistry({
+    ...base,
+    async commit(requested, bytes, revision) {
+      if (requested.kind === 'project' && requested.project === 'blocked') {
+        return { ok: false, error: 'failed' as const }
+      }
+      return base.commit(requested, bytes, revision)
+    }
+  })
+  const cleanable = registry.forProject('cleanable')
+  const blocked = registry.forProject('blocked')
+  const cleanableTab = await cleanable.open({ ...source, project: 'cleanable' }, 'edit')
+  const blockedTab = await blocked.open({ ...source, project: 'blocked' }, 'edit')
+  cleanable.updateText(cleanable.getSnapshot().tabs[cleanableTab].sessionId, '# save me')
+  blocked.updateText(blocked.getSnapshot().tabs[blockedTab].sessionId, '# keep me')
+
+  assert.equal(await registry.saveEditors(), false)
+  assert.equal(registry.dirtyEditorCount(), 1)
+})
+
+test('editor reload preparation leaves non-Monaco documents untouched', async () => {
+  const commits: string[] = []
+  const base = loader()
+  const registry = new DocumentWorkspaceRegistry({
+    ...base,
+    async load(requested) {
+      const loaded = await base.load(requested)
+      return requested.path.endsWith('.pdf')
+        ? { ...loaded, viewer: 'pdf', mediaType: 'application/pdf' }
+        : loaded
+    },
+    async commit(requested, bytes, revision) {
+      commits.push(requested.path)
+      return base.commit(requested, bytes, revision)
+    }
+  })
+  const workspace = registry.forProject('project')
+  const markdownTab = await workspace.open({ kind: 'project', project: 'project', path: 'notes/readme.md' }, 'edit')
+  const pdfTab = await workspace.open({ kind: 'project', project: 'project', path: 'paper.pdf' }, 'edit')
+  workspace.updateText(workspace.getSnapshot().tabs[markdownTab].sessionId, '# changed')
+  workspace.setExternalDirty(workspace.getSnapshot().tabs[pdfTab].sessionId, true)
+
+  assert.equal(registry.dirtyEditorCount(), 1)
+  assert.equal(await registry.saveEditors(), true)
+  assert.deepEqual(commits, ['notes/readme.md'])
+  assert.equal(workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[pdfTab].sessionId].dirty, true)
+})
+
+test('registry suspends the least frequently selected clean background session without closing its tab', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader(), {
+    budget: { maxBackgroundSessions: 1, maxBackgroundBytes: Number.MAX_SAFE_INTEGER }
+  })
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
+  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
+  const secondTab = await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
+  const secondSession = workspace.getSnapshot().tabs[secondTab].sessionId
+  workspace.focusTab(firstTab)
+  workspace.focusTab(firstTab)
+  const thirdTab = await workspace.open({ ...source, path: 'notes/third.md' }, 'edit')
+
+  const state = workspace.getSnapshot()
+  assert.ok(state.tabs[firstTab])
+  assert.ok(state.tabs[secondTab])
+  assert.ok(state.tabs[thirdTab])
+  assert.equal(state.sessions[firstSession].residency, 'resident')
+  assert.equal(state.sessions[secondSession].residency, 'suspended')
+  assert.equal(state.sessions[secondSession].bytes.byteLength, 0)
+  assert.equal(state.sessions[secondSession].text, null)
+})
+
+test('registry protects dirty and visible sessions from suspension', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader(), {
+    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+  })
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const dirtyTab = await workspace.open({ ...source, path: 'notes/dirty.md' }, 'edit')
+  const dirtySession = workspace.getSnapshot().tabs[dirtyTab].sessionId
+  workspace.updateText(dirtySession, '# unsaved')
+  const visibleTab = await workspace.open({ ...source, path: 'notes/visible.md' }, 'edit')
+  const visibleSession = workspace.getSnapshot().tabs[visibleTab].sessionId
+
+  assert.equal(workspace.getSnapshot().sessions[dirtySession].residency, 'resident')
+  assert.equal(workspace.getSnapshot().sessions[visibleSession].residency, 'resident')
+})
+
+test('selecting a suspended tab reloads its payload and preserves view state', async () => {
+  const loads: string[] = []
+  const base = loader()
+  const registry = new DocumentWorkspaceRegistry({
+    ...base,
+    async load(requested) {
+      loads.push(requested.path)
+      return base.load(requested)
+    }
+  }, {
+    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+  })
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
+  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
+  workspace.setTabViewState(firstTab, { cursor: 17 })
+  await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
+  assert.equal(workspace.getSnapshot().sessions[firstSession].residency, 'suspended')
+
+  workspace.focusTab(firstTab)
+  await workspace.waitForResidency()
+
+  const state = workspace.getSnapshot()
+  assert.deepEqual(loads, ['notes/first.md', 'notes/second.md', 'notes/first.md'])
+  assert.equal(state.sessions[firstSession].residency, 'resident')
+  assert.equal(state.sessions[firstSession].text, '# Draft\n')
+  assert.deepEqual(state.tabs[firstTab].viewState, { cursor: 17 })
+})
+
+test('registry applies one residency budget across inactive project workspaces', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader(), {
+    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+  })
+  const first = registry.forProject('project-one')
+  const firstTab = await first.open({ ...source, project: 'project-one' }, 'edit')
+  const firstSession = first.getSnapshot().tabs[firstTab].sessionId
+  registry.activateProject('project-two')
+  const second = registry.forProject('project-two')
+  await second.open({ ...source, project: 'project-two' }, 'edit')
+
+  assert.equal(first.getSnapshot().sessions[firstSession].residency, 'suspended')
+})
+
+test('registry reclaims viewer caches against globally resident sessions and all live tabs', async () => {
+  let residentSessionIds = new Set<string>()
+  let liveTabIds = new Set<string>()
+  const registry = new DocumentWorkspaceRegistry(loader(), {
+    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 },
+    reclaim: (sessions, tabs) => {
+      residentSessionIds = new Set(sessions)
+      liveTabIds = new Set(tabs)
+    }
+  })
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
+  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
+  const secondTab = await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
+  const secondSession = workspace.getSnapshot().tabs[secondTab].sessionId
+
+  assert.deepEqual([...residentSessionIds], [secondSession])
+  assert.deepEqual(new Set(liveTabIds), new Set([firstTab, secondTab]))
+  assert.equal(residentSessionIds.has(firstSession), false)
+})
+
+test('suspension removes a document text undo history', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader(), {
+    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+  })
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
+  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
+  workspace.updateText(firstSession, '# changed')
+  assert.equal(await workspace.save(firstSession), true)
+  await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
+
+  assert.equal(workspace.getSnapshot().sessions[firstSession].residency, 'suspended')
+  assert.equal(workspace.undo(firstSession), false)
+})
+
 test('saveFocused commits only the focused dirty save-capable session through ordinary save', async () => {
   const commits: string[] = []
   const base = loader()

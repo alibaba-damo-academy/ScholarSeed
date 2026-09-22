@@ -264,6 +264,24 @@ test('projects the latest feature-owned card snapshot without deleting durable h
   assert.equal(cards.length, 5)
 })
 
+test('first-position cards update content and detail identity without moving the display anchor', () => {
+  const first: ConvItem = {
+    kind: 'display_card', itemId: 'first-item', turnId: 'first-turn', eventSeq: 1,
+    card: { cardId: 'search', type: 'search', content: { run: 'one' } }
+  }
+  const message: ConvItem = { kind: 'agent', text: 'Preparing authorization' }
+  const latest: ConvItem = {
+    kind: 'display_card', itemId: 'latest-item', turnId: 'next-turn', eventSeq: 3,
+    card: { cardId: 'selection', type: 'search', content: { run: 'one', selection: 'selected' } }
+  }
+  const cards = [first, message, latest]
+  const original = structuredClone(cards)
+  const visible = latestDisplayCardItems(cards, card => String(card.content.run), () => 'first')
+  assert.deepEqual(visible, [{ ...first, card: latest.card }, message])
+  assert.deepEqual(cards, original)
+  assert.deepEqual(latestDisplayCardItems(cards, card => String(card.content.run)), [message, latest])
+})
+
 test('restores display card below the final answer from activity history', () => {
   const projected = projectActivityEvents(
     [{ kind: 'agent', text: '结论', turnId: 'turn-card' }],

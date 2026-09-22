@@ -9,10 +9,10 @@ TABLES_DIR = Path(__file__).resolve().parent / "generation" / "tables"
 if str(TABLES_DIR) not in sys.path:
     sys.path.insert(0, str(TABLES_DIR))
 
-from table_checks import collect_problems  # noqa: E402
+from table_checks import collect_problems, _extract_env  # noqa: E402
 
 
-_TABLE_RE = re.compile(r"\\begin\{table\*?\}.*?\\end\{table\*?\}", re.S)
+_TABLE_RE = re.compile(r"\\begin\{(table\*?|longtable)\}.*?\\end\{\1\}", re.S)
 _LABEL_RE = re.compile(r"\\label\{([^}]+)\}")
 _STRAY_RULE_SLASH_RE = re.compile(r"\\(?:top|mid|bottom)rule\\(?=\s)")
 _LAYOUT_PREFIXES = (
@@ -22,6 +22,7 @@ _LAYOUT_PREFIXES = (
     "x_column_underfilled_while_fixed_col_wraps", "cite_in_nonwrapping_column",
     "unbreakable_ascii_run", "column_count_out_of_range", "unescaped_percent",
     "length_without_unit", "missing_caption",
+    "longtable_", "long_text_in_nonwrapping_column",
 )
 
 
@@ -30,14 +31,10 @@ def _layout_problem(problem: str) -> bool:
 
 
 def _column_spec(block: str) -> str | None:
-    for pattern in (
-        r"\\begin\{tabularx\}\s*\{[^}]*\}\s*\{([^}]*)\}",
-        r"\\begin\{tabular\*\}\s*\{[^}]*\}\s*\{([^}]*)\}",
-        r"\\begin\{tabular\}\s*\{([^}]*)\}",
-    ):
-        match = re.search(pattern, block)
-        if match:
-            return match.group(1)
+    for name in ('longtable','tabularx','tabular*','tabular'):
+        parsed=_extract_env(block,name)
+        if parsed:
+            return parsed[0]
     return None
 
 
@@ -63,8 +60,6 @@ def inspect_native_tables(source: str, planned_tables: list[dict]) -> dict:
             issues.append({"table_id": item.get("table_id"), "label": label or None,
                            "source_line": source.count("\n", 0, match.start()) + 1,
                            "column_spec": _column_spec(block), "problems": problems})
-    for match in re.finditer(r'\\begin\{longtable\}.*?\\end\{longtable\}', source, re.S):
-        found.update(value for value in _LABEL_RE.findall(match[0]) if value in planned)
     for label, item in planned.items():
         if label not in found:
             issues.append({"table_id": item.get("table_id"), "label": label,

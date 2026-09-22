@@ -50,3 +50,32 @@ test('non-detail catalogue actions dismiss the open literature detail', () => {
   assert.equal(catalogue.getSnapshot().focusedId, null)
   catalogue.scope(null)
 })
+
+test('panel refresh does not request a literature list reload', () => {
+  const before = catalogue.getSnapshot()
+  catalogue.reloadPanel()
+  const after = catalogue.getSnapshot()
+  assert.equal(after.reload, before.reload)
+  assert.equal(after.panelReload, before.panelReload + 1)
+})
+
+test('tag filtering narrows the query without dropping the working selection', () => {
+  catalogue.scope(null)
+  catalogue.query({ collection_id: ['collection-a'] })
+  catalogue.select('paper', true)
+  catalogue.focus('paper')
+  // 标签是在既有勾选上叠加过滤条件, 不是换作用域: 勾选与打开中的文献都要留住。
+  catalogue.filter({ tag_id: ['tag-a'] })
+  assert.deepEqual(catalogue.getSnapshot().query.tag_id, ['tag-a'])
+  assert.deepEqual(catalogue.getSnapshot().query.collection_id, ['collection-a'])
+  assert.deepEqual(catalogue.getSnapshot().selected, ['paper'])
+  assert.equal(catalogue.getSnapshot().focusedId, 'paper')
+  // 撤到最后一个时 tag_id 回到 undefined, 而不是留一个空数组参与查询。
+  catalogue.filter({ tag_id: undefined })
+  assert.equal(catalogue.getSnapshot().query.tag_id, undefined)
+  assert.deepEqual(catalogue.getSnapshot().selected, ['paper'])
+  // 换作用域照旧清勾选: filter 只服务标签, 不改变 query 的语义。
+  catalogue.query({ collection_id: ['collection-b'] })
+  assert.deepEqual(catalogue.getSnapshot().selected, [])
+  catalogue.scope(null)
+})

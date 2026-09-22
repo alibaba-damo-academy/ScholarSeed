@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { maskPhone } from '../../account'
 import { downloadSessionDiagnostics, FEEDBACK_MAX_IMAGES, SESSION_DIAGNOSTIC_FILENAME, submitFeedback } from '../../api'
-import { feedbackImageRoom, mergeFeedbackImages, toScreenshotFile } from '../../attachments'
+import { clipboardImageFiles, feedbackImageRoom, mergeFeedbackImages, toScreenshotFile } from '../../attachments'
 import { Icon } from '../../icons'
 import { writeClipboard } from '../primitive/clipboard'
 import { Button, CopyButton, Dialog, DialogContent, DialogTitle, Textarea } from '../ui'
@@ -126,7 +126,7 @@ export function Feedback({
     return () => URL.revokeObjectURL(url)
   }, [autoShot])
 
-  const addImages = (picked: FileList | null): void => {
+  const addImages = (picked: ArrayLike<File> | null): void => {
     if (!picked?.length) return
     // 自动截图占用 5 张名额之一: 手动余量与总量预检都要把它算进去。
     const room = feedbackImageRoom(images.length, autoShot !== null, FEEDBACK_MAX_IMAGES)
@@ -220,6 +220,13 @@ export function Feedback({
         aria-label={t('feedback.title')}
         className={dialogClassName}
         data-testid="feedback-dialog"
+        onPaste={(event) => {
+          if (phase !== 'editing') return
+          const pastedImages = clipboardImageFiles(event.clipboardData.items)
+          if (!pastedImages.length) return
+          event.preventDefault()
+          addImages(pastedImages)
+        }}
         overlayClassName={scrimClassName}
         overlayProps={{
           onClick: () => phase !== 'submitting' && onClose()

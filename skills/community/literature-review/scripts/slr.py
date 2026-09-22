@@ -32,6 +32,8 @@ import re
 from main_view import emit
 from datetime import date
 from pathlib import Path
+from platform_io import run_stream
+from platform_runtime import runtime_info, utf8_env
 
 TERMINAL_STATUSES = ("SUCCESS", "PARTIAL_SUCCESS", "FAILED")
 
@@ -57,7 +59,7 @@ def substitute(command: list[str], workspace: Path) -> list[str]:
         for key, value in mapping.items():
             token = token.replace(key, value)
         out.append(token)
-    if out and out[0] == "scholarseed-skill-python":
+    if out and out[0] in ("python", "scholarseed-skill-python"):
         out[0] = sys.executable
     return out
 
@@ -123,7 +125,7 @@ def resolve_status(stage: dict, workspace: Path, stdout: str, returncode: int) -
 
 
 def stage_env(profile: str, workspace: Path) -> dict:
-    env = dict(os.environ)
+    env = utf8_env()
     env["SLR_HOME"] = str(slr_paths.HOME)
     env["SLR_PROFILE"] = profile
     env["SLR_WORKSPACE"] = str(workspace)
@@ -135,46 +137,7 @@ def stage_env(profile: str, workspace: Path) -> dict:
 def run_command(command: list[str], workspace: Path, log_path: Path,
                 env: dict, timeout: int, progress=False) -> tuple[int, str]:
     """Run one command, mirroring its output into the log file."""
-    import codecs,selectors,signal
-    chunks=[];decoder=codecs.getincrementaldecoder('utf-8')('replace'); pending=''
-    with log_path.open('a',encoding='utf-8') as log:
-        log.write('\n[slr] '+ ' '.join(command)+'\n');log.flush()
-        process=subprocess.Popen(command,cwd=str(workspace),env=env,stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,bufsize=0,start_new_session=True)
-        deadline=time.monotonic()+timeout
-        try:
-            with selectors.DefaultSelector() as selector:
-                selector.register(process.stdout,selectors.EVENT_READ)
-                while selector.get_map():
-                    if time.monotonic()>=deadline:
-                        os.killpg(process.pid,signal.SIGKILL);process.wait()
-                        log.write(f'\n[slr] timed out after {timeout}s\n');log.flush()
-                        return 124,''.join(chunks)
-                    for key,_ in selector.select(min(1,max(0,deadline-time.monotonic()))):
-                        data=os.read(key.fd,65536)
-                        if not data:selector.unregister(key.fileobj);continue
-                        text=decoder.decode(data);chunks.append(text);log.write(text);log.flush()
-                        if progress:
-                            pending += text
-                            while '\n' in pending:
-                                line, pending = pending.split('\n', 1)
-                                try: event = json.loads(line)
-                                except ValueError: continue
-                                if isinstance(event, dict) and event.get('event') == 'llm_progress':
-                                    print(line, file=sys.stderr, flush=True)
-                tail=decoder.decode(b'',final=True);chunks.append(tail);log.write(tail)
-            try:process.wait(timeout=max(.1,deadline-time.monotonic()))
-            except subprocess.TimeoutExpired:
-                if process.poll() is None:
-                    os.killpg(process.pid,signal.SIGKILL);process.wait()
-                log.write(f'\n[slr] timed out after {timeout}s\n');log.flush()
-                return 124,''.join(chunks)
-            return process.returncode,''.join(chunks)
-        except BaseException:
-            if process.poll() is None:
-                os.killpg(process.pid,signal.SIGKILL);process.wait()
-            raise
-        finally:process.stdout.close()
+    return run_stream(command,workspace,log_path,env,timeout,progress)
 
 
 # ----------------------------------------------------------------- commands --
@@ -271,7 +234,7 @@ def cmd_run(args) -> int:
     if args.stage in ('verify_postcheck', 'generation_publish') and step_results:
         detail = step_results[-1]['detail']
         for key in ('checks', 'pages_to_read', 'render_error', 'visual_review_required',
-                    'visual_review_complete', 'report', 'deliverable'):
+                    'visual_review_complete', 'inspection_scope', 'report', 'deliverable'):
             if key in detail:
                 result[key] = detail[key]
     if args.stage == 'retrieval_adapt' and status != 'FAILED':
@@ -521,6 +484,7 @@ def cmd_init(args) -> int:
         "status": "SUCCESS",
         "workspace": str(workspace),
         "created": created, "entrypoint": str(entry), "python": sys.executable,
+        "runtime": runtime_info(slr_paths.HOME,workspace),
         "already_present": existing,
         "inputs_written": inputs_written,
         "non_empty_before_init": occupied_before,
@@ -788,6 +752,8 @@ def cmd_doctor(args) -> int:
         command.append("--no-network")
     if args.as_json:
         command.append("--json")
+    if getattr(args,'workspace',None):
+        command += ['--workspace',args.workspace]
     return subprocess.call(command)
 
 
@@ -863,6 +829,7 @@ def main() -> int:
     doctor = sub.add_parser("doctor", help="check the environment")
     doctor.add_argument("--no-network", action="store_true")
     doctor.add_argument("--json", action="store_true", dest="as_json")
+    doctor.add_argument("--workspace", help="inspect an existing workspace runtime binding")
     doctor.set_defaults(func=cmd_doctor)
 
     info = sub.add_parser("info", help="print resolved paths and configuration")

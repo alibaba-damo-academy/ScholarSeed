@@ -18,7 +18,10 @@ import {
   selectionReplacementFor,
   useSelectionActions,
 } from "./actions";
-import { documentSelectionInteractionProps } from "./focus";
+import {
+  documentSelectionInteractionProps,
+  retainsDocumentSelection,
+} from "./focus";
 import {
   DEFAULT_SELECTION_TOOLBAR_WIDTH,
   SELECTION_VIEWPORT_MARGIN,
@@ -113,6 +116,15 @@ export function SelectionActionHost(): React.JSX.Element | null {
       current.presentation.visible !== false &&
       selectionAnchorIsVisible(current.presentation.point),
   );
+  useEffect(() => {
+    if (!active || active.pinned) return undefined;
+    const dismissOutsidePointer = (event: PointerEvent): void => {
+      if (!retainsDocumentSelection(null, event.target)) setActive(null);
+    };
+    document.addEventListener("pointerdown", dismissOutsidePointer, true);
+    return () =>
+      document.removeEventListener("pointerdown", dismissOutsidePointer, true);
+  }, [active]);
   useEffect(() => {
     if (
       active &&

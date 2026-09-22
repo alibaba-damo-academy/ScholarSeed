@@ -8,6 +8,7 @@ import re
 import tempfile
 from pathlib import Path
 from chapter_plan import ROLES
+from bibliography_contract import is_bibliography_title
 
 CONTRACT_VERSION = 1
 REQUEST_FIELDS = {'local_pdfs','writing_strategy','chapter_concurrency','intent','language',
@@ -53,6 +54,11 @@ def atomic_json(path, value):
 def json_input(path):
     import sys
     return json.load(sys.stdin) if str(path) == '-' else json.loads(Path(path).read_text())
+
+
+def validate_template_value(value):
+    if not isinstance(value,str) or not value.strip():
+        raise ValueError('publication.template must be a nonempty string, e.g. "ctexart" or "neurips"; objects are not accepted')
 
 
 def validate_request(data):
@@ -117,7 +123,7 @@ def validate_request(data):
     if not isinstance(pub,dict) or set(pub)-PUBLICATION_FIELDS: raise ValueError('publication accepts format, template, citation_style only')
     if pub.get('format','latex_pdf') not in ('latex_pdf','markdown'): raise ValueError('invalid publication.format')
     if pub.get('citation_style','numeric') not in ('numeric','author_year','ieee','acm'): raise ValueError('invalid citation_style')
-    if 'template' in pub and (not isinstance(pub['template'],str) or not pub['template'].strip()): raise ValueError('template must be nonempty')
+    if 'template' in pub: validate_template_value(pub['template'])
     constraints=result['constraints']; seen=set()
     if not isinstance(constraints,list): raise ValueError('constraints must be an array')
     for i,c in enumerate(constraints):
@@ -126,7 +132,10 @@ def validate_request(data):
         if not isinstance(c.get('id'),str) or not c['id'] or c['id'] in seen: raise ValueError(loc+': unique id required')
         seen.add(c['id']); kind=c.get('kind'); value=c.get('value'); quote=c.get('verbatim')
         if kind not in KINDS: raise ValueError(loc+': unsupported kind '+str(kind))
-        if not isinstance(quote,str) or not quote.strip() or not any(quote in s for s in originals): raise ValueError(loc+': verbatim must be a span of a user request')
+        if not isinstance(quote,str) or not quote.strip() or not any(quote in s for s in originals):
+            raise ValueError(loc+'/verbatim: must be an exact contiguous substring of intent, '
+                             'user_instructions, or one user_requests entry; do not concatenate, '
+                             'paraphrase, alter punctuation/whitespace, or quote effective_requirements')
         if kind in ('required_section','forbidden_section'):
             if not isinstance(value,dict) or not isinstance(value.get('title'),str) or not value['title'].strip(): raise ValueError(loc+': section value needs title')
             if set(value)-{'title','position','role'}: raise ValueError(loc+': unknown section constraint fields')
@@ -219,6 +228,11 @@ def configure(workspace, patch):
         raise ValueError('user_requests must preserve existing history in chronological order')
     if before and merged['intent']!=before['intent']: raise ValueError('original intent is immutable; append follow-up user_requests and update effective_requirements')
     current=validate_request(merged)
+    for i,c in enumerate(current['constraints']):
+        if c['kind']=='required_section' and is_bibliography_title(c['value']['title']):
+            raise ValueError(f'constraints/{i}: bibliography is publisher-owned, not a required_section; '
+                             'preserve the user request for a complete reference list in effective_requirements '
+                             'or an other constraint, and remove this chapter constraint')
     changed=[key for key in current if not before or current[key]!=before.get(key)]
     affected=[]
     if changed:

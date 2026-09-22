@@ -11,6 +11,8 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from platform_io import file_lock, kill_process_tree, process_options, ProcessJob
+from platform_runtime import utf8_env
 
 
 def save(path, value):
@@ -34,18 +36,9 @@ def final_json(text):
 
 
 async def stop(proc):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
+    if proc.returncode is not None:
         return
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except asyncio.TimeoutError:
-        pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    await asyncio.to_thread(kill_process_tree, proc.pid)
     await proc.wait()
 
 
@@ -62,12 +55,14 @@ async def run_components(workspace, commands):
         begin = time.monotonic()
         result = {"component": name, "command": command, "log": str(path)}
         proc = None
+        job = None
         try:
             with path.open("wb") as stream:
                 proc = await asyncio.create_subprocess_exec(
                     *command, cwd=str(ws), stdout=stream, stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True)
+                    env=utf8_env(), **process_options())
                 result["pid"] = proc.pid
+                job = ProcessJob(proc.pid)
                 rc = await proc.wait()
             payload = final_json(path.read_text(errors="replace"))
             result.update(exit_code=rc, status=payload.get("status", "SUCCESS" if rc == 0 else "FAILED"),
@@ -80,6 +75,7 @@ async def run_components(workspace, commands):
             result.update(status="FAILED", error=str(exc))
         finally:
             if proc is not None:
+                if job:job.close()
                 await stop(proc)
             result["seconds"] = round(time.monotonic() - begin, 3)
             save(logs / (name + ".json"), result)
@@ -116,7 +112,6 @@ async def run_components(workspace, commands):
 
 
 async def _produce(workspace, concurrency=3, repairs=1, only=None, overwrite=False, dry_run=False):
-    import fcntl
     from writing_contract import require_approval, preparation_identity
     root = Path(__file__).resolve().parent
     ws = Path(workspace)
@@ -125,8 +120,7 @@ async def _produce(workspace, concurrency=3, repairs=1, only=None, overwrite=Fal
     if manifest.get("writing_contract_sha256") != preparation_identity(ws):
         raise ValueError("writing scope or outline changed: rerun generation_prep before produce")
     (ws / "05_generation/_internal").mkdir(parents=True, exist_ok=True)
-    with (ws / "05_generation/_internal/produce.lock").open("w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with file_lock(ws / "05_generation/_internal/produce.lock"):
         # Figure planning is semantic work owned by the main agent. Validate it
         # before paying for either branch; this command never invents a plan.
         check = await asyncio.create_subprocess_exec(
@@ -163,9 +157,13 @@ async def produce(workspace, concurrency=3, repairs=1, only=None, overwrite=Fals
     loop = asyncio.get_running_loop()
     task = asyncio.current_task()
     previous = signal.getsignal(signal.SIGTERM)
-    loop.add_signal_handler(signal.SIGTERM, task.cancel)
+    if os.name == 'nt':
+        signal.signal(signal.SIGTERM, lambda *_: loop.call_soon_threadsafe(task.cancel))
+    else:
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
     try:
         return await _produce(workspace, concurrency, repairs, only, overwrite, dry_run)
     finally:
-        loop.remove_signal_handler(signal.SIGTERM)
+        if os.name != 'nt':
+            loop.remove_signal_handler(signal.SIGTERM)
         signal.signal(signal.SIGTERM, previous)

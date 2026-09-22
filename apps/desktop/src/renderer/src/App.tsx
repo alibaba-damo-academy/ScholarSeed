@@ -28,6 +28,7 @@ import type { SessionStatus } from './model'
 import { AccountLogin } from './components/business/AccountLogin'
 import { Landing } from './components/business/Landing'
 import { AccountPanel } from './components/business/AccountPanel'
+import { LanguageSwitchDialog } from './components/business/Preferences'
 import { ProjectForm } from './components/business/ProjectForm'
 import { Sidebar } from './components/business/Sidebar'
 import { UpdateOverlay } from './components/business/UpdateOverlay'
@@ -1061,6 +1062,8 @@ function AppMain({
         {workspaceReady && state.projectForm && <ProjectFormHost />}
 
         {workspaceReady && state.confirmDelete && <ConfirmDialog />}
+
+        <LanguageSwitchDialog />
 
         {workspaceReady && state.foregroundNotice && <ForegroundNotice />}
         {workspaceReady && state.resource.notice && <ResourceNoticeToast />}

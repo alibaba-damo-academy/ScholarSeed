@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 
-import { timestampLabel } from './projection.ts'
+import {
+  mergeLiteratureSummaries,
+  replaceLiteratureSummary,
+  timestampLabel
+} from './projection.ts'
+import type { LiteratureSummary } from '../../contracts/literature.ts'
 
 const listSource = readFileSync(new URL('./LiteratureList.tsx', import.meta.url), 'utf8')
 const engine = createInstance()
@@ -16,6 +21,11 @@ await engine.init({
   }
 })
 const moment = new Date(2026, 8, 15, 15, 46, 32)
+const summary = (id: string, title: string, version: number): LiteratureSummary => ({
+  id,
+  title,
+  version
+} as LiteratureSummary)
 // 与 localization/format.ts 的 createFormatters 同形, 但保留显式 locale 以便逐语言断言。
 const formatters = (locale: string) => ({
     date: (value: Date | number, options?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, options).format(value),
@@ -32,6 +42,47 @@ test('literature timestamps are shown down to the second', () => {
     assert.equal(timestampLabel('not a timestamp', formatters('zh-CN')), '')
 })
 
+test('a saved detail replaces only its visible row and rejects stale responses', () => {
+  const first = summary('first', 'First', 2)
+  const second = summary('second', 'Second', 4)
+  const items = [first, second]
+
+  const updated = summary('first', 'Updated first', 3)
+  const next = replaceLiteratureSummary(items, updated)
+  assert.notEqual(next, items)
+  assert.equal(next[0], updated)
+  assert.equal(next[1], second)
+  assert.deepEqual(next.map((item) => item.id), ['first', 'second'])
+
+  assert.equal(
+    replaceLiteratureSummary(next, summary('first', 'Stale first', 1)),
+    next
+  )
+  assert.equal(
+    replaceLiteratureSummary(next, summary('missing', 'Missing', 1)),
+    next
+  )
+})
+
+test('an in-flight list response keeps an equally new local row update', () => {
+  const fetched = [summary('first', 'Stale fetch', 3), summary('second', 'Second', 4)]
+  const local = new Map([
+    ['first', summary('first', 'Latest local', 3)],
+    ['missing', summary('missing', 'Not in current query', 5)]
+  ])
+
+  const merged = mergeLiteratureSummaries(fetched, local)
+  assert.equal(merged[0].title, 'Latest local')
+  assert.equal(merged[1], fetched[1])
+  assert.deepEqual(merged.map((item) => item.id), ['first', 'second'])
+
+  const newerFetch = mergeLiteratureSummaries(
+    [summary('first', 'Newer fetch', 4)],
+    local
+  )
+  assert.equal(newerFetch[0].title, 'Newer fetch')
+})
+
 test('the time columns keep room for a timestamp that carries seconds', () => {
     for (const key of ['created_at', 'updated_at']) {
         assert.match(
@@ -41,6 +92,15 @@ test('the time columns keep room for a timestamp that carries seconds', () => {
     }
     assert.match(listSource, /width: Math\.max\(COLUMN_META\[entry\.key\]\.minimum, entry\.width\)/)
     assert.doesNotMatch(listSource, /Intl\.DateTimeFormat/)
+})
+
+test('the whole literature table is a copy drop target for external files', () => {
+  assert.match(listSource, /data-testid="literature-drop-target"/)
+  assert.match(listSource, /data-drop-active=\{pdfDropActive \? 'true' : 'false'\}/)
+  assert.match(listSource, /hasDraggedFiles\(event\.dataTransfer\)/)
+  assert.match(listSource, /event\.dataTransfer\.dropEffect = 'copy'/)
+  assert.match(listSource, /void importPdfFiles\(event\.dataTransfer\.files\)/)
+  assert.match(listSource, /literature\('pdfImport\.drop'\)/)
 })
 
 test('chip columns let the cell do the clipping so truncation stays detectable', () => {

@@ -173,6 +173,51 @@ def test_open_binds_existing_snapshot() -> None:
         shutil.rmtree(project, ignore_errors=True)
 
 
+def test_open_projects_versioning_without_a_resource_tree_scan() -> None:
+    project = Path(tempfile.mkdtemp(prefix="file-workbench-versioning-projection-"))
+    try:
+        target = project / "resources" / "notes.md"
+        target.parent.mkdir()
+        target.write_text("# notes\n", encoding="utf-8")
+        client = _client(project)
+        content = client.app.state.content
+        versions = client.app.state.resource_versions
+        project_id = content.project().id
+        versions.ensure_initial(project_id, "resources/notes.md")
+
+        with (
+            patch.object(content, "scan_resources", wraps=content.scan_resources) as scan_resources,
+            patch.object(versions, "observe", wraps=versions.observe) as observe,
+        ):
+            opened = client.get(
+                "/api/workbench/open",
+                params={"project": project_id, "path": "resources/notes.md"},
+            )
+
+        payload = opened.json()
+        versioning = payload.get("versioning", {})
+        check(
+            "open 直接返回完整版本能力",
+            opened.status_code == 200
+            and versioning.get("file_id")
+            and versioning.get("disk_revision") == payload.get("revision")
+            and versioning.get("management_state") == "managed",
+            f"status={opened.status_code} body={opened.text}",
+        )
+        check(
+            "单文件打开不扫描完整资源树",
+            scan_resources.call_count == 0,
+            f"calls={scan_resources.call_count}",
+        )
+        check(
+            "单文件打开只执行一次版本观测",
+            observe.call_count == 1,
+            f"calls={observe.call_count}",
+        )
+    finally:
+        shutil.rmtree(project, ignore_errors=True)
+
+
 def test_recreated_pdf_opens_with_an_isolated_identity() -> None:
     project = Path(tempfile.mkdtemp(prefix="file-workbench-recreated-pdf-"))
     try:
@@ -1275,6 +1320,7 @@ if __name__ == "__main__":
     test_office_documents_are_preview_only()
     test_editor_formats_open_save_and_reopen()
     test_open_binds_existing_snapshot()
+    test_open_projects_versioning_without_a_resource_tree_scan()
     test_recreated_pdf_opens_with_an_isolated_identity()
     test_pdf_identity_conflict_is_a_structured_response()
     test_unknown_files_are_classified_by_content_for_basic_preview()

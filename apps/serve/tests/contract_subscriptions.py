@@ -51,6 +51,7 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                             "visibility": "list",
                             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
                             "default_reasoning_level": "low",
+                            "input_modalities": ["text", "image", "pdf"],
                             "tool_mode": "code_mode",
                             "use_responses_lite": True,
                             "model_messages": {"instructions_template": "provider instructions"},
@@ -142,6 +143,16 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(catalog["available_models"]), 1)
             self.assertEqual(catalog["available_models"][0]["billing"], "subscription")
             self.assertEqual(catalog["available_models"][0]["reasoning_efforts"], ["low", "high"])
+            self.assertEqual(
+                catalog["available_models"][0]["input_modalities"],
+                ["text", "image", "pdf"],
+            )
+            self.assertTrue(catalog["available_models"][0]["image_input"])
+            self.assertTrue(
+                self.models.inference_connection(
+                    personal_model_key(connection, MODEL), user_id=OWNER
+                )["image_input"]
+            )
             await self.models.validate_effort(
                 personal_model_key(connection, MODEL), "high", user_id=OWNER
             )

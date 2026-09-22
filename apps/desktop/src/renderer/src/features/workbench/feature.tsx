@@ -135,8 +135,8 @@ function MonacoDocumentHost(props: {
   toolbarActions?: React.ReactNode
   viewKind: 'preview' | 'edit'
 }): React.JSX.Element {
-  const formatOnSave = useApp().state.formatOnSave
-  return <MonacoDocument {...props} formatOnSave={formatOnSave} />
+  const { editorRuntimeRevision, formatOnSave } = useApp().state
+  return <MonacoDocument key={`${props.tabId}:${editorRuntimeRevision}`} {...props} formatOnSave={formatOnSave} />
 }
 
 function TableViewerHost({ path }: { path: string }): React.JSX.Element {

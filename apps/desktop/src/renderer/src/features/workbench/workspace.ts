@@ -9,6 +9,7 @@ import {
 } from '../../contracts/workbench.ts'
 import { CITATION_VIEW_STATE_KEY, type CitationMatch, type CitationResolution } from '../../contracts/citations.ts'
 import {
+  DOCUMENT_LOAD_FAILURE_KIND,
   commitDocument,
   createManagedCopy,
   documentIdFor,
@@ -39,19 +40,33 @@ import {
   type AdjacentLeaf,
   type DockArea,
   type DockLayout,
+  type DockNode,
   type DropEdge,
   type TabInsertion
 } from './layout.ts'
 import { usesLightweightTextState } from './limits.ts'
 import { viewerPolicy } from './policy.ts'
+import { reclaimDocumentResources, type DocumentResourceReclaimer } from './reclaim.ts'
+import {
+  DEFAULT_DOCUMENT_RESIDENCY_BUDGET,
+  MAX_TEXT_HISTORY_BYTES,
+  MAX_TEXT_HISTORY_ENTRIES,
+  estimateDocumentResidentBytes,
+  selectLfsEvictions,
+  trimTextHistory,
+  type DocumentResidencyBudget,
+  type TextHistoryState
+} from './residency.ts'
 import { viewerForPath } from './tabs.ts'
 
 const SPLIT_PROJECTION_SUFFIX = ':split'
+const DOCUMENT_RESTORE_FAILURE_CODE = 'document_restore_failed'
 
 export type DocumentViewKind = 'preview' | 'edit'
 export type DocumentNavigationView = 'resource' | 'literature'
 export type DocumentLoadState = 'loading' | 'ready' | 'error'
 export type DocumentSaveState = 'clean' | 'dirty' | 'saving' | 'conflict' | 'error'
+export type DocumentResidency = 'resident' | 'suspended' | 'restoring'
 export type CloseChoice = 'save' | 'overwrite' | 'discard' | 'cancel'
 export type TabCloseScope = 'current' | 'others' | 'left' | 'right' | 'all'
 export type TabSplitDirection = 'right' | 'bottom'
@@ -73,6 +88,7 @@ export interface DocumentSession {
   savedBytes: Uint8Array
   text: string | null
   savedText: string | null
+  residency: DocumentResidency
   lightweightText: boolean
   loadState: DocumentLoadState
   loadFailure?: DocumentLoadFailure | null
@@ -283,11 +299,9 @@ export function focusedSelectionPresentation(
   return { tab, session, selection, presentation }
 }
 
-const MAX_TEXT_HISTORY_ENTRIES = 200
-
-interface TextHistory {
-  past: string[]
-  future: string[]
+interface DocumentWorkspaceResidencyDelegate {
+  selected(workspace: DocumentWorkspace, sessionId: string): void
+  changed(): void
 }
 
 function emptyCapabilities(): LoadedDocument['capabilities'] {
@@ -388,7 +402,10 @@ export class DocumentWorkspace {
   private nextId = 1
   private readonly saveDelegates = new Map<string, Map<symbol, DocumentSaveDelegate>>()
   private readonly saves = new Map<string, Promise<boolean>>()
-  private readonly textHistories = new Map<string, TextHistory>()
+  private readonly textHistories = new Map<string, TextHistoryState>()
+  private readonly residencyRestores = new Map<string, Promise<boolean>>()
+  private readonly residencyRestoreGenerations = new Map<string, number>()
+  private nextHistorySequence = 0
   private readonly versioningRefreshes = new Map<string, number>()
   private nextVersioningRefresh = 0
   private nextExclusiveOpen = 0
@@ -398,7 +415,9 @@ export class DocumentWorkspace {
 
   constructor(
     private readonly loader: DocumentLoader,
-    private readonly claimExclusiveViewer?: ExclusiveViewerClaim
+    private readonly claimExclusiveViewer?: ExclusiveViewerClaim,
+    private readonly residencyDelegate?: DocumentWorkspaceResidencyDelegate,
+    private readonly idNamespace = ''
   ) {}
 
   getSnapshot = (): DocumentWorkspaceState => this.state
@@ -409,14 +428,24 @@ export class DocumentWorkspace {
   }
 
   private publish(next: DocumentWorkspaceState): void {
+    const previousFocusedTabId = this.state.focusedTabId
     this.state = next
     for (const listener of this.listeners) listener()
+    if (next.focusedTabId && next.focusedTabId !== previousFocusedTabId) {
+      this.recordSelection(next.focusedTabId)
+    }
+    this.residencyDelegate?.changed()
   }
 
   private id(prefix: string): string {
-    const id = `${prefix}-${this.nextId}`
+    const id = `${this.idNamespace}${prefix}-${this.nextId}`
     this.nextId += 1
     return id
+  }
+
+  private recordSelection(tabId: string): void {
+    const sessionId = this.state.tabs[tabId]?.sessionId
+    if (sessionId) this.residencyDelegate?.selected(this, sessionId)
   }
 
   private sessionFor(source: DocumentSource): DocumentSession | undefined {
@@ -685,6 +714,7 @@ export class DocumentWorkspace {
             savedBytes: new Uint8Array(),
             text: null,
             savedText: null,
+            residency: 'restoring' as const,
             lightweightText: false,
             loadState: 'loading' as const,
             loadFailure: null,
@@ -714,7 +744,7 @@ export class DocumentWorkspace {
           ...this.state,
           sessions: {
             ...this.state.sessions,
-            [sessionId]: { ...current, loadState: 'error', loadFailure: loaded }
+            [sessionId]: { ...current, residency: 'resident', loadState: 'error', loadFailure: loaded }
           }
         })
         return tabId
@@ -753,6 +783,7 @@ export class DocumentWorkspace {
             ...cleanByteState(loaded.bytes),
             text,
             savedText: text,
+            residency: 'resident',
             lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
             loadState: 'ready',
             loadFailure: null,
@@ -793,6 +824,7 @@ export class DocumentWorkspace {
         savedBytes: new Uint8Array(),
         text: null,
         savedText: null,
+        residency: 'resident',
         lightweightText: false,
         loadState: 'error',
         loadFailure: loaded,
@@ -830,6 +862,7 @@ export class DocumentWorkspace {
       ...cleanByteState(loaded.bytes),
       text,
       savedText: text,
+      residency: 'resident',
       lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
       loadState: 'ready',
       loadFailure: null,
@@ -949,12 +982,14 @@ export class DocumentWorkspace {
 
   updateText(sessionId: string, text: string): void {
     const session = this.state.sessions[sessionId]
-    if (!session || session.loadState !== 'ready' || !session.capabilities.can_edit) return
+    if (!session || session.residency !== 'resident' || session.loadState !== 'ready' || !session.capabilities.can_edit) return
     if (session.text === text) return
     const history = this.textHistories.get(sessionId) ?? { past: [], future: [] }
-    if (session.text !== null) history.past.push(session.text)
-    if (history.past.length > MAX_TEXT_HISTORY_ENTRIES) history.past.shift()
+    if (session.text !== null) {
+      history.past.push({ text: session.text, sequence: ++this.nextHistorySequence })
+    }
     history.future = []
+    trimTextHistory(history, MAX_TEXT_HISTORY_BYTES, MAX_TEXT_HISTORY_ENTRIES)
     this.textHistories.set(sessionId, history)
     this.replaceText(session, text)
   }
@@ -962,20 +997,22 @@ export class DocumentWorkspace {
   undo(sessionId: string): boolean {
     const session = this.state.sessions[sessionId]
     const history = this.textHistories.get(sessionId)
-    const text = history?.past.pop()
-    if (!session || session.text === null || text === undefined || !history) return false
-    history.future.push(session.text)
-    this.replaceText(session, text)
+    const entry = history?.past.pop()
+    if (!session || session.text === null || entry === undefined || !history) return false
+    history.future.push({ text: session.text, sequence: ++this.nextHistorySequence })
+    trimTextHistory(history, MAX_TEXT_HISTORY_BYTES, MAX_TEXT_HISTORY_ENTRIES)
+    this.replaceText(session, entry.text)
     return true
   }
 
   redo(sessionId: string): boolean {
     const session = this.state.sessions[sessionId]
     const history = this.textHistories.get(sessionId)
-    const text = history?.future.pop()
-    if (!session || session.text === null || text === undefined || !history) return false
-    history.past.push(session.text)
-    this.replaceText(session, text)
+    const entry = history?.future.pop()
+    if (!session || session.text === null || entry === undefined || !history) return false
+    history.past.push({ text: session.text, sequence: ++this.nextHistorySequence })
+    trimTextHistory(history, MAX_TEXT_HISTORY_BYTES, MAX_TEXT_HISTORY_ENTRIES)
+    this.replaceText(session, entry.text)
     return true
   }
 
@@ -1300,7 +1337,7 @@ export class DocumentWorkspace {
         ...this.state,
         sessions: {
           ...this.state.sessions,
-          [sessionId]: { ...current, loadState: 'error', loadFailure: loaded }
+          [sessionId]: { ...current, residency: 'resident', loadState: 'error', loadFailure: loaded }
         }
       })
       return false
@@ -1336,6 +1373,7 @@ export class DocumentWorkspace {
           ...cleanByteState(loaded.bytes),
           text,
           savedText: text,
+          residency: 'resident',
           lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
           loadState: 'ready',
           loadFailure: null,
@@ -1403,6 +1441,7 @@ export class DocumentWorkspace {
           savedBytes: new Uint8Array(),
           text: session.text === null ? null : '',
           savedText: session.savedText === null ? null : '',
+          residency: 'resident',
           loadState: 'ready',
           saveState: 'clean',
           dirty: false,
@@ -1690,15 +1729,153 @@ export class DocumentWorkspace {
     return placedTabId
   }
 
+  visibleSessionIds(): Set<string> {
+    const visible = new Set<string>()
+    const visit = (node: DockNode): void => {
+      if (node.kind === 'split') {
+        visit(node.first)
+        visit(node.second)
+        return
+      }
+      const tab = node.activeTabId ? this.state.tabs[node.activeTabId] : null
+      if (tab) visible.add(tab.sessionId)
+    }
+    visit(this.state.layout.areas.primary)
+    visit(this.state.layout.areas.secondary)
+    return visible
+  }
+
+  suspendSession(sessionId: string, protectVisible = true): boolean {
+    const session = this.state.sessions[sessionId]
+    if (
+      !session
+      || session.residency !== 'resident'
+      || session.loadState !== 'ready'
+      || session.dirty
+      || session.saveState !== 'clean'
+      || (protectVisible && this.visibleSessionIds().has(sessionId))
+    ) return false
+    this.textHistories.delete(sessionId)
+    this.publish({
+      ...this.state,
+      selectionPresentations: this.withoutSessionPresentations(sessionId),
+      sessions: {
+        ...this.state.sessions,
+        [sessionId]: {
+          ...session,
+          bytes: new Uint8Array(),
+          savedBytes: new Uint8Array(),
+          text: null,
+          savedText: null,
+          residency: 'suspended',
+          lightweightText: false,
+          selection: null
+        }
+      }
+    })
+    return true
+  }
+
+  ensureSessionResident(sessionId: string): Promise<boolean> {
+    const currentRestore = this.residencyRestores.get(sessionId)
+    if (currentRestore) return currentRestore
+    const session = this.state.sessions[sessionId]
+    if (!session || session.residency === 'resident') return Promise.resolve(Boolean(session))
+    if (session.residency === 'restoring') return Promise.resolve(false)
+    const generation = (this.residencyRestoreGenerations.get(sessionId) ?? 0) + 1
+    this.residencyRestoreGenerations.set(sessionId, generation)
+    this.publish({
+      ...this.state,
+      sessions: {
+        ...this.state.sessions,
+        [sessionId]: { ...session, residency: 'restoring', loadState: 'loading', loadFailure: null }
+      }
+    })
+    const restore = this.loader.load(session.source).catch((error): DocumentLoadFailure => ({
+      kind: DOCUMENT_LOAD_FAILURE_KIND,
+      code: DOCUMENT_RESTORE_FAILURE_CODE,
+      message: error instanceof Error ? error.message : String(error),
+      retryable: true,
+      status: null
+    })).then((loaded) => {
+      const current = this.state.sessions[sessionId]
+      if (
+        !current
+        || current.residency !== 'restoring'
+        || this.residencyRestoreGenerations.get(sessionId) !== generation
+      ) return false
+      if (isDocumentLoadFailure(loaded)) {
+        this.publish({
+          ...this.state,
+          sessions: {
+            ...this.state.sessions,
+            [sessionId]: { ...current, residency: 'resident', loadState: 'error', loadFailure: loaded }
+          }
+        })
+        return false
+      }
+      const text = TEXT_VIEWERS.has(loaded.viewer) ? UTF8.decode(loaded.bytes) : null
+      const tabs = Object.fromEntries(Object.entries(this.state.tabs).map(([tabId, tab]) => (
+        tab.sessionId === sessionId
+          ? [tabId, { ...tab, viewKind: canonicalViewKind(loaded.viewer, tab.viewKind, loaded.capabilities.can_edit) }]
+          : [tabId, tab]
+      )))
+      this.publish({
+        ...this.state,
+        tabs,
+        sessions: {
+          ...this.state.sessions,
+          [sessionId]: {
+            ...current,
+            documentId: loaded.documentId,
+            source: loaded.source,
+            viewer: loaded.viewer,
+            processor: loaded.processor,
+            capabilities: loaded.capabilities,
+            versioning: loaded.versioning ?? null,
+            revision: loaded.revision,
+            mediaType: loaded.mediaType,
+            contentKind: loaded.contentKind ?? 'unknown',
+            ...cleanByteState(loaded.bytes),
+            text,
+            savedText: text,
+            residency: 'resident',
+            lightweightText: usesLightweightTextState(loaded.viewer, loaded.bytes.byteLength),
+            loadState: 'ready',
+            loadFailure: null,
+            saveState: 'clean',
+            dirty: false,
+            selection: null,
+            externalChange: Boolean(loaded.externalChange),
+            deleted: false
+          }
+        }
+      })
+      return true
+    }).finally(() => {
+      if (this.residencyRestores.get(sessionId) === restore) {
+        this.residencyRestores.delete(sessionId)
+      }
+    })
+    this.residencyRestores.set(sessionId, restore)
+    return restore
+  }
+
+  async waitForResidency(): Promise<void> {
+    await Promise.all(this.residencyRestores.values())
+  }
+
   activate(leafId: string, tabId: string): void {
     const focusedLeaf = this.locationForTab(tabId)
     if (!focusedLeaf || focusedLeaf.leafId !== leafId) return
+    const alreadyFocused = this.state.focusedTabId === tabId
     this.publish({
       ...this.state,
       layout: activateTab(this.state.layout, leafId, tabId),
       focusedTabId: tabId,
       focusedLeaf
     })
+    if (alreadyFocused) this.recordSelection(tabId)
   }
 
   focusLeaf(area: DockArea, leafId: string): void {
@@ -2224,6 +2401,10 @@ export class DocumentWorkspace {
       this.saves.delete(tab.sessionId)
       this.textHistories.delete(tab.sessionId)
       this.versioningRefreshes.delete(tab.sessionId)
+      this.residencyRestoreGenerations.set(
+        tab.sessionId,
+        (this.residencyRestoreGenerations.get(tab.sessionId) ?? 0) + 1
+      )
     }
     let layout = removeTabFromLayout(this.state.layout, tabId)
     const previousFocusedArea = this.state.focusedLeaf?.area
@@ -2261,19 +2442,143 @@ export const defaultLoader: DocumentLoader = {
   createManagedCopy
 }
 
+const MONACO_VIEWERS: ReadonlySet<ViewerKind> = new Set(['code', 'markdown'])
+
+interface DocumentWorkspaceRegistryOptions {
+  budget?: DocumentResidencyBudget
+  reclaim?: DocumentResourceReclaimer
+}
+
+interface DocumentSelectionStat {
+  count: number
+  lastSelectedSequence: number
+}
+
 export class DocumentWorkspaceRegistry {
   private readonly workspaces = new Map<string | null, DocumentWorkspace>()
+  private readonly selectionStats = new Map<string, DocumentSelectionStat>()
+  private readonly budget: DocumentResidencyBudget
+  private readonly reclaim: DocumentResourceReclaimer
+  private activeScope: string | null | undefined
+  private nextSelectionSequence = 0
+  private nextWorkspaceId = 0
+  private rebalancing = false
 
-  constructor(private readonly loader: DocumentLoader) {}
+  constructor(
+    private readonly loader: DocumentLoader,
+    options: DocumentWorkspaceRegistryOptions = {}
+  ) {
+    this.budget = options.budget ?? DEFAULT_DOCUMENT_RESIDENCY_BUDGET
+    this.reclaim = options.reclaim ?? reclaimDocumentResources
+  }
 
   forProject(project: string | null | undefined): DocumentWorkspace {
     const scope = project ?? null
+    if (this.activeScope === undefined) this.activeScope = scope
     let workspace = this.workspaces.get(scope)
     if (!workspace) {
-      workspace = new DocumentWorkspace(this.loader, this.claimExclusiveViewer)
+      this.nextWorkspaceId += 1
+      workspace = new DocumentWorkspace(
+        this.loader,
+        this.claimExclusiveViewer,
+        { selected: this.recordSelection, changed: this.rebalance },
+        `workspace-${this.nextWorkspaceId}:`
+      )
       this.workspaces.set(scope, workspace)
     }
     return workspace
+  }
+
+  dirtyEditorCount(): number {
+    return [...this.workspaces.values()].reduce((count, workspace) => (
+      count + Object.values(workspace.getSnapshot().sessions)
+        .filter((session) => session.dirty && MONACO_VIEWERS.has(session.viewer)).length
+    ), 0)
+  }
+
+  async saveEditors(): Promise<boolean> {
+    for (const workspace of this.workspaces.values()) {
+      const sessionIds = Object.values(workspace.getSnapshot().sessions)
+        .filter((session) => session.dirty && MONACO_VIEWERS.has(session.viewer))
+        .map((session) => session.id)
+      for (const sessionId of sessionIds) {
+        if (!await workspace.save(sessionId)) return false
+      }
+    }
+    return this.dirtyEditorCount() === 0
+  }
+
+  activateProject(project: string | null | undefined): void {
+    const scope = project ?? null
+    this.activeScope = scope
+    const workspace = this.forProject(scope)
+    for (const sessionId of workspace.visibleSessionIds()) {
+      void workspace.ensureSessionResident(sessionId)
+    }
+    this.rebalance()
+  }
+
+  reclaimResources(): void {
+    const residentSessionIds = new Set<string>()
+    const liveTabIds = new Set<string>()
+    for (const workspace of this.workspaces.values()) {
+      const state = workspace.getSnapshot()
+      for (const session of Object.values(state.sessions)) {
+        if (session.residency === 'resident') residentSessionIds.add(session.id)
+      }
+      for (const tabId of Object.keys(state.tabs)) liveTabIds.add(tabId)
+    }
+    this.reclaim(residentSessionIds, liveTabIds)
+  }
+
+  private readonly recordSelection = (workspace: DocumentWorkspace, sessionId: string): void => {
+    const previous = this.selectionStats.get(sessionId)
+    this.selectionStats.set(sessionId, {
+      count: (previous?.count ?? 0) + 1,
+      lastSelectedSequence: ++this.nextSelectionSequence
+    })
+    if (this.workspaces.get(this.activeScope ?? null) === workspace) {
+      void workspace.ensureSessionResident(sessionId)
+    }
+  }
+
+  private readonly rebalance = (): void => {
+    if (this.rebalancing) return
+    this.rebalancing = true
+    try {
+      const liveSessionIds = new Set<string>()
+      const owners = new Map<string, { workspace: DocumentWorkspace; scope: string | null }>()
+      const candidates = [...this.workspaces.entries()].flatMap(([scope, workspace]) => {
+        const state = workspace.getSnapshot()
+        const visible = workspace.visibleSessionIds()
+        return Object.values(state.sessions).flatMap((session) => {
+          liveSessionIds.add(session.id)
+          owners.set(session.id, { workspace, scope })
+          if (session.residency !== 'resident' || session.loadState !== 'ready') return []
+          const selected = this.selectionStats.get(session.id)
+          return [{
+            id: session.id,
+            residentBytes: estimateDocumentResidentBytes(session),
+            selectionCount: selected?.count ?? 0,
+            lastSelectedSequence: selected?.lastSelectedSequence ?? 0,
+            budgeted: !(scope === this.activeScope && visible.has(session.id)),
+            protected: session.dirty
+              || session.saveState !== 'clean'
+              || (scope === this.activeScope && visible.has(session.id))
+          }]
+        })
+      })
+      for (const sessionId of this.selectionStats.keys()) {
+        if (!liveSessionIds.has(sessionId)) this.selectionStats.delete(sessionId)
+      }
+      for (const sessionId of selectLfsEvictions(candidates, this.budget)) {
+        const owner = owners.get(sessionId)
+        owner?.workspace.suspendSession(sessionId, owner.scope === this.activeScope)
+      }
+      this.reclaimResources()
+    } finally {
+      this.rebalancing = false
+    }
   }
 
   private readonly claimExclusiveViewer: ExclusiveViewerClaim = (owner, _candidateTabId, group) => {

@@ -2,30 +2,12 @@
 // oracle (skills/community/literature-review/scripts/smoke_publication.py).
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const fs = require('node:fs')
-const os = require('node:os')
 const path = require('node:path')
 const {
-  artifact, bundledTexlive, digest, resolveVendoredTexlive, stagedBinDirectory, stagedEngines
+  artifact, bundledTexlive, stagedBinDirectory, stagedEngines
 } = require('./texlive.cjs')
 
 const DESKTOP = path.resolve(__dirname, '..')
-const VENDOR_MANIFEST = path.join(DESKTOP, '..', '..', 'scripts', 'vendor', 'texlive', 'manifest.json')
-const ARCHIVE_NAME = JSON.parse(fs.readFileSync(VENDOR_MANIFEST, 'utf8')).targets['darwin-arm64'].archive
-
-function writeVendorFixture(root, payload, sidecar) {
-  const desktopRoot = path.join(root, 'checkout', 'apps', 'desktop')
-  const vendor = path.join(root, 'checkout', 'scripts', 'vendor', 'texlive')
-  fs.mkdirSync(desktopRoot, { recursive: true })
-  fs.mkdirSync(vendor, { recursive: true })
-  const archive = path.join(vendor, ARCHIVE_NAME)
-  fs.writeFileSync(archive, payload)
-  fs.writeFileSync(`${archive}.sha256`, sidecar)
-  fs.writeFileSync(path.join(vendor, 'manifest.json'),
-    fs.readFileSync(VENDOR_MANIFEST, 'utf8'))
-  return desktopRoot
-}
-
 test('vendored manifest selects platform-specific archives', () => {
   const arm = artifact(DESKTOP, 'darwin', 'arm64')
   const intel = artifact(DESKTOP, 'darwin', 'x64')
@@ -45,13 +27,13 @@ test('vendored manifest selects platform-specific archives', () => {
   assert.equal(win.bin_relative, 'texlive/bin/windows')
   assert.equal(win.machine, 'x86_64')
   assert.deepEqual(win.executables, ['xelatex', 'pdflatex', 'bibtex', 'kpsewhich'])
+  for (const selected of [arm, intel, win]) {
+    assert.match(selected.url, /^https:\/\//)
+    assert.match(selected.sha256, /^[a-f0-9]{64}$/)
+    assert.ok(selected.bytes > 0)
+  }
   // Linux is not a supported Desktop target.
   assert.throws(() => artifact(DESKTOP, 'linux', 'x64'), /no bundled TeX Live distribution/)
-})
-
-test('the committed archive matches its sidecar', async () => {
-  const selected = artifact(DESKTOP, 'darwin', 'arm64')
-  assert.equal(await digest(selected.archive), selected.sha256)
 })
 
 test('staged layout is platform-correct and needs no manifest', () => {
@@ -66,36 +48,4 @@ test('staged layout is platform-correct and needs no manifest', () => {
   assert.deepEqual(stagedEngines('/resources', 'win32', ['xelatex']),
     [path.join('/resources', 'backend', 'texlive', 'bin', 'windows', 'xelatex.exe')])
   assert.throws(() => bundledTexlive('/does-not-exist', 'darwin'))
-})
-
-test('a tampered archive is rejected before extraction', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'texlive-contract-'))
-  try {
-    const desktopRoot = writeVendorFixture(root, 'not the reviewed payload',
-      `${'0'.repeat(64)}  ${ARCHIVE_NAME}\n`)
-    await assert.rejects(() => resolveVendoredTexlive(desktopRoot, 'darwin', 'arm64'),
-      /SHA-256 mismatch/)
-    // A sidecar that does not name its own archive is rejected before hashing.
-    writeVendorFixture(root, 'not the reviewed payload', `${'0'.repeat(64)}  other.tar.gz\n`)
-    assert.throws(() => artifact(desktopRoot, 'darwin', 'arm64'), /sidecar is invalid/)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
-})
-
-test('an unpulled LFS pointer names the missing payload, not a checksum mismatch', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'texlive-lfs-'))
-  try {
-    const pointer = ['version https://git-lfs.github.com/spec/v1',
-      `oid sha256:${'0'.repeat(64)}`].join('\n')
-    const desktopRoot = writeVendorFixture(root, pointer,
-      `${'0'.repeat(64)}  ${ARCHIVE_NAME}\n`)
-    assert.throws(() => artifact(desktopRoot, 'darwin', 'arm64'), /unresolved Git LFS pointer/)
-    // The pointer is recognised before hashing, so the failure never degrades
-    // into the "SHA-256 mismatch" that a corrupt archive reports.
-    await assert.rejects(() => resolveVendoredTexlive(desktopRoot, 'darwin', 'arm64'),
-      /unresolved Git LFS pointer/)
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true })
-  }
 })

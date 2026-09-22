@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next'
 import type { createFormatters } from '../../../../localization/format'
-import type { LiteratureReview } from '../../contracts/literature'
+import type { LiteratureReview, LiteratureSummary } from '../../contracts/literature'
 
 export const REVIEW_STATUS = {
   outline: 'reviewProjection.outline', generated: 'reviewProjection.result', partial: 'reviewProjection.result',
@@ -13,6 +13,7 @@ export const REVIEW_VERDICTS = {
 const GENERATION_LABELS = { SUCCESS: 'reviewProjection.generation.SUCCESS', PARTIAL_SUCCESS: 'reviewProjection.generation.PARTIAL_SUCCESS', FAILED: 'reviewProjection.generation.FAILED' } as const
 const GENERATION_STATUSES = new Set(Object.keys(GENERATION_LABELS))
 const REVIEW_CHECKPOINTS = new Set<string>(['outline', 'result'])
+const PRECISE_SEARCH_ORIGIN = 'precise-search'
 const OUTPUT_FORMATS = new Set(['latex_pdf', 'markdown', null])
 const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', null])
 const DECISION_SOURCES = new Set(['user', 'default', null])
@@ -24,6 +25,36 @@ export const TIMESTAMP_FORMAT: Intl.DateTimeFormatOptions = { dateStyle: 'short'
 export function timestampLabel(value: string, format: ReturnType<typeof createFormatters>): string {
   const time = new Date(value)
   return Number.isNaN(time.getTime()) ? '' : format.date(time, TIMESTAMP_FORMAT)
+}
+
+export function latestLiteratureSummary<T extends LiteratureSummary>(
+  current: T,
+  candidate: T
+): T {
+  return candidate.version >= current.version ? candidate : current
+}
+
+export function replaceLiteratureSummary(
+  items: LiteratureSummary[],
+  candidate: LiteratureSummary
+): LiteratureSummary[] {
+  const index = items.findIndex((item) => item.id === candidate.id)
+  if (index < 0) return items
+  const replacement = latestLiteratureSummary(items[index], candidate)
+  if (replacement === items[index]) return items
+  const next = [...items]
+  next[index] = replacement
+  return next
+}
+
+export function mergeLiteratureSummaries(
+  fetched: LiteratureSummary[],
+  local: ReadonlyMap<string, LiteratureSummary>
+): LiteratureSummary[] {
+  return fetched.map((item) => {
+    const candidate = local.get(item.id)
+    return candidate && candidate.version >= item.version ? candidate : item
+  })
 }
 
 export function reviewStatus(review: LiteratureReview, t: TFunction<'literature'>): string {
@@ -42,6 +73,14 @@ export function reviewSupersessionKey(value: Record<string, unknown>): string | 
     && typeof value.checkpoint === 'string' && REVIEW_CHECKPOINTS.has(value.checkpoint)
     ? value.workspace
     : null
+}
+
+export function searchSupersessionKey(value: Record<string, unknown>): string | null {
+  if (value.origin !== PRECISE_SEARCH_ORIGIN
+    || typeof value.session_id !== 'string' || !value.session_id.trim()
+    || typeof value.run_id !== 'string' || !value.run_id.trim()
+    || !isCount(value.round) || (value.round as number) < 1) return null
+  return JSON.stringify([value.session_id, value.origin, value.run_id, value.round])
 }
 
 export function parseReview(value: Record<string, unknown>): LiteratureReview | null {

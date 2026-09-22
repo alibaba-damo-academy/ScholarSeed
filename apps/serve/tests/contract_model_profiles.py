@@ -438,10 +438,49 @@ def test_official_personal_endpoint_uses_verified_vendor_capabilities() -> None:
         official_row.get("max_output_tokens") == 131072 and official_row.get("image_input") is True,
         str(official_row),
     )
+    official_connection = service.inference_connection(
+        personal_model_key(official["id"], "qwen3.8-max"), user_id="local"
+    )
+    check(
+        "official endpoint inference uses the same verified image capability as its catalog row",
+        official_connection.get("image_input") is True,
+        str(official_connection.get("image_input")),
+    )
     check(
         "a proxy with the same model id does not inherit vendor capabilities",
         proxy_row.get("reasoning_options") is None and proxy_row.get("max_output_tokens") is None,
         str(proxy_row),
+    )
+
+
+def test_official_personal_endpoint_keeps_catalog_and_inference_modalities_aligned() -> None:
+    """One trusted model coordinate must expose the same modalities at every gate."""
+
+    store = ModelProfileStore()
+    for existing in store.list()["profiles"]:
+        store.delete(existing["id"])
+    profile = store.upsert(
+        profile_values(
+            preview_name="Bailian",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            models=(GATEWAY_MODEL_KEY,),
+        )
+    )
+    service, _selected = build_service(store)
+    key = personal_model_key(profile["id"], GATEWAY_MODEL_KEY)
+    row = next(
+        item for item in asyncio.run(service.catalog())["available_models"] if item["key"] == key
+    )
+    connection = service.inference_connection(key, user_id=LOCAL_USER)
+    check(
+        "Bailian qwen3.8-max catalog declares image input",
+        row.get("image_input") is True,
+        str(row),
+    )
+    check(
+        "one-shot inference uses the catalog image capability",
+        connection.get("image_input") is row.get("image_input") is True,
+        str({"catalog": row.get("image_input"), "inference": connection.get("image_input")}),
     )
 
 
@@ -1748,6 +1787,7 @@ def main() -> int:
     test_connection_probe_uses_model_directory()
     test_personal_profile_is_a_catalog_source()
     test_official_personal_endpoint_uses_verified_vendor_capabilities()
+    test_official_personal_endpoint_keeps_catalog_and_inference_modalities_aligned()
     test_catalog_display_provenance_preserves_user_labels_and_model_identity()
     test_hidden_model_leaves_the_catalog_and_stays_recoverable()
     test_connection_save_round_trips_the_hidden_flag()

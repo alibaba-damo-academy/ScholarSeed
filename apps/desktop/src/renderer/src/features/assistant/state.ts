@@ -136,6 +136,23 @@ export const ASSISTANT_CONTEXT_FAILURE = {
   SOURCE_PENDING: 'assistant_source_pending'
 } as const
 
+export function beginContextCandidateLoad(
+  current: AiPanelState,
+  source: AiContextSource
+): AiPanelState {
+  const keepVisibleCandidates =
+    current.contextPickerOpen && current.contextPickerSource === source
+  return {
+    ...current,
+    open: true,
+    contextPickerOpen: true,
+    contextPickerSource: source,
+    contextCandidates: keepVisibleCandidates ? current.contextCandidates : [],
+    contextCandidatesLoading: true,
+    contextError: null
+  }
+}
+
 export function replaceCurrentDocumentRefs(
   refs: readonly AssistantContextRef[],
   submittedRefIds: readonly string[]

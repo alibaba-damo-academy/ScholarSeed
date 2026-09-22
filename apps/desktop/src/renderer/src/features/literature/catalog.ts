@@ -10,6 +10,7 @@ interface CatalogueState {
   focusedAttachmentId: string | null
   items: LiteratureSummary[]
   reload: number
+  panelReload: number
   importRequest: ImportRequest | null
 }
 
@@ -29,6 +30,7 @@ let state: CatalogueState = {
   focusedAttachmentId: null,
   items: [],
   reload: 0,
+  panelReload: 0,
   importRequest: null,
 }
 const scopes = new Map<string | null, CatalogueState>()
@@ -65,7 +67,7 @@ export const catalogue = {
     update(saved ? { ...saved, importRequest: null, reload: state.reload + 1 } : {
       projectId,
       query: { ...DEFAULT_QUERY, project_id: projectId ?? undefined },
-      selected: [], focusedId: null, focusedAttachmentId: null, items: [], importRequest: null, reload: state.reload + 1,
+      selected: [], focusedId: null, focusedAttachmentId: null, items: [], importRequest: null, reload: state.reload + 1, panelReload: state.panelReload + 1,
     })
   },
   query(patch: Partial<LiteratureQuery>): void {
@@ -78,6 +80,26 @@ export const catalogue = {
       selected: [],
       focusedId: null,
       focusedAttachmentId: null
+    })
+  },
+  /**
+   * 只收窄筛选条件, 保留勾选与已打开的文献。
+   *
+   * query() 清 selected/focused 是「换了作用域」的语义: 换分类、换项目之后旧勾选
+   * 指向的行已经不在列表里, 留着就是隐患。标签不一样 —— 它是在既有勾选上附加过滤
+   * 条件, 用户常常先勾一批文献再用标签收窄视图, 清掉勾选等于丢掉已做的工作。
+   *
+   * focusedId 一并保留是安全的: 详情面板按 id 独立取数, 不依赖列表 items, 所以
+   * 「边看详情边加标签」不会把详情关掉。代价是勾选可能指向被过滤掉的行, 批量条
+   * 报的数量会大于可见行数 —— 那是用户要的工作集语义, 批量确认框报的也是这个数。
+   */
+  filter(patch: Partial<LiteratureQuery>): void {
+    update({
+      query: {
+        ...state.query,
+        ...patch,
+        ...(state.projectId ? { project_id: state.projectId } : {})
+      }
     })
   },
   /**
@@ -128,6 +150,7 @@ export const catalogue = {
     update({ selected: [], focusedId: null, focusedAttachmentId: null })
   },
   reload(): void { update({ reload: state.reload + 1 }) },
+  reloadPanel(): void { update({ panelReload: state.panelReload + 1 }) },
 }
 
 /**

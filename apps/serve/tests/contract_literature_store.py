@@ -1076,6 +1076,132 @@ class LiteratureStoreTests(unittest.TestCase):
             {"Important": 3, "Shared": 1},
         )
 
+    def test_multiple_tags_intersect_and_tag_facets_follow_the_collection_scope(self) -> None:
+        """多标签取交集; 侧栏标签 facet 按分类作用域收敛, 且不被已选标签反向收窄。"""
+
+        repository = LiteratureRepository()
+        parent = repository.create_collection("Parent", project_id=self.project.id)
+        child = repository.create_collection("Child", parent["id"], self.project.id)
+        outside = repository.create_collection("Outside", project_id=self.project.id)
+        both = repository.save(
+            replace(self.item, id="both-tags", tags=("Important", "Shared")), self.project.id
+        )
+        important_only = repository.save(
+            replace(self.item, id="important-only", tags=("Important",)), self.project.id
+        )
+        shared_only = repository.save(
+            replace(self.item, id="shared-only", tags=("Shared",)), self.project.id
+        )
+        # 项目内分类必须走项目作用域的写入口: update() 的 collection_ids 只认全局分类。
+        repository.replace_project_collections(both.id, self.project.id, (child["id"],))
+        repository.replace_project_collections(important_only.id, self.project.id, (child["id"],))
+        repository.replace_project_collections(shared_only.id, self.project.id, (outside["id"],))
+        # 从没被任何文献用过的标签: 验证 facet 不会因为计数为 0 就把它藏起来。
+        repository.create_tag("Unused")
+        ids = {tag["name"]: tag["id"] for tag in repository.tags()}
+
+        # 交集: 单标签照常筛, 两个标签只留同时挂着的那一条。
+        self.assertEqual(
+            {item.id for item in repository.list(tag_ids=(ids["Important"],))},
+            {"both-tags", "important-only"},
+        )
+        self.assertEqual(
+            {item.id for item in repository.list(tag_ids=(ids["Important"], ids["Shared"]))},
+            {"both-tags"},
+        )
+        # 计数走同一份 _selection, 不能和列表各说各话。
+        self.assertEqual(repository.filtered_total(tag_ids=(ids["Important"], ids["Shared"])), 1)
+        self.assertEqual(repository.filtered_total(tag_ids=(ids["Important"],)), 2)
+
+        # 作用域 facet: 全库标签都列出, 计数为 0 的也照列, 不随分类忽隐忽现。
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in repository.scoped_tags()},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+        # 选中父分类要按递归子树收敛, 与列表的 collection 口径一致。
+        subtree = repository.scoped_tags(
+            project_id=self.project.id, collection_ids=(parent["id"],)
+        )
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in subtree},
+            {"Important": 2, "Shared": 1, "Unused": 0},
+        )
+        self.assertEqual([tag["name"] for tag in subtree], ["Important", "Shared", "Unused"])
+        outside_scope = repository.scoped_tags(
+            project_id=self.project.id, collection_ids=(outside["id"],)
+        )
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in outside_scope},
+            {"Important": 0, "Shared": 1, "Unused": 0},
+        )
+        # 计数降序; 同为 0 的先后由 created_at 决定, 不断言以免绑死时间戳精度。
+        counts = [tag["count"] for tag in outside_scope]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+        self.assertEqual(outside_scope[0]["name"], "Shared")
+        # total 保持全库口径: 删除标签是全库操作, 确认框必须报全库影响面。
+        self.assertEqual(
+            {tag["name"]: tag["total"] for tag in outside_scope},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+
+        app = FastAPI()
+        app.state.content = self.content
+        register_literature_routes(app)
+        client = TestClient(app)
+        scope = {"project_id": self.project.id, "collection_id": [child["id"]]}
+        scoped = client.get("/api/v1/literatures/tag-facets", params=scope)
+        self.assertEqual(scoped.status_code, 200, scoped.text)
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in scoped.json()["tags"]},
+            {"Important": 2, "Shared": 1, "Unused": 0},
+        )
+        self.assertEqual(
+            {tag["name"]: tag["total"] for tag in scoped.json()["tags"]},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+        # 排序由后端给出, 侧栏不再自己排。
+        scoped_counts = [tag["count"] for tag in scoped.json()["tags"]]
+        self.assertEqual(scoped_counts, sorted(scoped_counts, reverse=True))
+        # 被选中的维度不能过滤自己的 facet: 多带一个 tag_id 也不许把结果收窄,
+        # 否则选中第一个标签之后其余标签的计数会退化成交集, 没法再叠加第二个。
+        narrowed = client.get(
+            "/api/v1/literatures/tag-facets",
+            params={**scope, "tag_id": [ids["Important"]]},
+        )
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in narrowed.json()["tags"]},
+            {"Important": 2, "Shared": 1, "Unused": 0},
+        )
+        # 打标签用的全量 facet 不受影响, 仍按项目口径列出全部标签。
+        full = client.get("/api/v1/literatures/facets", params={"project_id": self.project.id})
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in full.json()["tags"]},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+
+        # 只选项目、不选分类时也必须按项目收敛: 全览里点侧栏的项目行走的就是这条
+        # 路径, facet 漏掉 project_id 就会退回全库计数, 而项目文献库里两者恰好相等
+        # 所以看不出来。别的项目里补一条 Shared, 让两种口径的差值可观测。
+        elsewhere = replace(self.item, id="elsewhere", tags=("Shared",))
+        repository.save(elsewhere, self.other_project.id)
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in repository.scoped_tags()},
+            {"Important": 2, "Shared": 3, "Unused": 0},
+        )
+        in_project = repository.scoped_tags(project_id=self.project.id)
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in in_project},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+        by_project = client.get(
+            "/api/v1/literatures/tag-facets", params={"project_id": self.project.id}
+        )
+        self.assertEqual(by_project.status_code, 200, by_project.text)
+        self.assertEqual(
+            {tag["name"]: tag["count"] for tag in by_project.json()["tags"]},
+            {"Important": 2, "Shared": 2, "Unused": 0},
+        )
+
     def test_project_navigation_uses_content_projects_as_the_dimension(self) -> None:
         repository = LiteratureRepository()
         repository.save(self.item, self.project.id)

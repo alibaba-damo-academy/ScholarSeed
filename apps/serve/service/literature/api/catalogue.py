@@ -640,6 +640,34 @@ def register_global_routes(app: FastAPI) -> None:
             ],
         }
 
+    @app.get(f"{API_PREFIX}/literatures/tag-facets")
+    def tag_facets(
+        request: Request,
+        collection_id: list[str] = Query(default=[]),
+        project_id: str = "",
+        without_collection: bool = False,
+        without_project: bool = False,
+        recent: bool = False,
+    ) -> dict[str, Any]:
+        """侧栏标签云的 facet: 全库标签都回, 计数按当前分类作用域收敛并降序排。
+
+        与 /literatures/facets 分开而不是给它加参数, 是因为那一份的 collections 同时
+        喂着侧栏分类树 —— 一旦按分类收窄, 返回的 collections 只剩选中子树, 整棵树会
+        当场塌掉。打标签用的全量标签列表仍然走 /literatures/facets。
+
+        刻意不接受 tag_id: 交集筛选下被选中的维度不能过滤自己的 facet。
+        """
+
+        project_id = _project_scope(request, project_id)
+        entries = LiteratureRepository().scoped_tags(
+            project_id=project_id,
+            collection_ids=tuple(collection_id),
+            without_collection=without_collection,
+            without_project=without_project,
+            recent_only=recent,
+        )
+        return {"tags": [_tag_facet(entry) for entry in entries]}
+
     @app.get(f"{API_PREFIX}/literatures/projects")
     def projects(request: Request) -> dict[str, Any]:
         content = getattr(request.app.state, "content", None)

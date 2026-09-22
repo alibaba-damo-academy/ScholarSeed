@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -28,6 +29,7 @@ SCHEMA_VERSION = 1
 INVENTORY_PROJECTION = r"""
 import importlib.metadata
 import json
+import os
 import sys
 import sysconfig
 
@@ -53,6 +55,12 @@ installed = {}
 # Inventory installed distributions, not source-tree egg-info exposed by editable
 # .pth files. The bundler separately rejects editable/local namespace fallbacks.
 sites = {sysconfig.get_path("purelib"), sysconfig.get_path("platlib")}
+# win32 组件化布局 (proposal 108 §7): 产品发行物不在 site-packages, 而在随应用版本
+# 交付的 pylibs 根 (构建步骤经 SCHOLARSEED_PRODUCT_LIBS 声明)。清单必须看到它们,
+# 否则 verify 的 installed 投影缺 5 个本地发行物, 构建在该步必失败。
+product_libs = os.environ.get("SCHOLARSEED_PRODUCT_LIBS", "")
+if product_libs:
+    sites.add(product_libs)
 for distribution in importlib.metadata.distributions(path=sites):
     name = canonicalize_name(distribution.metadata["Name"])
     if name in installed:
@@ -233,7 +241,13 @@ def verify(manifest: Path, requirements: Path) -> None:
         packages[wheel["name"]] = wheel["version"]
     compare(packages, expected["packages"])
     compare(packages, projection["installed"])
-    subprocess.run([sys.executable, "-I", "-B", "-m", "pip", "check"], check=True)
+    if os.environ.get("SCHOLARSEED_PRODUCT_LIBS"):
+        # pip check 必须能看到 pylibs 里的产品发行物才能校验它们的依赖边;
+        # -I 会忽略 PYTHONPATH, 换成 -s (关用户 site) + 显式 PYTHONPATH。
+        env = {**os.environ, "PYTHONPATH": os.environ["SCHOLARSEED_PRODUCT_LIBS"]}
+        subprocess.run([sys.executable, "-s", "-B", "-m", "pip", "check"], check=True, env=env)
+    else:
+        subprocess.run([sys.executable, "-I", "-B", "-m", "pip", "check"], check=True)
     print(f"[dependencies] verified {len(packages)} locked distributions")
 
 

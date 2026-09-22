@@ -264,7 +264,7 @@ class WritingTest(unittest.TestCase):
         text = writing.draft_path(self.ws, 1).read_text()
         writing.apply_review(self.ws, {"base_sha256": digest(text), "edits": []})
         result = self.cli("run", "generation_publish")
-        pdf = self.ws / "06_output/survey.pdf"
+        pdf = self.ws / "06_output/Methods.pdf"
         self.assertTrue(pdf.exists(), result.stdout + result.stderr)
         self.assertGreater(pdf.stat().st_size, 1000)
         status = writing.read(self.ws / "05_generation/_status/phase07_compile_latex.json")

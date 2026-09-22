@@ -11,6 +11,53 @@ import { createServer, type ViteDevServer } from 'vite'
 
 const FIXTURE_URL = '/components/ui.render.fixture.html'
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const MOTION_OBSERVATION_MS = 350
+
+test('animated collapsible interpolates height, closes accessibly and reverses cleanly', async () => {
+  await withFixture(async (page) => {
+    const trigger = page.getByTestId('render-motion-trigger')
+    const content = page.getByTestId('render-motion-content')
+    await trigger.scrollIntoViewIfNeeded()
+    const sample = (opening: boolean) => page.evaluate(async ({ opening, duration }) => {
+      const content = document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!
+      const trigger = document.querySelector<HTMLButtonElement>('[data-testid="render-motion-trigger"]')!
+      const heights = [content.getBoundingClientRect().height]
+      if ((trigger.getAttribute('aria-expanded') === 'true') !== opening) trigger.click()
+      const started = performance.now()
+      await new Promise<void>((resolve) => {
+        const record = (): void => {
+          heights.push(content.getBoundingClientRect().height)
+          if (performance.now() - started < duration) requestAnimationFrame(record)
+          else resolve()
+        }
+        requestAnimationFrame(record)
+      })
+      return heights
+    }, { opening, duration: MOTION_OBSERVATION_MS })
+    const opening = await sample(true)
+    const fullHeight = opening.at(-1)!
+    assert.ok(fullHeight > 0)
+    assert.ok(opening.some((height) => height > 0 && height < fullHeight))
+    await page.getByTestId('render-motion-action').focus()
+    const closing = await sample(false)
+    assert.equal(await content.getAttribute('inert'), '')
+    assert.equal(await content.getAttribute('aria-hidden'), 'true')
+    assert.equal(await trigger.evaluate((element) => element === document.activeElement), true)
+    assert.ok(closing.some((height) => height > 0 && height < fullHeight))
+    assert.equal(closing.at(-1), 0)
+    await trigger.click()
+    await trigger.click()
+    await trigger.click()
+    await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!.getBoundingClientRect().height > 0)
+    assert.equal(await trigger.getAttribute('aria-expanded'), 'true')
+    assert.equal(await content.getAttribute('inert'), null)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    assert.equal(await content.evaluate((element) => getComputedStyle(element).transitionProperty), 'none')
+    await trigger.press(' ')
+    await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!.getBoundingClientRect().height === 0)
+    assert.equal(await trigger.getAttribute('aria-expanded'), 'false')
+  })
+})
 
 async function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {

@@ -10,8 +10,10 @@ from pathlib import Path
 
 from task_contract import atomic_json
 from main_view import compact
+from platform_io import file_lock
 
 EVIDENCE = ('retrieval_adapt', 'fulltext', 'processing', 'outline', 'review-packet')
+
 FULLTEXT_AUTHORIZATION_BOUNDARY = 'fulltext_authorization'
 FULLTEXT_AUTHORIZATION_ACTION = (
     'Complete the product-owned full-text authorization checkpoint, then resume with '
@@ -53,12 +55,10 @@ def retrieval_summary(ws):
 
 
 def advance(workspace, phase, start=None, runner=None):
-    import fcntl
     ws = Path(workspace).resolve()
     folder = ws / '_status'
     folder.mkdir(parents=True, exist_ok=True)
-    with (folder / 'workflow.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with file_lock(folder / 'workflow.lock'):
         try:
             return _advance(ws, phase, start, runner or execute)
         except (ValueError, OSError, KeyError, TypeError) as exc:

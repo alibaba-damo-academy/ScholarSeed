@@ -411,21 +411,15 @@ class ResourceVersionSupervisor:
     def capability(self, project_id: str, path: str) -> ResourceCapability:
         """Project the live eligibility policy without duplicating it in clients."""
 
-        base = self._versions.capability(project_id, path)
-        entries = self._entries(project_id)
-        state = self._management_state(project_id, path, entries, managed=base.managed)
-        if state is ManagementState.MANAGED:
+        selected = (path,)
+        projected = self.capability_states(project_id, selected)[path]
+        if projected.managed and projected.management_state is ManagementState.MANAGED:
             self._versions.observe(project_id, path)
-            base = self._versions.capability(project_id, path)
-        return replace(
-            base,
-            can_version=state is ManagementState.MANAGED,
-            max_size_bytes=self.max_size_bytes(),
-            management_state=state,
-            pending=None if state is ManagementState.GIT else base.pending,
-            drifted=False if state is ManagementState.GIT else base.drifted,
-            manual_admitted=self._versions.manual_admitted(project_id, path),
-        )
+            projected = self.capability_states(project_id, selected)[path]
+        if projected.managed:
+            return projected
+        live = self._versions.capability(project_id, path)
+        return replace(projected, disk_revision=live.disk_revision)
 
     def capability_states(
         self,

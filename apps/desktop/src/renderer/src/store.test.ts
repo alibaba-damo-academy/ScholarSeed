@@ -101,9 +101,9 @@ test('initial state starts with an empty composer, the overview tab and closed o
   assert.match(initialBlock, /pdfSidePanelOpen: false/)
 })
 
-test('permission, collaboration and usage defaults fail closed at zero', () => {
+test('permission, collaboration and usage defaults initialize consistently', () => {
   assert.match(initialBlock, /collaborationMode: 'default'/)
-  assert.match(initialBlock, /globalPermissionMode: 'ask'/)
+  assert.match(initialBlock, /globalPermissionMode: DEFAULT_GLOBAL_PERMISSION_MODE/)
   assert.match(initialBlock, /judgment: 'pending'/)
   assert.match(initialBlock, /usage: EMPTY_USAGE/)
   assert.match(initialBlock, /catalog: EMPTY_CATALOG/)

@@ -1,6 +1,6 @@
 // Product-owned TeX Live toolchain for the bundled literature-review skill.
-// The archive is a reviewed vendor input; packaging verifies its SHA-256
-// sidecar before staging it, and both launch surfaces resolve the platform
+// The archive is a reviewed download; packaging verifies its SHA-256 before
+// staging it, and both launch surfaces resolve the platform
 // binary directory so the skill's `shutil.which` lookups find the shipped
 // engines instead of depending on the host having TeX installed.
 const fs = require('node:fs')
@@ -8,6 +8,7 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync, spawn } = require('node:child_process')
 const { nativeTar } = require('../../../scripts/python.cjs')
+const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
 
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'texlive')
 const MANIFEST_NAME = 'manifest.json'
@@ -23,25 +24,6 @@ const ARCH_ALIASES = { x86_64: 'x64' }
 // `bin_relative`, which keeps the manifest authoritative without shipping it.
 const PLATFORM_DIRECTORY = { darwin: 'universal-darwin', win32: 'windows' }
 const WINDOWS_PLATFORM = 'win32'
-// The archive is a Git LFS object. A checkout without `git lfs pull` leaves the
-// pointer file in the working tree, and reporting that as a checksum mismatch
-// would send whoever hits it hunting for a corrupt archive instead of a missing
-// LFS payload.
-const LFS_POINTER_PREFIX = 'version https://git-lfs.github.com/spec/v1'
-
-function assertNotLfsPointer(archive) {
-  const fd = fs.openSync(archive, 'r')
-  try {
-    const head = Buffer.alloc(LFS_POINTER_PREFIX.length)
-    const bytesRead = fs.readSync(fd, head, 0, head.length, 0)
-    if (bytesRead === head.length && head.toString('utf8') === LFS_POINTER_PREFIX) {
-      throw new Error(`TeX Live archive is an unresolved Git LFS pointer: run git lfs pull (${archive})`)
-    }
-  } finally {
-    fs.closeSync(fd)
-  }
-}
-
 function executableName(name, platform = process.platform) {
   return platform === WINDOWS_PLATFORM ? `${name}.exe` : name
 }
@@ -72,16 +54,15 @@ function artifact(desktopRoot, platform = process.platform, arch = process.arch)
     throw new Error('TeX Live manifest declares no executables')
   }
   const archive = path.join(vendorRoot(desktopRoot), selected.archive)
-  assertNotLfsPointer(archive)
-  const sidecar = fs.readFileSync(`${archive}.sha256`, 'utf8').trim().split(/\s+/)
-  if (!SHA256_PATTERN.test(sidecar[0]) || sidecar[1]?.replace(/^\*/, '') !== selected.archive) {
-    throw new Error('TeX Live archive SHA-256 sidecar is invalid')
+  if (!SHA256_PATTERN.test(selected.sha256) || typeof selected.url !== 'string' ||
+      !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
+    throw new Error('TeX Live archive metadata is invalid')
   }
   const platformDirectory = selected.bin_relative.split('/').slice(-2).join('/')
   if (platformDirectory !== `bin/${PLATFORM_DIRECTORY[platform]}`) {
     throw new Error(`TeX Live manifest layout differs from the product layout: ${selected.bin_relative}`)
   }
-  return { ...selected, archive, key, sha256: sidecar[0], texlive: document.texlive, executables }
+  return { ...selected, archive, key, texlive: document.texlive, executables }
 }
 
 function binDirectory(treeRoot, selected, platform = process.platform) {
@@ -144,6 +125,7 @@ async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
     return { binDirectory: binDir, root: directory, reported, sha256: selected.sha256,
       texlive: selected.texlive }
   }
+  await ensureArtifact(selected.archive, selected)
   // The cache key and the receipt already bind a cached tree to the reviewed
   // archive checksum, so the full archive digest is only paid on a cache miss.
   if (await digest(selected.archive) !== selected.sha256) {
@@ -180,6 +162,7 @@ function stageTexlive(backendDirectory, selected) {
 async function stageVerifiedTexlive(backendDirectory, desktopRoot, platform = process.platform,
   arch = process.arch) {
   const selected = artifact(desktopRoot, platform, arch)
+  await ensureArtifact(selected.archive, selected)
   if (await digest(selected.archive) !== selected.sha256) {
     throw new Error('TeX Live archive SHA-256 mismatch')
   }

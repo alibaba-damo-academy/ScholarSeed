@@ -899,6 +899,7 @@ test('version history opens a resizable read-only text comparison tab', async ({
 
 test('file tabs follow projects and auto-save on workspace blur with a version', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -953,6 +954,8 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
     await expect(editor.locator('.view-lines')).toContainText('Auto-saved Alpha')
     await page.getByTestId('activity-literature').click()
     await expect.poll(() => readFileSync(alpha.path, 'utf8')).toContain('Auto-saved Alpha')
+    await expect(page.getByRole('tab', { name: /alpha\.md/ })).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'shared-resource-literature-tabs.png') })
     await page.getByTestId('activity-resource').click()
 
     await openProject('Tab scope Beta')
@@ -1262,6 +1265,105 @@ test('code editor shortcuts apply language comments and indentation', async ({},
     await input.press(`${SHORTCUT}+s`)
     await expect.poll(() => readFileSync(join(resources, 'source.java'), 'utf8')).toMatch(/^\/\/ class Answer \{/)
     await page.screenshot({ path: join(runtime.artifacts, 'code-shortcut-language-comment.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('language switch reloads open code editors without leaving the current project or file', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    await openFile(page, 'source.cpp')
+    await openFile(page, 'source.py')
+    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editorInput = editor.locator('textarea').first()
+    const runtimeFrames = page.locator('iframe[title="Monaco runtime"]')
+    const expectMonacoPresentation = async (): Promise<void> => {
+      await expect(runtimeFrames).toHaveCount(2)
+      await expect.poll(async () => runtimeFrames.evaluateAll((frames) => (
+        frames.every((frame) => getComputedStyle(frame).display === 'none')
+      ))).toBe(true)
+      const firstLineNumber = editor.locator('.margin-view-overlays .line-numbers').first()
+      await expect(firstLineNumber).toBeVisible()
+      await expect(firstLineNumber).toHaveText('1')
+      await expect.poll(async () => editor.locator('.view-line span').evaluateAll((tokens) => (
+        new Set(tokens.map((token) => getComputedStyle(token).color)).size
+      ))).toBeGreaterThan(1)
+    }
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin)
+    const runtimeLoadErrors: string[] = []
+    page.on('console', (message) => {
+      if (message.type() === 'error' && message.text().includes('Failed to load resource')) {
+        runtimeLoadErrors.push(message.text())
+      }
+    })
+    page.on('response', (response) => {
+      if (response.status() >= 400) runtimeLoadErrors.push(`${response.status()} ${response.url()}`)
+    })
+    await expectMonacoPresentation()
+    await editor.locator('.view-line').last().click()
+    await editorInput.press('End')
+    await editorInput.type('\n# unsaved language switch')
+
+    await page.getByTestId('activity-account').click()
+    await page.getByTestId('account-menu-language').click()
+    await page.getByRole('button', { name: 'English', exact: true }).click()
+    const dialog = page.getByTestId('language-switch-dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toContainText('当前页面和文件保持不变')
+    await dialog.getByRole('button', { name: '保存并切换', exact: true }).click()
+
+    await expect(page.getByTestId('workbench-home-space')).toHaveCount(0)
+    await expect(page.getByRole('tab', { name: /source\.cpp/ })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /source\.py/ })).toHaveAttribute('aria-selected', 'true')
+    await expect(editor).toBeVisible()
+    await expect(editor.locator('.view-lines')).toContainText('unsaved language switch')
+    await expect.poll(() => readFileSync(join(resources, 'source.py'), 'utf8')).toContain('# unsaved language switch')
+    await expect.poll(() => page.evaluate(() => performance.timeOrigin)).toBe(timeOrigin)
+    await expect.poll(async () => runtimeFrames.evaluateAll((frames) => (
+      frames.every((frame) => frame.getAttribute('src')?.includes('language=en'))
+    ))).toBe(true)
+    await expectMonacoPresentation()
+
+    await page.locator('[data-testid="markdown-find"]:visible').click()
+    await expect(editor.getByRole('textbox', { name: 'Find', exact: true })).toBeVisible()
+    const nextMatch = editor.getByRole('button', { name: 'Next Match (Enter)', exact: true })
+    await nextMatch.hover()
+    const findTooltip = editor.locator('.context-view:has(.monaco-hover[role="tooltip"])')
+    await expect(findTooltip).toBeVisible()
+    await expect.poll(async () => {
+      const [buttonBounds, tooltipBounds] = await Promise.all([nextMatch.boundingBox(), findTooltip.boundingBox()])
+      if (!buttonBounds || !tooltipBounds) return false
+      const buttonCenter = buttonBounds.x + buttonBounds.width / 2
+      const tooltipBottom = tooltipBounds.y + tooltipBounds.height
+      const verticalGap = buttonBounds.y - tooltipBottom
+      return tooltipBottom <= buttonBounds.y
+        && verticalGap <= POPOVER_ANCHOR_MAX_GAP_PX
+        && buttonCenter >= tooltipBounds.x
+        && buttonCenter <= tooltipBounds.x + tooltipBounds.width
+    }).toBe(true)
+    const tooltipPointer = findTooltip.locator('.workbench-hover-pointer.bottom')
+    await expect(tooltipPointer).toHaveCount(1)
+    await expect.poll(() => tooltipPointer.evaluate((pointer) => (
+      getComputedStyle(pointer, '::after').content
+    ))).not.toBe('none')
+    const tooltipContent = findTooltip.getByRole('tooltip')
+    await expect.poll(() => tooltipContent.evaluate((tooltip) => {
+      const bounds = tooltip.getBoundingClientRect()
+      const topmost = document.elementFromPoint(
+        bounds.x + bounds.width / 2,
+        bounds.y + bounds.height / 2
+      )
+      return Boolean(topmost && tooltip.contains(topmost))
+    })).toBe(true)
+    expect(runtimeLoadErrors).toEqual([])
+    await page.screenshot({ path: join(runtime.artifacts, 'code-language-hot-switch-state-preserved.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })

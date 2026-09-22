@@ -398,6 +398,12 @@
   gap: 6px;
   margin-top: 8px;
 }
+/* 多选生效后把未选中的 chip 整体压淡 —— 选中对比完全由这一条表达: Tag 的 selected
+   轴只提供 .vds-tag--selected 这个状态钩子, 自身不画视觉。只改透明度不改尺寸, 点击
+   时标签云不会重排跳位。浓度取语义 token, 页面不写死数值。 */
+.lit-tag-cloud[data-tag-filter='active'] > .vds-tag:not(.vds-tag--selected) {
+  opacity: var(--vds-opacity-deemphasized);
+}
 .lit-detail {
   width: min(390px, 44%);
   min-width: 400px;

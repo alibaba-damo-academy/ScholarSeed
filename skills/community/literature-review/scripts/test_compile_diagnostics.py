@@ -13,6 +13,31 @@ spec.loader.exec_module(compiler)
 
 
 class CompileDiagnosticsTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('pdflatex'), 'TeX engine unavailable')
+    def test_template_longtable_breaks_pages_and_retains_last_row(self):
+        from native_document import load_renderer
+        from pypdf import PdfReader
+        renderer=load_renderer()
+        with tempfile.TemporaryDirectory(prefix='slr-longtable-') as folder:
+            dest=Path(folder)
+            shutil.copy(renderer.NEURIPS_TEMPLATE_DIR/renderer.NEURIPS_STY_FILENAME,dest)
+            preamble=renderer._citation_preamble('english',{'natbib_options':'numbers,sort',
+                'bibliography_style':'unsrtnat_scholarseed'})
+            rows='\n'.join(fr'Row{i}&\rule{{0pt}}{{10mm}}Supported evidence\\' for i in range(1,51))
+            body=(r'\begin{document}\begin{longtable}{p{3cm}p{8cm}}'
+                  r'\caption{Evidence comparison}\label{tab:T1}\\'
+                  r'\toprule Method&Evidence\\\midrule\endfirsthead'
+                  r'\toprule Method&Evidence\\\midrule\endhead'+'\n'+rows+'\n'+
+                  r'\bottomrule\end{longtable}\end{document}')
+            (dest/'long.tex').write_text(preamble+'\n'+body,encoding='utf-8')
+            result=subprocess.run(['pdflatex','-interaction=nonstopmode','-halt-on-error','long.tex'],
+                                  cwd=dest,capture_output=True,text=True,errors='replace',timeout=60)
+            self.assertEqual(result.returncode,0,result.stdout[-3000:])
+            pdf=PdfReader(dest/'long.pdf')
+            self.assertGreater(len(pdf.pages),1)
+            self.assertIn('Row50',pdf.pages[-1].extract_text())
+            self.assertNotIn('Float too large',(dest/'long.log').read_text(errors='replace'))
+
     @unittest.skipUnless(shutil.which('pdflatex') and shutil.which('xelatex'), 'TeX engines unavailable')
     def test_bold_math_compiles_in_both_language_templates(self):
         root=Path(__file__).resolve().parents[1]

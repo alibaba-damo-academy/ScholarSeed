@@ -1,4 +1,3 @@
-import './nls'
 import { languages } from 'monaco-editor/editor/editor.api'
 import { conf as cppConfiguration, language as cppLanguage } from 'monaco-editor/languages/definitions/cpp/cpp'
 import { conf as cssConfiguration, language as cssLanguage } from 'monaco-editor/languages/definitions/css/css'

@@ -92,6 +92,7 @@ import {
 } from './metadata'
 import { LiteratureNotes } from './Notes'
 import { AttachmentImportDialog } from './Import'
+import { latestLiteratureSummary } from './projection'
 import {
   loadPdfRecords,
   subscribePdfRecords,
@@ -179,6 +180,19 @@ const SYNC_PREVIEW_VALUE_CLASS = [
   'min-w-0 text-[length:var(--vds-font-body-lv2)] text-[var(--vds-text-primary)]',
   '[overflow-wrap:anywhere]'
 ].join(' ')
+const PANEL_AFFECTING_FIELDS = new Set(['item_type', 'publication', 'year'])
+const PANEL_AFFECTING_RELATIONS: Array<keyof LiteratureUpdate> = [
+  'collection_ids',
+  'tag_ids',
+  'project_ids',
+  'project_collection_ids'
+]
+
+const updateAffectsPanel = (update: LiteratureUpdate): boolean =>
+  PANEL_AFFECTING_RELATIONS.some((key) => update[key] !== undefined) ||
+  Object.keys(update.fields ?? {}).some((field) =>
+    PANEL_AFFECTING_FIELDS.has(field)
+  )
 
 /**
  * 确认对话框里的逐字段新旧对比。
@@ -1004,11 +1018,13 @@ function TagSection({
 export function LiteratureDetail({
   id,
   attachmentId,
-  onClose
+  onClose,
+  onItemUpdated
 }: {
   id: string | null
   attachmentId: string | null
   onClose: () => void
+  onItemUpdated: (item: Detail) => void
 }): React.JSX.Element | null {
   const { t: literature } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
@@ -1047,6 +1063,9 @@ export function LiteratureDetail({
   const descriptionId = useId()
   const primaryInput = useRef<HTMLInputElement>(null)
   const attachmentInput = useRef<HTMLInputElement>(null)
+  const updateQueue = useRef<Promise<void>>(Promise.resolve())
+  const detailIdentity = useRef({ id, projectId })
+  detailIdentity.current = { id, projectId }
   const { reload } = useCatalogue()
   const syncedReload = useRef(reload)
   useEffect(() => {
@@ -1119,13 +1138,44 @@ export function LiteratureDetail({
     }
   }, [id, projectId, reload])
   if (!id) return null
+  const acceptUpdatedItem = (updated: Detail): void => {
+    setItem((current) =>
+      current ? latestLiteratureSummary(current, updated) : updated
+    )
+    onItemUpdated(updated)
+  }
+  const queueLiteratureUpdate = (
+    update: LiteratureUpdate
+  ): Promise<Detail | null> => {
+    const itemId = id
+    const itemProjectId = projectId
+    const request = updateQueue.current.then(() =>
+      updateLiterature(itemId, update, itemProjectId)
+    )
+    updateQueue.current = request.then(
+      () => undefined,
+      () => undefined
+    )
+    return request.then((updated) =>
+      detailIdentity.current.id === itemId &&
+      detailIdentity.current.projectId === itemProjectId
+        ? updated
+        : null
+    )
+  }
+  const isCurrentDetail = (): boolean =>
+    detailIdentity.current.id === id &&
+    detailIdentity.current.projectId === projectId
   const save = async (update: LiteratureUpdate): Promise<void> => {
     try {
       setError(null)
-      setItem(await updateLiterature(id, update, projectId))
+      const updated = await queueLiteratureUpdate(update)
+      if (!updated) return
+      acceptUpdatedItem(updated)
       setRelation(null)
-      catalogue.reload()
+      if (updateAffectsPanel(update)) catalogue.reloadPanel()
     } catch (reason) {
+      if (!isCurrentDetail()) return
       setError(literatureErrorMessage(reason instanceof LiteratureApiError ? reason.failure.code : undefined, reason instanceof Error ? reason.message : undefined, 'detail.saveFailed'))
     }
   }
@@ -1184,16 +1234,20 @@ export function LiteratureDetail({
   ): Promise<void> => {
     setSyncing(true)
     try {
-      setItem(await updateLiterature(id, { fields, ...(bibType ? { bib_type: bibType } : {}) }, projectId))
+      const update = { fields, ...(bibType ? { bib_type: bibType } : {}) }
+      const updated = await queueLiteratureUpdate(update)
+      if (!updated) return
+      acceptUpdatedItem(updated)
       setSyncMatch(null)
       setSyncMissed(false)
-      catalogue.reload()
+      if (updateAffectsPanel(update)) catalogue.reloadPanel()
       toast({ title: literature('detail.sync.succeeded'), tone: 'success' })
     } catch (reason) {
+      if (!isCurrentDetail()) return
       toast({ title: literature('detail.sync.failed'), tone: 'error' })
       setError(literatureErrorMessage(reason instanceof LiteratureApiError ? reason.failure.code : undefined, reason instanceof Error ? reason.message : undefined, 'detail.saveFailed'))
     } finally {
-      setSyncing(false)
+      if (isCurrentDetail()) setSyncing(false)
     }
   }
   /**

@@ -36,6 +36,7 @@ export function ReferencePicker({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const noMatch = Boolean(query.trim()) && !loading && candidates.length === 0
+  const initialLoading = loading && candidates.length === 0
   const [visibleCount, setVisibleCount] = React.useState(REFERENCE_PAGE_SIZE)
   React.useEffect(() => {
     setVisibleCount(REFERENCE_PAGE_SIZE)
@@ -43,7 +44,7 @@ export function ReferencePicker({
   const visibleCandidates = candidates.slice(0, visibleCount)
 
   return (
-    <div className="flex max-h-[calc(min(420px,70vh)-var(--vds-space-2))] min-h-0 flex-col overflow-hidden" data-testid="reference-picker">
+    <div aria-busy={loading} className="flex max-h-[calc(min(420px,70vh)-var(--vds-space-2))] min-h-0 flex-col overflow-hidden" data-testid="reference-picker">
       <div className="grid flex-none gap-[var(--vds-space-2)] border-b border-[var(--border-soft)] bg-[var(--bg-2)] px-[var(--vds-space-2)] pb-[var(--vds-space-3)] pt-[var(--vds-space-2)]">
         <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
           <IconButton
@@ -96,7 +97,7 @@ export function ReferencePicker({
         </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-[var(--vds-space-1)] overflow-x-hidden overflow-y-auto px-[var(--vds-space-1)] pb-[var(--vds-space-1)] pt-[var(--vds-space-1)]" data-testid="reference-picker-list">
-        {loading ? (
+        {initialLoading ? (
           <div role="status" className="px-[var(--vds-space-3)] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
             {t('composer.loadingProject')}
           </div>

@@ -9,6 +9,7 @@ const { executableDigest } = require('./digest.cjs')
 const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require('./bundle.cjs')
 const { pythonRelease, verifyPythonArchive, verifyPython, verifyDevelopmentPython,
   developmentPython, nativeTar } = require('../../../scripts/python.cjs')
+const { ensureRipgrep } = require('../../../scripts/ripgrep.cjs')
 const { checkToolchain, ensureNodeDependencies } = require('../../../scripts/toolchain.cjs')
 const { stageNotices } = require('./notices.cjs')
 let dependencies
@@ -16,6 +17,7 @@ let dependencies
 const DESKTOP = path.resolve(__dirname, '..')
 const REPO = path.resolve(DESKTOP, '../..')
 const PACKAGE = JSON.parse(fs.readFileSync(path.join(DESKTOP, 'package.json')))
+const { PYLIBS_DIRNAME } = require('../runtime/components.cjs')
 const PRODUCT_SOURCE = path.join(DESKTOP, 'resources', 'product.json')
 const CONTEXT_ENV = 'SCHOLARSEED_BUILD_CONTEXT'
 const APPLE_TEAM_ID = /^[A-Z0-9]{10}$/
@@ -48,6 +50,79 @@ const BUILD_TYPES = {
 }
 const OBSOLETE_ENV_PREFIX = 'VEDA_'
 const OBSOLETE_ENV_ALLOWED = new Set(['VEDA_DESKTOP_DEFAULT_CONFIG'])
+// P1 实验开关（proposal 108 §6）：=1 时生成 ZIP 直解压候选包（useZip + differentialPackage:false
+// 成对写入）。默认（未设/为空）保持 package.json 现状。实验对照与生产启用由门槛决定，
+// 不由这个开关单方面翻转。
+const NSIS_ZIP_ENV = 'SCHOLARSEED_NSIS_USE_ZIP'
+
+/**
+ * NSIS 配置解析 + 配对不变量守卫。
+ *
+ * 26.15.7 NsisTarget 的归档格式是 `!isBuildDifferentialAware && useZip ? "zip" : "7z"`，
+ * 而模板 defines（COMPRESSION_METHOD/ZIP_COMPRESSION）只看 useZip：单独启用 useZip 会把
+ * 7z 字节以 app-64.zip 之名嵌进安装器，运行期 nsisunz 解压必失败（不可安装产物）。
+ * 因此 useZip 为 true 时 differentialPackage 必须显式为 false，缺一即拒绝构建。
+ */
+function resolveNsisConfiguration(base, env = process.env) {
+  const nsis = { ...(base.nsis || {}) }
+  const requested = String(env[NSIS_ZIP_ENV] || '').trim()
+  if (requested === '1') {
+    nsis.useZip = true
+    nsis.differentialPackage = false
+  } else if (requested !== '') {
+    throw new Error(`${NSIS_ZIP_ENV} accepts only "1" (ZIP candidate) or unset/empty (default)`)
+  }
+  if (nsis.useZip === true && nsis.differentialPackage !== false) {
+    throw new Error('nsis.useZip=true requires nsis.differentialPackage=false: electron-builder would otherwise embed a 7z archive named app-64.zip, producing an uninstallable installer')
+  }
+  return nsis
+}
+
+/**
+ * 构建证据（proposal 108 §3/§12「模板漂移」）：manifest 声明版本、实际解析版本与
+ * NSIS 解压模板摘要一起进 result.json。升级 electron-builder 后模板摘要变化即提示
+ * 重跑路径/日志/故障矩阵，不以注释里的旧版本作证据。
+ */
+async function builderEvidence(nsisConfiguration) {
+  const { verify } = loadDependencies()
+  const libraryManifest = require.resolve('app-builder-lib/package.json', { paths: [DESKTOP] })
+  const declared = (PACKAGE.devDependencies && PACKAGE.devDependencies['electron-builder']) ||
+    (PACKAGE.dependencies && PACKAGE.dependencies['electron-builder']) || ''
+  const template = path.join(path.dirname(libraryManifest), 'templates', 'nsis', 'include',
+    'extractAppPackage.nsh')
+  return {
+    declaredVersion: declared,
+    resolvedVersion: JSON.parse(fs.readFileSync(libraryManifest, 'utf8')).version,
+    extractTemplateSha256: fs.existsSync(template) ? await verify.sha256(template) : null,
+    nsis: nsisConfiguration
+  }
+}
+
+/**
+ * Windows 载荷统计：win-unpacked 的文件数与字节数，P1/P2 实验的精确分母
+ * （proposal 108 §2「出包清单需重新给出精确分母」）。非 win32 或 backend 阶段返回 null。
+ */
+function payloadStatistics(context, args) {
+  if (args.platform !== 'win32' || args.stage === 'backend') return null
+  const root = path.join(context.output, 'win-unpacked')
+  if (!fs.existsSync(root)) return null
+  let files = 0
+  let bytes = 0
+  const stack = [root]
+  while (stack.length) {
+    const directory = stack.pop()
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name)
+      if (entry.isDirectory()) {
+        stack.push(full)
+      } else if (!entry.isSymbolicLink()) {
+        files += 1
+        bytes += fs.statSync(full).size
+      }
+    }
+  }
+  return { root: 'win-unpacked', files, bytes }
+}
 
 function loadDependencies() {
   if (dependencies) return dependencies
@@ -56,6 +131,7 @@ function loadDependencies() {
     verify: require('./verify.cjs'),
     verifyOfficeAssets: require('./office-assets.cjs').verifyOfficeAssets,
     bundle: require('./bundle.cjs').bundle,
+    packWindowsComponents: require('./bundle.cjs').packWindowsComponents,
     targets: require('./target.cjs'),
     prepareBrowser: require('./browser.cjs').prepareBrowser,
     verifyBuiltClosure: require('./closure.cjs').verifyBuiltClosure,
@@ -327,8 +403,8 @@ async function runtimeBinaries(selected) {
   const { resolveVendoredCodex, verify } = loadDependencies()
   const codex = await resolveVendoredCodex(DESKTOP, selected.platform,
     selected.arch === 'x86_64' ? 'x64' : selected.arch, console.log)
-  const rg = path.join(REPO, 'scripts/vendor/ripgrep', selected.triple, selected.ripgrepName)
-  fs.accessSync(rg, fs.constants.R_OK)
+  const ripgrep = await ensureRipgrep(REPO, selected.platform, selected.arch)
+  const rg = ripgrep.executable
   const rows = {
     codex: { path: codex.path, root: codex.root, files: codex.files,
       sha256: await verify.sha256(codex.path), executable_sha256: await verify.sha256(codex.path),
@@ -362,7 +438,7 @@ function frozenProductConfiguration(args, binaries) {
   const runtime = product.runtimes?.[product.default_runtime]
   if (!runtime?.enabled || !/^[a-f0-9]{64}$/.test(binaries.codex.executable_sha256) ||
       binaries.codex.source?.package !== '@openai/codex' ||
-      binaries.codex.source?.distribution !== 'git-lfs') {
+      binaries.codex.source?.distribution !== 'verified-download') {
     throw new Error('default runtime lacks verified official release evidence')
   }
   runtime.executable_sha256 = binaries.codex.executable_sha256
@@ -423,8 +499,10 @@ function writeBuilderConfiguration(context, args) {
       ? { ...entry, from: path.join(context.resourceRoot, path.basename(entry.from)) }
       : entry)
   const filename = path.join(context.runDirectory, 'electron-builder.json')
+  const nsisConfiguration = resolveNsisConfiguration(PACKAGE.build)
   const config = {
     ...PACKAGE.build,
+    nsis: nsisConfiguration,
     electronDist: cachedElectronDistribution(context, args)
       || path.join(DESKTOP, 'node_modules', 'electron', 'dist'),
     mac,
@@ -441,10 +519,11 @@ function writeBuilderConfiguration(context, args) {
       ? { ...PACKAGE.build.win, icon: selected.icon,
           signtoolOptions: { sign: path.join(__dirname, 'windows-sign.cjs'),
             signingHashAlgorithms: ['sha256'], publisherName: [args['windows-publisher']] } }
-      : { ...PACKAGE.build.win, icon: selected.icon, sign: null }
+      : { ...PACKAGE.build.win, icon: selected.icon }
   }
   fs.accessSync(path.join(DESKTOP, selected.icon), fs.constants.R_OK)
   verify.atomicJSON(filename, config)
+  context.nsis = nsisConfiguration
   return filename
 }
 
@@ -488,8 +567,8 @@ async function main(argv = process.argv.slice(2)) {
     // Locked npm dependencies are installed before any third-party module is loaded,
     // because this entry is also reached on a checkout without node_modules.
     ensureNodeDependencies()
-    const { build, bundle, prepareBrowser, targets, verify, verifyBuiltClosure,
-      verifyOfficeAssets } = loadDependencies()
+    const { build, bundle, packWindowsComponents, prepareBrowser, targets, verify,
+      verifyBuiltClosure, verifyOfficeAssets } = loadDependencies()
     const { hostArch } = targets
     const args = options(argv)
     if (args.platform !== process.platform || args.target.arch !== hostArch()) {
@@ -548,23 +627,37 @@ async function main(argv = process.argv.slice(2)) {
       SCHOLARSEED_BUNDLE_CODEX_EXECUTABLE: binaries.codex.path
     })
     await bundle(context, args.target, environment)
-    run(python, ['-I', '-B', '-m', 'service.cli.prebundle', '--build', '--source', context.skillSource,
-      '--lock', context.lock], { env: environment })
+    // win32 组件化（proposal 108 §7.1）：产品代码在 backend/pylibs，凡是要 import 产品模块的
+    // 构建步骤都从 -I（isolated 会忽略 PYTHONPATH）换成 -s（关用户 site）+ 显式 PYTHONPATH；
+    // 其它平台保持 -I 不变。
+    const productLibs = path.join(backend, PYLIBS_DIRNAME)
+    const productFlags = args.platform === 'win32' ? ['-s', '-B'] : ['-I', '-B']
+    // 技能依赖门禁（prebundle --provision/verify）用 shutil.which 解析产品 console script
+    // （如 scholarseed-bridge）。P2a 组件化后这些 launcher 在 backend/bin，不在宿主 PATH
+    // （CI 不激活仓库 venv），故把产品自有 launcher 目录前置进门禁 PATH，不依赖宿主环境。
+    const productBinDir = path.join(backend, 'bin')
+    const productPathEnv = `${productBinDir}${path.delimiter}${environment.PATH}`
+    const productEnv = args.platform === 'win32'
+      ? { ...environment, PYTHONPATH: productLibs, SCHOLARSEED_PRODUCT_LIBS: productLibs,
+          PATH: productPathEnv }
+      : { ...environment, PATH: productPathEnv }
+    run(python, [...productFlags, '-m', 'service.cli.prebundle', '--build', '--source', context.skillSource,
+      '--lock', context.lock], { env: productEnv })
     context.lockSha256 = await verify.sha256(context.lock)
-    run(python, ['-I', '-B', '-m', 'service.cli.prebundle', '--provision', '--source', context.skillSource,
+    run(python, [...productFlags, '-m', 'service.cli.prebundle', '--provision', '--source', context.skillSource,
       '--lock', context.lock, '--report', context.dependencies,
-      '--toolchain-root', context.texlive.binDirectory], { env: environment })
+      '--toolchain-root', context.texlive.binDirectory], { env: productEnv })
     // Compile oracle: prove the staged toolchain compiles what the bundled skill
     // actually emits. The preambles are read from the skill source, which
     // prebundle verifies byte-for-byte against the staged pack, so a package
     // added to a preamble fails the build here instead of a user's survey.
     const oracleScript = path.join(context.skillSource, 'literature-review', 'scripts',
       'smoke_publication.py')
-    const oracleResult = spawnSync(python, ['-I', '-B', oracleScript], {
+    const oracleResult = spawnSync(python, [...productFlags, oracleScript], {
       cwd: REPO,
       encoding: 'utf8',
-      env: { ...environment,
-        PATH: `${context.texlive.binDirectory}${path.delimiter}${environment.PATH}` }
+      env: { ...productEnv,
+        PATH: `${context.texlive.binDirectory}${path.delimiter}${productEnv.PATH}` }
     })
     const oracleOutput = (oracleResult.stdout || '').trim()
     if (oracleResult.error || oracleResult.status !== 0) {
@@ -577,15 +670,19 @@ async function main(argv = process.argv.slice(2)) {
       throw new Error(`bundled TeX Live oracle failed: ${oracleOutput.slice(0, 2000)}`)
     }
     context.texlive.oracle = oracle
-    run(python, ['-I', '-B', path.join(backend, VERIFIER_FILENAME), 'verify',
+    run(python, [...productFlags, path.join(backend, VERIFIER_FILENAME), 'verify',
       '--manifest', path.join(backend, INVENTORY_FILENAME),
-      '--requirements', path.join(backend, REQUIREMENTS_FILENAME)], { env: environment })
+      '--requirements', path.join(backend, REQUIREMENTS_FILENAME)], { env: productEnv })
     fs.copyFileSync(context.lock, path.join(backend, 'skills.lock.json'))
     fs.copyFileSync(context.dependencies, path.join(backend, 'dependencies.json'))
+    if (args.platform === 'win32') {
+      // 所有需要松散 python/texlive 树的验证都已跑完；现在冻结证据、打组件 zip、删松散树。
+      context.components = packWindowsComponents(context, args, environment)
+    }
     if (args.platform === 'darwin') context.browser = await prepareBrowser(resourceRoot, args.arch)
     verify.atomicJSON(context.file, context)
     if (args.stage !== 'backend') {
-      verifyOfficeAssets(DESKTOP)
+      await verifyOfficeAssets(DESKTOP)
       const vite = path.join(DESKTOP, 'node_modules', '.bin',
         process.platform === 'win32' ? 'electron-vite.cmd' : 'electron-vite')
       run(vite, ['build'], { env: environment })
@@ -606,6 +703,7 @@ async function main(argv = process.argv.slice(2)) {
       : args.candidate ? `${args.type}-candidate-unsigned`
         : args.type === 'dev' ? (args.platform === 'darwin' ? 'ad-hoc-local-only' : 'unsigned-dev')
           : args.platform === 'darwin' ? 'developer-id-notarized' : 'signed-windows'
+    const builder = await builderEvidence(context.nsis || resolveNsisConfiguration(PACKAGE.build))
     const result = {
       schema: CONTEXT_SCHEMA, status: 'passed', stage: args.stage,
       product: { product_id: context.product.config.product_id,
@@ -621,7 +719,16 @@ async function main(argv = process.argv.slice(2)) {
       publishable: !args.candidate && args.type !== 'dev',
       trust: { level: trustLevel, ...(app?.trust || {}) }, target: context.target, skills: {
         source: context.skillSource, lock: context.lock, lock_sha256: context.lockSha256
-      }, runtime, python_dependencies: context.pythonDependencies
+      }, runtime, python_dependencies: context.pythonDependencies,
+      builder, payload: payloadStatistics(context, args),
+      ...(context.components
+        ? { components: {
+            target: context.components.target,
+            app_components_sha256: context.components.appComponentsSha256,
+            content_ids: Object.fromEntries(
+              context.components.components.map(item => [item.kind, item.contentId]))
+          } }
+        : {})
     }
     verify.atomicJSON(context.result, result)
     console.log(`[package] verified installer: ${installer?.path || 'not requested'}`)
@@ -637,7 +744,7 @@ async function main(argv = process.argv.slice(2)) {
 
 module.exports = { BUILD_TYPES, buildNumberOf, buildRunDirectory, credentialFreeEnv, freezeFile,
   frozenProductConfiguration, acquireMutex, installerArtifacts, options, provenance,
-  writeBuilderConfiguration, localDmgbuild }
+  writeBuilderConfiguration, localDmgbuild, resolveNsisConfiguration, payloadStatistics }
 
 if (require.main === module) {
   main().catch(error => { console.error(`[package] ERROR ${error.message}`); process.exitCode = 1 })

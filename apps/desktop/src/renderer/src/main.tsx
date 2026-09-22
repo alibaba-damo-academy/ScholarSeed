@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import '@fontsource/ibm-plex-mono/400.css'
@@ -16,6 +16,7 @@ import { DisplayCardProvider } from './components/business/Cards'
 import { InteractionPolicyProvider } from './components/business/Interactions'
 import { TaskCenterProvider } from './components/business/Tasks'
 import { Toaster, ToastProvider } from './components/ui'
+import { resolveDocumentWorkspaceProject } from './features/workbench/scope'
 import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
 import { assistantProject, StoreProvider, useApp } from './store'
 
@@ -23,10 +24,16 @@ function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }): 
   const { state } = useApp()
   // A docked assistant may show a conversation from another project while the
   // center keeps the explicitly selected project's document workspace open.
-  // Conversation-only surfaces clear homeSelectedProjectId before activation,
-  // so they still resolve the workspace from the active session.
-  const projectId = state.homeSelectedProjectId ?? assistantProject(state).projectId
+  // Conversation-only surfaces can clear homeSelectedProjectId before activation,
+  // so the provider and document actions share the same project resolution policy.
+  const projectId = resolveDocumentWorkspaceProject(
+    state.homeSelectedProjectId,
+    assistantProject(state).projectId
+  )
   const workspace = documentWorkspaces.forProject(projectId)
+  useEffect(() => {
+    documentWorkspaces.activateProject(projectId)
+  }, [projectId])
   return (
     <DocumentWorkspaceContext.Provider value={workspace}>
       {children}

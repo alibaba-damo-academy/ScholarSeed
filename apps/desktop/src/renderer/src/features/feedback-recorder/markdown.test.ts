@@ -78,7 +78,7 @@ test('review markdown contains visible feedback without hidden request logs', ()
     'screenshot-1': 'data:image/png;base64,AQID',
     'screenshot-2': 'data:image/png;base64,BAUG'
   }
-  const markdown = composeReviewMarkdown(session, summary, labels, screenshotSources)
+  const markdown = composeReviewMarkdown(session, summary, labels)
 
   assert.match(markdown, /^# 检查并提交问题反馈/m)
   assert.match(markdown, /^## 问题总结/m)
@@ -89,9 +89,10 @@ test('review markdown contains visible feedback without hidden request logs', ()
   assert.match(markdown, /说明：创建后没有响应/)
   assert.match(markdown, /输入内容：测试项目/)
   assert.match(markdown, /截图说明 1：项目卡片没有响应/)
-  assert.match(markdown, /!\[截图说明 1\]\(data:image\/png;base64,AQID\)/)
   assert.match(markdown, /截图说明 2：项目区域完整截图/)
-  assert.match(markdown, /!\[截图说明 2\]\(data:image\/png;base64,BAUG\)/)
+  assert.doesNotMatch(markdown, /data:image\//)
+  assert.doesNotMatch(markdown, /base64,/)
+  assert.doesNotMatch(markdown, /!\[/)
   assert.doesNotMatch(markdown, /private-log|POST|500/)
 
   const html = composeReviewHtml(session, summary, labels, screenshotSources)

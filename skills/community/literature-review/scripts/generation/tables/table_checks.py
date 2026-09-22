@@ -122,6 +122,13 @@ def _extract_env(text: str, env_name: str) -> tuple[str, str] | None:
     cursor = bi + len(begin_marker)
     while cursor < len(text) and text[cursor] in " \t\n":
         cursor += 1
+    if cursor < len(text) and text[cursor] == '[':
+        end = text.find(']', cursor)
+        if end < 0:
+            return None
+        cursor = end + 1
+        while cursor < len(text) and text[cursor] in " \t\n":
+            cursor += 1
     if env_name in ("tabularx", "tabular*"):
         if cursor >= len(text) or text[cursor] != "{":
             return None
@@ -294,6 +301,17 @@ def _long_token_in_cell(cell: str) -> str | None:
 def _check_layout_shell(text: str) -> tuple[str | None, str | None, str | None, list[str]]:
     problems: list[str] = []
 
+    lt = _extract_env(text, "longtable")
+    if lt:
+        col_spec, body = lt
+        if re.search(r'\\begin\{table\*?\}|\\resizebox\b|\\begin\{minipage\}',text):
+            problems.append("longtable_inside_unbreakable_box")
+        if any(t == 'X' for t,_ in _parse_columns(col_spec)):
+            problems.append("longtable_X_column_unsupported:use_bounded_p_columns")
+        if r'\endfirsthead' not in body or r'\endhead' not in body:
+            problems.append("longtable_missing_repeated_header")
+        return "longtable", col_spec, body, problems
+
     tx = _extract_env(text, "tabularx")
     if tx:
         col_spec, body = tx
@@ -442,6 +460,12 @@ def _grid_problems(col_spec: str, body: str, shell: str | None) -> list[str]:
     # (tabular*) deliberately uses l/c/r for its short-cite identity column, so
     # the genuine A2 overflow case is caught by the unbreakable-run check instead.
     if shell == "tabularx":
+        for ci, kind in enumerate(col_types):
+            if kind in ('l','c','r'):
+                width=max((_content_cm(row[ci]) for row in _all_rows(body) if ci<len(row)),default=0)
+                if width>3.0:
+                    problems.append(f"long_text_in_nonwrapping_column:col{ci+1}_is_{kind}:"
+                                    "move_qualifications_to_wrapping_column_or_note")
         for row in grid:
             hit = False
             for ci, cell in enumerate(row):
@@ -571,7 +595,9 @@ def collect_problems(text: str, expected_label: str = "",
 
     problems: list[str] = []
 
-    if "\\begin{table}" not in text or "\\end{table}" not in text:
+    if "\\begin{longtable}" in text and "\\end{longtable}" in text:
+        pass
+    elif "\\begin{table}" not in text or "\\end{table}" not in text:
         problems.append("missing_table_environment")
     elif not re.search(r"\\begin\{table\}\[t\]", text):
         problems.append("wrong_placement_specifier:expected_[t]")

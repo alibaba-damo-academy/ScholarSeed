@@ -1,4 +1,4 @@
-import { editor as monacoEditor, type IDisposable, type Range } from 'monaco-editor/editor/editor.api'
+import type { editor as monacoEditor, IDisposable, Range } from 'monaco-editor/editor/editor.api'
 
 import { findMatchNeedsTopSpace } from './occlusion'
 
@@ -19,7 +19,8 @@ interface FindControllerContribution extends IDisposable {
 
 export function bindAdaptiveFindSpace(
   editor: monacoEditor.IStandaloneCodeEditor,
-  host: HTMLElement
+  host: HTMLElement,
+  paddingOption: monacoEditor.EditorOption
 ): IDisposable {
   const controller = editor.getContribution<FindControllerContribution>(FIND_CONTROLLER_ID)
   if (!controller) return { dispose: () => undefined }
@@ -62,7 +63,7 @@ export function bindAdaptiveFindSpace(
       && findMatchNeedsTopSpace(
         editor.getTopForLineNumber(currentMatch.startLineNumber),
         widget.getBoundingClientRect().height,
-        editor.getOption(monacoEditor.EditorOption.padding).top,
+        editor.getOption(paddingOption).top,
         spaceEnabled
       )
     )

@@ -201,6 +201,7 @@
   "pdfImport": {
     "choose": "选择要导入的 PDF",
     "chooseBibliography": "选择要导入的 Bib 或 RIS 文件",
+    "drop": "松开以导入 PDF",
     "description": "正在逐个上传并解析所选 PDF。窗口会保留每个文件的处理结果。",
     "pending": "等待处理",
     "uploading": "上传中 · {{progress}}%",
@@ -534,6 +535,7 @@
     "noProjectsDescription": "请先创建资料库项目，再存入附件。",
     "copySucceeded": "存入成功",
     "operationFailed": "操作失败",
+    "openFailed": "附件打开失败，请重试。",
     "missingTitle": "附件文件已丢失",
     "missingDescription": "文献库里已经没有这份文件，打开会失败。可以移除这条附件记录，或重新上传。"
   },
@@ -793,9 +795,9 @@
     }
   },
   "join": {
-    "button": "加入文献库",
+    "button": "加入我的文献",
     "direct": "直接加入",
-    "project": "加入项目",
+    "project": "关联至项目",
     "collection": "加入我的分类",
     "newCollection": "新建分类…",
     "added": "已加入",

@@ -33,7 +33,7 @@
     "literature-review": {
       "skills": ["agentic-search"],
       "python": ["matplotlib==3.10.8", "pysbd==0.3.4"],
-      "imports": ["openai", "httpx", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd"],
+      "imports": ["openai", "httpx", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock"],
       "bundled_executables": ["xelatex", "pdflatex", "bibtex", "kpsewhich"]
     }
   }

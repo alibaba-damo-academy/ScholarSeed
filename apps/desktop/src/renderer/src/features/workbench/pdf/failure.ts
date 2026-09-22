@@ -54,6 +54,7 @@ const ERROR_KEYS = {
   pdf_ai_execution_failed: 'reading.errors.execution_failed',
   pdf_ai_preparation_failed: 'reading.errors.preparation_failed',
   pdf_ai_operation_busy: 'reading.errors.operation_busy',
+  pdf_ai_figure_stream_required: 'reading.errors.figure_stream_required',
 } as const
 
 /** HTTP details, live tasks and restored tasks retain error identity independently of language. */

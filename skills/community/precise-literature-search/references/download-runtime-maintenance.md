@@ -5,10 +5,17 @@ research runs call the adapter; they do not reproduce these algorithms.
 
 ## Provisioned configuration
 
-The adapter resolves `PAPER_DL_EXECUTABLE` or `PAPER_DL_ROOT` overrides, then
-the skill's `.venv/bin/paper-dl` (`.venv/Scripts/paper-dl.exe` on Windows), then
-`PATH`. Supply one tested runtime during installation. The runtime
-reports PDFs through `original_path`.
+The adapter resolves `PAPER_DL_EXECUTABLE` or `PAPER_DL_ROOT` overrides first.
+Under the ScholarSeed product the host pins the interpreter (`SCHOLARSEED_PYTHON`
+is set), so the adapter runs the provisioned module entry `-m paper_dl` on that
+active interpreter rather than the `paper-dl` console script: the pip-generated
+console script embeds a build-machine-absolute shebang that breaks once the
+bundled backend is relocated. A missing `paper_dl` module is an environment
+blocker, never a trigger to install packages or switch environments. Without a
+pinned interpreter (standalone use) it falls back to the skill's
+`.venv/bin/paper-dl` (`.venv/Scripts/paper-dl.exe` on Windows), then `PATH`.
+Supply one tested runtime during installation. The runtime reports PDFs through
+`original_path`.
 
 All skill copies share the user-level browser pool at `~/.paper-dl/browser-pool/`.
 Set `PAPER_DL_BROWSER_POOL_DIR` consistently to override it, outside every run.

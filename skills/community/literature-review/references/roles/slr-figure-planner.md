@@ -123,7 +123,7 @@ or other arrays; scripts compute them from the corpus. Submit only the example
 matching the confirmed figure plan, not all three as additional figures.
 Prompt, labels and caption language follow the actual task.
 
-Use the supplied workspace launcher for both commands:
+Use the supplied workspace CLI (`runtime.cli.argv` or its matching shell command) for both commands. These POSIX examples use `slr`; Windows uses the returned `slr.cmd` or Python command:
 
 ```bash
 ./<topic>/slr figures plan --request figure-plan.json

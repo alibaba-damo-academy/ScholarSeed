@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { invokeFigure, type PdfAiRequest } from './analysis.ts'
+import { invokeFigure, pdfResponseLanguage, type PdfAiRequest } from './analysis.ts'
 
 const request: PdfAiRequest = {
   literature_id: 'paper', project_id: '', revision: 'old', model_key: 'model',
   kind: 'figure_explanation', module: 'all', page: 2, text: '', rect: [0.1, 0.2, 0.3, 0.4],
-  client_action_id: 'action', client_attempt_id: 'attempt', instruction: '解释趋势'
+  client_action_id: 'action', client_attempt_id: 'attempt', instruction: '解释趋势',
+  response_language: 'zh'
 }
 
 function installFetch(fetch: typeof globalThis.fetch): () => void {
@@ -27,6 +28,13 @@ function stream(...events: unknown[]): Response {
     headers: { 'content-type': 'text/event-stream' }
   })
 }
+
+test('PDF response language follows the supported interface locale', () => {
+  assert.equal(pdfResponseLanguage('en'), 'en')
+  assert.equal(pdfResponseLanguage('en-US'), 'en')
+  assert.equal(pdfResponseLanguage('zh-CN'), 'zh')
+  assert.equal(pdfResponseLanguage(undefined), 'zh')
+})
 
 test('figure invocation streams crop and markdown before authoritative result', async () => {
   const restore = installFetch(async () => stream(

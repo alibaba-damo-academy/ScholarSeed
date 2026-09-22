@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -62,6 +63,9 @@ INTERACTIVE_SKIPPED_REASONS = {
 MODES = {"interactive", "autodev"}
 ZOTERO_MODES = {"off", "fallback", "desktop-first"}
 BUNDLED_WHEEL_NAME = "paper_fulltext_dl-0.1.3-py3-none-any.whl"
+# Env var the ScholarSeed host injects to pin the product interpreter; its
+# presence means this adapter already runs under that interpreter.
+PRODUCT_PYTHON_ENV = "SCHOLARSEED_PYTHON"
 
 # These are sign-in starting points only.  They are deliberately generic and
 # never receive an identifier, account detail, cookie, or session token.
@@ -264,6 +268,19 @@ def resolve_paper_dl() -> tuple[list[str], Path | None, str]:
         raise ValueError(
             f"paper-dl executable is missing at {source_executable} and uv is unavailable under PAPER_DL_ROOT: {root}"
         )
+
+    # Product path: paper_dl is provisioned into this host-pinned interpreter.
+    # Use the module entry — the pip-generated `paper-dl` console script carries
+    # a build-machine-absolute shebang that breaks once the bundle is relocated.
+    if os.getenv(PRODUCT_PYTHON_ENV):
+        if find_spec("paper_dl") is None:
+            raise ValueError(
+                "paper_dl is not importable by the active product interpreter; the "
+                f"bundled runtime for {bundled_wheel_path()} is missing. Report an "
+                "environment blocker; do not install dependencies or switch "
+                "environments during the run."
+            )
+        return [sys.executable, "-m", "paper_dl"], None, f"{sys.executable} -m paper_dl"
 
     local_executable = installed_venv_executable()
     if local_executable.is_file():

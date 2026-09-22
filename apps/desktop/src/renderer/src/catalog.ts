@@ -92,6 +92,18 @@ export function requestModelKey(
   )
 }
 
+/** Whether the exact model used by a workbench request accepts image input. */
+export function requestModelSupportsImageInput(
+  models: ReadonlyArray<Pick<ModelInfo, 'key' | 'disabled' | 'image_input'>>,
+  defaultModel: string,
+  activeSession: string | null,
+  threads: Record<string, Thread>
+): boolean {
+  const modelKey = requestModelKey(models, defaultModel, activeSession, threads)
+  const model = models.find((item) => item.key === modelKey)
+  return Boolean(model && !model.disabled && model.image_input === true)
+}
+
 /** Personal catalogue keys are `personal-<uuid>:<model id>`; see `connections.py`. */
 const PERSONAL_MODEL_KEY_PREFIX = 'personal-'
 const PERSONAL_MODEL_KEY_SEPARATOR = ':'

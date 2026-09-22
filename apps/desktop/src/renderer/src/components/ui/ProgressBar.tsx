@@ -14,7 +14,7 @@ const MAX_PROGRESS = 100
 const RING_SIZE = 100
 const RING_CENTER = RING_SIZE / 2
 const RING_RADIUS = 42
-const RING_STROKE_WIDTH = 1.3
+const RING_STROKE_WIDTH = 8
 
 function normalizeProgressValue(value: number): number {
   return Math.min(MAX_PROGRESS, Math.max(MIN_PROGRESS, value))
@@ -60,7 +60,7 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
           aria-valuenow={indeterminate ? undefined : normalizedValue}
         >
           <svg aria-hidden="true" viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} className={cx('size-full -rotate-90', indeterminate && 'animate-spin motion-reduce:animate-none')}>
-            <circle cx={RING_CENTER} cy={RING_CENTER} r={RING_RADIUS} fill="none" stroke="var(--vds-other-overlay-2)" strokeWidth={RING_STROKE_WIDTH} vectorEffect="non-scaling-stroke" />
+            <circle cx={RING_CENTER} cy={RING_CENTER} r={RING_RADIUS} fill="none" stroke="var(--vds-other-overlay-2)" strokeWidth={RING_STROKE_WIDTH} />
             {(indeterminate || normalizedValue > MIN_PROGRESS) && (
               <circle
                 cx={RING_CENTER}
@@ -69,7 +69,6 @@ export const ProgressBar = forwardRef<HTMLDivElement, ProgressBarProps>(
                 fill="none"
                 stroke="var(--vds-brand-bg-default)"
                 strokeWidth={RING_STROKE_WIDTH}
-                vectorEffect="non-scaling-stroke"
                 strokeLinecap="round"
                 pathLength={MAX_PROGRESS}
                 strokeDasharray={`${MAX_PROGRESS} ${MAX_PROGRESS}`}

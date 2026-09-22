@@ -130,6 +130,10 @@ GENERATION_PRESENTATION = {"SUCCESS": "generated", "PARTIAL_SUCCESS": "partial",
 GENERATION_STATUSES = frozenset(GENERATION_PRESENTATION)
 PUBLICATION_REPORT_STATUSES = GENERATION_STATUSES | {"WARNING"}
 PUBLICATION_CHECK_STATUSES = frozenset(("SUCCESS", "WARNING", "FAILED"))
+PUBLICATION_CITATION_CHECK_IDS = frozenset(
+    ("unknown_citations", "bibliography_ownership", "bibliography_definitions")
+)
+PUBLICATION_STATUS_PRIORITY = {"SUCCESS": 0, "WARNING": 1, "FAILED": 2}
 PUBLICATION_CHECK_IDS = frozenset(
     (
         "unknown_citations",
@@ -138,6 +142,9 @@ PUBLICATION_CHECK_IDS = frozenset(
         "planned_tables",
         "plan_advice",
         "compilation",
+        "bibliography_ownership",
+        "bibliography_definitions",
+        "visual_inspection_scope",
     )
 )
 PUBLICATION_STRUCTURAL_CHECK_IDS = frozenset(
@@ -603,8 +610,15 @@ def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dic
         checks_by_id[identity] = check
 
     checks = []
-    citations = checks_by_id.get("unknown_citations")
-    if citations is not None:
+    citation_checks = [
+        check
+        for identity, check in checks_by_id.items()
+        if identity in PUBLICATION_CITATION_CHECK_IDS
+    ]
+    if citation_checks:
+        citations = max(
+            citation_checks, key=lambda check: PUBLICATION_STATUS_PRIORITY[check["status"]]
+        )
         checks.append(
             {
                 "id": "cite_sync",
@@ -615,7 +629,10 @@ def _adapt_publication_postcheck(postcheck: dict, generation: dict) -> tuple[dic
     if "visual_review_required" in postcheck:
         if not postcheck.get("visual_review_required"):
             render_verdict = "NOT_APPLICABLE"
-        elif postcheck.get("render_error"):
+        elif (
+            postcheck.get("render_error")
+            or checks_by_id.get("visual_inspection_scope", {}).get("status", "SUCCESS") != "SUCCESS"
+        ):
             render_verdict = "WARN"
         elif postcheck.get("pages_to_read"):
             render_verdict = "PASS"

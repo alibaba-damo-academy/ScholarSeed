@@ -35,6 +35,7 @@ import { Save, Undo2 } from 'lucide-react'
 
 import { Alert, BadgeDot, Button, Dialog, DialogPortal, DialogContent, DialogFooter, DialogHeader, DialogTitle, IconButton, SearchBox, Tabs, TabsList, TabsTrigger, Tooltip, useToast } from '../../components/ui'
 import { writeClipboard } from '../../components/primitive/clipboard'
+import { useApp } from '../../store'
 import {
   useSelectionActionContribution,
   type SelectionReplacement
@@ -1334,6 +1335,7 @@ export function MarkdownDocument({
   viewKind: DocumentViewKind
 }): React.JSX.Element {
   const { t } = useTranslation('workbench')
+  const editorRuntimeRevision = useApp().state.editorRuntimeRevision
   const session = useDocumentWorkspace().sessions[sessionId]
   const workspace = useWorkspaceController()
   const [editorToolbarHost, setEditorToolbarHost] = useState<HTMLDivElement | null>(null)
@@ -1363,7 +1365,7 @@ export function MarkdownDocument({
       {viewKind === 'preview' || visualDisabled
         ? (
             <div className="vds-markdown-source min-h-0 min-w-0 overflow-hidden" data-testid="markdown-source-editor">
-              <MonacoDocument formatOnSave={formatOnSave} sessionId={sessionId} tabId={tabId} viewKind={viewKind} toolbarHost={editorToolbarHost} />
+              <MonacoDocument key={`${tabId}:${editorRuntimeRevision}`} formatOnSave={formatOnSave} sessionId={sessionId} tabId={tabId} viewKind={viewKind} toolbarHost={editorToolbarHost} />
             </div>
           )
         : (

@@ -76,12 +76,15 @@ export type UpdateErrorOrigin = 'check' | 'download' | 'install'
  * - `install_signature_indeterminate`：校验执行了、签名者与打包策略一致，但本机建立不起证书链
  *   信任（离线吊销、缺根证书等）。包字节已被 SHA-512 钉死，重新下载必然复现，文案引导修复
  *   本机环境后重试安装，不引导重新下载。
+ * - `install_already_running`：上一轮更新的安装器进程还活着（停在进度窗或等人点向导）。
+ *   此刻再拉起一个只会被安装器互斥量直接 Abort，重试无意义；文案说明在等什么、如何收场。
  */
 export type UpdateInstallFallback =
   | 'install_failed'
   | 'install_verify_unavailable'
   | 'install_signature_untrusted'
   | 'install_signature_indeterminate'
+  | 'install_already_running'
 
 /**
  * 主进程内部 updater → shell 的进度回调形状，不过 IPC 桥。

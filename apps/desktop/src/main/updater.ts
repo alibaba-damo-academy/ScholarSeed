@@ -3,6 +3,7 @@
 
 import { app, shell } from 'electron'
 import { spawn } from 'child_process'
+import type { ChildProcess } from 'child_process'
 import { createHash, randomUUID } from 'crypto'
 import {
   accessSync,
@@ -15,12 +16,13 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmdirSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'fs'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 
 import {
   AUTHENTICODE_REPORT_KEYS,
@@ -30,6 +32,34 @@ import {
 } from './authenticode.ts'
 import { desktopHome, LOGS_DIRNAME, resolveProductConfig } from './backend'
 import { systemCacheDir } from './cachedir.ts'
+import {
+  DECISION_CANCEL,
+  DECISION_COMMIT,
+  DECISION_FILE,
+  DECISION_KEYS,
+  HANDSHAKE_HOME_ENV,
+  HANDSHAKE_NONCE_ENV,
+  HANDSHAKE_PID_ENV,
+  HANDSHAKE_SCHEMA_VERSION,
+  INSTALL_SUBDIRNAME,
+  READY_FILE,
+  READY_POLL_INTERVAL_MS,
+  READY_TIMEOUT_MS,
+  REQUEST_FILE,
+  REQUEST_KEYS,
+  UPDATE_ID_ARGUMENT_PREFIX,
+  encodeRecord,
+  handshakeDirectory,
+  isValidUpdateId,
+  newNonce,
+  newUpdateId,
+  parseReady,
+  readyPointsToLiveProcess,
+  serializeRecord,
+  splitFiletime,
+  validateReady
+} from './handshake.ts'
+import type { HandshakeDecision, HandshakeRequest, ReadyRecord } from './handshake.ts'
 import { MACOS_HDIUTIL, mountPointsOfImage, readHdiutilInfoPlist } from './mounts.ts'
 import { planUpdatePrune, stagedInstallerName, updateArtifactKind } from './staging.ts'
 import type { UpdateArtifactEntry } from './staging.ts'
@@ -69,7 +99,13 @@ const MACOS_ARM64 = 'arm64'
 const MACOS_X86_64 = 'x86_64'
 const WINDOWS_PLATFORM = 'win32'
 const WINDOWS_POWERSHELL = 'powershell.exe'
-const WINDOWS_UPDATE_ARGUMENTS = ['--updated', '/S', '--force-run']
+const WINDOWS_WHOAMI = 'whoami.exe'
+// 新协议不传 /S 与 --force-run：/S 会连进度页一起抑制，--force-run 会让 installSection 的
+// ${isForceRun}&&${Silent} 分支成为第二个拉起者。「更新仅进度窗」靠 installer.nsh 的
+// customInstallMode 钩子实现（协议模式跳掉 assisted 必弹的安装模式选择页），而不是靠 /S——
+// 2026-09-22 真机事故：只不传 /S 而不跳页时，自动更新停在该页等人工点击，安装始终没发生。
+// 旧 0.2.0 客户端仍会带 /S --force-run 调新安装器，兼容路径在 installer.nsh（legacy 模式）。
+const WINDOWS_UPDATE_ARGUMENT = '--updated'
 const WINDOWS_INSTALLER_ENV = 'SCHOLARSEED_UPDATE_INSTALLER'
 // 校验脚本把 JSON 报告写进这个 env 指定的文件（而不是 stdout）：stdout 按控制台代码页编码，
 // 承载不了证书 DN 里的中文属地属性；文件编码由 `Set-Content -Encoding UTF8` 显式决定。
@@ -107,6 +143,10 @@ const INSTALL_CONFIRM_WAIT_SECONDS = 0.5
 const DMG_ATTACH_ATTEMPTS = 2
 const DMG_ATTACH_RETRY_DELAY_MS = 1500
 const UPDATE_TOKEN_ARGUMENT = '--scholarseed-update-token='
+// 更新后拉起的新实例用它在启动期把 app-started / health-confirmed 绑回本轮 updateId。
+const UPDATE_ID_ARGUMENT = '--scholarseed-update-id='
+// 结构化事件行的 schema 版本（提案 §5.1 字段契约）。
+const UPDATE_EVENT_SCHEMA_VERSION = 1
 const READY_STATE_FILE = 'ready.json'
 const ANNOUNCED_STATE_FILE = 'announced.json'
 const HTTP_OK = 200
@@ -754,33 +794,373 @@ function windowsInstallFallback(error: unknown): UpdateInstallFallback {
   return 'install_failed'
 }
 
+/**
+ * 结构化更新事件行（提案 108 §5.1 字段契约）：JSON 单行，同时进 log sink 与 update.log。
+ * 跨进程（NSIS 侧 install.log）用 timestampUtc + updateId 关联；进程内耗时用 elapsedMs。
+ */
+interface UpdateEventFields {
+  phase: string
+  event: string
+  result?: string
+  errorCode?: string
+  updateId?: string
+  fromVersion?: string
+  toVersion?: string
+  elapsedMs?: number
+}
+
+function logUpdateEvent(log: LogSink, fields: UpdateEventFields): void {
+  const line = `${JSON.stringify({
+    schemaVersion: UPDATE_EVENT_SCHEMA_VERSION,
+    timestampUtc: new Date().toISOString(),
+    processId: process.pid,
+    ...fields
+  })}\n`
+  log(line)
+  persistUpdateLog(line)
+}
+
+/**
+ * 当前用户 SID（whoami 是原生 exe，不经 PowerShell、不受受限语言模式影响，同 chcp.com 的
+ * 选择理由）。取不到返回 null：调用方 fail-closed 走手动流程，不猜一个身份继续握手。
+ */
+async function windowsUserSid(): Promise<string | null> {
+  try {
+    const result = await runCommandAsync(WINDOWS_WHOAMI, ['/user', '/nh'])
+    if (result.status !== 0) {
+      persistUpdateLog(`[update] whoami failed: exit=${result.status} stderr=${result.stderr}\n`)
+      return null
+    }
+    const match = result.stdout.match(/S-\d+(?:-\d+)+/)
+    if (!match) persistUpdateLog(`[update] whoami output has no SID: stdout=${result.stdout}\n`)
+    return match ? match[0] : null
+  } catch (error) {
+    persistUpdateLog(`[update] whoami could not run: ${String(error)}\n`)
+    return null
+  }
+}
+
+/**
+ * 指定进程的创建时刻（Windows FILETIME，uint64 十进制串）。用 PowerShell 而非 wmic：
+ * wmic 在 Win11 24H2+ 已移除。脚本只用受限语言模式允许的构造（cmdlet + 属性 get +
+ * DateTime 这一 core 类型的方法调用），同 verifyWindowsInstaller 的纪律（bug 87042987）。
+ */
+async function windowsProcessCreationFiletime(pid: number): Promise<string | null> {
+  const script =
+    `$target = Get-Process -Id $env:${HANDSHAKE_PID_ENV} -ErrorAction Stop\n` +
+    'Write-Output ([string]$target.StartTime.ToFileTimeUtc())'
+  try {
+    const result = await runCommandAsync(
+      WINDOWS_POWERSHELL,
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { env: { ...process.env, [HANDSHAKE_PID_ENV]: String(pid) } }
+    )
+    const text = result.stdout.trim()
+    if (result.status !== 0 || !/^\d{1,20}$/.test(text)) {
+      persistUpdateLog(
+        `[update] process creation filetime unavailable: exit=${result.status} stdout=${text} stderr=${result.stderr}\n`
+      )
+      return null
+    }
+    return text
+  } catch (error) {
+    persistUpdateLog(`[update] process creation filetime probe failed: ${String(error)}\n`)
+    return null
+  }
+}
+
+/**
+ * NSIS 侧 install.log 的字节数：安装器侧阶段证据的唯一观测点。
+ * 2026-09-22 真机该文件恒 0 字节（握手各阶段明确跑过却一行没落），而安装器写失败是静默的——
+ * 不在 Node 侧落一行字节数，下一次「静默」在现场日志里仍然无从归因。读不到记 -1。
+ */
+function installLogBytes(): number {
+  try {
+    return statSync(join(desktopHome(), LOGS_DIRNAME, 'install.log')).size
+  } catch {
+    return -1
+  }
+}
+
+type ReadyOutcome = 'ready' | 'timeout' | 'installer-exited' | 'invalid-ready'
+
+/**
+ * 上一轮协议安装器是否仍活着：扫握手目录里的 ready.ini，用 installerPid + 创建时刻双重比对。
+ *
+ * 没有这道闸时，重拉的客户端会对还挂着的安装器再 spawn 一个：模板的
+ * ALLOW_ONLY_ONE_INSTALLER_INSTANCE 互斥量命中后直接 Abort（退出码 2），新实例把失败卡甩给
+ * 用户，而真正挂着的那个安装器窗口还在等点击（2026-09-22 真机事故形态）。创建时刻一致才算
+ * 同一进程，PID 被复用即视为已退（见 handshake.ts readyPointsToLiveProcess）。
+ */
+async function findRunningProtocolInstaller(): Promise<ReadyRecord | null> {
+  let entries: string[]
+  try {
+    entries = readdirSync(join(updateStateDirectory(), INSTALL_SUBDIRNAME))
+  } catch {
+    return null // 握手目录还没建过：不可能有挂着的安装器。
+  }
+  for (const entry of entries) {
+    if (!isValidUpdateId(entry)) continue
+    let record: ReadyRecord | null = null
+    try {
+      record = parseReady(readFileSync(join(updateStateDirectory(), INSTALL_SUBDIRNAME, entry, READY_FILE)))
+    } catch {
+      continue // 没有 ready.ini 或写到一半：本轮握手没成立过，不构成并发安装器。
+    }
+    if (record === null) continue
+    const creation = await windowsProcessCreationFiletime(Number(record.installerPid))
+    if (creation === null) continue
+    const { low, high } = splitFiletime(creation)
+    if (readyPointsToLiveProcess(record, Number(record.installerPid), low, high)) return record
+  }
+  return null
+}
+
+/**
+ * 轮询 ready.ini 直到有效 ready、超时或安装器先行退出。
+ *
+ * 三种非 ready 结局语义不同：文件存在且解析成功但身份不符（updateId/nonce 对不上）是
+ * **协议失败**，立即返回，不等超时——目录里有别的写者；解析不成立（尚未写完/还没创建）
+ * 继续轮询；安装器退出（exit/error）说明握手对端没了，立即返回。
+ */
+function waitForInstallerReady(
+  directory: string,
+  request: HandshakeRequest,
+  child: ChildProcess
+): Promise<ReadyOutcome> {
+  return new Promise((resolve) => {
+    let settled = false
+    const deadline = Date.now() + READY_TIMEOUT_MS
+    function finish(outcome: ReadyOutcome): void {
+      if (settled) return
+      settled = true
+      clearInterval(timer)
+      child.off('exit', onExit)
+      child.off('error', onError)
+      resolve(outcome)
+    }
+    function onExit(code: number | null): void {
+      persistUpdateLog(`[update] installer exited during handshake with code ${code}\n`)
+      finish('installer-exited')
+    }
+    function onError(error: Error): void {
+      persistUpdateLog(`[update] installer spawn error during handshake: ${String(error)}\n`)
+      finish('installer-exited')
+    }
+    const timer = setInterval(() => {
+      if (settled) return
+      if (Date.now() > deadline) {
+        finish('timeout')
+        return
+      }
+      let record: ReadyRecord | null = null
+      try {
+        record = parseReady(readFileSync(join(directory, READY_FILE)))
+      } catch {
+        return // 还没写出：下一拍再看，超时兜底。
+      }
+      if (record === null) return // 文件存在但不可解析（写到一半或格式坏）：轮询到超时。
+      if (!validateReady(record, request)) {
+        persistUpdateLog(
+          `[update] ready record identity mismatch: updateId=${record.updateId} expected=${request.updateId}\n`
+        )
+        finish('invalid-ready')
+        return
+      }
+      finish('ready')
+    }, READY_POLL_INTERVAL_MS)
+    child.once('exit', onExit)
+    child.once('error', onError)
+  })
+}
+
+/**
+ * 决策单写者：commit/cancel 一经发布不得改变（提案 §5.2 第 3 条）。
+ * 临时文件 + 同目录 rename 保证安装器读到的要么是缺失、要么是完整记录。
+ * 发布失败只落日志——cancel 发布失败时安装器会等满自己的 60s 决策超时后退出，
+ * 语义仍是安全侧。
+ */
+function publishHandshakeDecision(
+  directory: string,
+  request: HandshakeRequest,
+  decision: HandshakeDecision,
+  log: LogSink
+): void {
+  try {
+    const temporary = join(directory, `decision-${randomUUID()}.tmp`)
+    writeFileSync(
+      temporary,
+      encodeRecord(
+        serializeRecord(DECISION_KEYS, {
+          schemaVersion: HANDSHAKE_SCHEMA_VERSION,
+          updateId: request.updateId,
+          nonce: request.nonce,
+          decision
+        })
+      )
+    )
+    renameSync(temporary, join(directory, DECISION_FILE))
+    logUpdateEvent(log, { phase: 'handoff', event: 'decision', result: decision, updateId: request.updateId })
+  } catch (error) {
+    persistUpdateLog(`[update] decision publish failed (${decision}): ${String(error)}\n`)
+  }
+}
+
 export async function installWindows(
   installer: string,
   meta: LatestVersionMeta,
   log: LogSink
 ): Promise<StartUpdateResult> {
+  const fromVersion = app.getVersion()
+  const toVersion = `${meta.version}-${meta.build_number}`
+  const updateId = newUpdateId()
+  let child: ChildProcess | null = null
+  let directory: string | null = null
+  let request: HandshakeRequest | null = null
   try {
     if (!app.isPackaged) {
       throw new Error('automatic Windows update requires an installed packaged application')
     }
+    const running = await findRunningProtocolInstaller()
+    if (running !== null) {
+      // 上一轮安装器还活着（停在进度窗或等人点向导）：再 spawn 只会被模板互斥量 Abort 成
+      // 一次「安装失败」。不退出 app、不动暂存包，把结局标成独立分类让界面说清在等什么。
+      logUpdateEvent(log, {
+        phase: 'installer-start',
+        event: 'concurrent-installer',
+        result: 'blocked',
+        errorCode: 'installer-alive',
+        updateId: running.updateId,
+        fromVersion,
+        toVersion
+      })
+      return { ok: false, errorFallback: 'install_already_running' }
+    }
     const config = resolveDesktopConfig(log)
     await verifyWindowsInstaller(installer, config.expectedWindowsPublisher, log)
-    const child = spawn(installer, WINDOWS_UPDATE_ARGUMENTS, {
+
+    // 握手上下文（SID + 进程创建时刻）任一取不到就不做自动交接：不退出 app，
+    // 打开完整安装包走手动流程（提案 §5.1 首轮自动握手只支持同用户、非提权、上下文完整）。
+    const sid = await windowsUserSid()
+    const filetime = await windowsProcessCreationFiletime(process.pid)
+    if (sid === null || filetime === null) {
+      logUpdateEvent(log, {
+        phase: 'installer-start',
+        event: 'handoff-context-unavailable',
+        result: 'manual',
+        errorCode: sid === null ? 'caller-sid-unavailable' : 'caller-creation-time-unavailable',
+        updateId,
+        fromVersion,
+        toVersion
+      })
+      await shell.openPath(installer)
+      return { ok: true, mode: 'manual' }
+    }
+
+    const { low, high } = splitFiletime(filetime)
+    request = {
+      schemaVersion: HANDSHAKE_SCHEMA_VERSION,
+      updateId,
+      nonce: newNonce(),
+      callerSid: sid,
+      callerPid: String(process.pid),
+      callerCreationLow: low,
+      callerCreationHigh: high,
+      fromVersion,
+      toVersion,
+      installDir: resolve(dirname(process.execPath))
+    }
+    directory = handshakeDirectory(join(updateStateDirectory(), 'install'), updateId)
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(directory, REQUEST_FILE),
+      encodeRecord(serializeRecord(REQUEST_KEYS, request))
+    )
+
+    const spawnStartedAt = Date.now()
+    child = spawn(installer, [WINDOWS_UPDATE_ARGUMENT, `${UPDATE_ID_ARGUMENT_PREFIX}${updateId}`], {
       detached: true,
       stdio: 'ignore',
-      windowsHide: true
+      windowsHide: true,
+      env: {
+        ...process.env,
+        [HANDSHAKE_HOME_ENV]: desktopHome(),
+        [HANDSHAKE_NONCE_ENV]: request.nonce
+      }
     })
-    child.unref()
     if (!child.pid) throw new Error('Windows installer did not start')
-    const started = `[update] started verified Windows installer version=${meta.version}\n`
-    log(started)
-    persistUpdateLog(started)
+    logUpdateEvent(log, { phase: 'installer-start', event: 'spawn', result: 'ok', updateId, fromVersion, toVersion })
+
+    const outcome = await waitForInstallerReady(directory, request, child)
+    const elapsedMs = Date.now() - spawnStartedAt
+    persistUpdateLog(`[update] install.log bytes=${installLogBytes()} after handshake outcome=${outcome}\n`)
+    if (outcome !== 'ready') {
+      // 超时/协议失败：发布 cancel（安装器收到后在卸载前退出）、终止安装器进程——此刻它
+      // 还停在 customInit 的等待循环里，没有发生任何安装动作，kill 是安全的。
+      publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
+      child.kill()
+      logUpdateEvent(log, {
+        phase: 'installer-ready',
+        event: 'wait',
+        result: outcome,
+        errorCode: outcome,
+        updateId,
+        fromVersion,
+        toVersion,
+        elapsedMs
+      })
+      return { ok: false, errorFallback: 'install_failed' }
+    }
+    publishHandshakeDecision(directory, request, DECISION_COMMIT, log)
+    logUpdateEvent(log, {
+      phase: 'installer-ready',
+      event: 'wait',
+      result: 'ok',
+      updateId,
+      fromVersion,
+      toVersion,
+      elapsedMs
+    })
+    // commit 已发布才 unref：安装器接下来等本进程退出（≤60s），随后卸载/安装/拉起。
+    child.unref()
+    child = null
     return { ok: true, mode: 'auto' }
   } catch (error) {
     // 原始诊断（含可能的代码页乱码 stderr）只落 update.log；回报结构化分类，界面给本地化文案。
+    if (child && directory && request) {
+      publishHandshakeDecision(directory, request, DECISION_CANCEL, log)
+      child.kill()
+    }
     persistUpdateLog(`[update] Windows install failed: ${String(error)}\n`)
     return { ok: false, errorFallback: windowsInstallFallback(error) }
   }
+}
+
+/** 新实例启动参数里的本轮 updateId；形状不合法一律视为没有（防路径/日志注入）。 */
+export function pendingUpdateId(argv: string[] = process.argv): string | null {
+  const value = argv.find((argument) => argument.startsWith(UPDATE_ID_ARGUMENT))
+  if (!value) return null
+  const candidate = value.slice(UPDATE_ID_ARGUMENT.length)
+  return isValidUpdateId(candidate) ? candidate : null
+}
+
+/**
+ * 更新后新实例的启动闭环事件（提案 §5.2）：app-started 在窗口就绪后、health-confirmed
+ * 在 bootstrap 已等到 /api/healthz 之后（index.ts 调用点保证该顺序）。Shell 拉起成功
+ * 不等于健康成功，两条事件分开落，install.log 的 launch 结果只覆盖前者。
+ */
+export function logUpdateLifecycleEvent(
+  event: 'app-started' | 'health-confirmed',
+  updateId: string,
+  log: LogSink
+): void {
+  logUpdateEvent(log, {
+    phase: event === 'app-started' ? 'launch' : 'health-confirmed',
+    event,
+    result: 'ok',
+    updateId,
+    fromVersion: app.getVersion()
+  })
 }
 
 function currentAppBundlePath(): string | null {

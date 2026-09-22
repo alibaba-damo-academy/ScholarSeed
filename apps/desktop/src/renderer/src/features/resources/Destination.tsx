@@ -11,6 +11,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  EllipsisText,
   IconButton,
   Input,
   useToast
@@ -110,20 +111,22 @@ export function WebImportDestination({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-[var(--vds-space-2)]">
+        <div className="grid min-w-0 grid-cols-1 gap-[var(--vds-space-2)]">
           <span className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
             {t('destination.target')}
           </span>
-          <div className="rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-2)]">
+          <div className="min-w-0 rounded-[var(--vds-radius-4)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-raised)] p-[var(--vds-space-2)]">
             <Button
-              className="w-full !justify-start"
+              className="min-w-0 w-full !justify-start"
               data-testid="web-import-folder-root"
               icon={<Icon name="inbox" size={14} />}
               variant={selectedParent === '' ? 'secondary' : 'ghost'}
               onClick={() => onSelect('', '')}
             >
-              <span className="truncate">{t('destination.projectRoot', { name: projectName })}</span>
-              {selectedParent === '' ? <span className="ml-auto" aria-label={t('destination.selected')}>✓</span> : null}
+              <EllipsisText wrapperClassName="flex-1" className="text-left" tooltipPortalled>
+                {t('destination.projectRoot', { name: projectName })}
+              </EllipsisText>
+              {selectedParent === '' ? <span className="ml-auto shrink-0" aria-label={t('destination.selected')}>✓</span> : null}
             </Button>
             <DestinationTree
               nodes={tree}
@@ -139,12 +142,13 @@ export function WebImportDestination({
               disabled={busy}
             />
           </div>
-          <span
-            className="truncate text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]"
-            title={selectedParent || t('destination.root')}
+          <EllipsisText
+            wrapperClassName="w-full"
+            className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]"
+            tooltipPortalled
           >
             {selectedParent ? t('destination.destination', { path: selectedParent }) : t('destination.destinationRoot')}
-          </span>
+          </EllipsisText>
         </div>
 
         {newFolderOpen ? (

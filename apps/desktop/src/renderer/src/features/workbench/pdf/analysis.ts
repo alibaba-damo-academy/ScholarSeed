@@ -6,6 +6,10 @@ export type PdfAction = 'document_translation' | 'interpretation' | 'selection_t
 export interface PdfSelection { text: string; page: number; quads: number[][] }
 export interface PdfAiContent { text: string; uncertain?: boolean; evidence?: { page: number; quote: string }[] }
 export type TranslationDirection = 'auto' | 'zh' | 'en'
+export type PdfResponseLanguage = 'zh' | 'en'
+export function pdfResponseLanguage(language: string | undefined): PdfResponseLanguage {
+  return language?.toLowerCase().startsWith('en') ? 'en' : 'zh'
+}
 export interface TranslationSentence { source_text: string; translated_text: string; located: boolean; paragraph_start?: boolean; heading?: boolean }
 export interface ReadingSummary extends PdfAiContent {
   paper_type: string; contribution: PdfAiContent; claims: PdfAiContent[]; method: PdfAiContent; limitations: PdfAiContent
@@ -16,6 +20,7 @@ export interface PdfAiResult extends PdfAiContent {
   modules?: Record<string, ReadingSummary>
   source_language?: string; target_language?: string; blocks?: TranslationSentence[]
   pages?: { page: number; blocks: TranslationSentence[] }[]
+  response_language?: PdfResponseLanguage
 }
 export interface PdfAiRequest {
   literature_id: string; path?: string; asset_id?: string; project_id: string; revision: string; model_key: string
@@ -23,6 +28,7 @@ export interface PdfAiRequest {
   client_action_id: string; client_attempt_id: string
   instruction?: string
   target_language?: TranslationDirection
+  response_language: PdfResponseLanguage
 }
 export interface PdfAiProgress { phase: 'segment' | 'synthesis'; current: number; total: number; cached: number }
 export interface PdfAiTask { task_id: string; status: string; error?: string; error_code?: string; error_detail?: string; result?: PdfAiResult; crop?: string; progress?: PdfAiProgress }

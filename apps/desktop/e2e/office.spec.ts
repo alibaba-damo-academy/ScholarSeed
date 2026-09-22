@@ -138,7 +138,11 @@ function sha256(path: string): string {
 test('Office prewarms one runtime and replaces Office-family documents in place', async ({}, testInfo) => {
   test.setTimeout(OFFICE_READY_TIMEOUT_MS * 2)
   const runtime = createRuntime(testInfo)
-  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', theme: 'light' }))
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    theme: 'light',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   const diagnostics: OfficeDiagnostic[] = []
   try {
@@ -211,13 +215,13 @@ test('Office prewarms one runtime and replaces Office-family documents in place'
     await page.getByTestId('activity-account').click()
     await page.getByTestId('account-menu-language').click()
     await page.getByRole('button', { name: 'English', exact: true }).click()
-    await expect(docxFrame).toHaveAttribute('data-runtime-language', 'en')
+    await expect(docxFrame).toHaveAttribute('data-runtime-language', 'zh')
     await expect(docxFrame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
-    await expect.poll(() => diagnostics.filter(
+    expect(diagnostics.filter(
       (item) => item.hostId === docxHost && item.stage === 'document-ready'
-    ).length).toBeGreaterThan(readyBeforeLanguageChange)
+    ).length).toBe(readyBeforeLanguageChange)
     await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
-    await page.screenshot({ path: join(runtime.artifacts, 'office-language-auto-restart.png') })
+    await page.screenshot({ path: join(runtime.artifacts, 'office-language-runtime-preserved.png') })
 
     const readyBeforeChineseContent = diagnostics.filter(
       (item) => item.hostId === docxHost && item.stage === 'document-ready'
@@ -226,9 +230,9 @@ test('Office prewarms one runtime and replaces Office-family documents in place'
     await page.getByRole('button', { name: '简体中文', exact: true }).click()
     await expect(docxFrame).toHaveAttribute('data-runtime-language', 'zh')
     await expect(docxFrame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
-    await expect.poll(() => diagnostics.filter(
+    expect(diagnostics.filter(
       (item) => item.hostId === docxHost && item.stage === 'document-ready'
-    ).length).toBeGreaterThan(readyBeforeChineseContent)
+    ).length).toBe(readyBeforeChineseContent)
     await expect(page.getByTestId('document-save')).toHaveCount(0)
     await page.waitForTimeout(OFFICE_PAINT_SETTLE_MS)
     await page.screenshot({ path: join(runtime.artifacts, 'office-docx-readonly-content.png') })

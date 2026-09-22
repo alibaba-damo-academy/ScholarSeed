@@ -112,7 +112,7 @@ def compile_plan(outline,available):
 
 # Only execution bookkeeping is removed. Unknown business fields are retained.
 BOOKKEEPING={'processing_log','request_log','cache_path','source_path','source_maps','source_map',
-             'processing_status','source_text_sha256','material_sha256'}
+             'processing_status','source_text_sha256','material_sha256','paperId','paper_id'}
 
 def business_card(record):
     if isinstance(record,dict):return {k:business_card(v) for k,v in record.items() if k not in BOOKKEEPING}
@@ -133,6 +133,6 @@ def cards_plain(paper_ids,cards,keys):
         elif isinstance(value,str):lines.extend(prefix+line for line in value.split('\n'))
         else:lines.append(prefix+json.dumps(value,ensure_ascii=False))
     for pid in paper_ids:
-        lines.append(f'## Paper {pid} | cite_key: {keys[pid]}')
+        lines.append(f'## Paper {keys[pid]}')
         append(business_card(cards[pid]));lines.append('')
     return '\n'.join(lines)

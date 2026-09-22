@@ -207,6 +207,7 @@
   "pdfImport": {
     "choose": "Select PDFs to import",
     "chooseBibliography": "Select Bib or RIS files to import",
+    "drop": "Drop to import PDFs",
     "description": "The selected PDFs are uploaded and parsed one at a time. This window keeps the result for each file.",
     "pending": "Waiting",
     "uploading": "Uploading · {{progress}}%",
@@ -551,6 +552,7 @@
     "noProjectsDescription": "Create a library project before saving this attachment.",
     "copySucceeded": "Saved to library",
     "operationFailed": "Operation failed",
+    "openFailed": "Could not open the attachment. Please try again.",
     "missingTitle": "Attachment file missing",
     "missingDescription": "This file is no longer in the library store, so opening it will fail. Remove the attachment record or upload it again."
   },
@@ -813,9 +815,9 @@
     }
   },
   "join": {
-    "button": "Add to library",
+    "button": "Add to my literature",
     "direct": "Add directly",
-    "project": "Add to project",
+    "project": "Link to project",
     "collection": "Add to my collections",
     "newCollection": "New collection…",
     "added": "Added",

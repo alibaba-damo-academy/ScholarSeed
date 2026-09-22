@@ -8,6 +8,7 @@
       "language": "CHINESE",
       "publication": {
         "format": "latex_pdf",
+        "template": "ctexart",
         "citation_style": "numeric"
       }
     },
@@ -99,8 +100,9 @@
   "writing.approve": [
     {
       "packet_id": "<value returned by review-packet>",
-      "user_response": "大纲确认，使用数字引用。",
+      "user_response": "确认，使用 ctexart 模板和数字引用。",
       "publication": {
+        "template": "ctexart",
         "citation_style": "numeric"
       }
     }

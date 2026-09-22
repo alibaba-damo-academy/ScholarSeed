@@ -16,6 +16,10 @@ Check their claims individually against what the body actually establishes and
 revise unsupported or overstated claims; rewrite the abstract's findings to state
 only what the body establishes, replacing its entire text when needed through
 one exact-match delta edit.
+The publisher owns the reference list. Resolve bibliography_warnings by removing
+chapter-authored duplicate headings/lists, retaining the single publisher
+bibliography entry point and existing inline citations. Repair prose references
+to any removed bibliography chapter. Do not rewrite bibliography metadata.
 Preserve resolved_section_languages, planned titles and section labels. Top-level
 chapters use \section and direct children \subsection; when removing a repeated
 parent heading, correct its descendants rather than leaving a skipped level.

@@ -68,20 +68,30 @@ from service.paths import SERVICE_BRIDGE_DIR, SERVICE_CASES_DIR  # noqa: E402
 from service.platform.bridge import INTERNAL_BASE_URL_ENV  # noqa: E402
 from service.platform.executables import (  # noqa: E402
     SKILL_PYTHON_COMMAND,
+    SKILL_PYTHON_PROBE_ARGUMENTS,
+    command_directories,
+    probe_command,
     resolve_command,
-    scripts_directory,
 )
 
 CONFIG_SEED_ENV = "SCHOLARSEED_CONFIG_SEED_PATH"
 
 
 def _ensure_skill_python_path() -> None:
-    """Expose the active environment's Skill Python entry point to sessions."""
+    """Prefer a working product Skill Python launcher over installed trampolines."""
 
-    launcher = resolve_command(SKILL_PYTHON_COMMAND)
+    launcher = next(
+        (
+            candidate
+            for directory in command_directories()
+            if (candidate := resolve_command(SKILL_PYTHON_COMMAND, directory)) is not None
+            and probe_command(candidate, SKILL_PYTHON_PROBE_ARGUMENTS)
+        ),
+        None,
+    )
     if launcher is None:
         return
-    directory = str(scripts_directory())
+    directory = str(launcher.parent)
     inherited = os.environ.get("PATH", "")
     normalized_directory = os.path.normcase(os.path.abspath(directory))
     entries = [

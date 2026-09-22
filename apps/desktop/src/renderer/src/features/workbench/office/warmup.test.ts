@@ -71,10 +71,20 @@ test('Office warmup keeps failure recovery visible', () => {
   const failed: OfficeWarmupStatus = { ...INITIAL_OFFICE_WARMUP_STATUS, stage: 'error' }
   assert.equal(shouldShowOfficeWarmup(failed, false), true)
   assert.equal(shouldShowOfficeWarmupProgress(failed, false), false)
-  assert.match(warmupSource, /className="pointer-events-auto /)
+  assert.match(warmupSource, /className=\{`pointer-events-auto /)
+  assert.match(
+    warmupSource,
+    /status\.stage === 'error'\s*\? 'z-\[var\(--vds-z-toast\)\]'\s*: 'z-\[var\(--vds-z-background-task\)\]'/
+  )
+  assert.match(warmupSource, /status\.stage === 'error'\s*\? createPortal\(content, document\.body\)\s*: content/)
   assert.match(warmupSource, /data-testid="office-font-warmup"/)
   assert.match(warmupSource, /officeWarmup\.error/)
   assert.match(warmupSource, /officeWarmup\.retry/)
+  assert.match(warmupSource, /const \[dismissedError, setDismissedError\] = useState\(false\)/)
+  assert.match(warmupSource, /if \(status\.stage !== 'error' && dismissedError\) setDismissedError\(false\)/)
+  assert.match(warmupSource, /status\.stage === 'error' && dismissedError/)
+  assert.match(warmupSource, /<CardHeader className="pb-\[var\(--vds-space-2\)\]">\s*<div className="flex items-center justify-between gap-\[var\(--vds-space-2\)\]">/)
+  assert.match(warmupSource, /<IconButton[\s\S]*label=\{t\('officeDocument\.close'\)\}[\s\S]*onClick=\{\(\) => setDismissedError\(true\)\}/)
 })
 
 test('retry rebuilds the WASM frame and enables progress', () => {

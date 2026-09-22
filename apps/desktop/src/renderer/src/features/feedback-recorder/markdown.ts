@@ -44,8 +44,7 @@ export function reviewTargetLabel(step: RecordingSession['steps'][number]): stri
 export function composeReviewMarkdown(
   session: RecordingSession,
   summary: SummaryFields,
-  labels: ReviewMarkdownLabels,
-  screenshotSources: Readonly<Record<string, string>> = {}
+  labels: ReviewMarkdownLabels
 ): string {
   const lines = [`# ${labels.title}`, '', `## ${labels.summary}`, '', summary.final.trim(), '', `## ${labels.steps}`, '']
   session.steps.forEach((step, index) => {
@@ -67,10 +66,6 @@ export function composeReviewMarkdown(
       screenshots.forEach((screenshot, screenshotIndex) => {
         const suffix = screenshot.note ? `：${screenshot.note}` : ''
         lines.push(`  - ${labels.screenshotNote} ${screenshotIndex + STEP_NUMBER_OFFSET}${suffix}`)
-        const source = screenshotSources[screenshot.screenshotId]
-        if (source) {
-          lines.push(`  ![${labels.screenshotNote} ${screenshotIndex + STEP_NUMBER_OFFSET}](${source})`)
-        }
       })
     }
     lines.push('')

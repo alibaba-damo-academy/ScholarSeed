@@ -51,7 +51,7 @@ import {
   type DocumentDropPreview,
   useDocumentDrag
 } from './Dragging'
-import { reclaimDocumentResources } from './reclaim'
+import { shouldMountDocumentView } from './residency'
 import { DocumentPanelActions, DocumentPanelHost } from './Inspector'
 import { DocumentTabMenu } from './Menu'
 import { documentPanelContext } from './panel'
@@ -67,6 +67,7 @@ import { VersionHistory } from './VersionHistory'
 import {
   useDocumentWorkspace,
   useWorkspaceController,
+  documentWorkspaces,
   type DocumentSession,
   type DocumentTab
 } from './workspace'
@@ -465,7 +466,10 @@ function LeafView({
         ? leaf.tabIds.map((tabId) => {
             const candidate = state.tabs[tabId]
             if (!candidate) return null
-            const keepMounted = candidate.viewKind === 'edit'
+            const session = state.sessions[candidate.sessionId]
+            const keepMounted = session
+              ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind, session.residency)
+              : false
             if (!keepMounted && candidate.id !== tab.id) return null
             return (
               <div
@@ -577,7 +581,7 @@ export function DocumentDock(): React.JSX.Element {
     })
   }, [project, workspace])
   useEffect(() => {
-    reclaimDocumentResources(new Set(Object.keys(state.sessions)), new Set(Object.keys(state.tabs)))
+    documentWorkspaces.reclaimResources()
   }, [state.sessions, state.tabs])
 
   useEffect(() => {

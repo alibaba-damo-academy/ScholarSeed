@@ -42,7 +42,7 @@ def _git(home: Path, *args: str) -> str:
 # behaviour and would make every fingerprint unique for no information.
 _FINGERPRINT_GLOBS = ("SKILL.md", "references/roles/*.md", "references/*.md",
                       "schema/**/*.json", "config/**/*.json",
-                      "scripts/**/*.py", "scripts/**/*.sh", "scripts/slr",
+                      "scripts/**/*.py", "scripts/**/*.sh", "scripts/**/*.cmd", "scripts/slr", "scripts/setup",
                       "lib/**/*.py")
 
 

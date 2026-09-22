@@ -7,4 +7,5 @@ if ! command -v scholarseed-skill-python >/dev/null 2>&1; then
   echo "[slr] launch this skill from ScholarSeed Desktop or scholarseed-serve" >&2
   exit 1
 fi
-exec scholarseed-skill-python "$SLR_LAUNCHER_DIR/slr.py" "$@"
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+exec scholarseed-skill-python "$SLR_LAUNCHER_DIR/bootstrap.py" "$@"

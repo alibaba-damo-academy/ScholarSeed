@@ -7,24 +7,11 @@ from collections import Counter
 import re
 
 from figure_caption import has_numbering_prefix
+from markup import visible_source
 
 _ENV = re.compile(r'\\begin\{(table\*?|longtable|tabularx|tabular\*?|figure\*?)\}.*?\\end\{\1\}', re.S)
 _LABEL = re.compile(r'\\label\{((?:tab|fig)[:-][^}]+)\}')
 _ANCHOR = re.compile(r'<a\s+(?:id|name)=["\']((?:tab|fig)[:-][^"\']+)["\']\s*>\s*</a>|\{#((?:tab|fig)[:-][^}]+)\}', re.I)
-
-
-def _blank(match):
-    return re.sub(r'[^\n]', ' ', match[0])
-
-
-def visible_source(source, markdown=False):
-    if markdown:
-        source = re.sub(r'(?ms)^\s*(`{3,}|~{3,})[^\n]*\n.*?^\s*\1\s*$', _blank, source)
-        source = re.sub(r'(`+)[^`\n]*?\1', _blank, source)
-        return re.sub(r'<!--.*?-->', _blank, source, flags=re.S)
-    source = re.sub(r'\\begin\{(verbatim\*?|lstlisting|minted)\}.*?\\end\{\1\}', _blank, source, flags=re.S)
-    source = re.sub(r'\\verb\*?([^\w\s]).*?\1', _blank, source)
-    return re.sub(r'(?<!\\)%[^\n]*', _blank, source)
 
 
 def _anchor_label(match):
@@ -110,7 +97,7 @@ def inspect_native_assets(sources, assets, output_format='latex_pdf'):
                     headings = list(re.finditer(r'\\label\{sec:s(\d+(?:_\d+)*)\}', source[:start]))
                     owner = headings[-1][1].replace('_','.') if headings else None
                     expected = planned[label].get('section_id')
-                    if owner and expected and owner != expected:
+                    if owner and expected and owner != expected and not owner.startswith(expected+'.'):
                         issue('asset_wrong_owner', target, source, start, label, expected_owner=expected, actual_owner=owner)
             if kind == 'figure' and not re.search(r'\\(?:includegraphics|input|subfile)\b|\\begin\{(?:tikzpicture|forest)\}', block):
                 issue('figure_wrapper_without_content', target, source, start, labels[0] if len(labels)==1 else None)

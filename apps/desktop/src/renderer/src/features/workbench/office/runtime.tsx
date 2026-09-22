@@ -206,7 +206,8 @@ function OfficeHost({
   const { state: appState } = useApp()
   const { t, i18n } = useTranslation('workbench')
   const requestedLanguage = i18n.resolvedLanguage === 'en' ? 'en' : 'zh'
-  const [frameLanguage, setFrameLanguage] = useState<'zh' | 'en'>(requestedLanguage)
+  const [frameLanguage] = useState<'zh' | 'en'>(requestedLanguage)
+  const [frameTranslation] = useState(() => i18n.getFixedT(frameLanguage, 'workbench'))
   const workspace = useDocumentWorkspace()
   const controller = useWorkspaceController()
   const viewId = host.viewId ?? ''
@@ -300,17 +301,11 @@ function OfficeHost({
   }, [clearRevealTimeout, reveal, session])
 
   useEffect(() => {
-    if (requestedLanguage === frameLanguage) return
-    if (session && session.saveState !== 'clean') return
-    setFrameLanguage(requestedLanguage)
-  }, [frameLanguage, requestedLanguage, session?.saveState])
-
-  useEffect(() => {
     setFrameReady(false)
     setRuntimeReady(false)
     setReadyBinding('')
     loadedBinding.current = ''
-    const nextFrame = officeFrameDocument(i18n.getFixedT(frameLanguage, 'workbench'), LOCALES[frameLanguage].office)
+    const nextFrame = officeFrameDocument(frameTranslation, LOCALES[frameLanguage].office)
     setFrame(nextFrame)
     return () => {
       frameRef.current?.contentWindow?.postMessage(
@@ -320,7 +315,7 @@ function OfficeHost({
       nextFrame.dispose()
       setFrame((current) => current === nextFrame ? null : current)
     }
-  }, [appState.shortcutOverrides, frameEpoch, frameLanguage, i18n])
+  }, [appState.shortcutOverrides, frameEpoch, frameLanguage, frameTranslation])
 
   useLayoutEffect(() => {
     if (!anchor) {
@@ -741,7 +736,6 @@ function OfficeHost({
       data-testid="office-switch-mask"
       aria-hidden="true"
     />}
-    {bounds && requestedLanguage !== frameLanguage && session && session.saveState !== 'clean' && <div className="fixed z-[var(--vds-z-popover)]" style={{ left: bounds.left, top: bounds.top, width: bounds.width }}><Alert tone="info" title={t('officeDocument.languagePending')} /></div>}
     {imageError && <Toaster toasts={[{ id: 'office-image-error', tone: 'warning', title: imageError.cause instanceof Error && imageError.cause.message === 'office_image_permission' ? officeFailureText(imageError.cause.message, t) : imageFailureText(imageError.cause) }]} onDismiss={() => setImageError(null)} closeLabel={t('officeDocument.close')} />}
     {notice && <Toaster toasts={[{ id: notice.id, tone: 'warning', title: officeFailureText(notice.message, t), description: notice.detail }]} onDismiss={() => setNotice(null)} closeLabel={t('officeDocument.close')} />}
     <OfficeWarmup

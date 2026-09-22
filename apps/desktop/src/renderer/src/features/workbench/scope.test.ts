@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { resolveDocumentWorkspaceProject } from './scope.ts'
+
 const dockSource = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
 const mainSource = readFileSync(new URL('../../main.tsx', import.meta.url), 'utf8')
 const layoutSource = readFileSync(new URL('../../design/layout.css', import.meta.url), 'utf8')
@@ -84,13 +86,34 @@ test('module and docked assistant panels collapse without remounting the workben
 })
 
 test('renderer selects one real document workspace controller per project without a global facade', () => {
-  assert.match(mainSource, /const projectId = state\.homeSelectedProjectId \?\? assistantProject\(state\)\.projectId/)
+  assert.match(mainSource, /const projectId = resolveDocumentWorkspaceProject\(/)
   assert.match(mainSource, /documentWorkspaces\.forProject\(projectId\)/)
   assert.match(mainSource, /<DocumentWorkspaceContext\.Provider value=\{workspace\}>/)
   assert.match(storeSource, /documentWorkspaces\.forProject\(project\)/)
   assert.match(storeSource, /current\.homeSelectedProjectId === project/)
   assert.match(storeSource, /const projectActiveTab = projectWorkspace\.focusedTabId \?\? OVERVIEW_TAB\.id/)
   assert.doesNotMatch(workspaceSource, /export const documentWorkspace =/)
+})
+
+test('literature attachment opening shares the rendered workspace scope and reports open failures', () => {
+  assert.match(mainSource, /resolveDocumentWorkspaceProject\(/)
+  const action = storeSource.slice(
+    storeSource.indexOf('openLiteratureAttachment: async'),
+    storeSource.indexOf('closeLiteratureAttachment:', storeSource.indexOf('openLiteratureAttachment: async'))
+  )
+  assert.equal(action.match(/resolveDocumentWorkspaceProject\(/g)?.length, 3)
+  assert.doesNotMatch(action, /stateRef\.current\.homeSelectedProjectId !== project/)
+  assert.match(action, /catch \(error\)/)
+  assert.match(action, /noticeLiterature\('error'/)
+  assert.match(action, /console\.error\('\[literature\] attachment open failed'/)
+})
+
+test('document workspace scope follows explicit, selected, assistant, then global priority', () => {
+  assert.equal(resolveDocumentWorkspaceProject('selected', 'assistant'), 'selected')
+  assert.equal(resolveDocumentWorkspaceProject(null, 'assistant'), 'assistant')
+  assert.equal(resolveDocumentWorkspaceProject(null, null), null)
+  assert.equal(resolveDocumentWorkspaceProject('selected', 'assistant', 'explicit'), 'explicit')
+  assert.equal(resolveDocumentWorkspaceProject('selected', 'assistant', null), null)
 })
 
 test('personal auto-save setting persists and leaving the document dock saves only the focused session', () => {

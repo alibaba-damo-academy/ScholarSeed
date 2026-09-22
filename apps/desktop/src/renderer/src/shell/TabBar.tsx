@@ -50,20 +50,18 @@ export function TabBar(): React.JSX.Element {
   const workspace = useWorkspaceController()
   const documents = useDocumentWorkspace()
   const documentTabs: NavigationTabItem[] = state.mainView === 'resource' || state.mainView === 'literature'
-    ? Object.values(documents.tabs).filter(tab => {
+    ? Object.values(documents.tabs).flatMap((tab) => {
         const session = documents.sessions[tab.sessionId]
-        return session && documentNavigationView(tab, session) === state.mainView
-      }).map((tab) => {
-        const source = documents.sessions[tab.sessionId]?.source
-        const ResourceIcon = source?.kind === 'literature'
-          ? fileIconForName(source.path)
+        if (!session) return []
+        const ResourceIcon = session.source.kind === 'literature'
+          ? fileIconForName(session.source.path)
           : resourceFileIcon(tab.title)
-        return {
-          dirty: documents.sessions[tab.sessionId]?.dirty === true,
+        return [{
+          dirty: session.dirty,
           icon: <ResourceIcon size={13} strokeWidth={1.8} />,
           id: tab.id,
           label: documentDisplayTitle(tab, conversation, workbench)
-        }
+        }]
       })
     : []
   const workbenchTabs: NavigationTabItem[] = state.tabs
@@ -130,7 +128,6 @@ export function TabBar(): React.JSX.Element {
     const session = documents.sessions[tab.sessionId]
     if (!session) return null
     const literature = session.source.kind === 'literature'
-    if (documentNavigationView(tab, session) !== state.mainView) return null
     const ResourceIcon = literature
       ? fileIconForName(session.source.path)
       : resourceFileIcon(tab.title)

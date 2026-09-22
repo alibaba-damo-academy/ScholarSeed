@@ -1,5 +1,5 @@
 import { assistantFailureDetail } from './failure'
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Copy, MessageCirclePlus, Plus } from 'lucide-react'
 
@@ -39,7 +39,6 @@ const ANSWER_ANNOTATION_FOCUS_DURATION_MS = 2400
 const CONVERSATION_STREAM_SELECTOR = '.conversation-stream'
 const SELECTION_TOOLBAR_MAX_WIDTH_PX = 390
 const SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX = 16
-const SELECTION_ACTIONS_HEIGHT_PX = 120
 const ANNOTATION_ERROR_MESSAGES = {
   answer_revision_conflict: 'remaining.revisionConflict',
   answer_quote_mismatch: 'remaining.quoteMismatch',
@@ -58,6 +57,8 @@ interface SelectionDraft {
   left: number
   width: number
   top: number
+  selectionTop: number
+  selectionBottom: number
   placement: 'above' | 'below'
   mode: 'actions' | 'comment'
 }
@@ -260,6 +261,43 @@ export function AnnotatedAnswer({
   const toolbarRef = useRef<HTMLDivElement>(null)
   const commentRef = useRef('')
   const [draft, setDraft] = useState<SelectionDraft | null>(null)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const toolbar = toolbarRef.current
+    if (!draft || !root || !toolbar) return
+    const stream = root.closest<HTMLElement>(CONVERSATION_STREAM_SELECTOR)
+    const updatePosition = (): void => {
+      const rootBounds = root.getBoundingClientRect()
+      const streamBounds = stream?.getBoundingClientRect()
+      const visibleTop = Math.max(0, streamBounds?.top ?? 0) + SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
+      const visibleBottom = Math.min(window.innerHeight, streamBounds?.bottom ?? window.innerHeight)
+        - SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
+      const toolbarHeight = toolbar.getBoundingClientRect().height
+      const selectionTop = rootBounds.top + draft.selectionTop
+      const selectionBottom = rootBounds.top + draft.selectionBottom
+      const spaceBelow = visibleBottom - selectionBottom
+      const spaceAbove = selectionTop - visibleTop
+      const placement = spaceBelow >= toolbarHeight || spaceBelow >= spaceAbove ? 'below' : 'above'
+      const preferredTop = placement === 'below' ? selectionBottom : selectionTop - toolbarHeight
+      const viewportTop = Math.max(visibleTop, Math.min(preferredTop, visibleBottom - toolbarHeight))
+      const top = viewportTop - rootBounds.top + (placement === 'above' ? toolbarHeight : 0)
+      setDraft(current => current && (current.top !== top || current.placement !== placement)
+        ? { ...current, top, placement }
+        : current)
+    }
+    updatePosition()
+    const observer = new ResizeObserver(updatePosition)
+    observer.observe(toolbar)
+    observer.observe(root)
+    if (stream) observer.observe(stream)
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [draft])
   const draftRef = useRef<SelectionDraft | null>(null)
   useEffect(() => { draftRef.current = draft }, [draft])
   const [comment, setComment] = useState('')
@@ -337,9 +375,6 @@ export function AnnotatedAnswer({
       Math.max(0, rootBounds.width - SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX)
     )
     const toolbarHalfWidth = toolbarWidth / 2
-    const placement = selectionBounds.top >= (
-      SELECTION_ACTIONS_HEIGHT_PX + SELECTION_TOOLBAR_VIEWPORT_MARGIN_PX
-    ) ? 'above' : 'below'
     setComment('')
     commentRef.current = ''
     setSaveError(null)
@@ -356,11 +391,10 @@ export function AnnotatedAnswer({
           selectionBounds.left + selectionBounds.width / 2 - rootBounds.left
         )
       ),
-      top: Math.max(
-        0,
-        (placement === 'above' ? selectionBounds.top : selectionBounds.bottom) - rootBounds.top
-      ),
-      placement,
+      top: selectionBounds.bottom - rootBounds.top,
+      selectionTop: selectionBounds.top - rootBounds.top,
+      selectionBottom: selectionBounds.bottom - rootBounds.top,
+      placement: 'below',
       mode: 'actions'
     })
   }

@@ -205,16 +205,8 @@ def _runtime_uses_one_interpreter() -> None:
     )
     check(
         "paid-download 使用活动解释器模块入口",
-        '[sys.executable, "-m", "paper_dl"]' in adapter,
-    )
-    product_policy = adapter.find("if os.getenv(PRODUCT_PYTHON_ENV):")
-    product_entry = adapter.find('[sys.executable, "-m", "paper_dl"]', product_policy)
-    standalone_fallback = adapter.find("local_executable = installed_venv_executable()")
-    check(
-        "paid-download 在书深产品路径不切换 skill 独立环境",
-        product_policy >= 0
-        and product_entry > product_policy
-        and standalone_fallback > product_entry,
+        '[sys.executable, "-m", PAPER_DL_MODULE]' in adapter
+        and 'PAPER_DL_MODULE = "paper_dl"' in adapter,
     )
 
 

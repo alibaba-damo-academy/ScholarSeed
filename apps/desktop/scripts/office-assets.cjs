@@ -3,6 +3,7 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
 
 const OFFICE_ASSET_ROOT = path.join('src', 'renderer', 'public', 'office')
 const OFFICE_BUILD_DIRECTORY = 'zeta-20250513'
@@ -24,11 +25,12 @@ function digest(filename) {
   return hash.digest('hex')
 }
 
-function verifyOfficeAssets(desktopRoot = path.resolve(__dirname, '..')) {
+async function verifyOfficeAssets(desktopRoot = path.resolve(__dirname, '..')) {
   const root = path.join(desktopRoot, OFFICE_ASSET_ROOT, OFFICE_BUILD_DIRECTORY)
   const manifest = JSON.parse(fs.readFileSync(path.join(root, OFFICE_MANIFEST), 'utf8'))
   for (const [name, expected] of Object.entries(manifest.files)) {
     const filename = path.join(root, name)
+    if (expected.url) await ensureArtifact(filename, expected)
     const stat = fs.statSync(filename)
     if (!stat.isFile() || stat.size !== expected.bytes) {
       throw new Error(`Office runtime asset size mismatch: ${name}`)
@@ -40,6 +42,11 @@ function verifyOfficeAssets(desktopRoot = path.resolve(__dirname, '..')) {
   return manifest
 }
 
-if (require.main === module) verifyOfficeAssets()
+if (require.main === module) {
+  verifyOfficeAssets().catch(error => {
+    console.error(`[office-assets] ${error.message}`)
+    process.exitCode = 1
+  })
+}
 
 module.exports = { OFFICE_BUILD_DIRECTORY, verifyOfficeAssets }

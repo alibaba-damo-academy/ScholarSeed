@@ -6,6 +6,8 @@ import type {
   AssistantContextRef
 } from '../../contracts/assistant.ts'
 import {
+  INITIAL_AI_PANEL_STATE,
+  beginContextCandidateLoad,
   contextRefMatchesCandidate,
   mergeContextCandidates,
   replaceCurrentDocumentRefs
@@ -114,4 +116,38 @@ test('manual addition does not mutate a submitted automatic ref', () => {
   assert.deepEqual(result.refs.map((item) => item.ref_id), ['submitted', 'new'])
   assert.equal(result.refs[0].origin, 'current_document')
   assert.equal(result.refs[1].origin, 'explicit')
+})
+
+test('context candidate reload preserves visible rows for the same source only', () => {
+  const candidate: AssistantContextCandidate = {
+    kind: 'file',
+    source_id: 'paper.md',
+    label: 'paper.md',
+    origin: 'explicit'
+  }
+  const current = {
+    ...structuredClone(INITIAL_AI_PANEL_STATE),
+    contextPickerOpen: true,
+    contextPickerSource: 'resource',
+    contextCandidates: [candidate]
+  }
+
+  assert.deepEqual(beginContextCandidateLoad(current, 'resource'), {
+    ...current,
+    open: true,
+    contextPickerOpen: true,
+    contextPickerSource: 'resource',
+    contextCandidates: [candidate],
+    contextCandidatesLoading: true,
+    contextError: null
+  })
+  assert.deepEqual(beginContextCandidateLoad(current, 'literature'), {
+    ...current,
+    open: true,
+    contextPickerOpen: true,
+    contextPickerSource: 'literature',
+    contextCandidates: [],
+    contextCandidatesLoading: true,
+    contextError: null
+  })
 })

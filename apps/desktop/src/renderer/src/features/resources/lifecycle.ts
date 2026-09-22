@@ -5,7 +5,8 @@ import {
   findResourceNode,
   withResourceChildren,
   type ResourceCreateMode,
-  type ResourceNode
+  type ResourceNode,
+  type ResourceState
 } from './state.ts'
 import type { AssistantContextRef } from '../../contracts/assistant'
 import type { FileEvent, RootKind } from '../../contracts/content'
@@ -20,6 +21,34 @@ export const RESOURCE_TREE_ROOT: RootKind = 'resources'
 export interface ResourceTreePage {
   nodes: ResourceNode[]
   total: number
+}
+
+export function beginResourceTreeReload(resource: ResourceState): ResourceState {
+  return {
+    ...resource,
+    loadState: resource.loadState === 'ready' || resource.loadState === 'refreshing'
+      ? 'refreshing'
+      : 'loading'
+  }
+}
+
+export function finishResourceTreeReload(
+  resource: ResourceState,
+  result: (ResourceTreePage & { root: string }) | null
+): ResourceState {
+  if (!result) {
+    return {
+      ...resource,
+      loadState: resource.loadState === 'refreshing' ? 'ready' : 'error'
+    }
+  }
+  return {
+    ...resource,
+    tree: result.nodes,
+    rootTotal: result.total,
+    root: result.root,
+    loadState: 'ready'
+  }
 }
 
 export interface MaterializedResourcePath {

@@ -512,12 +512,13 @@ test('annotation save failures use toast feedback instead of an inline alert', (
   assert.doesNotMatch(answerImportSource, /annotationError|setAnnotationError/)
 })
 
-test('resource file tabs stay in top navigation while split panes expose closable leaf tabs', () => {
+test('same-project resource and literature document tabs share the top navigation while split panes expose closable leaf tabs', () => {
   assert.match(tabBarSource, /tabVisibleInCurrentView,/)
   assert.match(workbenchTabsSource, /mainView === 'literature'\) return kind === 'literature' \|\| kind === 'literature_search'/)
   assert.match(tabBarSource, /const documentTabs: NavigationTabItem\[\] = state\.mainView === 'resource' \|\| state\.mainView === 'literature'/)
-  assert.match(tabBarSource, /\? Object\.values\(documents\.tabs\)\.filter/)
-  assert.match(tabBarSource, /documentNavigationView\(tab, session\) === state\.mainView/)
+  assert.match(tabBarSource, /\? Object\.values\(documents\.tabs\)\.flatMap/)
+  assert.match(tabBarSource, /const session = documents\.sessions\[tab\.sessionId\][\s\S]*?if \(!session\) return \[\]/)
+  assert.doesNotMatch(tabBarSource, /documentNavigationView\(tab, session\) !== state\.mainView/)
   assert.match(tabBarSource, /resourceFileIcon\(tab\.title\)/)
   assert.match(resourcePanelSource, /resourceFileIcon\(node\.name\)/)
   assert.match(resourceIconsSource, /xlsx:\s*FileSpreadsheet/)

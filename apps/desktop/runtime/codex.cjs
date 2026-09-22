@@ -1,4 +1,4 @@
-// Product-owned fixed Codex runtime. Archives are reviewed Git LFS inputs.
+// Product-owned fixed Codex runtime. Reviewed archives are downloaded on demand.
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -6,6 +6,7 @@ const crypto = require('node:crypto')
 const { execFile, spawn, spawnSync } = require('node:child_process')
 const { promisify } = require('node:util')
 const { nativeTar } = require('../../../scripts/python.cjs')
+const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
 
 const run = promisify(execFile)
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'codex')
@@ -85,15 +86,13 @@ function artifact(desktopRoot, platform, arch) {
   const key = `${platform}-${arch}`
   const selected = manifest.artifacts?.[key]
   if (manifest.package !== '@openai/codex' || !/^\d+\.\d+\.\d+$/.test(manifest.version) ||
-      !selected || !INTEGRITY_PATTERN.test(selected.integrity)) {
+      !selected || !INTEGRITY_PATTERN.test(selected.integrity) ||
+      !SHA256_PATTERN.test(selected.sha256) || typeof selected.url !== 'string' ||
+      !Number.isSafeInteger(selected.bytes) || selected.bytes <= 0) {
     throw new Error(`Unsupported vendored Codex platform: ${key}`)
   }
   const archive = path.join(root, selected.file)
-  const sidecar = fs.readFileSync(`${archive}.sha256`, 'utf8').trim().split(/\s+/)
-  if (!SHA256_PATTERN.test(sidecar[0]) || sidecar[1]?.replace(/^\*/, '') !== selected.file) {
-    throw new Error('Vendored Codex SHA-256 sidecar is invalid')
-  }
-  return { ...selected, archive, key, root, sha256: sidecar[0], version: manifest.version }
+  return { ...selected, archive, key, root, version: manifest.version }
 }
 
 async function probeVersion(executable, version) {
@@ -118,7 +117,7 @@ async function probeVersion(executable, version) {
 }
 
 function sourceRecord(selected) {
-  return { package: '@openai/codex', distribution: 'git-lfs',
+  return { package: '@openai/codex', distribution: 'verified-download',
     archive_sha256: selected.sha256, integrity: selected.integrity }
 }
 
@@ -182,6 +181,7 @@ async function resolveVendoredCodex(
       // Untrusted cache (failed probe or mode repair): fall through and rebuild.
     }
   }
+  await ensureArtifact(selected.archive, selected)
   if (await digest(selected.archive, 'sha256', 'hex') !== selected.sha256) {
     throw new Error('Vendored Codex archive SHA-256 mismatch')
   }

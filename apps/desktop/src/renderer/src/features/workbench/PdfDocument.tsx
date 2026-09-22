@@ -449,8 +449,9 @@ export function PdfDocument({
 
   const activePage = loadedPages.get(pageNumber(currentPage, pageCount))
   const natural = activePage?.getViewport({ scale: 1 })
+  const fitViewportWidth = size.width + (sidebar ? navigationWidth : 0)
   const scale = mode === 'custom' ? storedScale : natural && size.width && size.height
-    ? fittedScale(mode, natural, { width: Math.max(1, size.width - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
+    ? fittedScale(mode, natural, { width: Math.max(1, fitViewportWidth - PAGE_GUTTER), height: Math.max(1, size.height - PAGE_GUTTER) }) : 1
   const scaleRef = useRef(scale)
   scaleRef.current = scale
 
@@ -1017,14 +1018,14 @@ export function PdfDocument({
     analysis.exitFigureSelection()
   }, [analysis.exitFigureSelection, clearFigureSelection])
   const activeDocumentPanelId = activeDocumentPanel?.id
+  const rightPanelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
   useEffect(() => {
     if (!active) return
-    const panelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
     set({
-      pdfSidePanelOpen: panelOpen,
-      ...(panelOpen ? { modulePanelOpen: false } : {})
+      pdfSidePanelOpen: rightPanelOpen,
+      ...(rightPanelOpen ? { modulePanelOpen: false } : {})
     })
-  }, [active, analysis.panel, recordsOpen, activeDocumentPanelId, set])
+  }, [active, rightPanelOpen, set])
   useEffect(() => () => { if (active) set({ pdfSidePanelOpen: false }) }, [active, set])
   const encrypted = loadError?.kind === PDF_LOAD_FAILURE_KIND.encrypted
   const canOpenEncryptedExternally = Boolean(session && isLocatedDocumentSource(session.source))
@@ -1075,7 +1076,7 @@ export function PdfDocument({
         <PdfScale editLabel={t('pdfToolbar.editScale')} fitPageLabel={t('pdfToolbar.fitPage')} fitWidthLabel={t('pdfToolbar.fitWidth')} mode={mode} scale={scale} onModeChange={(nextMode) => update({ mode: nextMode })} onScaleChange={(nextScale) => zoom(nextScale)} />
         <IconButton label={t('pdfToolbar.zoomIn')} icon={<Icon name="plus" size={15} />} size="sm" variant="outline" data-testid="pdf-zoom-in" disabled={scale >= MAX_SCALE} onClick={() => zoom(scale + SCALE_STEP)} />
         <IconButton label={t('pdfToolbar.previousPage')} icon={<span className="inline-flex rotate-180"><Icon name="chevron-right" size={15} /></span>} size="sm" variant="outline" data-testid="pdf-previous" disabled={currentPage <= 1 || !pageCount} onClick={() => navigate(currentPage - 1)} />
-        <Input className="w-12 text-center tabular-nums" size="sm" aria-label={t('pdfToolbar.pageNumber')} data-testid="pdf-page-input" type="number" min={1} max={pageCount || 1} value={pageInput}
+        <Input className="!w-12 text-center tabular-nums" size="sm" aria-label={t('pdfToolbar.pageNumber')} data-testid="pdf-page-input" type="text" inputMode="numeric" min={1} max={pageCount || 1} value={pageInput}
           onChange={event => setPageInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') navigate(pageNumber(pageInput, pageCount)) }} onBlur={() => navigate(pageNumber(pageInput, pageCount))} />
         <span className="whitespace-nowrap tabular-nums">/ {pageCount || '…'}</span>
         <IconButton label={t('pdfToolbar.nextPage')} icon={<Icon name="chevron-right" size={15} />} size="sm" variant="outline" data-testid="pdf-next" disabled={currentPage >= pageCount} onClick={() => navigate(currentPage + 1)} />
@@ -1161,7 +1162,7 @@ export function PdfDocument({
         rightPanel={<span aria-hidden />}
         onWidthChange={width => update({ navigationWidth: Number.parseFloat(width) })}
       />}
-      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) { captureSelection(true); setSelectionDragSpan(null) } }} onKeyUp={() => captureSelection()}
+      <div ref={viewportRef} data-ob="pdf-viewport" className={`vds-pdf-pages flex-1${analysis.figure ? ' cursor-crosshair' : ''}`} style={{ marginLeft: sidebar ? `${navigationWidth}px` : undefined }} onScroll={onScroll} onMouseUp={() => { if (!analysis.figure) { captureSelection(true); setSelectionDragSpan(null) } }} onKeyUp={() => captureSelection()}
         onPointerDownCapture={event => {
           const element = (event.target as HTMLElement).closest<HTMLElement>('.vds-pdf-page')
           if (!analysis.figure) {
@@ -1194,44 +1195,46 @@ export function PdfDocument({
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
         }} onPointerCancel={() => setSelectionDragSpan(null)}>
-        {!pageCount && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
-        {pageNumbers.map(number => <PdfPageSlot
-          estimatedSize={estimatedPageSize}
-          fonts={fonts}
-          initialPage={loadedPages.get(number)}
-          key={number}
-          loadPage={loadPage}
-          pageNumber={number}
-          scale={scale}
-          keepRendered={selectionDragSpan !== null && pageInSelectionSpan(number, selectionDragSpan.anchor, selectionDragSpan.focus)}
-          search={query}
-          focus={focus?.page === number ? focus : undefined}
-          annotations={anchoredMarks.filter(mark => mark.page === number)}
-          selectionQuads={workspace.selectionPresentations[tabId] && session?.selection?.locator.kind === 'pdf'
-            ? selections.find(selection => selection.page === number)?.quads
-            : undefined}
-          citationQuads={citationPages?.find(item => item.page === number)?.quads}
-          commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
-          onAnnotationOpen={(mark) => {
-            setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
-            setActiveMark(mark.id)
-            setMarkColors(previous => ({ ...previous, [mark.style]: mark.color }))
-          }}
-          onInternalLink={navigateInternalLink}
-          renderAnnotation={(mark, close) => <PdfAnnotation
-            analyzing={analysis.selectionAnalyzing}
-            canAnalyze={analysis.canAnalyzeSelection}
-            comments={sidecar?.records.comments.filter(comment => comment.mark_id === mark.id) ?? []}
-            mark={mark}
-            saving={saving}
-            onColorChange={(color) => { void updateMark(mark.id, { color }) }}
-            onComment={(body) => addMarkComment(mark.id, body)}
-            onDelete={() => { void deleteMark(mark.id) }}
-            onExplain={(instruction) => { analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction); close(); setActiveMark(null) }}
-            onStyleChange={(style) => { void updateMark(mark.id, { style }) }}
-            onTranslate={() => { analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }); close(); setActiveMark(null) }}
-          />}
-        />)}
+        <div data-testid="pdf-pages-track" className={`box-border min-h-full${rightPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}>
+          {!pageCount && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
+          {pageNumbers.map(number => <PdfPageSlot
+            estimatedSize={estimatedPageSize}
+            fonts={fonts}
+            initialPage={loadedPages.get(number)}
+            key={number}
+            loadPage={loadPage}
+            pageNumber={number}
+            scale={scale}
+            keepRendered={selectionDragSpan !== null && pageInSelectionSpan(number, selectionDragSpan.anchor, selectionDragSpan.focus)}
+            search={query}
+            focus={focus?.page === number ? focus : undefined}
+            annotations={anchoredMarks.filter(mark => mark.page === number)}
+            selectionQuads={workspace.selectionPresentations[tabId] && session?.selection?.locator.kind === 'pdf'
+              ? selections.find(selection => selection.page === number)?.quads
+              : undefined}
+            citationQuads={citationPages?.find(item => item.page === number)?.quads}
+            commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
+            onAnnotationOpen={(mark) => {
+              setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
+              setActiveMark(mark.id)
+              setMarkColors(previous => ({ ...previous, [mark.style]: mark.color }))
+            }}
+            onInternalLink={navigateInternalLink}
+            renderAnnotation={(mark, close) => <PdfAnnotation
+              analyzing={analysis.selectionAnalyzing}
+              canAnalyze={analysis.canAnalyzeSelection}
+              comments={sidecar?.records.comments.filter(comment => comment.mark_id === mark.id) ?? []}
+              mark={mark}
+              saving={saving}
+              onColorChange={(color) => { void updateMark(mark.id, { color }) }}
+              onComment={(body) => addMarkComment(mark.id, body)}
+              onDelete={() => { void deleteMark(mark.id) }}
+              onExplain={(instruction) => { analysis.explainSelection({ page: mark.page, text: mark.text, quads: mark.quads }, instruction); close(); setActiveMark(null) }}
+              onStyleChange={(style) => { void updateMark(mark.id, { style }) }}
+              onTranslate={() => { analysis.translateSelection({ page: mark.page, text: mark.text, quads: mark.quads }); close(); setActiveMark(null) }}
+            />}
+          />)}
+        </div>
       </div>
       {analysis.sidePanel}
       {recordsOpen && !analysis.panel && <PdfAnnotations comments={sidecar?.records.comments ?? []} marks={anchoredMarks} saving={saving} expanded={expandedPanel === PDF_RECORDS_PANEL_ID} onToggleExpanded={() => setExpandedPanel(value => value === PDF_RECORDS_PANEL_ID ? null : PDF_RECORDS_PANEL_ID)} onClose={() => { setExpandedPanel(null); update({ records: false }) }} onDelete={(markId) => { void deleteMark(markId) }} onFocus={(mark) => { navigate(mark.page); requestFocus({ kind: 'annotation', page: mark.page, id: mark.id }) }} />}

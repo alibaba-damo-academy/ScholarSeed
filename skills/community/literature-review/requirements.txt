@@ -16,6 +16,7 @@ pypdfium2>=4.30,<5.12
 pdfplumber>=0.11,<0.12
 pypdf>=6.15.0,<7
 pysbd>=0.3.4
+filelock>=3.16
 
 # data_chart figures. Missing required charts are technical failures.
 matplotlib>=3.7

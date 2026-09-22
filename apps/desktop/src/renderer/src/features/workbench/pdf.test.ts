@@ -56,19 +56,27 @@ test('figure explanation keeps a stable toolbar button and replaces in-flight st
   const en = JSON.parse(readFileSync(new URL('../../../../localization/locales/en/pdf.json', import.meta.url), 'utf8'))
 
   assert.match(reading, /data-testid="pdf-figure-explanation"/)
+  assert.match(reading, /const figureModelSupportsImageInput = Boolean/)
+  assert.match(reading, /if \(!figureModelSupportsImageInput\)/)
+  assert.match(reading, /code: 'pdf_ai_image_input_unsupported'/)
+  assert.match(reading, /lastFigureRegion\.current = region/)
+  assert.match(reading, /kind === 'figure_explanation' && lastFigureRegion\.current\) startFigure\(lastFigureRegion\.current\)/)
+  assert.doesNotMatch(reading, /data-testid="pdf-figure-explanation"[^>]*disabled/)
   assert.match(reading, /<HoverCardContent side="bottom"/)
   assert.doesNotMatch(reading, /reading\.figureScope/)
   assert.match(reading, /figureAbort\.current\?\.abort\(\)/)
   assert.match(reading, /invokeFigure\(request, figureController\.signal/)
   assert.doesNotMatch(reading, /figureQueue|figureQueued/)
   assert.doesNotMatch(reading, /figureHistory|setFigureHistory/)
-  assert.match(reading, /floatingResult \|\| busy \|\| cropPreview \|\| jobs\.figure_explanation\?\.error \? <Card/)
+  assert.match(reading, /floatingResult \|\| busy \|\| cropPreview \|\| jobs\.figure_explanation\?\.error \|\| jobs\.figure_explanation\?\.failed \? <Card/)
   assert.doesNotMatch(reading, /figureResult', \{ index:/)
   assert.doesNotMatch(reading, /figureResultPending', \{ index:/)
   assert.equal(zh.reading.figureResult, '选区 · 第 {{page}} 页')
   assert.equal(zh.reading.figureResultPending, '选区 · 正在解释…')
   assert.equal(en.reading.figureResult, 'Selection · Page {{page}}')
   assert.equal(en.reading.figureResultPending, 'Selection · Explaining…')
+  assert.match(zh.reading.figureUnavailable, /当前模型.*图片输入/)
+  assert.match(en.reading.figureUnavailable, /current model.*image input/i)
   assert.match(reading, /action !== 'figure_explanation' && action !== 'document_translation' && jobBusy\(job\)/)
   assert.match(reading, /literatureId && kind !== 'figure_explanation'/)
   assert.match(reading, /<FigureGuide t=\{t\}/)
@@ -102,6 +110,34 @@ test('PDF surfaces exit figure selection through one transition', () => {
   assert.match(viewer, /const exitFigureSelection = useCallback\(\(\): void => \{\s*clearFigureSelection\(\)\s*analysis\.exitFigureSelection\(\)/)
   assert.match(viewer, /data-testid=\{`document-panel-toggle-\$\{panel\.id\}`\}[\s\S]*exitFigureSelection\(\)[\s\S]*documentPanels\.toggle\(panel\.id\)/)
   assert.match(viewer, /data-testid="pdf-annotation-toggle"[\s\S]*exitFigureSelection\(\)/)
+})
+
+test('literature AI actions expose independent persisted model selectors', () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  assert.match(source, /import \{ ModelMenu \} from '\.\.\/\.\.\/\.\.\/components\/business\/ModelMenu'/)
+  assert.match(source, /t\('reading\.currentModel'\)/)
+  assert.match(source, /state\.literatureAiModels/)
+  assert.match(source, /actions\.setLiteratureAiModel\(kind, model\.key\)/)
+  assert.match(source, /modelControl\('figure_explanation', true\)/)
+  assert.match(source, /modelControl\(panel as 'document_translation' \| 'interpretation'\)/)
+  assert.match(source, /modelFilter=\{multimodal \? MULTIMODAL_MODEL_FILTER : undefined\}/)
+  assert.match(source, /model_key: actionModelKey\(kind\)/)
+})
+
+test('PDF explanation requests follow the committed interface language', () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  const analysis = readFileSync(new URL('./pdf/analysis.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /pdfResponseLanguage\(i18n\.resolvedLanguage \|\| i18n\.language\)/)
+  assert.match(source, /response_language: responseLanguage/)
+  assert.match(source, /data\.interpretation\.response_language !== responseLanguage/)
+  assert.match(analysis, /startsWith\('en'\) \? 'en' : 'zh'/)
+})
+
+test('figure explanation keeps a synchronous capability failure visible', () => {
+  const source = readFileSync(new URL('./pdf/Reading.tsx', import.meta.url), 'utf8')
+  assert.match(source, /jobs\.figure_explanation\?\.error \|\| jobs\.figure_explanation\?\.failed \? <Card/)
+  assert.match(source, /feedback\('figure_explanation'\)/)
 })
 
 const BROKEN_CONTENTS_PDF = new URL('../../../../../e2e/fixtures/preview_pdf_1MB.pdf', import.meta.url)
@@ -176,6 +212,13 @@ test('PDF toolbar uses S controls with visible and ghost group spacing', () => {
   assert.match(source, /size="sm"[^\n]*data-testid="pdf-sidebar-toggle"/u)
   assert.doesNotMatch(source, /data-testid="pdf-search-open"/u)
   assert.match(tools, /gap-\[var\(--vds-toolbar-icon-gap\)\][^>]*data-pdf-annotation-tools/u)
+})
+
+test('PDF page number uses a plain numeric text input without stepper controls', () => {
+  const source = readFileSync(new URL('./PdfDocument.tsx', import.meta.url), 'utf8')
+
+  assert.match(source, /data-testid="pdf-page-input"[^>]*type="text"[^>]*inputMode="numeric"/u)
+  assert.doesNotMatch(source, /data-testid="pdf-page-input"[^>]*type="number"/u)
 })
 
 test('PDF selection is tab-scoped and clears the shared selection when the DOM selection is empty', () => {
@@ -500,7 +543,12 @@ test('PDF navigation and annotation inspector reuse compact design-system contro
   assert.match(source, /data-testid="pdf-navigation-resizable"/)
   assert.match(source, /leftWidth=\{`\$\{navigationWidth\}px`\}/)
   assert.match(source, /onWidthChange=\{width => update\(\{ navigationWidth: Number\.parseFloat\(width\) \}\)\}/)
-  assert.match(source, /absolute inset-y-0 left-0/)
+  assert.match(source, /style=\{\{ marginLeft: sidebar \? `\$\{navigationWidth\}px` : undefined \}\}/)
+  assert.match(source, /const fitViewportWidth = size\.width \+ \(sidebar \? navigationWidth : 0\)/)
+  assert.match(source, /fittedScale\(mode, natural, \{ width: Math\.max\(1, fitViewportWidth - PAGE_GUTTER\)/)
+  assert.match(source, /const rightPanelOpen = Boolean\(analysis\.panel \|\| recordsOpen \|\| activeDocumentPanelId\)/)
+  assert.match(source, /data-testid="pdf-pages-track"/)
+  assert.match(source, /rightPanelOpen \? ' min-w-\[calc\(100%\+var\(--vds-layout-pdf-panel-width\)\)\] pr-\[var\(--vds-layout-pdf-panel-width\)\]'/)
   assert.match(source, /overflow-x-hidden/)
   assert.match(source, /bg-\[var\(--vds-bg-white-default\)\]!/)
   assert.match(panel, /absolute inset-y-0 right-\[var\(--vds-layout-pdf-rail-width\)\]/)

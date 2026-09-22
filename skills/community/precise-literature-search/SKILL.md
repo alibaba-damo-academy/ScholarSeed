@@ -2,7 +2,7 @@
 name: precise-literature-search
 description: Iteratively search a precise research question, present candidate papers for review and selection, download authorized full texts, verify PDFs, and synthesize evidence grounded in the verified files. Use when the user emphasizes finding specific papers to answer specific research questions that may need fulltext screening. It may run unattended when explicitly requested after this skill is selected. Do not use when the user primarily wants an autonomous narrative literature review, asks broad research questions, or simply wants to download specific papers.
 description_zh: 围绕明确的研究问题开展迭代检索，展示候选论文供审阅和筛选，下载具有访问授权的全文，核验 PDF，并基于已核验文件中的证据形成综合分析。适用于用户强调查找特定论文来回答可能需要阅读全文才能回答的具体研究问题。选定本技能后，用户明确要求时可无人值守运行。如果用户的主要需求是自主撰写叙述性文献综述，提出宽泛的研究问题，或者下载具体文章，则不应使用本技能。
-version: "1.0.10"
+version: "1.0.11"
 ---
 
 # Precise Literature Search
@@ -52,12 +52,28 @@ interventions. Silence or ordinary acknowledgement is not auto authorization.
 
 Save UTF-8 request and feedback files. Artifacts belong in the working directory WORK_DIR,
 under `.precise-literature-search/runs/<run-id>/`. SKILL_DIR is the absolute directory containing this file. Use absolute paths for bundled tools.
-WORK_DIR is the current working directory. PLS_PYTHON is the absolute path to the Python interpreter.
+WORK_DIR is the current working directory.
 
-Python 3.11+ is required. Before starting the workflow, select a compatible
-interpreter, set PLS_PYTHON to its absolute path, and verify with
-`"$PLS_PYTHON" --version`. In a shell, assign PLS_PYTHON
-on a separate line before invoking it, within the same shell call.
+### Product Python
+
+Start and resume this Skill with `scholarseed-skill-python`, the host-provided
+launcher for the bundled Python 3.11+ runtime. Do not select a system Python,
+Homebrew Python, `py`, or a repository/Skill `.venv` yourself. The stage runner
+supplies `PLS_PYTHON` and executable commands from its active product interpreter;
+use those values unchanged in stage handoffs and subagents. Do not reuse an
+interpreter chosen manually in an earlier attempt.
+
+By default the download adapter runs that same Python with `-m paper_dl`, not
+the `paper-dl` console script, whose shebang may reference the build machine.
+Do not set `PAPER_DL_EXECUTABLE` or `PAPER_DL_ROOT` as an automatic workaround.
+Honor an external downloader only when explicitly selected by the user; if an
+inherited override has unclear provenance, report it and ask before changing it
+or continuing. A successful external override does not verify the product path.
+
+If the product launcher, `paper_dl`, or another required dependency is missing,
+stop the affected stage and report the failing command and error. Do not install
+dependencies, switch interpreters, or invoke a discovered `paper-dl` launcher.
+For native PowerShell syntax, follow [the Windows guide](references/windows.md).
 
 ## Agent delegation
 
@@ -70,7 +86,7 @@ execution outweigh startup and handoff overhead.
 ## Phase 0–1: start and confirm intent
 
 ```bash
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" start \
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" start \
   --work-dir "$WORK_DIR" --request-file "$REQUEST_FILE"
 ```
 
@@ -95,7 +111,7 @@ Choose `balance` by default; an explicit choice wins:
 - `full`: entity/probe planning with up to eight adaptive iterations.
 
 ```bash
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" search \
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" search \
   --run-dir "$RUN_DIR" --intent "$INTENT_FILE" --profile balance
 ```
 
@@ -161,12 +177,12 @@ A rejection, publication failure, or interruption ends the current turn immediat
 and preserves the run for resume.
 
 ```bash
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" authorize-download \
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" authorize-download \
   --run-dir "$RUN_DIR" --selection "$SELECTION_FILE" --decision-source user_explicit
 scholarseed-bridge literature result \
   --json '{"run":"<actual run directory relative to the session workdir>","checkpoint":"selection"}'
 # Run only after the checkpoint returns authorization.disposition=authorized.
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" download --run-dir "$RUN_DIR"
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" download --run-dir "$RUN_DIR"
 ```
 
 If the checkpoint returns `literature_result_selection_not_prepared`, run the
@@ -200,7 +216,7 @@ PDF directory. Mention browser release only when the returned notice confirms it
 After reading confirmation (or recorded auto delegation):
 
 ```bash
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" reading \
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" reading \
   --run-dir "$RUN_DIR" --decision-source user_explicit
 ```
 
@@ -215,7 +231,7 @@ command, then show each readable paper's three-sentence interaction summary.
 After an explicit finish decision (or recorded auto delegation):
 
 ```bash
-"$PLS_PYTHON" "$SKILL_DIR/scripts/stage.py" report \
+scholarseed-skill-python "$SKILL_DIR/scripts/stage.py" report \
   --run-dir "$RUN_DIR" --decision-source user_explicit
 ```
 

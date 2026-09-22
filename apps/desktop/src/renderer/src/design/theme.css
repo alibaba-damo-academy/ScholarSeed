@@ -1,6 +1,8 @@
 :root,
 :root[data-theme='light'] {
   color-scheme: light;
+  /* 多选筛选里「没被选中」的降透明度：比 disabled 更淡，用于把选中项从密集色块里衬出来。 */
+  --vds-opacity-deemphasized: 0.3;
   --vds-opacity-disabled: 0.5;
   /* 悬停/聚焦才显现的行内控件：隐藏用 opacity-0，显现统一取这个 token，页面不写死数值。 */
   --vds-opacity-full: 1;
@@ -235,7 +237,7 @@
   --vds-model-controls-width: min(240px, calc(100vw - var(--vds-space-6)));
   --vds-tooltip-z-index: var(--vds-z-tooltip);
   --vds-tooltip-max-width: 240px;
-  --vds-tooltip-max-height: 80vh;
+  --vds-tooltip-max-height: 200px;
   --vds-tooltip-padding: var(--vds-space-2) var(--vds-space-3);
   --vds-tooltip-radius: var(--vds-radius-3);
   --vds-tooltip-offset: var(--vds-space-2);

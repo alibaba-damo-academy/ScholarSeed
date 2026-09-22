@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { feedbackImageRoom, mergeFeedbackImages, toScreenshotFile } from './attachments.ts'
+import { clipboardImageFiles, feedbackImageRoom, mergeFeedbackImages, toScreenshotFile } from './attachments.ts'
 
 function png(name: string, byte: number): File {
   return new File([new Uint8Array([byte]).buffer], name, { type: 'image/png' })
@@ -16,6 +16,23 @@ test('toScreenshotFile 拷贝字节并产出带时间戳的 png File', async () 
   // 拷贝语义：构造后改源字节，不应污染已生成的 File。
   bytes[0] = 99
   assert.deepEqual(Array.from(new Uint8Array(await file.arrayBuffer())), [1, 2, 3, 4])
+})
+
+test('clipboardImageFiles 只提取剪贴板中的图片文件', () => {
+  const screenshot = png('clipboard.png', 1)
+  const document = new File(['text'], 'notes.txt', { type: 'text/plain' })
+  const files = clipboardImageFiles([
+    { kind: 'string', type: 'text/plain', getAsFile: () => null },
+    { kind: 'file', type: document.type, getAsFile: () => document },
+    { kind: 'file', type: screenshot.type, getAsFile: () => screenshot },
+    { kind: 'file', type: 'image/png', getAsFile: () => null }
+  ])
+
+  assert.deepEqual(files, [screenshot])
+  assert.deepEqual(
+    clipboardImageFiles([{ kind: 'string', type: 'text/plain', getAsFile: () => null }]),
+    []
+  )
 })
 
 test('feedbackImageRoom 为自动截图保留一个名额', () => {

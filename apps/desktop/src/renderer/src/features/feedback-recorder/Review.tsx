@@ -293,7 +293,7 @@ export function Review({
             getValue={async () => {
               const screenshotSources = await screenshotDataUrls(session.screenshots)
               clipboardHtmlRef.current = composeReviewHtml(session, summary, markdownLabels, screenshotSources)
-              return composeReviewMarkdown(session, summary, markdownLabels, screenshotSources)
+              return composeReviewMarkdown(session, summary, markdownLabels)
             }}
             idleLabel={t('feedbackRecorder.review.copyMarkdown')}
             size="md"

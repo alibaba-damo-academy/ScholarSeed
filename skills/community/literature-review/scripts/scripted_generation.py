@@ -44,6 +44,9 @@ Use two distinct node shapes, not one recursive chapter template:
   omit the language key entirely, including null, default or the parent's value.
   There is no third outline level.
 Section choices follow the task, with no paper quotas, word budgets or claim lists.
+Do not put References, Bibliography or 参考文献 in outline_tree at either level.
+The publisher supplies that list, including when the user requests complete
+references. A literature-comparison or related-work chapter is different.
 
 ASSET PLANNING
 Plan supported figures and tables where they help the owning section's argument.

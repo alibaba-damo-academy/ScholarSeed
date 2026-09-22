@@ -52,7 +52,9 @@ test('composer has one combined model control at the right of the spacer', () =>
   assert.doesNotMatch(effort, /<Slider/)
   assert.match(menu, /useEffort\(\)/)
   assert.doesNotMatch(menu, /reasoning-reset/)
-  assert.match(menu, /setSubmenu\(null\)\s+set\(\{ modelMenuOpen: false \}\)\s+if \(model.key === selectedModelKey\)/)
+  assert.match(menu, /setSubmenu\(null\)\s+setMenuOpen\(false\)\s+if \(model.key === selectedModelKey\)/)
+  assert.match(menu, /const menuOpen = independent \? localOpen : state\.modelMenuOpen/)
+  assert.match(menu, /data-testid=\{`\$\{testIdPrefix\}-selector-toggle`\}/)
   // 新交互: 单弹窗顶部直接展示全模型列表(最大高度 300px, 超出滚动), 思考强度行在
   // 右侧展开二级菜单; 无可选档位或未选择模型时强度行禁用并回显占位符; 底部为模型管理。
   assert.match(menu, /data-testid="model-effort-row"/)

@@ -289,6 +289,14 @@ test('tag variant contract maps badge-style tones to semantic colors', () => {
   assert.match(tagVariants({ tone: 'success' }), /--vds-tag-background:var\(--vds-success-light-bg-default\)/)
   assert.match(tagVariants({ tone: 'warning' }), /--vds-tag-background:var\(--vds-warning-light-bg-default\)/)
   assert.match(tagVariants({ tone: 'danger' }), /--vds-tag-background:var\(--vds-error-light-bg-default\)/)
+  // 选中态只挂状态钩子, 自身不画视觉: 对比由容器把未选中的 chip 压淡来表达。
+  // chip 上任何尺寸/字重/描边变化都会让换行排布的标签云在点击瞬间重排跳位。
+  assert.equal(
+    tagVariants({ selected: true }),
+    `${tagVariants()} vds-tag--selected`
+  )
+  assert.doesNotMatch(tagVariants({ selected: true }), /box-shadow|font-weight|border-width-2/)
+  assert.doesNotMatch(tagVariants(), /vds-tag--selected/)
 })
 
 test('semantic tag colors validate persisted values and select from the shared palette', () => {

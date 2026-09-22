@@ -20,6 +20,16 @@ export const MAX_TRACKED_RECENT_LITERATURE = 10
 
 export const MAX_SHORTCUT_OVERRIDES = 100
 export const MAX_SHORTCUT_KEY_LENGTH = 32
+export const MAX_MODEL_KEY_LENGTH = 512
+
+export const LITERATURE_AI_MODEL_ACTIONS = [
+  'document_translation',
+  'interpretation',
+  'figure_explanation'
+] as const
+
+export type LiteratureAiModelAction = typeof LITERATURE_AI_MODEL_ACTIONS[number]
+export type LiteratureAiModelPreferences = Partial<Record<LiteratureAiModelAction, string>>
 
 const RETIRED_SHORTCUT_COMMAND_IDS = new Set([
   'workbench.globalSearch',
@@ -123,6 +133,7 @@ export interface RendererPreferences {
   onboarding?: OnboardingPreferences
   selectionPrompts: SelectionPrompts
   reasoningPreferences?: Record<string, string>
+  literatureAiModels: LiteratureAiModelPreferences
   sidebarOpen: boolean
   sessionActivityInitialized: boolean
   sessionActivitySeen: Record<string, number>
@@ -143,6 +154,7 @@ export interface RendererPreferences {
 /** 各项默认值。其中 `language` 是检测链全部失败时的最终兜底，不是无条件默认值。 */
 export const DEFAULT_RENDERER_PREFERENCES: RendererPreferences = {
   selectionPrompts: sanitizeSelectionPrompts(undefined),
+  literatureAiModels: {},
   sidebarOpen: true,
   sessionActivityInitialized: false,
   sessionActivitySeen: {},
@@ -307,6 +319,19 @@ function preferenceRecordEqual<T extends string | number>(
     && keys.every((key) => left[key] === right[key])
 }
 
+export function sanitizeLiteratureAiModels(value: unknown): LiteratureAiModelPreferences {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const source = value as Record<string, unknown>
+  return Object.fromEntries(
+    LITERATURE_AI_MODEL_ACTIONS.flatMap((action) => {
+      const modelKey = source[action]
+      return typeof modelKey === 'string' && modelKey.length > 0 && modelKey.length <= MAX_MODEL_KEY_LENGTH
+        ? [[action, modelKey]]
+        : []
+    })
+  )
+}
+
 function shortcutOverridesEqual(
   left: PreferenceShortcutOverrides,
   right: PreferenceShortcutOverrides
@@ -335,6 +360,7 @@ export function rendererPreferencesEqual(
       left.reasoningPreferences ?? {},
       right.reasoningPreferences ?? {}
     )
+    && preferenceRecordEqual(left.literatureAiModels, right.literatureAiModels)
     && left.desktopNotifications === right.desktopNotifications
     && left.soundAlerts === right.soundAlerts
     && left.autoSave === right.autoSave
@@ -430,6 +456,7 @@ export function sanitizeRendererPreferences(
     reasoningPreferences: parsed.reasoningPreferences && typeof parsed.reasoningPreferences === 'object'
       ? Object.fromEntries(Object.entries(parsed.reasoningPreferences).filter(([, effort]) => typeof effort === 'string'))
       : {},
+    literatureAiModels: sanitizeLiteratureAiModels(parsed.literatureAiModels),
     sidebarOpen: typeof parsed.sidebarOpen === 'boolean'
       ? parsed.sidebarOpen
       : DEFAULT_RENDERER_PREFERENCES.sidebarOpen,

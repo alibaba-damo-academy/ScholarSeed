@@ -57,7 +57,7 @@ const PANEL_NOTES_WIDTH_CLASS_NAME = 'w-[var(--vds-update-notes-expanded-width)]
 const PANEL_BORDERED_CLASS_NAME =
   'border border-[var(--vds-divider-default)] [border-style:solid] [border-width:var(--vds-border-width-1)]'
 const PANEL_HEADER_CLASS_NAME =
-  'relative flex items-start gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-4)] pt-[var(--vds-space-5)]'
+  'relative flex items-start gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[12px] pt-[var(--vds-space-5)]'
 // 失败稿的头部四边等距 20（高 88），与 summary 稿的 20/20/16（高 84）不同。
 const PANEL_HEADER_FAILED_CLASS_NAME =
   'relative flex items-start gap-[var(--vds-space-3)] p-[var(--vds-space-5)]'
@@ -65,13 +65,13 @@ const PANEL_HEADER_FAILED_CLASS_NAME =
 const PANEL_HEADER_NOTES_CLASS_NAME =
   'relative flex items-center gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-3)] pt-[var(--vds-space-5)]'
 const PANEL_HERO_CLASS_NAME =
-  'grid size-[var(--vds-update-notes-hero-size)] flex-none place-items-center rounded-[var(--vds-update-notes-hero-radius)] [background:var(--vds-bg-white-active-transparent)]'
-const PANEL_HERO_GLYPH_CLASS_NAME = 'size-[var(--vds-update-notes-hero-icon-size)] object-contain'
+  'grid size-[42px] flex-none place-items-center rounded-[var(--vds-update-notes-hero-radius)] [background:var(--vds-bg-white-active-transparent)]'
+const PANEL_HERO_GLYPH_CLASS_NAME = 'size-[20px] object-contain'
 const PANEL_HERO_ICON_CLASS_NAME =
-  'grid size-[var(--vds-update-notes-hero-icon-size)] place-items-center !text-[length:var(--vds-update-notes-hero-icon-size)] !leading-none text-[var(--vds-error-bg-default)]'
-const PANEL_HEADING_CLASS_NAME = 'relative grid min-w-0 flex-1 gap-[var(--vds-update-notes-gap)]'
+  'grid size-[20px] place-items-center !text-[20px] !leading-none text-[var(--vds-error-bg-default)]'
+const PANEL_HEADING_CLASS_NAME = 'relative grid min-w-0 flex-1 gap-0'
 const PANEL_TITLE_CLASS_NAME =
-  'm-0 truncate text-[length:var(--vds-font-title)] !font-normal leading-[var(--vds-lh-title)] !text-[var(--vds-text-primary)]'
+  'm-0 truncate !text-[16px] !font-normal leading-[var(--vds-lh-title)] !text-[var(--vds-text-primary)]'
 const PANEL_VERSION_CLASS_NAME =
   'truncate text-[length:var(--vds-font-body-lv1)] font-normal leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-placeholder)] tabular-nums'
 const PANEL_VERSION_MUTED_CLASS_NAME =

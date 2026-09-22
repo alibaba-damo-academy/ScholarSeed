@@ -6,6 +6,8 @@ import en from '../../../../localization/locales/en/resources.json' with { type:
 
 import type { AssistantContextRef } from '../../contracts/assistant.ts'
 import {
+  beginResourceTreeReload,
+  finishResourceTreeReload,
   isResourcePathAtOrBelow,
   refreshesResourceTree,
   relocateExpandedResourcePaths,
@@ -18,7 +20,48 @@ import {
   transformResourceContextRefs,
   validateResourceMove
 } from './lifecycle.ts'
-import type { ResourceLinkRoot, ResourceNode } from './state.ts'
+import { INITIAL_RESOURCE_STATE, resourceStateForProjectSwitch, type ResourceLinkRoot, type ResourceNode } from './state.ts'
+
+test('initial resource load and retry keep the foreground loading state', () => {
+  const loading = beginResourceTreeReload(INITIAL_RESOURCE_STATE)
+  assert.equal(loading.loadState, 'loading')
+  const failed = finishResourceTreeReload(loading, null)
+  assert.equal(failed.loadState, 'error')
+  assert.equal(beginResourceTreeReload(failed).loadState, 'loading')
+})
+
+test('an already loaded empty tree refreshes without returning to foreground loading', () => {
+  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, { nodes: [], total: 0, root: '/project' })
+  const refreshing = beginResourceTreeReload(ready)
+  assert.equal(refreshing.loadState, 'refreshing')
+  assert.equal(refreshing.tree, ready.tree)
+  assert.equal(beginResourceTreeReload(refreshing).loadState, 'refreshing')
+  const complete = finishResourceTreeReload(refreshing, { nodes: [], total: 0, root: '/project' })
+  assert.equal(complete.loadState, 'ready')
+  assert.equal(complete.tree.length, 0)
+})
+
+test('failed background refresh retains the last successful snapshot and retries silently', () => {
+  const nodes: ResourceNode[] = [{ path: 'note.md', name: 'note.md', kind: 'file' }]
+  const ready = finishResourceTreeReload(INITIAL_RESOURCE_STATE, { nodes, total: 1, root: '/project' })
+  const failed = finishResourceTreeReload(beginResourceTreeReload(ready), null)
+  assert.equal(failed.loadState, 'ready')
+  assert.equal(failed.tree, nodes)
+  assert.equal(failed.rootTotal, 1)
+  assert.equal(failed.root, '/project')
+  assert.equal(beginResourceTreeReload(failed).loadState, 'refreshing')
+  assert.equal(beginResourceTreeReload(resourceStateForProjectSwitch(failed)).loadState, 'loading')
+})
+
+test('background refresh publishes new data while preserving selection and expansion', () => {
+  const ready = { ...INITIAL_RESOURCE_STATE, loadState: 'ready' as const, selected: 'folder', expanded: { folder: true } }
+  const nodes: ResourceNode[] = [{ path: 'folder', name: 'folder', kind: 'dir' }]
+  const complete = finishResourceTreeReload(beginResourceTreeReload(ready), { nodes, total: 1, root: '/project' })
+  assert.equal(complete.loadState, 'ready')
+  assert.equal(complete.tree, nodes)
+  assert.equal(complete.selected, ready.selected)
+  assert.equal(complete.expanded, ready.expanded)
+})
 
 const linkedRoot: ResourceLinkRoot = {
   rootId: 'root-1',

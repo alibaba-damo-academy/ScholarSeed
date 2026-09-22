@@ -28,7 +28,12 @@ export default defineConfig(({ command }) => ({
     base: './',
     build: {
       outDir: 'out/renderer',
-      rollupOptions: { input: { index: resolve(__dirname, 'src/renderer/index.html') } }
+      rollupOptions: {
+        input: {
+          index: resolve(__dirname, 'src/renderer/index.html'),
+          monaco: resolve(__dirname, 'src/renderer/monaco.html')
+        }
+      }
     },
     plugins: [react({ babel: developmentLocalization(command) })],
     cacheDir: resolve(__dirname, RENDERER_DEV_CACHE_DIRECTORY),

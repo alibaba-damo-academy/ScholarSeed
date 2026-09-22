@@ -64,6 +64,7 @@ import { finishHeadlessCheck } from './headless'
 import { loadRendererPreferences, commitRendererPreferences, reconcileRendererPreferences } from './preferences'
 import { applyMainLanguage, mainLocalization, startupFailureTitle } from './localization'
 import { backendFailureMessage, updateInstallFailure, type BackendFailure } from './failure'
+import { isFirstRun } from './startupmarker'
 import {
   DesktopHandoff,
   type AdoptOutcome,
@@ -78,7 +79,10 @@ import type { StartUpdateResult, UpdateCheckResult, UpdatePhase, UpdateProgress,
 import { LOCAL_LANE_UPDATE_REASON, updateCandidateKey } from '../updates'
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy } from './save'
-import { blocksRendererReload, prepareRendererLoad } from './reload'
+import {
+  blocksRendererReload,
+  prepareRendererLoad
+} from './reload'
 import { installOfficeFontPermission } from './fonts'
 import { acquireOfficeImage } from './images'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
@@ -124,7 +128,8 @@ const BACKEND_RESTART_MAX_DELAY_MS = 15_000
 const BACKEND_PORT_REUSE_ATTEMPTS = 2
 // 退出前让「即将关闭并在后台安装」遮罩停留到能被读完：安装是独立进程、期间没有窗口，
 // 用户没读到这句就会把随后的黑屏当成卡死。800ms 一闪而过，2500ms 才够读完两行。
-// 仅用于更新重启路径；macOS 安装脚本等 app 退出上限 30s、Windows NSIS 也会等退出，均安全。
+// 仅用于 macOS 更新重启路径（安装脚本等 app 退出上限 30s，安全）；Windows 走 ready 握手，
+// commit 后立即退出、安装器等退出上限 60s，不用这个延迟（提案 108 §5.2）。
 const UPDATE_QUIT_DELAY_MS = 2500
 // 一次更新正在推进时，检查结果必须丢弃：覆盖上去等于把用户点「重启完成更新」时的状态
 // 换回「发现新版本」，正在跑的下载/安装也就无从收尾。
@@ -232,7 +237,7 @@ function pushLog(line: string): void {
   logBuffer.push(line)
   while (logBuffer.length > 800) logBuffer.shift()
   writeStdout(line)
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send('scholarseed:backend-log', line)
   }
 }
@@ -1326,10 +1331,18 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         installStage: 'restarting'
       })
       // Quit so the detached installer can swap the now-idle bundle and relaunch.
-      setTimeout(() => {
+      if (process.platform === WINDOWS_PLATFORM) {
+        // Windows：installWindows 在 commit 发布后才返回，安装器正在 customInit 里等本进程
+        // 退出（≤60s，超时即中止、绝不强杀），立即退出直接缩短不可用窗口；握手等待期间
+        // 界面一直停留在「准备中」，不再需要靠延迟让遮罩被读完（提案 108 §5.2 第 5 条）。
         appQuitting = true
         app.quit()
-      }, UPDATE_QUIT_DELAY_MS)
+      } else {
+        setTimeout(() => {
+          appQuitting = true
+          app.quit()
+        }, UPDATE_QUIT_DELAY_MS)
+      }
     } else if (result.ok && result.mode === 'manual') {
       updateInstallationInProgress = false
       publishUpdateSnapshot({ ...currentUpdateSnapshot(), phase: 'manual' })
@@ -1523,7 +1536,9 @@ async function bootstrap(): Promise<void> {
     pushLog(`[shell] attaching to external serve ${apiBase} (no spawn)\n`)
   } else {
     backendManaged = true
-    setStartupStatus(mainLocalization().getFixedT(null, 'foundation')('startup.startingBackend'))
+    const firstRun = isFirstRun(desktopHome(), app.getVersion())
+    setStartupStatus(mainLocalization().getFixedT(null, 'foundation')(
+      firstRun ? 'startup.startingBackendFirstRun' : 'startup.startingBackend'))
     const ready = await startManagedBackend()
     if (!ready) {
       reportStartupFailure(mainLocalization().getFixedT(null, 'foundation')('startup.backendFailed'), backendFailureMessage(mainLocalization().getFixedT(null, 'foundation'), backend?.error ?? lastBackendFailure, 'notReady'))
@@ -1538,6 +1553,14 @@ async function bootstrap(): Promise<void> {
     await createWindow()
     const token = updater.pendingUpdateToken()
     if (token) updater.confirmInstalledUpdate(token, pushLog)
+    // 更新拉起的新实例把启动闭环绑回本轮 updateId：走到这里时 bootstrap 已等到
+    // /api/healthz 且窗口已创建（见上方注释的顺序说明），app-started 与 health-confirmed
+    // 各有事实依据，不是同一事件的两份拷贝（提案 108 §5.2）。
+    const relaunchedUpdateId = updater.pendingUpdateId()
+    if (relaunchedUpdateId) {
+      updater.logUpdateLifecycleEvent('app-started', relaunchedUpdateId, pushLog)
+      updater.logUpdateLifecycleEvent('health-confirmed', relaunchedUpdateId, pushLog)
+    }
     publishUpdateSnapshot(currentUpdateSnapshot())
     // 冷启动时深链可能早于主窗口到达（macOS open-url）：窗口就绪后补消费。
     // 这里的暂存**已经**等价于 proposal 74 §8.4 要的「serve 就绪后再投递」：bootstrap

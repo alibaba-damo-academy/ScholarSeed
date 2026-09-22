@@ -39,6 +39,7 @@
     "explain": "Explain",
     "translate": "Translate",
     "figure": "Explain figure",
+    "figureUnavailable": "The current model does not declare image input support. Select a model that supports images.",
     "figureGuide": {
       "title": "Explain figure",
       "description": "Select an image, table, or diagram to get an explanation.",
@@ -52,6 +53,7 @@
     "figureResult": "Selection · Page {{page}}",
     "figureResultPending": "Selection · Explaining…",
     "continueSelecting": "Continue selecting",
+    "currentModel": "Current model",
     "regenerate": "Regenerate",
     "generateSummary": "Generate reading summary",
     "close": "Close reading panel",
@@ -125,13 +127,14 @@
       "translation_sentence_incomplete": "The sentence translation is incomplete. Try again.",
       "task_missing": "The task does not exist.",
       "pdf_input_unsupported": "The current model does not declare PDF input support. Check its capabilities in model settings or select another model.",
-      "image_input_unsupported": "The current model does not declare image input support. Check its capabilities in model settings or select another model.",
+      "image_input_unsupported": "The current model does not support image input. Switch to a multimodal model that supports images, then try again.",
       "generation_failed": "Generation failed. Check the model connection and try again.",
       "literature_deleted": "The literature item was deleted. This result will not be saved.",
       "source_changed_during_generation": "The source PDF changed during generation. Previous results are preserved. Reopen the literature item.",
       "execution_failed": "Generation failed. Previous results are preserved. Try again.",
       "preparation_failed": "Could not prepare the reading task. Check the document and model settings, then try again.",
       "operation_busy": "This operation already has a generation task. Other AI operations are still available.",
+      "figure_stream_required": "Figure explanation requires the streaming endpoint. Update the client and try again.",
       "source_invalid": "Select a valid project PDF file for figure explanation."
     },
     "errorDiagnostic": "{{message}}\n{{detail}}"

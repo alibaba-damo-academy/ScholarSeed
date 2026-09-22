@@ -108,6 +108,7 @@ PREAMBLE_EN = r"""\documentclass{article}
 \usepackage{graphicx}
 \usepackage{array}
 \usepackage{tabularx}
+\usepackage{longtable}
 \usepackage{hyperref}
 % Figure/table caption label separator: render "Figure 1. caption" /
 % "Table 1. caption" with a period after the number instead of the default
@@ -128,9 +129,7 @@ PREAMBLE_EN = r"""\documentclass{article}
 """
 
 # Chinese preamble: built on `ctexart` (CTeX) which auto-loads xeCJK,
-# configures CJK fonts, and localises \section / \abstract headings. Pin
-# Fandol so output uses the bundled font on macOS and Windows rather than
-# selecting different host fonts. Must
+# configures CJK fonts, and localises \section / \abstract headings. Must
 # be compiled with xelatex — phase07_compile_latex.py auto-promotes the
 # engine when language=chinese is recorded in query_meta.json.
 PREAMBLE_ZH = r"""\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
@@ -139,6 +138,7 @@ PREAMBLE_ZH = r"""\documentclass[UTF8,11pt,a4paper,fontset=fandol]{ctexart}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{tabularx}
+\usepackage{longtable}
 \usepackage{amsmath,amssymb}
 \usepackage{bm}
 \usepackage[colorlinks=true,urlcolor=blue,linkcolor=black,citecolor=black]{hyperref}

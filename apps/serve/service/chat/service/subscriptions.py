@@ -17,6 +17,7 @@ from service.chat.service.completions import (
     CompletionRegistration,
 )
 from service.settings.authorization import BrowserAuthorization
+from service.settings.capabilities import INPUT_MODALITIES_KEY, MODALITY_KINDS
 from service.settings.connections import (
     ENABLED_KEY,
     MODEL_ID_KEY,
@@ -407,6 +408,18 @@ class SubscriptionService:
                 if not isinstance(model_id, str) or not model_id:
                     continue
                 levels = row.get("supported_reasoning_levels")
+                modalities = row.get(INPUT_MODALITIES_KEY)
+                declared_modalities = (
+                    list(
+                        dict.fromkeys(
+                            str(modality).strip().lower()
+                            for modality in modalities
+                            if str(modality).strip().lower() in MODALITY_KINDS
+                        )
+                    )
+                    if isinstance(modalities, list)
+                    else None
+                )
                 models.append(
                     {
                         "id": model_id,
@@ -421,6 +434,11 @@ class SubscriptionService:
                             else None
                         ),
                         "reasoning_effort": str(row.get("default_reasoning_level") or ""),
+                        **(
+                            {INPUT_MODALITIES_KEY: declared_modalities}
+                            if declared_modalities
+                            else {}
+                        ),
                     }
                 )
         except (ValueError, KeyError, TypeError):

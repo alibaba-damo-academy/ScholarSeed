@@ -24,6 +24,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from bibliography_contract import is_bibliography_title
 
 # Section-title vocabulary. The pipeline is bilingual, so every structural rule
 # that keys on a section's role has to recognise both spellings.
@@ -235,6 +236,9 @@ def validate(outline: dict, allowed: set[str], limits: dict,
         elif 'language' in node:
             errors.append(f"subsection {sid} must inherit its top-level chapter language; omit the language key entirely (including default, null or the parent value)")
         title = str(node.get("title") or "").strip().casefold()
+        if is_bibliography_title(title):
+            errors.append(f"section {sid}: bibliography is publisher-owned; remove this reference-list "
+                          "chapter/subsection, retain the user's bibliography requirement for publication")
         if title in seen_titles:
             errors.append(f"section {sid} repeats the title already used by section {seen_titles[title]}")
         seen_titles[title] = sid

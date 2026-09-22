@@ -1108,15 +1108,38 @@ export async function listQueuedMessages(sid: string): Promise<QueuedMessagePayl
   }
 }
 
-export async function deleteQueuedMessage(sid: string, queuedMessageId: string): Promise<boolean> {
+export interface QueuedMessageDeleteResponse {
+  ok: boolean
+  status: number
+  error?: string
+  detail?: string
+  applicationFailure?: ApplicationRequestFailure
+}
+
+export async function deleteQueuedMessage(
+  sid: string,
+  queuedMessageId: string
+): Promise<QueuedMessageDeleteResponse> {
   try {
     const response = await apiFetch(
       `/api/serve/sessions/${encodeURIComponent(sid)}/queue/${encodeURIComponent(queuedMessageId)}`,
       { method: 'DELETE' }
     )
-    return response.ok
-  } catch {
-    return false
+    if (!response.ok) {
+      const failure = await serviceErrorDetail(response)
+      return {
+        ok: false,
+        status: response.status,
+        error: failure.code,
+        detail: failure.message,
+        applicationFailure: failure.applicationFailure
+      }
+    }
+    const payload = (await response.json()) as { ok?: boolean; error?: string }
+    return { ok: payload.ok === true, status: response.status, error: payload.error }
+  } catch (error) {
+    const failure = describeRequestFailure(error)
+    return { ok: false, status: 0, detail: failure.message, applicationFailure: failure.applicationFailure }
   }
 }
 
@@ -1308,6 +1331,7 @@ export interface ModeChangeResult {
 
 export const GLOBAL_PERMISSION_MODES = ['ask', 'safe_auto', 'bypassPermissions'] as const
 export type GlobalPermissionMode = typeof GLOBAL_PERMISSION_MODES[number]
+export const DEFAULT_GLOBAL_PERMISSION_MODE: GlobalPermissionMode = 'safe_auto'
 
 export interface GlobalPermissionModeInfo {
   mode: GlobalPermissionMode

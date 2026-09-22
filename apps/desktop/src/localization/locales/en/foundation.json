@@ -9,6 +9,7 @@
     "preparing": "Preparing ScholarSeed…",
     "connecting": "Connecting to the running service…",
     "startingBackend": "Starting the local service…",
+    "startingBackendFirstRun": "First launch is initializing the local service; this can take a few minutes…",
     "opening": "Opening the workspace…",
     "backendFailed": "ScholarSeed backend failed to start",
     "interfaceFailed": "ScholarSeed interface failed to load",

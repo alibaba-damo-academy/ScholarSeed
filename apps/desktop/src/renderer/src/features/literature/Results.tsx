@@ -1,7 +1,7 @@
-import { JoinLibraryMenu } from './JoinMenu'
 import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
+import { BookOpenText } from 'lucide-react'
 
 import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchView } from './Search'
@@ -10,7 +10,7 @@ import { conversationSearchPapers, presentedSearchArtifacts } from './result'
 import type { ConversationSearchResult } from '../../contracts/literature'
 
 import { useApp } from '../../store'
-import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui'
+import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, EllipsisText } from '../../components/ui'
 
 const PREVIEW_PAPERS = 3
 const SEARCH_CARD_VERSION = '1.0'
@@ -49,13 +49,21 @@ export function LiteratureResults({ content, cardId }: { content: Record<string,
   if (!result) return <Alert tone="warning"><AlertDescription>{t('result.unreadable')}</AlertDescription></Alert>
   const selectedCorpus = Boolean(result.selection?.artifact_id)
   return <Card data-testid="literature-search-preview">
-    <CardHeader><CardTitle>{t('result.heading', { heading: selectedCorpus ? t('searchResult.authorizationPending') : t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS]), count: result.retained })}</CardTitle>
-      <CardDescription className="line-clamp-2">{result.criteria[0] || t('result.search')}</CardDescription></CardHeader>
+    <CardHeader><CardTitle className="!text-[14px] !font-medium !text-[var(--vds-text-primary)]">{t('result.heading', { heading: selectedCorpus ? t('searchResult.authorizationPending') : t(RESULT_LABELS[result.status as keyof typeof RESULT_LABELS]), count: result.retained })}</CardTitle>
+      <CardDescription className="line-clamp-2 text-[var(--vds-text-tertiary)]">{result.criteria[0] || t('result.search')}</CardDescription></CardHeader>
     <CardContent><div className="grid gap-[var(--vds-space-2)]">
-      {conversationSearchPapers(result.papers.slice(0, PREVIEW_PAPERS)).map(paper => <div key={paper.paper_id} className="grid gap-[var(--vds-space-1)]"><p className="m-0 line-clamp-2">{paper.title}{paper.year ? ` · ${paper.year}` : ''}</p><div><JoinLibraryMenu papers={[paper]} /></div></div>)}
-      <p className="m-0 text-[var(--vds-text-secondary)]">{t('result.summary', { sources: result.sources.length, candidates: numberLabel(result.candidates, t), deduplicated: numberLabel(result.deduplicated, t), retained: result.retained })}</p>
+      <div className="grid gap-[6px]">
+        {conversationSearchPapers(result.papers.slice(0, PREVIEW_PAPERS)).map(paper => (
+          <div key={paper.paper_id} className="flex min-w-0 items-center gap-[6px] rounded-[8px] bg-[var(--vds-bg-gray-default-transparent)] px-[8px] py-[6px]">
+            <BookOpenText aria-hidden className="shrink-0 text-[var(--vds-icon-outline-default)]" size={14} />
+            <EllipsisText className="text-[12px] text-[var(--vds-text-secondary)]" wrapperClassName="min-w-0 flex-1" tooltipPortalled>
+              {paper.title}{paper.year ? ` · ${paper.year}` : ''}
+            </EllipsisText>
+          </div>
+        ))}
+      </div>
       {result.warnings.length > 0 && <p className="m-0 line-clamp-2 text-[var(--vds-text-secondary)]">{result.warnings[0]}</p>}
-      <Button variant="secondary" onClick={() => act.openLiteratureResult({ session_id: result.session_id, card_id: cardId, title: result.criteria[0] || '' })}>{t('result.viewAll')}</Button>
+      <Button variant="outline" onClick={() => act.openLiteratureResult({ session_id: result.session_id, card_id: cardId, title: result.criteria[0] || '' })}>{t('result.viewAll')}</Button>
     </div></CardContent>
   </Card>
 }

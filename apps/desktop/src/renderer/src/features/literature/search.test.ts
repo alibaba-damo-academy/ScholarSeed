@@ -111,7 +111,28 @@ test('literature panel filters return focus to the literature overview tab', () 
   assert.match(source, /onClick=\{\(\) => selectLiteratureScope\(patch\)\}/)
   assert.match(source, /selectLiteratureScope\(\{ \.\.\.clear, project_id: project\.id \}\)/)
   assert.match(source, /selectLiteratureScope\(\{\s+\.\.\.clear,\s+project_id: project\?\.id \?\? projectId,\s+collection_id: \[collection\.id\]/)
-  assert.match(source, /selectLiteratureScope\(\{ \.\.\.clear, tag_id: \[item\.id\] \}\)/)
+  // 标签不再是作用域切换而是可叠加的多选过滤: 走 catalogue.filter 保留列表勾选,
+  // 且不能再出现「整体替换成单个标签」的旧写法。
+  assert.match(scopeHelper, /catalogue\.filter\(\{ tag_id: next\.length > 0 \? next : undefined \}\)/)
+  assert.doesNotMatch(source, /tag_id: \[item\.id\]/)
+  assert.match(source, /selected=\{activeTagIds\.has\(item\.id\)\}/)
+})
+
+test('tag facet scope mirrors the list query so sidebar project picks are counted', () => {
+  const source = readFileSync(new URL('./LiteraturePanel.tsx', import.meta.url), 'utf8')
+  const facetCall = source.slice(
+    source.indexOf('getLiteratureTagFacets({'),
+    source.indexOf('pruneStaleTags(value.tags)')
+  )
+  // 全览里点侧栏的项目行只写 query.project_id, 不改 homeSelectedProjectId; 拿面板
+  // 作用域 (projectId) 去请求会让标签计数退回全库。项目文献库里两者恰好相等, 所以
+  // 这个 bug 只在全览暴露 —— 断言必须钉住取值来源, 不能只钉住"能跑"。
+  assert.match(facetCall, /project_id: query\.project_id/)
+  assert.doesNotMatch(facetCall, /project_id: projectId/)
+  assert.match(source, /query\.collection_id,\s+query\.project_id,\s+query\.recent,/)
+  // 搜索与标签筛选互不相干; 已选标签也不能反向收窄自己的 facet。
+  assert.doesNotMatch(facetCall, /\bq:/)
+  assert.doesNotMatch(facetCall, /tag_id:/)
 })
 
 test('attachment deletion refreshes the shared literature catalogue after closing detail', () => {

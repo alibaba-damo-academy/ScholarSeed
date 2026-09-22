@@ -10,6 +10,9 @@ const monacoSource = readFileSync(new URL('./MonacoDocument.tsx', import.meta.ur
 const storeSource = readFileSync(new URL('../../store.tsx', import.meta.url), 'utf8')
 const editorStyles = readFileSync(new URL('./editor.css', import.meta.url), 'utf8')
 const diffSource = readFileSync(new URL('./Diff.tsx', import.meta.url), 'utf8')
+const frameSource = readFileSync(new URL('./monaco/host.tsx', import.meta.url), 'utf8')
+const frameBootstrapSource = readFileSync(new URL('./monaco/frame.ts', import.meta.url), 'utf8')
+const featureSource = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
 
 test('generated Markdown fragments resolve only through explicit anchors', () => {
   const source = [
@@ -107,7 +110,6 @@ test('Monaco source editor uses one global wrapping icon preference', () => {
   )).code)
   assert.deepEqual(labels.map(code => code.wrap), ['自动换行', 'Wrap'])
 })
-const featureSource = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
 const dockSource = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
 const workbenchHarnessSource = readFileSync(new URL('../../../../main/workbench.ts', import.meta.url), 'utf8')
 const workbenchE2ESource = readFileSync(new URL('../../../../../e2e/workbench.spec.ts', import.meta.url), 'utf8')
@@ -343,19 +345,16 @@ test('Markdown image failures retain HTTP diagnostics and allow a later retry', 
 })
 
 
-test('every Monaco runtime entry initializes the official NLS boundary before vendor modules', () => {
-  for (const entry of ['monaco.ts', 'syntax.ts']) {
-    const source = readFileSync(new URL(entry, import.meta.url), 'utf8')
-    assert.ok(source.indexOf("import './nls'") >= 0)
-    assert.ok(source.indexOf("import './nls'") < source.indexOf("from 'monaco-editor/"))
-  }
-  const bootstrap = readFileSync(new URL('./nls.ts', import.meta.url), 'utf8')
-  assert.match(bootstrap, /import 'monaco-editor\/nls\/lang\/zh-cn'/)
-  assert.match(bootstrap, /rendererLocalization\.resolvedLanguage/)
-  assert.doesNotMatch(bootstrap, /\.on\(|changeLanguage\(|editor\.create|dispose\(/)
+test('Monaco runs in a language-scoped frame while the application renderer stays mounted', () => {
+  assert.match(frameBootstrapSource, /language === 'zh'[\s\S]*import\('monaco-editor\/nls\/lang\/zh-cn'\)/)
+  assert.match(frameBootstrapSource, /await import\('\.\/runtime'\)/)
+  assert.match(frameSource, /new URL\('\.\/monaco\.html'/)
+  assert.match(frameSource, /event\.source !== frameRef\.current\?\.contentWindow/)
+  assert.match(featureSource, /editorRuntimeRevision/)
+  assert.doesNotMatch(storeSource, /reloadRenderer\(/)
   for (const source of [monacoSource, diffSource]) {
-    assert.match(source, /i18n\.resolvedLanguage !== MONACO_LANGUAGE/)
-    assert.match(source, /t\('code\.languagePending'\)/)
+    assert.match(source, /<MonacoFrame/)
+    assert.doesNotMatch(source, /languagePending|MONACO_LANGUAGE/)
   }
 })
 

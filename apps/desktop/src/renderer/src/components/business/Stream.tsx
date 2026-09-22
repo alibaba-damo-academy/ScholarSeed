@@ -8,6 +8,7 @@ import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
 import { Copy } from 'lucide-react'
 import aiThinking from '../../assets/ai-thinking.gif'
+import { createFollowScroll } from './scroll'
 import { activeThread, useApp } from '../../store'
 import {
   ConvCard,
@@ -122,6 +123,7 @@ const ACTIVITY_ELAPSED_TICK_MS = 1000
 const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
 const HIL_OUTCOME_UNKNOWN_MESSAGE = 'stream.hil.outcomeUnknown'
 const SHOW_SCROLL_TO_BOTTOM_DISTANCE_PX = 140
+const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
 const ANSWER_SOURCE_RANGE_UNIT = 'utf16_code_unit'
 const OPENABLE_RESOURCE_CONTEXT_KINDS = new Set(['file', 'resource'])
 const SELECTION_CONTEXT_KIND = 'selection'
@@ -198,7 +200,7 @@ const TOOL_RUN_STEP_CLASS =
 const TOOL_RUN_STEP_TRIGGER_CLASS =
   '!flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
 const TOOL_RUN_STEP_NAME_CLASS =
-  'shrink-0 font-medium text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
+  'shrink-0 font-normal text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
 const TOOL_RUN_STEP_CARET_CLASS =
   'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]/step:rotate-90 group-[.is-open]/step:text-[var(--text-2)]'
 const TOOL_RUN_STEP_CONTENT_CLASS =
@@ -212,7 +214,7 @@ const TOOL_RUN_IO_LABEL_CLASS =
 const TOOL_RUN_IO_CLASS =
   'm-[var(--vds-space-0)] max-h-[240px] overflow-auto rounded-[var(--vds-radius-3)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] font-mono text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
 const ACTIVITY_LINE_CLASS =
-  'group/activity my-[var(--vds-space-2)] !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-[var(--vds-space-1)] text-left text-[12.5px] leading-[1.45] !text-[var(--text-3)] shadow-none transition-colors duration-150 hover:!bg-[var(--vds-bg-white-hover-transparent)] hover:!text-[var(--text-2)]'
+  'group/activity m-0 !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-0 text-left text-[12.5px] !font-normal leading-[1.45] !text-[var(--vds-text-tertiary)] shadow-none transition-colors duration-150 hover:!bg-transparent hover:!text-[var(--vds-text-primary)]'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
 type WebSearchItem = Extract<ConvItem, { kind: 'web_search' }>
@@ -359,6 +361,7 @@ export function Stream({
   const endRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const showScrollToBottomRef = useRef(false)
+  const resumeFollowOnScroll = useRef(false)
   // Turn 终态事件是停止工作态的唯一依据。中途 assistant 文本之后仍可能继续执行
   // 不需要单独展示的活动（例如 web_fetch），因此不能根据最后一条文本隐藏运行标签。
   const busy =
@@ -417,6 +420,22 @@ export function Stream({
     showScrollToBottomRef.current = visible
     setShowScrollToBottom(visible)
   }, [home])
+
+  const followScroll = React.useMemo(() => createFollowScroll(
+    () => {
+      scrollToBottom('auto')
+      updateScrollToBottomVisibility()
+    },
+    (callback) => requestAnimationFrame(callback),
+    (frame) => cancelAnimationFrame(frame)
+  ), [scrollToBottom, updateScrollToBottomVisibility])
+
+  useEffect(() => () => followScroll.cancel(), [followScroll])
+
+  useLayoutEffect(() => {
+    followScroll.resume()
+    resumeFollowOnScroll.current = false
+  }, [followScroll, thread.sessionId])
 
   const continueTurn = async (
     failure: Extract<ConvItem, { kind: 'error' }>
@@ -548,10 +567,9 @@ export function Stream({
   useLayoutEffect(() => {
     if (
       !state.aiPanel.messageFocus &&
-      focusedSessionRef.current !== thread.sessionId &&
-      !showScrollToBottomRef.current
-    ) scrollToBottom(busy ? 'auto' : 'smooth')
-  }, [busy, conv, showWorking, scrollToBottom, state.aiPanel.messageFocus, thread.sessionId])
+      focusedSessionRef.current !== thread.sessionId
+    ) followScroll.request()
+  }, [busy, conv, showWorking, followScroll, state.aiPanel.messageFocus, thread.sessionId])
 
   useLayoutEffect(() => {
     const focus = state.aiPanel.messageFocus
@@ -598,36 +616,40 @@ export function Stream({
     }
     showScrollToBottomRef.current = true
     focusedSessionRef.current = thread.sessionId ?? null
+    followScroll.pause()
     stream.scrollTo({ top, behavior: 'instant' })
     updateScrollToBottomVisibility()
     set((current) => ({
       aiPanel: { ...current.aiPanel, messageFocus: null }
     }))
-  }, [conv, home, set, state.aiPanel, thread.resumeState, thread.sessionId, updateScrollToBottomVisibility])
+  }, [conv, followScroll, home, set, state.aiPanel, thread.resumeState, thread.sessionId, updateScrollToBottomVisibility])
 
   useEffect(() => {
-    if (home || !busy || !columnRef.current) return () => undefined
+    if (home || !columnRef.current) return () => undefined
     const observer = new ResizeObserver(() => {
-      if (focusedSessionRef.current !== thread.sessionId && !showScrollToBottomRef.current) scrollToBottom('auto')
-      updateScrollToBottomVisibility()
+      if (focusedSessionRef.current !== thread.sessionId) followScroll.request()
     })
     observer.observe(columnRef.current)
     return () => observer.disconnect()
-  }, [busy, home, scrollToBottom, thread.sessionId, updateScrollToBottomVisibility])
+  }, [followScroll, home, thread.sessionId])
 
   useEffect(() => {
     const stream = streamRef.current
     if (!stream || home) return () => undefined
     updateScrollToBottomVisibility()
-    stream.addEventListener('scroll', updateScrollToBottomVisibility, {
+    const onScroll = (): void => {
+      updateScrollToBottomVisibility()
+      if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
+    }
+    stream.addEventListener('scroll', onScroll, {
       passive: true
     })
     window.addEventListener('resize', updateScrollToBottomVisibility)
     return () => {
-      stream.removeEventListener('scroll', updateScrollToBottomVisibility)
+      stream.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', updateScrollToBottomVisibility)
     }
-  }, [home, updateScrollToBottomVisibility])
+  }, [followScroll, home, updateScrollToBottomVisibility])
 
   useLayoutEffect(() => {
     updateScrollToBottomVisibility()
@@ -688,11 +710,24 @@ export function Stream({
   return (
     <div
       ref={streamRef}
-      onWheel={() => { focusedSessionRef.current = null }}
-      onPointerDown={() => { focusedSessionRef.current = null }}
-      onKeyDown={() => { focusedSessionRef.current = null }}
+      onWheel={(event) => {
+        focusedSessionRef.current = null
+        followScroll.pause()
+        resumeFollowOnScroll.current = event.deltaY > 0
+        if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
+      }}
+      onPointerDown={() => {
+        focusedSessionRef.current = null
+        followScroll.pause()
+        resumeFollowOnScroll.current = false
+      }}
+      onKeyDown={() => {
+        focusedSessionRef.current = null
+        followScroll.pause()
+        resumeFollowOnScroll.current = false
+      }}
       className={cx(
-        'conversation-stream [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
+        'conversation-stream [--vds-card-radius:var(--vds-radius-6)] [container-name:conversation-stream] [container-type:inline-size] [scrollbar-gutter:stable_both-edges] [overflow-anchor:none] [&::-webkit-scrollbar]:w-[var(--vds-conversation-scrollbar-width)] [&_.vds-card]:!shadow-none',
         home ? 'pt-0' : 'pt-[var(--vds-space-4)]'
       )}
       style={{
@@ -810,7 +845,10 @@ export function Stream({
           data-testid="scroll-to-bottom"
           aria-label={t('stream.bottom')}
           title={t('stream.bottom')}
-          onClick={() => scrollToBottom('smooth')}
+          onClick={() => {
+            followScroll.resume()
+            scrollToBottom(window.matchMedia(REDUCED_MOTION_QUERY).matches ? 'auto' : 'smooth')
+          }}
         >
           <span
             aria-hidden
@@ -1539,10 +1577,11 @@ function ActivityRun({
       : t('stream.processed')
   return (
     <Collapsible
+      animated
       open={expanded}
       onOpenChange={setUserExpanded}
       className={cx(
-        'group my-[var(--vds-space-2)] min-w-0',
+        'group my-[var(--vds-space-2)] min-w-0 [--vds-collapsible-content-gap:0px]',
         expanded && 'is-open'
       )}
       data-testid="turn-activity"
@@ -1576,11 +1615,11 @@ function ActivityRun({
               窄对话区会出现横向滚动条。 */}
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{state}</span>
           <span className="inline-flex flex-none opacity-0 transition-opacity duration-150 group-hover/activity:opacity-100 group-focus-visible/activity:opacity-100">
-            <Icon name="chevron-right" size={13} sw={1.8} />
+            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} sw={1.8} />
           </span>
         </Button>
       </CollapsibleTrigger>
-      <CollapsibleContent className="ml-[var(--vds-space-4)] !rounded-none !border-0 !bg-transparent !p-0">
+      <CollapsibleContent className="ml-[var(--vds-space-3)] !rounded-none !border-0 !bg-transparent !p-0">
         <div className={TOOL_RUN_STEPS_CLASS}>
           {items.map((item) => {
             if (item.kind === 'thinking') {
@@ -1654,6 +1693,7 @@ function ThinkingActivityStep({
   const [open, setOpen] = useState(false)
   return (
     <Collapsible
+      animated
       open={open}
       onOpenChange={setOpen}
       className={cx(
@@ -2992,7 +3032,7 @@ function HilCard({
         </span>
         <span className="inline-flex flex-none items-center gap-[var(--vds-space-2)] @max-[340px]:col-span-2 @max-[340px]:justify-self-end">
           <Button
-            variant="secondary"
+            variant="outline"
             size="sm"
             type="button"
             data-testid={`hil-permission-${dockOptions.deny.id}`}
@@ -3606,10 +3646,10 @@ function Thinking({
 }): React.JSX.Element {
   const messageId = itemId ? `item:${itemId}` : undefined
   const markdownClassName =
-    'text-[14px] leading-[1.65] text-[var(--text-2)]'
+    '!text-[length:var(--vds-font-body-lv2)] leading-[1.65] text-[var(--text-2)] [&>*:last-child]:mb-0'
   return (
     <div
-      className="mb-[var(--vds-space-4)] min-w-0"
+      className="min-w-0"
       data-testid="turn-commentary"
     >
       {messageId ? (
@@ -4114,15 +4154,14 @@ function UserBubble({
             <CopyButton
               type="button"
               size="xs"
-              className="![--vds-icon-button-glyph:var(--vds-icon-7)]"
-              variant="ghost"
+              variant="ghostIcon"
               value={item.text}
               writeText={writeDesktopClipboard}
               idleLabel={t('stream.copyMessage')}
               copiedLabel={t('stream.copied')}
-              iconOnly
-              icon={<Copy size={14} />}
-            />
+            >
+              <Copy size={14} />
+            </CopyButton>
           </div>
         )}
       </div>
@@ -4312,16 +4351,19 @@ function AgentMsg({
     <div style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         {item.text && (
-          <AnnotatedAnswer
-            citationEnabled={citationEnabled}
-            text={item.text}
-            eventSeq={item.eventSeq}
-            evidence={item.evidence}
-            selectionEnabled={selectionEnabled}
-            turnId={item.turnId}
-            messageId={item.itemId ? `item:${item.itemId}` : null}
-            answerSources={item.answerSources}
-          />
+          <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_both]">
+            <AnnotatedAnswer
+              citationEnabled={citationEnabled}
+              text={item.text}
+              eventSeq={item.eventSeq}
+              evidence={item.evidence}
+              selectionEnabled={selectionEnabled}
+              turnId={item.turnId}
+              messageId={item.itemId ? `item:${item.itemId}` : null}
+              answerSources={item.answerSources}
+              markdownClassName="!text-[length:var(--vds-font-body-lv2)]"
+            />
+          </div>
         )}
         {trailingContent}
         {item.text && (
@@ -4329,15 +4371,14 @@ function AgentMsg({
             <CopyButton
               type="button"
               size="xs"
-              className="![--vds-icon-button-glyph:var(--vds-icon-7)]"
-              variant="ghost"
+              variant="ghostIcon"
               value={visibleMarkdownText(item.text || '')}
               writeText={writeDesktopClipboard}
               idleLabel={t('stream.copyReply')}
               copiedLabel={t('stream.copied')}
-              iconOnly
-              icon={<Copy size={14} />}
-            />
+            >
+              <Copy size={14} />
+            </CopyButton>
             {duration ? (
               <Tooltip
                 content={conversation('turn.duration', { duration })}

@@ -13,10 +13,39 @@ import {
   serviceErrorDetail, openSession, confirmUnknownTurn, requestFailureFeedback, postTurn, postSide, sendQueuedMessage, setMode, setSessionModel,
   createSubscriptionProfile, parseOpenSessionResponse, classifySessionResumeFailure, interruptSession, respondHil,
   DiagnosticOperationError, getDiagnosticPolicy, getSkillDocument, getSkills,
-  getGlobalPermissionMode, setGlobalPermissionMode, GLOBAL_PERMISSION_MODES,
-  SkillCatalogError, SkillDocumentError, setSkillActive
+  getGlobalPermissionMode, setGlobalPermissionMode, DEFAULT_GLOBAL_PERMISSION_MODE, GLOBAL_PERMISSION_MODES,
+  SkillCatalogError, SkillDocumentError, setSkillActive, deleteQueuedMessage
 } from './api.ts'
 import { SKILL_CATALOG_CHANGED_EVENT } from '../../skills.ts'
+
+test('queue withdrawal preserves business errors and uncertain transport results', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    scholarseed: { getApiBase: () => '' }, setTimeout, clearTimeout
+  } })
+  try {
+    for (const [status, error] of [[404, 'session_not_found'], [409, 'queued_message_not_editable']] as const) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error }), { status })
+      const result = await deleteQueuedMessage('session', 'message')
+      assert.equal(result.ok, false)
+      assert.equal(result.status, status)
+      assert.equal(result.error, error)
+    }
+    globalThis.fetch = async () => new Response(JSON.stringify({ ok: true }))
+    assert.equal((await deleteQueuedMessage('session', 'message')).ok, true)
+    globalThis.fetch = async () => { throw new TypeError('connection lost') }
+    const unknown = await deleteQueuedMessage('session', 'message')
+    assert.equal(unknown.ok, false)
+    assert.equal(unknown.status, 0)
+    globalThis.fetch = async () => new Response('invalid response')
+    assert.equal((await deleteQueuedMessage('session', 'message')).ok, false)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 
 test('only successful skill preference mutations invalidate open catalogs', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -58,6 +87,7 @@ test('all permission choices can be restored and persisted as the new-session de
       return new Response(JSON.stringify({ ok: true, mode: requested, modes: GLOBAL_PERMISSION_MODES }))
     }
     assert.deepEqual(GLOBAL_PERMISSION_MODES, ['ask', 'safe_auto', 'bypassPermissions'])
+    assert.equal(DEFAULT_GLOBAL_PERMISSION_MODE, 'safe_auto')
     assert.equal((await getGlobalPermissionMode())?.mode, 'ask')
     assert.equal((await setGlobalPermissionMode('bypassPermissions'))?.mode, 'bypassPermissions')
     assert.deepEqual(requests, [

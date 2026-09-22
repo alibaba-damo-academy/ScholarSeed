@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -20,10 +21,13 @@ import slr_paths
 slr_paths.bootstrap(__file__)
 from evidence import read,save
 from publication_files import dependencies,source_bundle
+from bibliography_contract import inspect_bibliography, duplicate_citation_definitions
 
-PAGE_RENDER_LIMIT=3
+from platform_io import file_lock
+from publication_pages import TRACKING_TEX
+from publication_pages import inspection_plan
+
 PAGE_RENDER_LONG_EDGE=1400
-
 
 def publication_source(ws):
     gen=Path(ws)/'05_generation'
@@ -44,7 +48,7 @@ def source_text(ws,source):
 
 
 def content_report(ws,edited=True):
-    """Advisory checks against CURRENT source/bibliography, never old task IDs."""
+    """Current-source checks; duplicate bibliography structures block publication."""
     source=publication_source(ws);sources,paths=source_bundle(source)
     prose='\n'.join(text for k,text in sources.items() if k=='main' or paths[k].suffix=='.tex')
     prose=re.sub(r'(?m)(?<!\\)%[^\n]*','',prose)
@@ -65,6 +69,9 @@ def content_report(ws,edited=True):
     checks=[{'id':'unknown_citations','unknown':unknown,'status':'WARNING' if unknown else 'SUCCESS'},
             {'id':'unresolved_references','missing':sorted(references-labels),
              'status':'WARNING' if references-labels else 'SUCCESS'}]
+    bibliography=inspect_bibliography(sources,source.suffix=='.md',
+                                     automatic_markdown=bool(cited_keys(prose)&keys))
+    checks.append({'id':'bibliography_ownership',**bibliography})
     # Planned coverage is advice only. Deleting all generation JSON must still
     # leave a directly compilable document.
     outline_path=Path(ws)/'04_outline/outline.json'
@@ -85,8 +92,9 @@ def content_report(ws,edited=True):
                        {'id':'planned_tables','missing':tables,'status':'WARNING' if tables else 'SUCCESS'}]
         except (ValueError,KeyError,TypeError):
             checks.append({'id':'plan_advice','status':'WARNING','message':'Old outline unavailable; current source remains editable.'})
-    return {'status':'WARNING' if any(c['status']=='WARNING' for c in checks) else 'SUCCESS',
-            'blocking':False,'checks':checks}
+    return {'status':'FAILED' if bibliography['blocking'] else
+                    'WARNING' if any(c['status']=='WARNING' for c in checks) else 'SUCCESS',
+            'blocking':bibliography['blocking'],'checks':checks}
 
 
 def safe_title_stem(title):
@@ -119,26 +127,46 @@ def deliverable_pdf_path(ws,source):
     return Path(ws)/'06_output'/(safe_title_stem(publication_title(ws,source))+'.pdf')
 
 
-def render_pages(ws,pdf=None):
+def render_pages(ws,pdf=None,*,include_scope=False):
+    scope={'status':'PARTIAL_SUCCESS','complete':False,'pages':[],'issues':[]}
+    def finish(paths,error):
+        return (paths,error,scope) if include_scope else (paths,error)
     ws=Path(ws)
     if pdf is None:
         report=ws/'05_generation/generation_report.json'
         recorded=read(report).get('deliverable') if report.exists() else None
         pdf=Path(recorded) if isinstance(recorded,str) and recorded.endswith('.pdf') else ws/'06_output/survey.pdf'
     else:pdf=Path(pdf)
-    if not pdf.exists():return [],'PDF unavailable'
+    if not pdf.exists():
+        scope['issues'].append({'code':'pdf_unavailable','path':str(pdf)})
+        return finish([],'PDF unavailable')
     folder=ws/'07_verifier/postcheck/pages';folder.mkdir(parents=True,exist_ok=True)
     prefix=folder/('page-'+uuid.uuid4().hex[:12])
+    rendered=[]
     try:
+        try:source=publication_source(ws)
+        except ValueError:source=None
+        scope=inspection_plan(source,pdf)
         with pypdfium2.PdfDocument(pdf) as document:
-            for index in range(min(PAGE_RENDER_LIMIT,len(document))):
-                width,height=document[index].get_size()
-                zoom=PAGE_RENDER_LONG_EDGE/max(width,height)
-                document[index].render(scale=zoom).to_pil().save(
-                    f'{prefix}-{index+1:02d}.png')
-    except (RuntimeError,OSError,ValueError) as exc:
-        return [],str(exc)[-2000:]
-    return [str(p) for p in sorted(folder.glob(prefix.name+'-*.png'))],None
+            for item in scope['pages']:
+                index=item['page_number']-1
+                path=f'{prefix}-{index+1:02d}.png'
+                page=document[index]
+                try:
+                    width,height=page.get_size()
+                    zoom=PAGE_RENDER_LONG_EDGE/max(width,height)
+                    bitmap=page.render(scale=zoom)
+                    try:bitmap.to_pil().save(path)
+                    finally:bitmap.close()
+                finally:page.close()
+                item['image']=path
+                rendered.append(path)
+    except (RuntimeError,OSError,ValueError,ImportError) as exc:
+        scope.update(status='PARTIAL_SUCCESS',complete=False)
+        scope['issues'].append({'code':'page_render_error','message':str(exc)[-2000:]})
+        return finish(rendered,str(exc)[-2000:])
+    error=None if scope['complete'] else 'Figure/table page selection is incomplete; see inspection_scope.issues and republish after fixing the reported labels.'
+    return finish(rendered,error)
 
 
 def _run(command,cwd,env):
@@ -161,16 +189,20 @@ def _export(ws,source):
 
 def publish(ws):
     import os
-    import fcntl
     ws=Path(ws).resolve();gen=ws/'05_generation';gen.mkdir(parents=True,exist_ok=True)
-    with (gen/'publication.lock').open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    with file_lock(gen/'publication.lock'):
         return _publish(ws,os.environ.copy())
 
 
 def _publish(ws,env):
     started=time.monotonic();source=publication_source(ws);gen=source.parent
     rules=content_report(ws)
+    if rules['blocking']:
+        result={**rules,'code':'BIBLIOGRAPHY_CONFLICT','stage':'generation_publish',
+                'source':str(source),'duration_sec':round(time.monotonic()-started,3),
+                'next_action':'Remove the reported duplicate bibliography from v2 or its included sources, then run workflow publish. Any earlier exported PDF is not the current result.'}
+        save(gen/'generation_report.json',result);save(ws/'_status/manuscript_publish.json',result)
+        return result
     if source.suffix=='.md':
         out=_export(ws,source);deliverable=out/'survey.md'
         from citation_formats import CitationResolver,parse_bib_file
@@ -206,8 +238,11 @@ def _publish(ws,env):
         record=gen/'_status/phase07_compile_latex.json'
         save(record,{'status':'FAILED','source':str(source),'message':'Current compile running'})
         for name in ('TEXINPUTS','BIBINPUTS','BSTINPUTS'):
-            env[name]=str(gen)+':'+str(ws)+':'+env.get(name,'')
-        command=[engine,'-interaction=nonstopmode','-halt-on-error',source.name]
+            env[name]=os.pathsep.join((str(gen),str(ws),env.get(name,'')))
+        tracker=gen/'_internal/publication_page_tracking.tex'
+        save(tracker,TRACKING_TEX)
+        command=[engine,'-interaction=nonstopmode','-halt-on-error','-jobname='+source.stem,
+                 r'\input{_internal/publication_page_tracking.tex}\input{'+source.name+'}']
         logs=[];first=_run(command,gen,env);logs.append(first.stdout+first.stderr)
         if (gen/(source.stem+'.aux')).exists() and r'\bibliography{' in text and shutil.which('bibtex'):
             bib=_run(['bibtex',source.stem],gen,env);logs.append(bib.stdout+bib.stderr)
@@ -221,13 +256,17 @@ def _publish(ws,env):
         fatal=[line for line in log_lines if line.startswith('!')]
         contexts=['\n'.join(log_lines[i:i+7]) for i,line in enumerate(log_lines) if line.startswith('!')]
         clean=final.returncode==0 and pdf.exists() and not fatal
-        diagnosis={'verdict':'clean' if clean else 'compile_failed','final_pass_rc':final.returncode,
+        duplicate_definitions=duplicate_citation_definitions(log)
+        if duplicate_definitions:clean=False
+        diagnosis={'verdict':'bibliography_conflict' if duplicate_definitions else 'clean' if clean else 'compile_failed','final_pass_rc':final.returncode,
                    'fatal_errors':fatal,'log_path':str(source.with_suffix('.log')),
                    'error_contexts':contexts,
                    'log_warnings':[line for line in log.splitlines() if 'Warning' in line or 'Overfull' in line]}
         save(record,{'status':'SUCCESS' if clean else 'FAILED','source':str(source),'diagnosis':diagnosis})
         result={'status':'SUCCESS' if clean else 'FAILED','source':str(source),
-                'checks':rules['checks']+[{'id':'compilation','status':'SUCCESS' if clean else 'FAILED','diagnosis':diagnosis}],
+                'checks':rules['checks']+[{'id':'bibliography_definitions',
+                    'status':'FAILED' if duplicate_definitions else 'SUCCESS','warnings':duplicate_definitions},
+                    {'id':'compilation','status':'SUCCESS' if clean else 'FAILED','diagnosis':diagnosis}],
                 'compile':diagnosis,'visual_review_required':True,
                 'next_action':'Inspect PDF pages; edit v2 and its dependencies, then run workflow publish.'}
         if clean:
@@ -238,6 +277,9 @@ def _publish(ws,env):
             result['deliverable']=str(deliverable)
         else:
             result.update(code='LATEX_COMPILE_ERROR',message='Current v2 did not compile. Edit it directly; any earlier exported PDF is not the current result.')
+            if duplicate_definitions:
+                result.update(code='BIBLIOGRAPHY_CONFLICT',blocking=True,
+                              message='Duplicate citation definitions remain; repair the bibliography and republish.')
     result.update(stage='generation_publish',duration_sec=round(time.monotonic()-started,3))
     save(gen/'generation_report.json',result);save(ws/'_status/manuscript_publish.json',result)
     return result
@@ -247,14 +289,20 @@ def audit(ws,render=False):
     ws=Path(ws);source=publication_source(ws)
     result=content_report(ws)
     previous=read(ws/'05_generation/generation_report.json') if (ws/'05_generation/generation_report.json').exists() else {}
-    result.update(status=previous.get('status','FAILED'),visual_review_required=source.suffix=='.tex',
+    result.update(status='FAILED' if result['blocking'] else previous.get('status','FAILED'),visual_review_required=source.suffix=='.tex',
                   visual_review_complete=False,pages_to_read=[],render_error=None)
-    result['checks'] += [c for c in previous.get('checks',[]) if c['id']=='compilation']
+    result['checks'] += [c for c in previous.get('checks',[]) if c['id'] in ('compilation','bibliography_definitions')]
     if render and source.suffix=='.tex' and result['status']=='SUCCESS':
-        result['pages_to_read'],result['render_error']=render_pages(ws,previous.get('deliverable'))
+        result['pages_to_read'],result['render_error'],result['inspection_scope']=render_pages(
+            ws,previous.get('deliverable'),include_scope=True)
+        result['checks'].append({'id':'visual_inspection_scope',
+                                 'status':'SUCCESS' if result['inspection_scope']['complete'] else 'WARNING',
+                                 'issues':result['inspection_scope']['issues']})
         if result['render_error']:result['status']='PARTIAL_SUCCESS'
     folder=ws/('07_verifier/postcheck' if render else '07_verifier/fast_audit/output')
     result['next_action']='Inspect the rendered pages; edit v2 directly and run workflow publish.'
+    if result.get('inspection_scope',{}).get('complete') is False:
+        result['next_action']='Resolve inspection_scope.issues and republish; available page images do not cover every figure/table yet.'
     result['report']=str(folder/'report.json');save(folder/'report.json',result)
     save(folder/'summary.md','# Publication checks\n\n'+'\n'.join('- '+c['id']+': '+c['status'] for c in result['checks']))
     return result

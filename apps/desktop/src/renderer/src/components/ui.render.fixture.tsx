@@ -646,6 +646,15 @@ function Fixture(): JSX.Element {
       </Collapsible>
       <output data-testid="render-collapsible-controlled-value">{controlledOpen ? 'open' : 'closed'}</output>
 
+      <Collapsible animated>
+        <CollapsibleTrigger data-testid="render-motion-trigger">展开过程</CollapsibleTrigger>
+        <CollapsibleContent data-testid="render-motion-content">
+          <p>第一步：检查资料</p>
+          <p>第二步：分析结果</p>
+          <Button data-testid="render-motion-action">查看详情</Button>
+        </CollapsibleContent>
+      </Collapsible>
+
       <Tabs data-testid="render-tabs" value={tabValue} onValueChange={setTabValue}>
         <TabsList aria-label="项目视图">
           <TabsTrigger value="overview">概览</TabsTrigger>

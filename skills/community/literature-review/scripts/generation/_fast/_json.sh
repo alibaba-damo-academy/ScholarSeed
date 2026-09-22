@@ -15,8 +15,8 @@
 # — the empty capture made every `[ "$miss" -eq 0 ]` convergence test a syntax
 # error rather than a comparison, so the drafting retry loop ran all three waves
 # unconditionally instead of stopping at the first clean one. Reading JSON with
-# The product Skill Python launcher removes the host-environment variable: Python is a
-# declared dependency of every phase these helpers are used from, while jq never was.
+# scholarseed-skill-python removes the install-time variable: scholarseed-skill-python is a hard dependency of
+# every phase these helpers are used from, jq was never a declared one.
 #
 # Every reader below is total. A missing file, unparseable JSON, or an absent
 # key yields the documented fallback (0 / "" / [] / {}) on stdout and still

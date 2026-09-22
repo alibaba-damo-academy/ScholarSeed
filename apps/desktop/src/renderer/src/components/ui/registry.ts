@@ -177,7 +177,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Collapsible: {
     exports: ['Collapsible', 'CollapsibleContent', 'CollapsibleTrigger'],
     intents: ['展开收起', '折叠', '显示更多', 'collapsible', 'disclosure', 'show more'],
-    use: '单个区块的展开/收起',
+    use: '单个区块的展开/收起；animated 可选高度过渡并尊重减少动态效果设置',
     replaces: ['button', 'div'],
     avoid: '多个互斥区块用 Accordion'
   },
@@ -545,9 +545,9 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Tag: {
     exports: ['Tag', 'TagClose'],
     intents: ['标签', '可关闭标签', '关闭标签', '彩色标签', 'tag', 'closable tag', 'chip', '标签筛选'],
-    use: '轻量标签/chip, 默认按设计稿提供 24px 高度、浅绿底、绿色描边; 支持 small 尺寸、tone/variant 类型色, 可通过 onClose 展示关闭按钮',
+    use: '轻量标签/chip, 默认按设计稿提供 24px 高度、浅绿底、绿色描边; 支持 small 尺寸、tone/variant 类型色, 可通过 onClose 展示关闭按钮; 需要保留每项自身配色与就地删除的筛选 chip 用 selected 表达选中态, role/aria-pressed 由调用方声明',
     replaces: ['button', 'span'],
-    avoid: '只展示状态/计数且不需要关闭时用 Badge; 互斥或多选筛选状态用 ToggleGroup'
+    avoid: '只展示状态/计数且不需要关闭时用 Badge; 不需要每项配色与就地删除的互斥/多选筛选, 用 ToggleGroup 或 Toggle'
   },
   Table: {
     exports: [

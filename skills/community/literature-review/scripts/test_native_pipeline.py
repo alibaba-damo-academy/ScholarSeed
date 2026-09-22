@@ -97,6 +97,64 @@ class NativeTest(unittest.TestCase):
         self.run_pipeline(model);self.assertEqual(len(model.calls),4)
         self.assertIn('Main edit',v2.read_text())
 
+    def test_abstract_warnings_feed_existing_refinement_and_clear_after_repair(self):
+        long_abstract = 'Detailed background. ' * 140 + '\n\nFurther details.'
+        concise = 'Supported synthesis. ' * 80
+        class AbstractModel(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_kind')=='abstract' or 'sources' in packet:
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text=(long_abstract if 'sources' not in packet else
+                          json.dumps({'edits':[{'target':'main','before':long_abstract,'after':concise}]}))
+                    kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                    return text
+                return await super().chat_stream(messages,**kwargs)
+        model=AbstractModel();out=self.run_pipeline(model)
+        abstract_index=next(i for i,p in enumerate(model.calls) if p.get('chapter_kind')=='abstract')
+        self.assertIn('ABSTRACT WRITING',model.systems[abstract_index])
+        self.assertNotIn('For central approaches, explain the problem',model.systems[abstract_index])
+        self.assertEqual({w['code'] for w in model.calls[-1]['abstract_warnings']},
+                         {'abstract_overlong','abstract_multiple_paragraphs'})
+        self.assertEqual(out['abstract']['status'],'SUCCESS')
+        self.assertEqual(len(model.calls),4)
+        self.assertIn(long_abstract,(self.ws/'05_generation/chapters/0.tex').read_text())
+        self.assertIn(concise,(self.ws/'05_generation/full_draft_v2.tex').read_text())
+
+    def test_unresolved_abstract_defaults_return_to_main_with_user_exceptions(self):
+        configure(self.ws,{'section_instructions':{'0':'Use two paragraphs in the abstract.'}})
+        class AbstractModel(Model):
+            async def chat_stream(self,messages,**kwargs):
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_kind')=='abstract':
+                    self.calls.append(packet);self.systems.append(messages[0]['content'])
+                    text='Supported question.\n\nSupported synthesis.'
+                    kwargs['_capture'].update(finish_reason='stop',usage={},partial_response=text)
+                    return text
+                return await super().chat_stream(messages,**kwargs)
+        model=AbstractModel();out=self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)
+        self.assertEqual(out['abstract']['status'],'WARNING')
+        self.assertIn('exceptions',out['next_action'])
+        self.assertEqual(model.calls[-1]['abstract_instructions'][0]['local_instructions'],
+                         {'0':'Use two paragraphs in the abstract.'})
+
+    def test_chapter_bibliography_reaches_refinement_and_blocks_unrepaired_publication(self):
+        class DuplicateBibliography(Model):
+            async def chat_stream(self,messages,**kwargs):
+                text=await super().chat_stream(messages,**kwargs)
+                packet=json.loads(messages[1]['content'])
+                if packet.get('chapter_ids')==['1']:
+                    text+=r'\begin{thebibliography}{9}\bibitem{Keyp1}Evidence\end{thebibliography}'
+                    kwargs['_capture']['partial_response']=text
+                return text
+        model=DuplicateBibliography();self.run_pipeline(model)
+        self.assertEqual(len(model.calls),4)
+        self.assertIn('duplicate_bibliography',str(model.calls[-1]['bibliography_warnings']))
+        result=publish(self.ws)
+        self.assertEqual(result['code'],'BIBLIOGRAPHY_CONFLICT')
+        self.assertFalse((self.ws/'06_output/Mechanisms.pdf').exists())
+
     def test_fixed_opening_is_last_prompt_and_saved_once(self):
         from chapter_pipeline import chapter_messages
         self.run_pipeline(Model())

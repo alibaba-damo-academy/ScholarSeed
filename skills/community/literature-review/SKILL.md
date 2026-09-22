@@ -1,6 +1,5 @@
 ---
 name: literature-review
-version: "2026.9.21+2"
 description: >-
   Produce or revise an evidence-grounded literature review, survey, related-work
   section, or individual chapter from a precise research intent. Discover papers,
@@ -12,6 +11,8 @@ description_zh: >-
   相关工作章节或单独章节。完成论文检索发现、paper card 证据抽取、大纲设计、
   带引用的正文撰写、图表生成，并核验 Markdown 或 PDF 交付物。需要已配置的
   模型后端，新文献检索依赖独立安装的 agentic-search skill。
+metadata:
+  version: "2026.9.22+1"
 ---
 
 # Literature review — main-agent contract
@@ -56,11 +57,12 @@ operation, create a visible TODO list using the host's native plan tool (such as
 
 ### Do
 
-- Use the supplied skill path and caller directory. Run `<skill>/scripts/slr doctor --no-network`, then `<skill>/scripts/slr init --workspace <caller/topic> --intent "<original request>"`.
+- Use the supplied skill path and caller directory. Identify the execution tool's OS/shell (not the desktop shown in a screenshot). On Windows use `<skill>\scripts\slr.cmd doctor --no-network --json`; on macOS/Linux/WSL use `<skill>/scripts/slr doctor --no-network --json`. If a host executes argument arrays, use the product Python launcher `scholarseed-skill-python <skill>/scripts/bootstrap.py`.
+- Doctor reports the actual OS, Python, output capabilities and `runtime.cli` as argv plus shell-specific commands. Use that resolved CLI for `init --workspace <caller/topic> --intent "<original request>"`; do not mix Windows and WSL interpreters or paths. If the environment is missing, follow the returned setup command first. Doctor is read-only.
 - Use a separate workspace per deliverable; do not overwrite an existing survey. Explicit output destinations take precedence.
 - For an existing task without a launcher, omit `--intent` to preserve its task.
-- Init returns a launcher; use `./<topic>/slr` from the fixed caller directory for later calls. Do not rely on persistent cd, aliases or exported variables.
-- Discover paths only for an invalid entry or a dependency doctor reports missing. The launcher uses the product Python 3.12.x; `<skill>/scripts/setup` verifies that environment.
+- Init returns the platform launcher and `runtime.cli`; reuse its exact argv or the matching shell command for all later calls and delegated roles. POSIX workspaces have `slr`, Windows workspaces have `slr.cmd`. Do not rely on persistent cd, aliases, activation or exported variables.
+- Discover paths only for an invalid entry or a dependency doctor reports missing. The launcher binds the product Python 3.12.x and performs product skill admission. Use `<skill>/scripts/setup` on POSIX or `<skill>\scripts\setup.cmd` on Windows; `SCHOLARSEED_PYTHON` is supplied by the product. Setup verifies its environment; never create a private skill venv. Existing workspace bindings take precedence; a moved or incompatible binding must be restored before resuming.
 - Configure the sole task through `writing configure --request FILE` (or `-` for stdin).
 - `01_input/writing_request.json` owns immutable original intent, ordered verbatim follow-ups and current effective interpretation. Derived query/output files and stage advice cannot override it; retired requirements files are ignored.
 - Keep local language/scope exceptions and only requested modules. Do not invent length or section quotas from corpus size.
@@ -77,7 +79,10 @@ operation, create a visible TODO list using the host's native plan tool (such as
 
 - Copy only actual user follow-ups, never this example. Follow-ups require `effective_requirements`.
 - `publication` and `retrieval` merge immediate keys; `constraints` replaces the complete list, so retain all still-applicable constraints. Other supplied fields replace those fields.
+- A request for a complete reference list is fulfilled by the publisher. Preserve it in the task text or an `other` constraint; never translate it into a `required_section` called References/Bibliography/参考文献. Reference lists are not model-authored outline nodes, even when the user requests them at the end.
 - Every constraint needs unique `id`, `kind`, typed `value` and `verbatim` copied from recorded user instructions:
+
+`verbatim` must be an exact contiguous substring of `intent`, `user_instructions`, or one entry in `user_requests`. Do not join fragments, paraphrase, change punctuation/whitespace, or quote derived `effective_requirements`. For separate requirements, use separate constraints or one complete original passage covering both.
 
 | Kind | Value |
 |---|---|
@@ -201,9 +206,11 @@ response) in exactly this order, even with automatic continuation authorization:
 
 1. Summarize the user's research request and personalized preferences in 1–2 sentences.
 2. Display `outline_markdown`: hierarchical chapters/subsections with each figure or table ID and caption nested under its owner. No paper lists/counts, descriptions, analytical tasks, rationale, purposes or separate planning tables. Show language only beside non-default chapters, within this packet rather than a separate language-confirmation gate.
-3. Ask for citation format and template together using available packet options. Reuse prior explicit choices and automatic-continuation authorization. Do not add a separate outline-confirmation question or repeat unchanged choices.
+3. Follow `confirmation.state`: `auto` or `approved` needs no new question after display; `required` needs a real confirmation. Retain publication choices the user already stated, asking once only for missing choices or confirmation of the current settings. Offer usable packet options only; do not add a separate outline-confirmation question or make the user choose unchanged settings again.
 
 - Complete surveys retain this combined confirmation unless explicitly waived. An explicit waiver uses `outline_review:"auto"` plus `auto_authorization` quoting an actual recorded user request; components default to auto.
+- Configured publication settings alone do not establish user approval. A preference to minimize questions does not supply a missing confirmation; an existing valid approval or explicit automatic-continuation policy does.
+- Use a question tool only when the host permits it in the active mode. A listed `request_user_input` may be Plan-only; if unavailable in Default mode, ask the single needed question in ordinary text and wait for the real reply. Do not switch modes just to ask.
 - Record a real decision with `writing approve --request FILE`, using packet_id, actual user_response and optional publication changes (and message_id if supplied by the host).
 - Reading the packet is not displaying it. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation. Never fabricate a user response or packet ID.
 
@@ -239,6 +246,8 @@ model is not a revision mechanism.
 - The task supplies a fixed chapter opening at the prompt end (`\section{...}` and label for LaTeX, `## ...` for Markdown); the model returns only raw continuation. Scripts save opening plus continuation under `05_generation/chapters/` and assemble without duplicating headings.
 - Abstracts receive the appropriate opening/closing wrapper; unsectioned components receive no invented heading. No model-authored JSON wrapper or JSON backslash escaping is required.
 - Chapters write planned subheadings, mathematics, citations and native tables; the assembler adds the document template and byline. Figure-owning prose explains the figure and uses `\ref{fig:F1}`; it never writes a placeholder, image path, figure environment, figure caption or label.
+- Ownership follows the source hierarchy: an asset assigned to chapter `2` may appear in `2` or its subsections; one assigned to `2.2` stays within `2.2`, not sibling `2.3` or another chapter. LaTeX floating to a different PDF page does not change content ownership.
+- The publisher also owns the bibliography heading and entries. Chapters write inline citations only; no manual reference list, `thebibliography` or `bibitem`. Short tables use width-bounded wrapping columns; tables too tall for a page use standalone `longtable` with repeated headers and preserved evidence, not a float or unreadably scaled box.
 - Scripts wait for all chapter calls and the completed figure branch, then assemble `05_generation/full_draft_v1.tex` (or `.md`) with actual figure wrappers and captions.
 - One refinement model receives the entire source, local included text, requirements, outline and evidence; it can repair the full assembled publication source, including templates, headings, formulas and captions.
 - LaTeX chapters with planned tables receive a width-bounded authoring contract. Deterministic table layout preflight after v1 assembly adds precise warnings and repair instructions to that refinement request only if a table fails; if all pass, no table-specific instruction or status field is added.
@@ -260,17 +269,19 @@ or hash-based edit permissions.
 
 ### Do: publish the current v2
 
-- Use one entry: `workflow publish`. It checks the current source, compiles/exports it and renders PDF pages 1–3.
+- Use one entry: `workflow publish`. It checks the current source, compiles/exports it and renders the first PDF page plus actual figure/table pages, including longtable continuation pages. `inspection_scope.pages` maps physical PDF page numbers to asset labels and image paths; `pages_to_read` is the same image list.
 - Check messages describe the current source and bibliography; old outline coverage is advisory, not an editing permission.
 - The final PDF is named from the document title; whitespace, colons and other cross-platform unsafe filename characters are normalized to underscores.
 
 ### Return → inspect, repair and deliver
 
 - Compilation failure is blocking and leaves the source available for direct repair.
+- Duplicate bibliography structures or multiply defined citations also block successful publication. Repair the reported source or bibliography and republish; do not report these as harmless retained warnings.
 - Main owns all paper-related corrections after handoff: prose, claims, formulas, section structure, captions, tables, citations, templates and layout.
 - Directly edit `05_generation/full_draft_v2.tex` and the local files it actually uses, including `.tex`, `.bib`, images and styles. Use the Markdown v2 for native Markdown tasks.
 - Exported `06_output/survey.*` files are delivery copies; edit the v2 source, then run `workflow publish` again.
 - Visual check scope: open the first-page image and the rendered pages that contain a figure or table, and inspect clipping, math, duplicated headings/captions, blank space and glyphs. Do not open any other page image in the default flow; widen the scope only on an explicit user request or when a check message names a specific page.
+- If `inspection_scope.complete` is false, resolve its missing/ambiguous labels or page mappings and republish. Available images are only a partial check set; do not claim that every figure/table was inspected.
 - Fix observed issues directly in v2 and repeat the same publication command.
 - Report actual checks, pages inspected, remaining issues and evidence limits. Reporting this limit is the complete required action; it is not a request to additionally verify uninspected pages or scientific content.
 

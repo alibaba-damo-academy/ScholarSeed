@@ -295,8 +295,16 @@
       "title": "跳转到行",
       "description": "输入 1 到 {{count}} 之间的行号。",
       "confirm": "跳转"
-    },
-    "languagePending": "代码编辑器语言将在重新打开应用后生效。请先保存工作。"
+    }
+  },
+  "languageSwitch": {
+    "title": "保存并切换语言？",
+    "description_other": "有 {{count}} 个代码文件尚未保存。保存成功后，将重新加载已打开的代码编辑器并切换为{{language}}；当前页面和文件保持不变。",
+    "confirm": "保存并切换",
+    "cancel": "取消",
+    "saving": "正在保存…",
+    "saveFailed": "部分文件未能保存。请处理保存错误或外部冲突后重试。",
+    "preferencesFailed": "语言偏好未能保存。请检查后重试。"
   },
   "officeDocument": {
     "searching": "查找中…",

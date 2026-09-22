@@ -84,6 +84,7 @@ from service.platform.context import (  # noqa: E402
     AssistantContextResolution,
     AssistantContextResolvedItem,
     AssistantContextResolveRequest,
+    AssistantTurnFinalization,
     ContextLabelFallback,
     ContextRef,
     ContextRefKind,
@@ -298,6 +299,88 @@ class AssistantTurnContract(unittest.TestCase):
         missing, missing_status = sessions.queued("missing-session")
         self.assertEqual(missing_status, 404)
         self.assertFalse(missing["ok"])
+
+    def test_cold_queue_withdrawal_is_durable_and_idempotent(self) -> None:
+        request_id = "cold-withdraw"
+        self.catalog.enqueue_message(
+            SESSION_ID, request_id, {"client_user_message_id": request_id, "input": []}
+        )
+        context = Mock()
+        residents = {}
+        turns = TurnService(
+            residents,
+            self.live._logger,
+            context_source=context,
+            catalog=self.catalog,
+            events=self.events,
+        )
+        for _attempt in range(2):
+            result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
+            self.assertEqual(status, 200)
+            self.assertTrue(result["ok"])
+        self.assertEqual(residents, {})
+        self.assertEqual(self.catalog.queued_messages(SESSION_ID), ())
+        self.assertEqual(
+            SessionCatalogStore(self.database).queued_message(SESSION_ID, request_id).state,
+            QueuedMessageState.CANCELLED,
+        )
+        self.assertIsNone(self.catalog.begin_queued_submission(SESSION_ID, request_id))
+        context.finalize.assert_called_with(
+            session_id=SESSION_ID,
+            client_turn_id=request_id,
+            outcome=AssistantTurnFinalization.DISCARDED,
+        )
+        self.assertEqual(
+            len(
+                [
+                    event
+                    for event in self.events.replay(SESSION_ID)
+                    if event.idempotency_key == f"queue:{request_id}:deleted"
+                ]
+            ),
+            1,
+        )
+        residents[SESSION_ID] = self.live
+        result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+
+    def test_cold_resource_wait_can_be_withdrawn_without_starting_runtime(self) -> None:
+        request_id = "cold-withdraw-wait"
+        queued = self.catalog.enqueue_message(SESSION_ID, request_id, {"input": []})
+        self.catalog.begin_resource_wait(SESSION_ID, request_id, purpose=queued.purpose)
+        residents = {}
+        turns = TurnService(
+            residents, self.live._logger, catalog=self.catalog, events=self.events
+        )
+        result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
+        self.assertEqual(status, 200)
+        self.assertTrue(result["ok"])
+        self.assertEqual(residents, {})
+        self.assertEqual(
+            self.catalog.queued_message(SESSION_ID, request_id).state,
+            QueuedMessageState.CANCELLED,
+        )
+
+    def test_cold_queue_withdrawal_preserves_submission_conflicts(self) -> None:
+        request_id = "cold-submitting"
+        self.catalog.enqueue_message(SESSION_ID, request_id, {"input": []})
+        self.catalog.begin_queued_submission(SESSION_ID, request_id)
+        turns = TurnService({}, self.live._logger, catalog=self.catalog, events=self.events)
+        result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
+        self.assertEqual(status, 409)
+        self.assertEqual(result["error"], "queued_message_not_editable")
+        self.assertEqual(
+            self.catalog.queued_message(SESSION_ID, request_id).state,
+            QueuedMessageState.SUBMITTING,
+        )
+        self.assertIsNone(self.events.by_key(SESSION_ID, f"queue:{request_id}:deleted"))
+        missing, status = asyncio.run(turns.delete_queued(SESSION_ID, "missing-message"))
+        self.assertEqual(status, 404)
+        self.assertEqual(missing["error"], "queued_message_not_found")
+        missing, status = asyncio.run(turns.delete_queued("missing-session", request_id))
+        self.assertEqual(status, 404)
+        self.assertEqual(missing["error"], "session_not_found")
 
     def test_skill_identity_selects_structured_fulltext_task_type(self) -> None:
         cases = (

@@ -1,4 +1,4 @@
-import type { ApiFailure, ConversationSearchResult, LiteratureCounts, LiteratureDetail, LiteratureFacets, LiteratureNote, LiteraturePage, LiteratureProjects, LiteratureQuery, LiteratureSearchEvent, LiteratureSearchPaper, LiteratureSearchTask, LiteratureSummary, LiteratureTask, LiteratureUpdate } from '../../contracts/literature'
+import type { ApiFailure, ConversationSearchResult, LiteratureCounts, LiteratureDetail, LiteratureFacets, LiteratureNote, LiteraturePage, LiteratureProjects, LiteratureQuery, LiteratureSearchEvent, LiteratureSearchPaper, LiteratureSearchTask, LiteratureSummary, LiteratureTagFacets, LiteratureTask, LiteratureUpdate } from '../../contracts/literature'
 import type { PaperMetaPayload, PaperMetaQuery } from './metadata'
 import type { LiteratureCollection, LiteratureItem, LiteratureTag } from './state'
 
@@ -240,6 +240,16 @@ export const deleteLiteratureNote = (itemId: string, noteId: string): Promise<vo
   request(`/literatures/${encodeURIComponent(itemId)}/notes/${encodeURIComponent(noteId)}`, { method: 'DELETE' })
 export const getLiteratureCounts = (projectId?: string): Promise<LiteratureCounts> => request('/literatures/counts', undefined, { project_id: projectId })
 export const getLiteratureFacets = (query: LiteratureQuery): Promise<LiteratureFacets> => request('/literatures/facets', undefined, query)
+/**
+ * 侧栏标签云的 facet: 全库标签都回, 计数按分类作用域收敛并按计数降序。
+ *
+ * 刻意不收 q —— 搜索与标签筛选互不相干, 搜索时标签计数不动是既定口径。也不收
+ * tag_id: 多标签取交集, 被选中的维度不能过滤自己的 facet, 否则选中第一个之后
+ * 就没法再叠加第二个。
+ */
+export const getLiteratureTagFacets = (
+  scope: Pick<LiteratureQuery, 'collection_id' | 'project_id' | 'recent' | 'without_collection' | 'without_project'>
+): Promise<LiteratureTagFacets> => request('/literatures/tag-facets', undefined, scope)
 export const getLiteratureProjects = (): Promise<LiteratureProjects> => request('/literatures/projects')
 export interface LibraryCollection { id: string; name: string; project_id?: string | null; parent_id?: string | null }
 export const listLiteratureCollections = (projectId?: string): Promise<LibraryCollection[]> =>

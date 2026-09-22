@@ -1,10 +1,9 @@
-import React, { useEffect, useRef } from 'react'
-import { useTranslation } from 'react-i18next'
+import React, { useEffect, useState } from 'react'
 
-import { Alert } from '../../components/ui/Alert'
+import { useApp } from '../../store'
 import { languageFor } from './language'
-import { monaco } from './monaco'
-import { MONACO_LANGUAGE } from './nls'
+import { MonacoFrame } from './monaco/host'
+import type { MonacoFrameContext } from './monaco/contract'
 
 interface DiffProps {
   baseText: string
@@ -25,12 +24,13 @@ export function Diff({
   testId,
   onCandidateChange
 }: DiffProps): React.JSX.Element {
-  const { t, i18n } = useTranslation('workbench')
-  const hostRef = useRef<HTMLDivElement>(null)
+  const { state } = useApp()
+  const [frame, setFrame] = useState<MonacoFrameContext | null>(null)
 
   useEffect(() => {
-    const host = hostRef.current
+    const host = frame?.host
     if (!host) return
+    const { monaco } = frame.runtime
     const language = languageFor(path)
     const original = monaco.editor.createModel(
       baseText,
@@ -63,10 +63,14 @@ export function Diff({
       original.dispose()
       modified.dispose()
     }
-  }, [baseText, candidateText, identity, onCandidateChange, path, readOnly])
+  }, [baseText, candidateText, frame, identity, onCandidateChange, path, readOnly])
 
-  return <>
-    {i18n.resolvedLanguage !== MONACO_LANGUAGE && <Alert tone="info" title={t('code.languagePending')} />}
-    <div className="min-h-0 flex-1" data-testid={testId} ref={hostRef} />
-  </>
+  return (
+    <MonacoFrame
+      language={state.lang}
+      onReady={setFrame}
+      testId={testId}
+      theme={document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'}
+    />
+  )
 }

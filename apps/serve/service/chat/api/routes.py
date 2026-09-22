@@ -233,6 +233,8 @@ def create_chat_app(
         prepare=session_service.prepare_turn,
         deliveries=resource_deliveries,
         review_batches=resource_review_batches,
+        catalog=access_store,
+        events=event_store,
     )
     session_service.bind_turn_confirmation(turn_service.confirm_queued_unknown)
     session_service.bind_queue_cancellation(turn_service.cancel_pending_locked)

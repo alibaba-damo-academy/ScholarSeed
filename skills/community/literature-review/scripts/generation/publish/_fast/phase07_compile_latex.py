@@ -954,9 +954,8 @@ def _main() -> int:
     # the selected vendored .bst (also staged by phase 5)
     # in the same directory.
     tex_env = dict(os.environ)
-    tex_env["TEXINPUTS"] = f"{ws.gen}:.:" + tex_env.get("TEXINPUTS", "")
-    tex_env["BIBINPUTS"] = f"{ws.gen}:.:" + tex_env.get("BIBINPUTS", "")
-    tex_env["BSTINPUTS"] = f"{ws.gen}:.:" + tex_env.get("BSTINPUTS", "")
+    for name in ("TEXINPUTS", "BIBINPUTS", "BSTINPUTS"):
+        tex_env[name] = os.pathsep.join((str(ws.gen), ".", tex_env.get(name, "")))
 
     cmd_pdflatex = [
         args.engine,
