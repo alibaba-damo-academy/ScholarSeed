@@ -11,6 +11,7 @@
  * 不自行估色。左列注明原型变量名，便于日后核对。
  */
 .vds-workbench {
+  --vds-window-controls-left-space: 77px;
   --wb-surface: #f0ede4; /* --panel  侧栏/面板 */
   --wb-white: #fffdf8; /* --white  卡片纸面 */
   --wb-rail: #1b3a29; /* --bar    活动栏底 */
@@ -32,6 +33,10 @@
   min-width: 0;
   background: var(--vds-bg-gray-default);
   color: var(--wb-ink);
+}
+
+.vds-workbench[data-platform='win32'] {
+  --vds-window-controls-left-space: 16px;
 }
 
 :root[data-theme='dark'] .vds-workbench {
@@ -4184,7 +4189,7 @@
   align-items: center;
   border-bottom: 1px solid var(--vds-border-default);
   background: var(--vds-bg-gray-default);
-  padding: 0 16px 0 77px;
+  padding: 0 16px 0 var(--vds-window-controls-left-space);
 }
 
 .vds-home-header-drag {

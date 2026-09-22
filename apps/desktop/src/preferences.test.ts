@@ -25,10 +25,11 @@ test('literature AI model preferences keep only known actions and valid model ke
     document_translation: 'qwen3.8-max',
     interpretation: 'personal-profile:gpt-5.6-sol',
     figure_explanation: 'qwen-vl-max',
-    selection_translation: 'ignored',
+    selection_translation: 'qwen3.8-max',
     unknown: 'ignored'
   }), {
     document_translation: 'qwen3.8-max',
+    selection_translation: 'qwen3.8-max',
     interpretation: 'personal-profile:gpt-5.6-sol',
     figure_explanation: 'qwen-vl-max'
   })

@@ -5,7 +5,9 @@ import type { RuntimePaths } from './runtime'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
 const DESKTOP_ROOT = resolve(REPO_ROOT, 'apps', 'desktop')
-const PYTHON = resolve(REPO_ROOT, '.venv', 'bin', 'python')
+const PYTHON = process.platform === 'win32'
+  ? resolve(REPO_ROOT, '.venv', 'Scripts', 'python.exe')
+  : resolve(REPO_ROOT, '.venv', 'bin', 'python')
 const TEST_PYTHON_PATH = [
   resolve(REPO_ROOT, 'apps', 'serve'),
   resolve(REPO_ROOT, 'packages', 'runtime'),
@@ -53,6 +55,7 @@ export interface LiveStatus {
 
 export interface DesktopSessionOptions {
   preserveRuntime?: boolean
+  nativeWindowLifecycle?: boolean
 }
 
 export class DesktopSession {
@@ -75,7 +78,7 @@ export class DesktopSession {
   async launch(): Promise<Page> {
     this.traceIndex += 1
     this.app = await electron.launch({
-      args: ['.', '--drive', this.runtime.drive, `--user-data-dir=${this.runtime.userData}`],
+      args: ['.', ...(this.options.nativeWindowLifecycle ? [] : ['--drive', this.runtime.drive]), `--user-data-dir=${this.runtime.userData}`],
       cwd: DESKTOP_ROOT,
       env: {
         ...process.env,

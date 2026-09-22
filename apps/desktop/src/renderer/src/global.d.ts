@@ -1,4 +1,5 @@
 import type { SubscriptionRequest, SubscriptionReply } from '../../subscriptions'
+import type { WindowCloseRequest, WindowCloseReply } from '../../window'
 import type { PreferenceLanguage, RendererPreferences } from '../../preferences'
 import type { DesktopNotificationInput, DesktopNotificationResult } from '../../notifications'
 import type { SystemPermissionId, SystemPermissionsSnapshot } from '../../permissions'
@@ -37,6 +38,9 @@ interface DesktopAuthSnapshot {
 
 declare global {
   interface ScholarSeedBridge {
+    getWindowCloseRequest?: () => Promise<WindowCloseRequest>
+    onWindowCloseRequest?: (callback: (request: WindowCloseRequest) => void) => () => void
+    respondWindowClose?: (reply: WindowCloseReply) => Promise<boolean>
     deviceSkills: (request: DeviceSkillRequest) => Promise<DeviceSkillResponse>
     getApiBase: () => string
     platform: string
@@ -112,6 +116,8 @@ declare global {
     /** 静默刷新：与背景检查同一条路径（不进 'checking' 相位）；更新表面打开时刷新状态。 */
     refreshUpdate: () => Promise<void>
     diagnoseUpdate: () => Promise<UpdateDiagnosis>
+    /** 组件 store 根（只读展示）；env 覆盖形状非法时主进程返回 null。 */
+    runtimeStorePath: () => Promise<string | null>
     startUpdate: (id: string) => Promise<StartUpdateResult>
     installUpdate: () => Promise<StartUpdateResult>
     /** 收起「发现新版本」弹窗；确认由主进程落盘，跨客户端重启有效。false = 当前没有候选包。 */

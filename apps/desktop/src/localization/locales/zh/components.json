@@ -1014,6 +1014,8 @@
       "title": "关于书深",
       "description": "版本、官方入口与新手引导。",
       "site": "官方网站",
+      "runtimeStore": "组件仓库位置",
+      "runtimeStoreUnavailable": "不可用（环境变量 SCHOLARSEED_RUNTIME_STORE 形状非法）",
       "mail": "联系邮箱",
       "copied": "已复制",
       "community": "官方社群",

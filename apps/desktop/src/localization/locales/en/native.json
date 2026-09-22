@@ -14,6 +14,7 @@
     "show": "Show window",
     "quit": "Quit application",
     "closeTitle": "Close the ScholarSeed window?",
+    "closeFailed": "The action could not be completed. Please try again.",
     "closeMessage": "Close the ScholarSeed window?",
     "closeDetail": "After minimizing to the tray, agents and background tasks keep running. Quitting the application stops active work.",
     "minimize": "Minimize to tray",

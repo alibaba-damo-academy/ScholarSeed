@@ -19,7 +19,7 @@ import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from './ProjectMenu'
 import { TabBar } from './TabBar'
 
 const TOPBAR_LEFT_GROUP_CLASS_NAME =
-  'vds-topbar-left-group relative flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] pl-[77px] pr-4'
+  'vds-topbar-left-group relative flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] [padding-left:var(--vds-window-controls-left-space)] pr-4'
 const TOPBAR_RIGHT_DIVIDER_CLASS_NAME =
   ' after:pointer-events-none after:absolute after:right-0 after:top-0 after:h-full after:w-px after:bg-[var(--vds-border-default)] after:content-[""]'
 const PROJECT_TRIGGER_CLASS_NAME =

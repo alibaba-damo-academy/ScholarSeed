@@ -479,6 +479,17 @@ function AboutPage(): React.JSX.Element {
   const [siteBase, setSiteBase] = React.useState(
     () => accountBase() || SITE_FALLBACK_BASE_URL
   )
+  const [runtimeStore, setRuntimeStore] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    let cancelled = false
+    void window.scholarseed.runtimeStorePath().then((value) => {
+      if (!cancelled) setRuntimeStore(value)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   React.useEffect(() => {
     let cancelled = false
@@ -871,6 +882,20 @@ function AboutPage(): React.JSX.Element {
               <Icon name="external" size={13} />
             </span>
           </Button>
+          {/* 组件 store 根只读展示：入口锁在首装向导（改 = 数 GB 重解压），这里不给改。 */}
+          <div className={ABOUT_ROW_CLASS_NAME} data-testid="about-runtime-store">
+            <span className={ABOUT_ICON_CLASS_NAME}>
+              <Icon name="folder" size={15} />
+            </span>
+            <span className={ABOUT_COPY_CLASS_NAME}>
+              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
+                {t('accountPanel.about.runtimeStore')}
+              </strong>
+            </span>
+            <span className={ABOUT_VALUE_CLASS_NAME}>
+              {runtimeStore ?? t('accountPanel.about.runtimeStoreUnavailable')}
+            </span>
+          </div>
           <Button
             type="button"
             size="content"

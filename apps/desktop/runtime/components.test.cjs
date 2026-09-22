@@ -111,8 +111,8 @@ test('store 路径函数拒绝非法 contentId 并给出稳定布局', () => {
 test('.cmd 前导锚定组件仓库、注入 pylibs、缺组件时显式失败且不回落宿主 Python', () => {
   const id = 'a1'.repeat(32)
   const preamble = components.windowsComponentPreamble('win32-x86_64', id).join('\r\n')
-  assert.match(preamble, /if defined SCHOLARSEED_HOME \(set "SS_RUNTIME=%SCHOLARSEED_HOME%\\runtime"\)/)
-  assert.match(preamble, /%USERPROFILE%\\\.scholarseed\\runtime/)
+  // 三档寻址与 Node 侧 resolveRuntimeStoreRoot 同档同序：首装自定义 store 覆盖优先。
+  assert.match(preamble, /if defined SCHOLARSEED_RUNTIME_STORE \(set "SS_RUNTIME=%SCHOLARSEED_RUNTIME_STORE%"\) else \(if defined SCHOLARSEED_HOME \(set "SS_RUNTIME=%SCHOLARSEED_HOME%\\runtime"\) else \(set "SS_RUNTIME=%USERPROFILE%\\\.scholarseed\\runtime"\)\)/)
   assert.match(preamble, new RegExp(`win32-x86_64-${id}\\\\python\\\\python\\.exe`))
   assert.match(preamble, /if not exist "%SS_PY%".*exit \/b 1/)
   assert.match(preamble, /set "PYTHONPATH=%~dp0\.\.\\pylibs;%PYTHONPATH%"/)
@@ -121,6 +121,27 @@ test('.cmd 前导锚定组件仓库、注入 pylibs、缺组件时显式失败�
   assert.match(skill, /"%SS_PY%" -m service\.cli\.skill_python %\*/)
   const console = components.consoleScriptLauncherCommand('win32-x86_64', id, 'import sys; sys.exit(0)')
   assert.match(console, /"%SS_PY%" -c "import sys; sys\.exit\(0\)" %\*/)
+})
+
+test('runtime store 根解析：env 覆盖优先、形状非法 fail-closed、缺省回 home', () => {
+  assert.equal(components.isValidRuntimeStoreRoot('D:\\ss-runtime', 'win32'), true)
+  assert.equal(components.isValidRuntimeStoreRoot('\\\\nas\\ss\\runtime', 'win32'), true)
+  assert.equal(components.isValidRuntimeStoreRoot('D:/ss-runtime', 'win32'), true)
+  assert.equal(components.isValidRuntimeStoreRoot('relative\\runtime', 'win32'), false)
+  assert.equal(components.isValidRuntimeStoreRoot('/Volumes/ss/runtime', 'win32'), false)
+  assert.equal(components.isValidRuntimeStoreRoot('/Volumes/ss/runtime', 'darwin'), true)
+  assert.equal(components.isValidRuntimeStoreRoot('', 'win32'), false)
+  const home = path.join(os.tmpdir(), 'ss-home')
+  assert.equal(components.resolveRuntimeStoreRoot({}, home, 'win32'), path.join(home, 'runtime'))
+  assert.equal(
+    components.resolveRuntimeStoreRoot({ SCHOLARSEED_RUNTIME_STORE: 'D:\\ss-runtime' }, home, 'win32'),
+    'D:\\ss-runtime'
+  )
+  // env 被手改坏：显式抛错而不是半路写出不存在的解释器路径（与 .cmd 同读同档，不会走岔）。
+  assert.throws(
+    () => components.resolveRuntimeStoreRoot({ SCHOLARSEED_RUNTIME_STORE: 'relative' }, home, 'win32'),
+    /invalid SCHOLARSEED_RUNTIME_STORE/
+  )
 })
 
 test('writeProductLibraries 只接受纯 Python wheel（真实解释器执行）', (t) => {

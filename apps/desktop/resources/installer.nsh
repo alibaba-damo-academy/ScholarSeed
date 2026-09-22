@@ -69,6 +69,13 @@
     !define SS_READY_FILE "ready.ini"
     !define SS_DECISION_FILE "decision.ini"
     !define SS_INSTALL_LOG "install.log"
+    ; 轮转保留上一轮（可能是崩溃轮）的安装器日志：本轮首条日志前把 install.log 改名成它。
+    !define SS_INSTALL_PREV_LOG "install-prev.log"
+    ; boot 探针矩阵（ssProbeWritePrimitives）：四个写原语各写一个独立文件，真机一轮指认坏原语。
+    !define SS_PROBE_APPEND_ANSI_LOG "install-probe-a.log"
+    !define SS_PROBE_WRITE_ANSI_LOG "install-probe-w.log"
+    !define SS_PROBE_APPEND_UTF16_LOG "install-probe-u16.log"
+    !define SS_PROBE_EXEC_LOG "install-probe-x.log"
     !define SS_HANDSHAKE_SLEEP_MS 200
     ; 决策等待与旧进程退出等待各 300 × 200ms = 60s（提案 §5.2 第 4/5 条）。
     !define SS_DECISION_WAIT_ROUNDS 300
@@ -90,6 +97,8 @@
     Var ssLaunchAttempted
     ; ssLogEvent 的日志文件句柄：用具名 Var 而非 $9 等寄存器，杜绝与调用方/GetTime 的寄存器别名。
     Var ssLogHandle
+    ; 每轮安装器只轮转一次 install.log（首条日志前），见 ssLogEvent。
+    Var ssLogRotated
     ; ssLogEvent 的入参（全局 Var 传参，见头注释）
     Var ssLogPhase
     Var ssLogEventName
@@ -247,6 +256,11 @@
     ;    IfErrors 当成失败而整段跳过；
     ; ④ 时间戳分段 FileWrite，不写 "$ssTimeDayT..." 这种串 —— NSIS 变量名按最长标识符解析，
     ;    T/Z 会被并进变量名（ssTimeDayT 未声明），整段展开成空串或字面量。
+    ; ⑤ 第二轮真机（build 202609222053）证明 ①-④ 都不是根因：install.log 仍 0 字节而 ready.ini
+    ;    （'w' + FileWriteUTF16LE）每轮写成功。两轮失败代码的交集是 FileOpen 'a' / FileSeek /
+    ;    FileWrite-ANSI / GetTime，故本轮弃用 'a'+FileSeek：首条日志前把旧 install.log 轮转成
+    ;    install-prev.log（崩溃轮证据保留一代），本体改 'w' 模式写。坏原语的最终指认交给
+    ;    ssProbeWritePrimitives 的四组合矩阵与 Node 侧尺寸探针。
     ; 读写寄存器：无对外泄漏（全部自保存/恢复）；ssTime* Var 与 ssLogHandle 为本函数私有契约。
     Function ssLogEvent
       Push $0
@@ -274,11 +288,17 @@
       CreateDirectory "$ssHome\logs"
       IfErrors ss_log_done
       ss_log_dir_ok:
+      StrCmp $ssLogRotated "1" ss_log_open
+      StrCpy $ssLogRotated "1"
+      IfFileExists "$ssHome\logs\${SS_INSTALL_LOG}" 0 ss_log_open
+      Delete "$ssHome\logs\${SS_INSTALL_PREV_LOG}"
+      Rename "$ssHome\logs\${SS_INSTALL_LOG}" "$ssHome\logs\${SS_INSTALL_PREV_LOG}"
+      ClearErrors
+      ss_log_open:
       ; UTC 时间戳（GetTime "U"）：day month year weekday hour min sec
       ${GetTime} "" "U" $ssTimeDay $ssTimeMonth $ssTimeYear $ssTimeWeekday $ssTimeHour $ssTimeMinute $ssTimeSecond
-      FileOpen $ssLogHandle "$ssHome\logs\${SS_INSTALL_LOG}" a
+      FileOpen $ssLogHandle "$ssHome\logs\${SS_INSTALL_LOG}" w
       IfErrors ss_log_done
-      FileSeek $ssLogHandle 0 END
       FileWrite $ssLogHandle '{"schemaVersion":${SS_HANDSHAKE_SCHEMA},"timestampUtc":"'
       FileWrite $ssLogHandle "$ssTimeYear-$ssTimeMonth-$ssTimeDay"
       FileWrite $ssLogHandle 'T'
@@ -315,6 +335,37 @@
       Pop $3
       Pop $2
       Pop $1
+      Pop $0
+    FunctionEnd
+
+    ; boot 探针矩阵：install.log 两轮真机恒 0 字节、而 ready.ini 每轮写成功，坏原语只可能在
+    ; 两者用法差集里（FileOpen 'a' / FileSeek / FileWrite-ANSI / GetTime）。这里用四个独立文件
+    ; 各试一种写原语组合，Node 侧把六个文件尺寸落进 update.log，真机一轮即可指认：
+    ;   a  = 'a' 无 FileSeek + FileWrite-ANSI（若坏而 w 好 → append 模式本身坏，轮转+'w' 即正解）
+    ;   w  = 'w' + FileWrite-ANSI（若好 → install.log 新写法成立）
+    ;   u16= 'a' + FileWriteUTF16LE（若好而 a 坏 → ANSI FileWrite 坏，需换编码契约）
+    ;   x  = nsExec 借 cmd.exe 重定向写（全坏时的环境旁证：子进程能写而安装器不能）
+    ; 只写 ASCII 标签行；每个组合独立 fail-closed（IfErrors 跳过下一组合），互不牵连。
+    ; 读写寄存器：$0（nsExec 返回值，自保存/恢复）；句柄用 ssLogHandle（本函数早于任何 ssLogEvent）。
+    Function ssProbeWritePrimitives
+      Push $0
+      FileOpen $ssLogHandle "$ssHome\logs\${SS_PROBE_APPEND_ANSI_LOG}" a
+      IfErrors ss_probe_w
+      FileWrite $ssLogHandle 'probe-a$\r$\n'
+      FileClose $ssLogHandle
+      ss_probe_w:
+      FileOpen $ssLogHandle "$ssHome\logs\${SS_PROBE_WRITE_ANSI_LOG}" w
+      IfErrors ss_probe_u16
+      FileWrite $ssLogHandle 'probe-w$\r$\n'
+      FileClose $ssLogHandle
+      ss_probe_u16:
+      FileOpen $ssLogHandle "$ssHome\logs\${SS_PROBE_APPEND_UTF16_LOG}" a
+      IfErrors ss_probe_x
+      FileWriteUTF16LE $ssLogHandle 'probe-u16$\r$\n'
+      FileClose $ssLogHandle
+      ss_probe_x:
+      nsExec::Exec `cmd.exe /c echo probe-x>> "$ssHome\logs\${SS_PROBE_EXEC_LOG}"`
+      Pop $0
       Pop $0
     FunctionEnd
 
@@ -448,6 +499,7 @@
       StrCpy $ssHandshakeMode "legacy"
       StrCpy $ssInstallComplete "0"
       StrCpy $ssLaunchAttempted "0"
+      StrCpy $ssLogRotated "0"
 
       ; NSIS 无内建 $PID：显式取当前安装器进程 ID。System 输出记号 .r0 落入 $0（非 $R0），
       ; 故读 $0。在 legacy 提前返回之前设置，保证 ssLogEvent 与 ready.ini 总能拿到。
@@ -465,6 +517,8 @@
 
       ReadEnvStr $ssHome ${SS_HOME_ENV}
       StrCmp $ssHome "" ss_init_fail_home
+      ; boot 探针矩阵：尽早跑（home 一可用就写），即使后续校验失败/崩溃也留下写原语证据。
+      Call ssProbeWritePrimitives
 
       ReadEnvStr $ssNonce ${SS_NONCE_ENV}
       StrCmp $ssNonce "" ss_init_fail_nonce
@@ -759,3 +813,108 @@
   !define MUI_PAGE_CUSTOMFUNCTION_PRE ssFinishPre
   !insertmacro MUI_PAGE_FINISH
 !macroend
+
+; C. 卸载期缓存清理：用户目录下的组件 store（content-addressed、数 GB）与暂存包缓存
+;    （%LOCALAPPDATA%\scholarseed-update）都是「可再获取」的缓存而非用户数据；NSIS 卸载器
+;    默认只清 INSTDIR，二者卸载后残留在用户目录。store 根解析与 Node/.cmd 同源三档：
+;    env SCHOLARSEED_RUNTIME_STORE（首装向导写入）优先，否则 $PROFILE\.scholarseed\runtime。
+;    清理分两档：
+;    - 版本更新（旧卸载器带 --updated 被新安装器拉起）：只删不一致的瞬态 —— staging（中断的
+;      解压）与 locks（死进程锁）；components/manifests 原样保留，跨版本命中是 proposal 108 P2a
+;      的收益，更新绝不能动它；
+;    - 真正卸载：整删 store 与暂存包缓存，并撤掉 env 登记（HKCU Environment + 广播）；
+;      .scholarseed 其余内容（会话/配置/技能/文献）是用户数据，一字不动。
+;    更新档不碰暂存包缓存：新安装器正从其中那个 exe 运行。
+!macro customUnInstall
+  ReadEnvStr $R0 "SCHOLARSEED_RUNTIME_STORE"
+  StrCmp $R0 "" 0 ss_uninst_store_set
+  StrCpy $R0 "$PROFILE\.scholarseed\runtime"
+  ss_uninst_store_set:
+  ${if} ${isUpdated}
+    RMDir /r "$R0\staging"
+    RMDir /r "$R0\locks"
+  ${else}
+    RMDir /r "$R0"
+    DeleteRegValue HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"
+    System::Call 'user32::SendMessageTimeout(i 0xffff, i 0x001A, p 0, p 0, i 0x0002, i 5000, *p .r1)'
+    RMDir /r "$LOCALAPPDATA\scholarseed-update"
+  ${endIf}
+!macroend
+
+; D. 首装高级步骤：组件 store 位置（可选）。assisted 模板的 customPageAfterChangeDir 钩子在
+;    目录页之后插页；该页没有 skipPageIfUpdated 包裹，故 PRE 里自行跳过非首装场景：
+;    --updated（更新）、既有 per-user/per-machine 安装（重装/修复）、env 已登记（配置过）。
+;    留空 = 默认路径，普通用户直接下一步即透明；仅非空且校验通过才写 HKCU Environment 并广播
+;    （.cmd 启动器在打包机生成、读不了机器本地文件，env 是 batch/NSIS/Node 三方同源的唯一档）。
+;    入口锁在首装：安装后不可改（改 = 数 GB 重解压 + 旧 store 孤儿），设置页只读展示。
+!macro customPageAfterChangeDir
+  !insertmacro MUI_PAGE_INIT
+  PageEx custom
+    PageCallbacks ssStorePagePre ssStorePageLeave
+    Caption " "
+  PageExEnd
+!macroend
+
+!ifndef BUILD_UNINSTALLER
+  Var ssStoreDirHwnd
+
+  Function ssStorePagePre
+    ${if} ${isUpdated}
+      Abort
+    ${endIf}
+    ${if} $hasPerUserInstallation == "1"
+      Abort
+    ${endIf}
+    ${if} $hasPerMachineInstallation == "1"
+      Abort
+    ${endIf}
+    ReadEnvStr $R0 "SCHOLARSEED_RUNTIME_STORE"
+    StrCmp $R0 "" ss_store_show
+    Abort
+    ss_store_show:
+    nsDialogs::Create 1018
+    Pop $R1
+    ${NSD_CreateLabel} 0 0 100% 40u "组件仓库位置（可选，仅首次安装可设置）。留空 = 默认：用户目录 .scholarseed\runtime（数 GB）。$\r$\nComponent store location (optional, first install only). Leave empty for the default: <user profile>\.scholarseed\runtime (several GB)."
+    Pop $R2
+    ${NSD_CreateDirRequest} 0 50u 85% 12u ""
+    Pop $ssStoreDirHwnd
+    ${NSD_CreateBrowseButton} 85% 50u 15% 12u "..."
+    Pop $R3
+    ${NSD_OnClick} $R3 ssStoreBrowse
+    nsDialogs::Show
+  FunctionEnd
+
+  Function ssStoreBrowse
+    Pop $R4
+    nsDialogs::SelectFolderDialog "组件仓库位置 / Component store location" ""
+    Pop $R5
+    StrCmp $R5 "error" ss_browse_done
+    ${NSD_SetText} $ssStoreDirHwnd "$R5"
+    ss_browse_done:
+  FunctionEnd
+
+  Function ssStorePageLeave
+    ${NSD_GetText} $ssStoreDirHwnd $R4
+    StrCmp $R4 "" ss_leave_done
+    ; 绝对路径校验：盘符（第二字符为 ':'）或 UNC（前导双反斜杠），与 Node 侧 isValidRuntimeStoreRoot 同判据。
+    StrCpy $R5 $R4 1 1
+    StrCmp $R5 ":" ss_store_valid
+    StrCpy $R5 $R4 2
+    StrCmp $R5 "\\" ss_store_valid
+    MessageBox MB_OK|MB_ICONSTOP "路径必须是绝对路径（盘符或 UNC）。$\r$\nThe path must be absolute (drive letter or UNC)."
+    Abort
+    ss_store_valid:
+    ; 可写探针：建了再删；对已存在目录建目录的错误语义不可靠，故探一个子目录。
+    CreateDirectory "$R4\ScholarSeedWriteProbe"
+    IfErrors ss_store_unwritable
+    RMDir "$R4\ScholarSeedWriteProbe"
+    WriteRegStr HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE" "$R4"
+    ; WM_SETTINGCHANGE 广播，让已登录会话立即看到新 env（不等下次登录）。
+    System::Call 'user32::SendMessageTimeout(i 0xffff, i 0x001A, p 0, p 0, i 0x0002, i 5000, *p .r0)'
+    Goto ss_leave_done
+    ss_store_unwritable:
+    MessageBox MB_OK|MB_ICONSTOP "该目录不可写，请换一个。$\r$\nThe directory is not writable; choose another."
+    Abort
+    ss_leave_done:
+  FunctionEnd
+!endif

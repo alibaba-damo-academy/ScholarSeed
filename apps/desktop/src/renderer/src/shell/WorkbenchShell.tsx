@@ -187,7 +187,7 @@ export function WorkbenchShell(): React.JSX.Element {
 
   return (
     <DocumentDragProvider>
-      <div className="vds-workbench" data-testid="workbench-shell">
+      <div className="vds-workbench" data-testid="workbench-shell" data-platform={window.scholarseed?.platform ?? 'web'}>
         {state.mainView === 'home' ? (
           /* 首页空间（原型 home space）：轻量标题栏 + 活动栏 + 全览内容；工作台标签 /
              模块面板 / AI 面板一律不挂 —— 首页是全局面，不携带任何项目上下文。 */

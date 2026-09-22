@@ -15,7 +15,6 @@
   --vds-layout-compact-control-width: 140px;
   --vds-layout-pdf-rail-width: calc(var(--vds-control-height-md) + var(--vds-space-1) * 2 + var(--vds-border-width-1));
   --vds-layout-pdf-panel-width: 390px;
-  --vds-layout-pdf-translation-width: 44%;
   --vds-layout-session-output-max-height: 120px;
   --vds-layout-search-row-max-height: 180px;
   --vds-literature-author-tooltip-max-height: 240px;

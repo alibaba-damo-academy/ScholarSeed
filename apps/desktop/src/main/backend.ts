@@ -38,8 +38,8 @@ import {
   COMPONENTS_DIRNAME,
   PYLIBS_DIRNAME,
   PYTHON_KIND,
-  RUNTIME_DIRNAME,
   parseAppComponents,
+  resolveRuntimeStoreRoot,
   storeComponentDirectory
 } from '../../runtime/components.cjs'
 import { skillPythonLauncherPath, writeSkillPythonLauncher } from '../../runtime/python.cjs'
@@ -219,7 +219,7 @@ function resolveBackendPaths(): BackendPaths {
     if (process.platform === 'win32' && !process.env[SCHOLARSEED_PYTHON_ENV] && existsSync(manifestPath)) {
       const manifest = parseAppComponents(readFileSync(manifestPath, 'utf8'))
       if (manifest) {
-        const storeRoot = join(desktopHome(), RUNTIME_DIRNAME)
+        const storeRoot = resolveRuntimeStoreRoot(process.env, desktopHome(), process.platform)
         const pythonComponent = manifest.components.find((component) => component.kind === PYTHON_KIND)
         if (pythonComponent) {
           const componentRoot = storeComponentDirectory(
@@ -370,6 +370,18 @@ function configureDesktopEnvironment(log: LogSink): void {
 /** 产品家目录 (~/.scholarseed, $SCHOLARSEED_HOME 覆盖) —— 桌面端一切落盘状态的唯一解析口。 */
 export function desktopHome(): string {
   return process.env[SCHOLARSEED_HOME_ENV] || join(homedir(), SCHOLARSEED_HOME_DIRNAME)
+}
+
+/**
+ * 组件 store 根（只读出口，供设置页展示）。env 覆盖形状非法时解析口会抛错——这里收成
+ * null 让界面如实显示「不可用」，而不是把异常甩给渲染层。
+ */
+export function runtimeStoreRoot(): string | null {
+  try {
+    return resolveRuntimeStoreRoot(process.env, desktopHome(), process.platform)
+  } catch {
+    return null
+  }
 }
 
 async function waitForHealth(baseUrl: string, timeoutMs: number, log: LogSink): Promise<boolean> {

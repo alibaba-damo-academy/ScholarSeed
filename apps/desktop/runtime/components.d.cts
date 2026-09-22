@@ -10,6 +10,7 @@ export const PYTHON_ENTRY_RELATIVE: string
 export const PYTHON_KIND: string
 export const PYTHON_TREE_DIRNAME: string
 export const RUNTIME_DIRNAME: string
+export const RUNTIME_STORE_ENV: string
 export const STAGING_DIRNAME: string
 export const TEXLIVE_BIN_PARENT_RELATIVE: string
 export const TEXLIVE_KIND: string
@@ -43,5 +44,7 @@ export function storeStagingDirectory(storeRoot: string): string
 export function storeManifestsDirectory(storeRoot: string): string
 export function storeLocksDirectory(storeRoot: string): string
 export function windowsComponentPreamble(target: string, contentId: string): string[]
+export function isValidRuntimeStoreRoot(value: string, platform: string): boolean
+export function resolveRuntimeStoreRoot(env: NodeJS.ProcessEnv, home: string, platform: string): string
 export function skillPythonLauncherCommand(target: string, contentId: string, module: string): string
 export function consoleScriptLauncherCommand(target: string, contentId: string, pyLaunch: string): string
