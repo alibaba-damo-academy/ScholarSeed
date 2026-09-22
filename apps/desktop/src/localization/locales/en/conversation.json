@@ -132,6 +132,10 @@
       "message": "The model service did not accept this request.",
       "action": "Check the model, permissions, and input."
     },
+    "modelConfig": {
+      "message": "This model is not supported by the current endpoint.",
+      "action": "Check that the model name is correct, or switch to another model in settings. Your question and context have been retained."
+    },
     "unknown": {
       "action": "An error occurred during generation. Your question and context have been retained."
     }

@@ -367,6 +367,7 @@ PRODUCT_ROOT_SUITES = (
     "tests.release.contract_lint",
     "tests.release.contract_dependencies",
     "tests.contract_codex_adapter",
+    "tests.contract_failure_codes",
     "tests.contract_codex_isolation",
     "tests.contract_artifact_directives",
     "tests.contract_runtime_driver",

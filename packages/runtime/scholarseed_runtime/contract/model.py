@@ -50,6 +50,11 @@ class ModelTransport:
     wire_protocol: ModelWireProtocol = ModelWireProtocol.RESPONSES
     credential_ref: str = ""
     supports_websockets: bool = False
+    # 出站传输的重试预算（产品按 endpoint 归属决定，``None`` 表示交给 runtime 默认）。
+    # 这是厂商中立的「最多重试几次」提示：网关路自有重试+降级故设 0，BYOK 直连路无兜底
+    # 故保留一次瞬时重连。具体配置键名与语义由 vendor adapter 落地，契约只携带预算值。
+    stream_max_retries: int | None = None
+    request_max_retries: int | None = None
 
 
 @dataclass(frozen=True)

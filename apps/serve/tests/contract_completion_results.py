@@ -18,12 +18,12 @@ from service.chat.service.completions import (
     mount_completion_bridge,
     normalize_response_input,
 )
+from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.streams import (
     INPUT_SHAPE_LIMIT,
     SSE_BUFFER_LIMIT,
     CompletionDiagnostic,
     StreamObservation,
-    terminal_provider_failure,
 )
 
 
@@ -372,11 +372,95 @@ class CompletionBridgeContract(unittest.TestCase):
                 "error_code": "CONTENT_SAFETY_BLOCKED",
                 "safe_error": "The request did not pass content safety review.",
                 "retryability": "terminal",
+                "provider_http_status": 400,
             },
         )
         unrelated = dict(fields)
         unrelated["downstream"] = dict(fields["downstream"], error_type="")
         self.assertEqual(terminal_provider_failure(unrelated), {})
+
+    def test_native_response_failed_invalid_parameter_is_provider_error_and_recovered(self):
+        # 工单 87102385 的形态：HTTP200 + 原生 response.failed 终态携 InvalidParameter。
+        body = (
+            b'data: {"type":"response.failed","response":{"status":"failed","error":'
+            b'{"code":"InvalidParameter","message":"Unsupported model: \'minimax-m2.1\'"}}}\n\n'
+        )
+        _, returned = self.model_response(body, native=True, streaming=True)
+        self.assertEqual(returned, body)
+        fields = self.diagnostics[-1][1]
+        # R4：带 error 的 response.failed 终态升格，serve 记录不再是 eof/failure_type=""。
+        self.assertEqual(fields["end_reason"], "provider_error")
+        self.assertEqual(fields["failure_type"], "InvalidParameter")
+        self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
+        self.assertEqual(fields["downstream"]["error_code"], "InvalidParameter")
+        # R1/R2：bridge 是最后结构化观测点，恢复真实码 + 有界 message + 终态。
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "Unsupported model: 'minimax-m2.1'",
+                "error_code": "InvalidParameter",
+                "safe_error": "Unsupported model: 'minimax-m2.1'",
+                "retryability": "terminal",
+                "provider_http_status": 400,
+            },
+        )
+
+    def test_recovered_message_is_bounded_and_url_redacted(self):
+        body = (
+            b'data: {"type":"response.failed","response":{"status":"failed","error":'
+            b'{"code":"InvalidParameter","message":"Unsupported model, see '
+            b'https://secret.example/key?token=abc"}}}\n\n'
+        )
+        self.model_response(body, native=True, streaming=True)
+        recovered = terminal_provider_failure(self.diagnostics[-1][1])
+        self.assertEqual(recovered["error_code"], "InvalidParameter")
+        self.assertNotIn("https://secret.example", recovered["safe_error"])
+        self.assertNotIn("token=abc", recovered["safe_error"])
+        self.assertIn("[URL]", recovered["safe_error"])
+
+    def test_unregistered_code_upgrades_diagnostic_but_is_not_released(self):
+        body = (
+            b'data: {"type":"response.failed","response":{"status":"failed","error":'
+            b'{"code":"weird_vendor_code","message":"internal detail"}}}\n\n'
+        )
+        self.model_response(body, native=True, streaming=True)
+        fields = self.diagnostics[-1][1]
+        # R4 升格与白名单无关：任何带 error 的 response.failed 终态都记 provider_error。
+        self.assertEqual(fields["end_reason"], "provider_error")
+        self.assertEqual(fields["failure_type"], "weird_vendor_code")
+        # 白名单外的码不放行到产品面，继续折叠（恢复源返回空）。
+        self.assertEqual(terminal_provider_failure(fields), {})
+
+    def test_chat_structured_error_terminal_upgrades_to_provider_error(self):
+        # chat 路合成 response.failed 终态后同样升格 provider_error（与原生路共用 settle）。
+        error_content = json.dumps(
+            {
+                "error": {
+                    "message": "You exceeded your current quota.",
+                    "type": "insufficient_quota",
+                    "code": "insufficient_quota",
+                }
+            }
+        )
+        body = (
+            b"data: "
+            + json.dumps(
+                {
+                    "id": "chat-response",
+                    "choices": [{"delta": {"content": error_content}, "finish_reason": "stop"}],
+                }
+            ).encode()
+            + b"\n\ndata: [DONE]\n\n"
+        )
+        self.model_response(body, streaming=True)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["wire_protocol"], "chat_completions")
+        self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
+        self.assertEqual(fields["end_reason"], "provider_error")
+        self.assertEqual(fields["failure_type"], "insufficient_quota")
+        # quota 不在 bridge 终态白名单（Codex 自带白名单已保码，adapter 直接分类），
+        # 故恢复源返回空——R4 只修诊断记录，不改产品归因来源。
+        self.assertEqual(terminal_provider_failure(fields), {})
 
     def test_bridge_preserves_native_lite_and_only_translates_chat_tools(self):
         tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]

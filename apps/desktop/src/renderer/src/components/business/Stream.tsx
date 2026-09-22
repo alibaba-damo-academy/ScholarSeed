@@ -4602,12 +4602,25 @@ function ErrorCard({
         <AlertTitle className="text-[length:var(--vds-font-body-lv2)] font-medium">
           {failureText.title}
         </AlertTitle>
-        <AlertDescription
-          truncate={false}
-          className="whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]"
-        >
-          {failureText.action}
-        </AlertDescription>
+        {failureText.message ? (
+          <AlertDescription
+            truncate={false}
+            data-testid="turn-failure-reason"
+            className="whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+          >
+            {failureText.message}
+          </AlertDescription>
+        ) : null}
+        {/* 原因与下一步同源时 (content_policy 的 messageKey==actionKey、applicationFailure 分支) 只渲染一次。 */}
+        {failureText.action && failureText.action !== failureText.message ? (
+          <AlertDescription
+            truncate={false}
+            data-testid="turn-failure-action"
+            className="whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+          >
+            {failureText.action}
+          </AlertDescription>
+        ) : null}
         {item.runtimeAction === 'continue_turn' ? (
           <div>
             <Button

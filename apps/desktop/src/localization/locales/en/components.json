@@ -206,6 +206,8 @@
       "actual": "Actual result",
       "expected": "Expected result",
       "additional": "Additional details",
+      "diagnosticsNotice": "Submitting also uploads runtime diagnostics (error details, startup records, and performance metrics, not your conversation content) plus the conversation record of the current session (your full prompts and model replies, that is, your research content), used only to investigate this issue. Other sessions are never uploaded. Cancel this submission if you would rather not share them.",
+      "diagnosticsNoticeNoSession": "Submitting also uploads runtime diagnostics (error details, startup records, and performance metrics, not your conversation content), used only to investigate this issue. No session is open, so there is no conversation record to attach.",
       "submit": "Submit feedback"
     },
     "summary": {

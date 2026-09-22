@@ -7,6 +7,7 @@ export type ProviderFailureKind =
   | 'rate_limit'
   | 'auth'
   | 'request'
+  | 'model_config'
   | 'unavailable'
   | 'content_policy'
 
@@ -29,12 +30,15 @@ const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>
   'throttling.requestsratelimit': 'rate_limit',
   authentication_error: 'auth',
   invalid_api_key: 'auth',
+  model_bridge_credential_required: 'auth',
   permission_denied: 'auth',
   runtime_not_authenticated: 'auth',
   unauthorized: 'auth',
   bad_request: 'request',
   invalid_request_error: 'request',
-  model_not_found: 'request',
+  invalidparameter: 'model_config',
+  model_not_found: 'model_config',
+  unsupported_model: 'model_config',
   overloaded: 'unavailable',
   server_error: 'unavailable',
   service_unavailable: 'unavailable',
@@ -76,6 +80,7 @@ const FAILURE_TEXT = {
   auth: { messageKey: 'failure.auth.message', actionKey: 'failure.auth.action' },
   unavailable: { messageKey: 'failure.unavailable.message', actionKey: 'failure.unavailable.action' },
   request: { messageKey: 'failure.request.message', actionKey: 'failure.request.action' },
+  model_config: { messageKey: 'failure.modelConfig.message', actionKey: 'failure.modelConfig.action' },
   unknown: { messageKey: 'failure.runtime', actionKey: 'failure.unknown.action' }
 } as const
 
@@ -120,6 +125,7 @@ export function formatTurnFailure(
 // These strings are never used to generate new UI messages.
 const LEGACY_FAILURE_MESSAGES = {
   content_policy: '',
+  model_config: '',
   quota: '模型分配额度已用完。',
   credits: '积分余额已用尽，本次生成已停止。',
   rate_limit: '模型请求过于频繁，请稍后再试。',

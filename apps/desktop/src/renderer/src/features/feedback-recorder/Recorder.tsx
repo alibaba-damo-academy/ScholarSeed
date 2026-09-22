@@ -21,6 +21,7 @@ import {
   TooltipTrigger
 } from '../../components/ui'
 import { CAPTURE_SETTLE_FRAMES, waitForFrames } from '../../frames'
+import { useApp } from '../../store'
 import { Annotator, type AnnotatorResult } from './Annotator'
 import { Capture } from './Capture'
 import { useFloatingSurface } from './drag'
@@ -62,6 +63,7 @@ function captureErrorText(t: TFunction<'components'>, error: FeedbackCaptureErro
 
 export function Recorder(): React.JSX.Element {
   const { t } = useTranslation('components')
+  const { state } = useApp()
   const rootRef = React.useRef<HTMLDivElement>(null)
   const leaseRef = React.useRef<RecorderLease | null>(null)
   const sessionRef = React.useRef<RecordingSession | null>(null)
@@ -308,6 +310,10 @@ export function Recorder(): React.JSX.Element {
       setDescriptionTruncated(preparedDescription.truncated)
       const result = await submitFeedback({
         description: preparedDescription.description,
+        // 省略即 include_logs=false，serve 会整段跳过诊断收集，反馈包就只剩 recording report。
+        includeLogs: true,
+        includeTrace: true,
+        sessionId: state.activeSession,
         images: session.screenshots
           .filter((screenshot) => session.steps.some((step) => step.stepId === screenshot.stepId))
           .map((screenshot) => screenshot.file),
@@ -397,6 +403,7 @@ export function Recorder(): React.JSX.Element {
       {(phase === 'review' || phase === 'submitting') && session ? (
         <Review
           error={error}
+          hasSession={Boolean(state.activeSession)}
           warning={descriptionTruncated
             ? t('feedbackRecorder.notices.descriptionTruncated', {
               limit: RECORDER_DESCRIPTION_MAX_LENGTH

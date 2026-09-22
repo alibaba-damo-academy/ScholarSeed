@@ -19,6 +19,7 @@ from scholarseed_codex.events import translate_event
 from scholarseed_codex.failure import (
     PROVIDER_CONTENT_POLICY_MESSAGE,
     PROVIDER_CREDITS_MESSAGE,
+    PROVIDER_MODEL_CONFIG_MESSAGE,
     provider_failure,
 )
 from scholarseed_codex.files import (
@@ -686,6 +687,32 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure.http_status, 429)
         self.assertEqual(failure.retryability, RuntimeRetryability.USER_RETRYABLE)
         self.assertEqual(failure.message, "The model provider rate limit was reached.")
+
+    async def test_invalid_parameter_is_terminal_with_model_config_message(self) -> None:
+        """参数/模型类拒绝是确定性终态（防御性登记：码经恢复或上游修复到达 adapter 即生效）。"""
+
+        self.state.active_turn_id = "model-config-turn"
+        await self.state.notification(
+            "error",
+            {
+                "turnId": "model-config-turn",
+                "willRetry": False,
+                "error": {
+                    "code": "InvalidParameter",
+                    "message": "Unsupported model: 'minimax-m2.1'",
+                },
+            },
+            generation=1,
+        )
+        await self.state.notification(
+            "turn/completed",
+            {"turn": {"id": "model-config-turn", "status": "failed"}},
+            generation=1,
+        )
+        terminal = self.events[-1]
+        self.assertEqual(terminal.payload["error_code"], "InvalidParameter")
+        self.assertEqual(terminal.payload["safe_error"], PROVIDER_MODEL_CONFIG_MESSAGE)
+        self.assertEqual(terminal.payload["retryability"], RuntimeRetryability.TERMINAL.value)
 
     async def test_recovered_provider_retry_does_not_contaminate_later_failure(self) -> None:
         self.state.active_turn_id = "retry-turn"

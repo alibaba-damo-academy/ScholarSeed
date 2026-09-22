@@ -552,6 +552,12 @@ class SessionLedger:
             payload["rpc_method"] = incident.rpc_method
         if incident.rpc_code is not None:
             payload["rpc_code"] = incident.rpc_code
+        # 供应商归因（含 bridge 恢复回填的真实上游码）随产品事件投影，与 Trace incident
+        # span 保持一致；空值不投影，避免把「无归因」写成显式空字段。
+        if incident.provider_error_code:
+            payload["provider_error_code"] = incident.provider_error_code
+        if incident.provider_http_status is not None:
+            payload["provider_http_status"] = incident.provider_http_status
         return payload
 
     async def incident(

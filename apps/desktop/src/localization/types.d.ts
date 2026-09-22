@@ -761,6 +761,8 @@ declare module 'i18next' {
                 "actual": "实际现象",
                 "expected": "预期结果",
                 "additional": "其他补充",
+                "diagnosticsNotice": "提交后会一并上传运行诊断日志（报错信息、启动记录与性能指标，不含你的对话内容），以及当前会话的对话记录（完整提问与模型回复，即你的研究内容），仅用于排查本次问题；其他会话不会被上传。如不想分享，请取消本次提交。",
+                "diagnosticsNoticeNoSession": "提交后会一并上传运行诊断日志（报错信息、启动记录与性能指标，不含你的对话内容），仅用于排查本次问题。当前没有打开任何会话，无对话记录可附带。",
                 "submit": "提交反馈"
             },
             "summary": {
@@ -2122,6 +2124,10 @@ declare module 'i18next' {
                 "message": "当前请求未被模型服务接受。",
                 "action": "请检查模型、权限与输入。"
             },
+            "modelConfig": {
+                "message": "该模型不被当前端点支持。",
+                "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
+            },
             "unknown": {
                 "action": "生成过程中发生异常，已保留本轮问题和上下文。"
             }
@@ -3211,7 +3217,7 @@ declare module 'i18next' {
             "unreadable": "检索结果暂不可读取。",
             "retryDescription": "本次检索结果暂不可读取，请重试。",
             "opening": "正在打开本次检索结果…",
-            "viewAll": "在文献库查看全部结果",
+            "viewAll": "查看全部结果",
             "query": "精准文献检索",
             "search": "文献检索",
             "status": {
@@ -3322,9 +3328,9 @@ declare module 'i18next' {
                 "bannerByDoi": "从 doi.org 同步元数据",
                 "bannerByArxiv": "从 arxiv.org 同步元数据",
                 "bannerByTitle": "从 openalex.org 同步元数据",
-                "byDoi": "从 doi.org 获取 BibTeX 并填充文献，无需登录。",
-                "byArxiv": "从 arXiv 获取 BibTeX 并填充文献，无需登录。",
-                "byTitle": "从 OpenAlex 按标题检索，命中后需你确认再填充，无需登录。",
+                "byDoi": "从 doi.org 获取 BibTeX 并填充文献。",
+                "byArxiv": "从 arXiv 获取 BibTeX 并填充文献。",
+                "byTitle": "从 OpenAlex 按标题检索，命中后需你确认再填充。",
                 "reasonLabel": "查看原因与处理方式",
                 "supplementIdentifier": "补充标识信息",
                 "missed": "未找到匹配的元信息记录",

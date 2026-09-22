@@ -2706,7 +2706,7 @@ export interface FeedbackInput {
   email?: string
   /** 附带本机诊断日志。 */
   includeLogs?: boolean
-  /** 附带对话 trace (含完整提问与模型输出)。必须用户显式勾选。 */
+  /** 附带对话 trace (含完整提问与模型输出)。默认附带、可取消; 没有勾选框的入口须由告知文案承担知情。 */
   includeTrace?: boolean
   /**
    * 当前点开的会话 id (store 的 activeSession)。serve 侧只收这一个会话的对话记录;

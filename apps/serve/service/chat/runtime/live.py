@@ -47,6 +47,7 @@ from scholarseed_runtime.contract.session import SuspendState
 from scholarseed_runtime.gateway.driver import RuntimeDriver, RuntimeObservation, RuntimeTurnResult
 from service.capabilities.service.skills import SkillCatalog, load_skill_state
 from service.chat.constants import (
+    GENERIC_PROVIDER_FAILURE_CODE,
     HIL_STATE_CANCELLED,
     HIL_STATE_RESOLVED,
     PRODUCT_EVENT_ANSWER_SOURCES,
@@ -162,8 +163,8 @@ from service.chat.service.estimate import SkillDurationEstimator
 from service.chat.service.plan import SessionPlans
 from service.chat.service.publication import PublicationCommand, PublicationService
 from service.chat.service.recording import RecordingService
+from service.chat.service.rejections import terminal_provider_failure
 from service.chat.service.sources import answer_sources
-from service.chat.service.streams import terminal_provider_failure
 from service.chat.service.tasks import ProductTaskLease
 from service.content.domain.model import ContentError
 from service.platform.bridge import BRIDGE_TOKEN_BYTES, DisplayCardContent, PlanWrite
@@ -780,6 +781,7 @@ class LiveSession:
                 client_turn_id, failure = model_failure
                 if client_turn_id == self.active_product_turn_id:
                     event = replace(event, payload={**dict(event.payload), **failure})
+        event = self._recover_incident_attribution(event)
         self._trace.runtime_event(event)
         incident = event_incident(event)
         if incident is not None and event.kind is not RuntimeEventKind.RUNTIME_INCIDENT:
@@ -1393,13 +1395,62 @@ class LiveSession:
     def trace_completion(self, fields: Mapping[str, Any]) -> None:
         self._trace.completion(fields)
         client_turn_id = str(fields.get("client_user_message_id") or "")
-        if (
+        if not (
             client_turn_id
             and client_turn_id == self.active_product_turn_id
             and fields.get("phase") == "finished"
         ):
-            failure = terminal_provider_failure(fields)
-            self._model_bridge_failure = (client_turn_id, failure) if failure else None
+            return
+        downstream = fields.get("downstream")
+        error_code = (
+            str(downstream.get("error_code") or "") if isinstance(downstream, Mapping) else ""
+        )
+        if not error_code:
+            # 无结构化 error_code 的 finished 诊断（成功轮 / 空终态）不参与归因，也不冲掉
+            # 同 turn 已恢复的值——它没有可覆盖的信息。
+            return
+        # 同 turn 多次上游调用（Codex 流重试）取最后一条带 error_code 的 finished 诊断：
+        # 命中白名单则恢复真实归因，未命中则清空，忠实反映最后一次上游结果。终态事件统一
+        # 清槽，故不会跨 turn 串味。
+        failure = terminal_provider_failure(fields)
+        self._model_bridge_failure = (client_turn_id, failure) if failure else None
+
+    def _recover_incident_attribution(self, event: RuntimeEvent) -> RuntimeEvent:
+        """Backfill a flattened ``provider_error_code`` on provider incidents.
+
+        Codex drops the upstream ``error.code``, so adapter-emitted provider incidents
+        (the retrying spans and the terminal failed span) carry only the generic
+        fallback. When the bridge already recovered a structured code for the same
+        turn, stamp it onto the incident so every span of one rejection attributes
+        consistently. Best-effort: a diagnostic that lands after the incident leaves
+        the incident untouched (the terminal payload still recovers), so this never
+        blocks projection.
+        """
+
+        cached = self._model_bridge_failure
+        if cached is None:
+            return event
+        client_turn_id, failure = cached
+        if client_turn_id != self.active_product_turn_id:
+            return event
+        code = str(failure.get("error_code") or "")
+        if not code:
+            return event
+        payload = event.payload if isinstance(event.payload, Mapping) else None
+        raw = payload.get("incident") if isinstance(payload, Mapping) else None
+        if not isinstance(raw, Mapping):
+            return event
+        existing = str(raw.get("provider_error_code") or "").strip()
+        if existing and existing.casefold() != GENERIC_PROVIDER_FAILURE_CODE.casefold():
+            # 已带具体上游码（如 Codex 白名单放行的 rate_limit_exceeded）：bridge 恢复
+            # 只补「无具体归因」的通用码/空值，绝不覆盖 adapter 已解析出的真实码。
+            return event
+        incident = dict(raw)
+        incident["provider_error_code"] = code
+        http_status = failure.get("provider_http_status")
+        if http_status is not None:
+            incident["provider_http_status"] = http_status
+        return replace(event, payload={**dict(payload), "incident": incident})
 
     def observe_model(self, client_turn_id: str, actual_model: str) -> None:
         """A late HTTP response must never change another execution's identity."""

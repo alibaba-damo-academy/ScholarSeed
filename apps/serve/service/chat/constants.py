@@ -91,6 +91,10 @@ RUNTIME_CAPABILITY_UNAVAILABLE = "runtime_capability_unavailable"
 RUNTIME_INCIDENT_IDEMPOTENCY_PREFIX = "incident"
 RUNTIME_INCIDENT_INVALID = "runtime_incident_invalid"
 RUNTIME_LEGACY_ERROR = "codex_runtime_error"
+# 供应商拒绝但 Codex 已把真实 error.code 拍平时的产品级通用兜底码（adapter 的
+# ``CODEX_PROVIDER_FAILED`` 投影到产品面/ incident 的值）。归因恢复只在 incident 仍是
+# 这个「无具体归因」通用码（或空）时回填真实上游码，绝不覆盖已带具体码的 incident。
+GENERIC_PROVIDER_FAILURE_CODE = "codex_provider_failed"
 PRODUCT_EVENT_ID_PREFIX = "product"
 PRODUCT_REFERENCE_FILE = "file"
 PRODUCT_REFERENCE_DIRECTORY = "directory"

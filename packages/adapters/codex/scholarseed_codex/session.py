@@ -545,6 +545,12 @@ class CodexRuntimeSession:
             "requires_openai_auth": False,
             "supports_websockets": transport.supports_websockets,
         }
+        # 出站重试预算由产品按 endpoint 归属决定并经契约下行（``None`` 即交回 Codex 默认）。
+        # adapter 只应用预算值，不认网关地址、不解析 endpoint 归属——那是 Serve 的拓扑知识。
+        if transport.stream_max_retries is not None:
+            provider["stream_max_retries"] = transport.stream_max_retries
+        if transport.request_max_retries is not None:
+            provider["request_max_retries"] = transport.request_max_retries
         environment = dict(request.process_environment)
         material = ModelCredential()
         if transport.credential_ref:

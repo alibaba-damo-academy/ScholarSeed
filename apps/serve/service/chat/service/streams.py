@@ -12,7 +12,6 @@ from enum import Enum
 from typing import Any, Callable, Mapping
 
 from damoatrace.recording.redaction import Redactor
-from scholarseed_runtime.contract.incident import RuntimeRetryability
 
 LOGGER = logging.getLogger(__name__)
 DIAGNOSTIC_EVENT = "model_bridge.diagnostic"
@@ -24,6 +23,7 @@ INPUT_FIELD_LIMIT = 32
 ERROR_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
 METADATA_PATTERN = re.compile(r"[a-zA-Z0-9_.:/+\-]+")
 RESPONSE_TERMINALS = frozenset(("response.completed", "response.failed", "response.incomplete"))
+RESPONSE_FAILED = "response.failed"
 SSE_DATA = b"data:"
 SSE_EVENT = b"event:"
 SSE_DONE = b"[DONE]"
@@ -33,15 +33,6 @@ CODEX_INVALID_PROMPT = "invalid_prompt"
 PROVIDER_ERROR_PREFIX = re.compile(r"^<(\d{3})>\s+([A-Za-z][A-Za-z0-9_.-]*)(?::|$)", re.IGNORECASE)
 PROVIDER_FAILURE_CODES = {
     ("server_error", 400, "internalerror.algo.datainspectionfailed"): CONTENT_SAFETY_BLOCKED,
-}
-TERMINAL_PROVIDER_FAILURES = {
-    CONTENT_SAFETY_BLOCKED: (CONTENT_SAFETY_BLOCKED, CONTENT_SAFETY_MESSAGE),
-}
-CODEX_TERMINAL_PROVIDER_FAILURES = {
-    (CODEX_INVALID_PROMPT, CONTENT_SAFETY_BLOCKED): (
-        CONTENT_SAFETY_BLOCKED,
-        CONTENT_SAFETY_MESSAGE,
-    ),
 }
 
 
@@ -139,30 +130,6 @@ def _normalize_native_response_line(line: bytes) -> bytes:
 def metadata_token(value: object) -> str:
     text = str(value or "")
     return text if len(text) <= METADATA_LIMIT and METADATA_PATTERN.fullmatch(text) else ""
-
-
-def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, str]:
-    downstream = fields.get("downstream")
-    if (
-        fields.get("phase") != "finished"
-        or not isinstance(downstream, Mapping)
-        or downstream.get("terminal_event") != "response.failed"
-    ):
-        return {}
-    code = str(downstream.get("error_code") or "")
-    error_type = str(downstream.get("error_type") or "")
-    terminal_failure = TERMINAL_PROVIDER_FAILURES.get(code)
-    if terminal_failure is None:
-        terminal_failure = CODEX_TERMINAL_PROVIDER_FAILURES.get((code, error_type))
-    if terminal_failure is None:
-        return {}
-    product_code, message = terminal_failure
-    return {
-        "error": message,
-        "error_code": product_code,
-        "safe_error": message,
-        "retryability": RuntimeRetryability.TERMINAL.value,
-    }
 
 
 @dataclass

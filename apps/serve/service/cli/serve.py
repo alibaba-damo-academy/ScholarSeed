@@ -108,6 +108,10 @@ DESKTOP_ENV = "SCHOLARSEED_DESKTOP"
 DEFAULT_SERVER_LOG_LEVEL = "info"
 DESKTOP_SERVER_LOG_LEVEL = "debug"
 SERVICE_LOGGER_NAMESPACE = "service"
+# Codex adapter 命名空间：其 INFO 诊断（codex_provider_error / codex_turn_failed 等）默认被
+# root=WARNING 过滤，backend.log 里 0 行，线上无法离线归因（proposal 106 R5）。与 service
+# 同档放行，使供应商拒绝/重试的归因证据进 backend 包。
+CODEX_LOGGER_NAMESPACE = "scholarseed_codex"
 SERVICE_LOG_LEVELS = {
     "critical": logging.CRITICAL,
     "error": logging.ERROR,
@@ -274,6 +278,7 @@ def serve_main(argv: Optional[List[str]] = None) -> int:
     # without enabling third-party HTTP logs, whose URLs can contain credentials.
     logging.basicConfig()
     logging.getLogger(SERVICE_LOGGER_NAMESPACE).setLevel(SERVICE_LOG_LEVELS[log_level])
+    logging.getLogger(CODEX_LOGGER_NAMESPACE).setLevel(SERVICE_LOG_LEVELS[log_level])
     _configure_resource_logging(log_level)
 
     # ── 解析 auth_mode (优先级: --auth-mode > --auth/--no-auth > SCHOLARSEED_AUTH_MODE > auto) ──

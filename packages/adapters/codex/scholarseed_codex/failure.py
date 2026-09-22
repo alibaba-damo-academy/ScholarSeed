@@ -18,6 +18,7 @@ PROVIDER_QUOTA_MESSAGE = "The model provider allocation quota is exhausted."
 PROVIDER_RATE_LIMIT_MESSAGE = "The model provider rate limit was reached."
 PROVIDER_AUTH_MESSAGE = "The model provider authentication failed."
 PROVIDER_REQUEST_MESSAGE = "The model provider rejected the request parameters."
+PROVIDER_MODEL_CONFIG_MESSAGE = "The endpoint does not support this model; check the model name."
 PROVIDER_UNAVAILABLE_MESSAGE = "The model provider is temporarily unavailable."
 PROVIDER_CONTENT_POLICY_MESSAGE = "The request did not pass content safety review."
 PROVIDER_CREDITS_MESSAGE = "The account credit balance is exhausted."
@@ -70,7 +71,16 @@ _REQUEST_CODES = frozenset(
     {
         "bad_request",
         "invalid_request_error",
+    }
+)
+# 模型/参数类配置错误：用户改个模型名即可自修，是确定性终态（重试无意义）。Codex 当前会
+# 把这类 response.failed 的 error.code 拍平成可重试的流中断，故本表是防御性的——当码经
+# serve bridge 恢复（proposal 106 R1）或未来上游修复后到达 adapter 即生效。
+_MODEL_CONFIG_CODES = frozenset(
+    {
+        "invalidparameter",
         "model_not_found",
+        "unsupported_model",
     }
 )
 _UNAVAILABLE_CODES = frozenset(
@@ -89,7 +99,12 @@ _CREDIT_CODES = frozenset(
     }
 )
 _TERMINAL_CODES = (
-    _QUOTA_CODES | _AUTH_CODES | _REQUEST_CODES | _CONTENT_POLICY_CODES | _CREDIT_CODES
+    _QUOTA_CODES
+    | _AUTH_CODES
+    | _REQUEST_CODES
+    | _MODEL_CONFIG_CODES
+    | _CONTENT_POLICY_CODES
+    | _CREDIT_CODES
 )
 _CODE_BY_MESSAGE = {
     CODEX_QUOTA_EXCEEDED_MESSAGE.casefold(): "insufficient_quota",
@@ -104,6 +119,7 @@ _SAFE_MESSAGES = {
     **dict.fromkeys(_RATE_LIMIT_CODES, PROVIDER_RATE_LIMIT_MESSAGE),
     **dict.fromkeys(_AUTH_CODES, PROVIDER_AUTH_MESSAGE),
     **dict.fromkeys(_REQUEST_CODES, PROVIDER_REQUEST_MESSAGE),
+    **dict.fromkeys(_MODEL_CONFIG_CODES, PROVIDER_MODEL_CONFIG_MESSAGE),
     **dict.fromkeys(_UNAVAILABLE_CODES, PROVIDER_UNAVAILABLE_MESSAGE),
     **dict.fromkeys(_CREDIT_CODES, PROVIDER_CREDITS_MESSAGE),
 }
@@ -166,6 +182,12 @@ def provider_failure(value: Any) -> ProviderFailure:
 
 def authentication_failure(failure: ProviderFailure) -> bool:
     return failure.code.casefold() in _AUTH_CODES
+
+
+def provider_codes() -> frozenset[str]:
+    """Provider error codes this adapter classifies into a dedicated safe message."""
+
+    return frozenset(_SAFE_MESSAGES)
 
 
 def _safe_message(code: str) -> str:
@@ -233,6 +255,7 @@ __all__ = [
     "PROVIDER_FAILURE_MESSAGE",
     "ProviderFailure",
     "authentication_failure",
+    "provider_codes",
     "provider_failure",
     "unpack_error",
 ]

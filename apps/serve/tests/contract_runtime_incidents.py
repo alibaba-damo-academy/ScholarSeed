@@ -1067,6 +1067,74 @@ class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.payload["message"], "The model provider rejected the request.")
         self.assertTrue(record.payload["retryable"])
 
+    def _reject_diagnostic(self, client_turn_id: str) -> None:
+        self.live.trace_completion(
+            {
+                "client_user_message_id": client_turn_id,
+                "phase": "finished",
+                "downstream": {
+                    "terminal_event": "response.failed",
+                    "error_code": "InvalidParameter",
+                    "error_message": "Unsupported model: 'minimax-m2.1'",
+                },
+            }
+        )
+
+    async def test_provider_incident_backfills_recovered_error_code(self) -> None:
+        """Codex 拍平码后，bridge 恢复的真实上游码回填到 retrying incident 投影。"""
+
+        client_turn_id = "client-rejected-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self._reject_diagnostic(client_turn_id)
+        await self.emit(
+            RuntimeEventKind.RUNTIME_INCIDENT,
+            incident=self.incident(RuntimeIncidentState.RETRYING),
+        )
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(record.kind, PRODUCT_EVENT_RUNTIME_INCIDENT)
+        self.assertEqual(record.payload["provider_error_code"], "InvalidParameter")
+        self.assertEqual(record.payload["provider_http_status"], 400)
+
+    async def test_incident_backfill_requires_same_active_turn(self) -> None:
+        """活跃轮切走后才到的 incident 不能被上一轮恢复出的归因污染。"""
+
+        self.live.active_product_turn_id = "turn-a"
+        self._reject_diagnostic("turn-a")
+        self.live.active_product_turn_id = "turn-b"
+        await self.emit(
+            RuntimeEventKind.RUNTIME_INCIDENT,
+            incident=self.incident(RuntimeIncidentState.RETRYING),
+        )
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertNotIn("provider_error_code", record.payload)
+
+    async def test_incident_backfill_tolerates_late_diagnostic(self) -> None:
+        """诊断晚于 incident 到达：incident 保持无归因，不阻塞、不报错（终态另行恢复）。"""
+
+        self.live.active_product_turn_id = "client-late-turn"
+        await self.emit(
+            RuntimeEventKind.RUNTIME_INCIDENT,
+            incident=self.incident(RuntimeIncidentState.RETRYING),
+        )
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertNotIn("provider_error_code", record.payload)
+
+    async def test_incident_backfill_preserves_existing_specific_code(self) -> None:
+        """incident 已带具体上游码（Codex 白名单放行的）时，bridge 恢复不覆盖它。"""
+
+        client_turn_id = "client-specific-turn"
+        self.live.active_product_turn_id = client_turn_id
+        self._reject_diagnostic(client_turn_id)
+        specific = replace(
+            self.incident(RuntimeIncidentState.RETRYING),
+            provider_error_code="rate_limit_exceeded",
+            provider_http_status=429,
+        )
+        await self.emit(RuntimeEventKind.RUNTIME_INCIDENT, incident=specific)
+        record = self.events.replay(PRODUCT_SESSION_ID)[-1]
+        self.assertEqual(record.payload["provider_error_code"], "rate_limit_exceeded")
+        self.assertEqual(record.payload["provider_http_status"], 429)
+
     async def test_failed_incident_is_an_error_but_recovery_states_are_not(self) -> None:
         await self.emit(
             RuntimeEventKind.RUNTIME_INCIDENT,

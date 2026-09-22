@@ -129,6 +129,13 @@ GATEWAY_LOGIN_REQUIRED_ERROR = "使用内置模型需先登录；或在设置中
 OPENAI_PROVIDER_ALIASES = frozenset(("openai", "openai-compatible", "openai_compatible"))
 HEADER_ENV_PATTERN = re.compile(r"[^A-Z0-9]+")
 MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
+# Codex 出站重试预算按 endpoint 归属分档（proposal 106 / 落实 proposal 42 立场）。
+# 内置网关路自有重试+降级链，Codex 再重试只会对一个确定性拒绝重复打上游，故设 0；
+# BYOK 直连路无网关兜底，保留一次瞬时重连韧性，确定性拒绝最多两次即终态。
+GATEWAY_STREAM_MAX_RETRIES = 0
+GATEWAY_REQUEST_MAX_RETRIES = 0
+BYOK_STREAM_MAX_RETRIES = 1
+BYOK_REQUEST_MAX_RETRIES = 1
 # Product-owned configuration accessor.  Kept as a named seam so model tests and
 # callers can replace the effective persisted catalog without importing DamoAgent SDK.
 load_builtin_work_config = load_config_values
@@ -238,6 +245,8 @@ class SessionModelSpec:
                 ),
                 credential_ref=credential_ref,
                 supports_websockets=bool(provider.get("supports_websockets")),
+                stream_max_retries=_retry_budget(provider.get("stream_max_retries")),
+                request_max_retries=_retry_budget(provider.get("request_max_retries")),
             ),
             context_window=context_window,
             reasoning_effort=reasoning_effort,
@@ -869,6 +878,10 @@ class ModelService:
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
+                        # 订阅路恒经产品网关注册（registration.base_url 即 loopback bridge），
+                        # 网关自有重试+降级，故与内置网关路同档：Codex 侧不再重试。
+                        "stream_max_retries": GATEWAY_STREAM_MAX_RETRIES,
+                        "request_max_retries": GATEWAY_REQUEST_MAX_RETRIES,
                     },
                 )
             # ``apply_profile`` 是唯一让个人连接完全决定路由的入口: 它清掉内置配置里
@@ -1199,11 +1212,20 @@ def _codex_provider(
     private_headers = dict(headers) if isinstance(headers, Mapping) else {}
     call_url = str(config.get("call_url") or "").strip()
     chat_completions = call_url.endswith(CHAT_COMPLETIONS_SUFFIX)
+    responses_endpoint = f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}"
+    # endpoint 归属是产品拓扑事实（只有自有网关有重试+降级链），在这一层判定一次，
+    # 再投影成出站重试预算随 provider dict 下行；adapter 只应用预算，不认网关地址。
+    gateway_owned = completions.accepts_source(call_url or responses_endpoint)
+    stream_max_retries, request_max_retries = (
+        (GATEWAY_STREAM_MAX_RETRIES, GATEWAY_REQUEST_MAX_RETRIES)
+        if gateway_owned
+        else (BYOK_STREAM_MAX_RETRIES, BYOK_REQUEST_MAX_RETRIES)
+    )
     if (
         chat_completions
         or reasoning_effort is not None
         or account_tokens is not None
-        or completions.accepts_source(call_url or f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}")
+        or gateway_owned
     ):
         # 会话 id 按会话固定，可以随注册快照；用户 token 7 天到期且现在直接站网关的鉴权位
         # （验签腿必须校 exp），所以必须**调用时动态取** —— 注册时快照会让长会话后期整批 401。
@@ -1215,8 +1237,8 @@ def _codex_provider(
         if session_id:
             metering_headers[CONV_MESSAGE_ID_HEADER] = session_id
         registration = completions.register(
-            endpoint=call_url or f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}",
-            responses_endpoint=f"{base_url.rstrip('/')}{RESPONSES_SUFFIX}",
+            endpoint=call_url or responses_endpoint,
+            responses_endpoint=responses_endpoint,
             wire_protocol=(
                 ModelWireProtocol.CHAT_COMPLETIONS
                 if chat_completions
@@ -1240,12 +1262,16 @@ def _codex_provider(
             "wire_api": "responses",
             "requires_openai_auth": False,
             "supports_websockets": False,
+            "stream_max_retries": stream_max_retries,
+            "request_max_retries": request_max_retries,
         }, {}
     provider: dict[str, Any] = {
         "name": SCHOLARSEED_CODEX_PROVIDER_NAME,
         "base_url": base_url.rstrip("/"),
         "wire_api": "responses",
         "supports_websockets": False,
+        "stream_max_retries": stream_max_retries,
+        "request_max_retries": request_max_retries,
     }
     environment: dict[str, str] = {}
     if api_key:
@@ -1309,6 +1335,18 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _retry_budget(value: Any) -> int | None:
+    """Project a declared retry budget; ``0`` is meaningful (no retry) and must survive."""
+
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 __all__ = [

@@ -48,6 +48,7 @@ const STEP_ACTION_LABEL_KEYS = {
 
 interface ReviewProps {
   error: string
+  hasSession: boolean
   warning: string
   session: RecordingSession
   submitting: boolean
@@ -121,6 +122,7 @@ function ScreenshotEditor({ screenshot, onDelete, onNoteChange }: ScreenshotEdit
 
 export function Review({
   error,
+  hasSession,
   warning,
   session,
   submitting,
@@ -275,6 +277,14 @@ export function Review({
             </ol>
           </Card>
         </div>
+        <p
+          data-testid="feedback-recorder-diagnostics-notice"
+          className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+        >
+          {hasSession
+            ? t('feedbackRecorder.review.diagnosticsNotice')
+            : t('feedbackRecorder.review.diagnosticsNoticeNoSession')}
+        </p>
         <DialogFooter>
           <Button disabled={submitting} variant="secondary" onClick={onCancel}>{t('feedbackRecorder.cancel')}</Button>
           <CopyButton

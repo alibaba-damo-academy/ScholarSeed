@@ -4,14 +4,14 @@
 import { BrowserWindow } from 'electron'
 import { readFileSync } from 'node:fs'
 
-import startupLogoPath from '../renderer/src/assets/logo.webp?asset'
+import startupLogoPath from '../renderer/src/assets/logo.svg?asset'
 import { mainLocalization } from './localization'
 
 const STARTUP_WINDOW_WIDTH = 440
 const STARTUP_WINDOW_HEIGHT = 292
 const STARTUP_WINDOW_BACKGROUND = '#F8F8F5'
 const STARTUP_STATUS_ID = 'startup-status'
-const STARTUP_LOGO_SOURCE = `data:image/webp;base64,${readFileSync(startupLogoPath).toString('base64')}`
+const STARTUP_LOGO_SOURCE = `data:image/svg+xml;base64,${readFileSync(startupLogoPath).toString('base64')}`
 function startupDocument(): string {
   const locale = mainLocalization()
   const t = locale.getFixedT(null, 'foundation')

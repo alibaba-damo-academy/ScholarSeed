@@ -23,7 +23,7 @@ import recentIconVideo from '../../assets/icon-video.png'
 import recentIconWord from '../../assets/icon-word.png'
 import recentIconXls from '../../assets/icon-xls.png'
 import recentIconZip from '../../assets/icon-zip.png'
-import scholarseedLogoMark from '../../assets/logo.webp'
+import scholarseedLogoMark from '../../assets/logo.svg'
 import { catalogue } from '../literature/catalog'
 import type {
   LiteratureCounts,

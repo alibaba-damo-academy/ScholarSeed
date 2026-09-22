@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 import zh from '../../localization/locales/zh/conversation.json' with { type: 'json' }
@@ -172,6 +173,80 @@ test('credit balance exhaustion maps to a dedicated credits card without retry',
   assert.equal(credits.runtimeAction, undefined)
   await locale.changeLanguage('en')
   assert.equal(display(credits).message, 'Your credit balance is exhausted, so generation has stopped.')
+})
+
+test('classified turn failures keep a distinct reason for the card to surface', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+
+  // 适配器 _AUTH_CODES 里有这个码，渲染层曾漏登记，于是塌缩成 unknown 并只剩英文脱敏原文。
+  const bridge = describeTurnFailure({
+    code: 'model_bridge_credential_required',
+    message: 'The model provider authentication failed.',
+    retryable: false
+  })
+  assert.equal(bridge.failure?.kind, 'auth')
+  assert.equal(display(bridge).message, '模型服务认证失败。')
+  assert.equal(display(bridge).action, '请检查登录或模型凭证。')
+
+  // 限流是原因句最要紧的一条：action 只说「已保留」，看不出是限流。
+  const rateLimit = describeTurnFailure({
+    code: 'rate_limit_exceeded',
+    message: 'The model provider rate limit was reached.',
+    retryable: true
+  })
+  assert.equal(display(rateLimit).message, '模型请求过于频繁，请稍后再试。')
+  assert.notEqual(display(rateLimit).action, display(rateLimit).message)
+
+  // 未登记码仍落 unknown，但脱敏原文必须留在 message 里，不能只剩通用文案。
+  const unregistered = describeTurnFailure({
+    code: 'codex_provider_failed',
+    message: 'The model provider rejected the request.',
+    retryable: true
+  })
+  assert.equal(unregistered.failure?.kind, 'unknown')
+  assert.equal(display(unregistered).message, 'The model provider rejected the request.')
+  assert.equal(display(unregistered).action, '生成过程中发生异常，已保留本轮问题和上下文。')
+
+  await locale.changeLanguage('en')
+  assert.equal(display(bridge).message, 'Model service authentication failed.')
+  assert.equal(display(rateLimit).message, 'Too many model requests. Try again later.')
+})
+
+test('the turn failure card renders the reason ahead of the next step', () => {
+  const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
+  const anchor = stream.indexOf('data-testid="turn-failure-card"')
+  assert.notEqual(anchor, -1)
+  const card = stream.slice(anchor)
+  const body = card.slice(0, card.indexOf('{item.runtimeAction ==='))
+  assert.match(body, /data-testid="turn-failure-reason"[\s\S]*?\{failureText\.message\}/)
+  assert.match(body, /data-testid="turn-failure-action"[\s\S]*?\{failureText\.action\}/)
+  // 原因与下一步同源时 (content_policy 的 messageKey==actionKey) 只渲染一次。
+  assert.match(body, /failureText\.action && failureText\.action !== failureText\.message/)
+  assert.ok(body.indexOf('turn-failure-reason') < body.indexOf('turn-failure-action'))
+})
+
+test('unsupported model rejection maps to a model_config card without retry', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  const display = (item: ReturnType<typeof describeTurnFailure>) => formatTurnFailure(item, locale.getFixedT(null, 'conversation'))
+  // 工单 87102385：上游 InvalidParameter（"Unsupported model"）经 bridge 恢复后到达产品面。
+  const modelConfig = describeTurnFailure({
+    code: 'InvalidParameter',
+    message: "Unsupported model: 'minimax-m2.1'",
+    retryable: true
+  })
+  assert.equal(modelConfig.failure?.kind, 'model_config')
+  assert.equal(display(modelConfig).title, '回答生成失败')
+  assert.equal(display(modelConfig).message, '该模型不被当前端点支持。')
+  assert.match(display(modelConfig).action, /检查模型名/)
+  // 确定性配置错误：用户改个模型名即可自修，即使上游标了 retryable 也不给重试按钮。
+  assert.equal(modelConfig.runtimeAction, undefined)
+  // model_not_found 归到同一可操作分类（不再落泛 request）。
+  assert.equal(describeTurnFailure({ code: 'model_not_found' }).failure?.kind, 'model_config')
+  await locale.changeLanguage('en')
+  assert.equal(display(modelConfig).message, 'This model is not supported by the current endpoint.')
 })
 
 test('session catalog distinguishes a failed payload from an authoritative empty list', () => {

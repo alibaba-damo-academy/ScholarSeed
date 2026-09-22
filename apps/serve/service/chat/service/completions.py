@@ -27,6 +27,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
 from service.chat.service.streams import (
+    RESPONSE_FAILED,
     CompletionDiagnostic,
     NativeResponseNormalizer,
     StreamEnd,
@@ -1013,6 +1014,18 @@ class CompletionBridge:
 
         async def stream() -> AsyncIterator[bytes]:
             call.task = asyncio.current_task()
+
+            def settle_upstream_end() -> None:
+                # 带 error 的 response.failed 终态是供应商拒绝，不是干净的流结束：升格
+                # PROVIDER_ERROR 并用真实 error_code 记 failure_type，使 serve 侧记录不再
+                # 是 eof/failure_type=""（proposal 106 R4）。downstream 观测已脱敏/有界。
+                downstream = call.diagnostic.downstream
+                if downstream.terminal == RESPONSE_FAILED and downstream.error_code:
+                    call.diagnostic.upstream_end = StreamEnd.PROVIDER_ERROR.value
+                    call.diagnostic.failure_type = downstream.error_code
+                else:
+                    call.diagnostic.upstream_end = StreamEnd.EOF.value
+
             try:
                 if call.revoked or not upstream.active:
                     raise asyncio.CancelledError()
@@ -1050,7 +1063,7 @@ class CompletionBridge:
                             return
                     for normalized_chunk in normalizer.finish():
                         yield normalized_chunk
-                    call.diagnostic.upstream_end = StreamEnd.EOF.value
+                    settle_upstream_end()
                     return
                 async for chunk in chat_stream_to_responses(
                     response,
@@ -1061,7 +1074,7 @@ class CompletionBridge:
                     ),
                 ):
                     yield chunk
-                call.diagnostic.upstream_end = StreamEnd.EOF.value
+                settle_upstream_end()
             except asyncio.CancelledError:
                 call.diagnostic.upstream_end = (
                     StreamEnd.REVOKED.value if call.revoked else StreamEnd.CANCELLED.value

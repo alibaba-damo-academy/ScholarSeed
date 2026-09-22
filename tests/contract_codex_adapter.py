@@ -785,6 +785,57 @@ def test_vendor_neutral_model_projection() -> None:
     check("catalog contains no credentials", "secret-api-key" not in catalog_text)
 
 
+def test_remote_retry_budget_projection() -> None:
+    print("== remote retry budget projection ==")
+
+    def project(transport: ModelTransport) -> dict[str, object]:
+        async def scenario() -> dict[str, object]:
+            intent = ModelIntent(
+                model_ref="research-model",
+                revision="model:research-model",
+                capabilities=ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA),
+                transport=transport,
+            )
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                patch.dict(codex_environment.os.environ, {"SCHOLARSEED_CODEX_HOME": directory}),
+            ):
+                session = CodexRuntimeSession(
+                    OpenSessionRequest(
+                        product_session_id="product-session",
+                        cwd=ROOT,
+                        model=intent,
+                    )
+                )
+                await session._apply_model_connection()
+                config = dict(session._native.request.thread_config)
+                providers = dict(config.get("model_providers") or {})
+                return dict(providers.get("scholarseed") or {})
+
+        return asyncio.run(scenario())
+
+    remote = dict(
+        mode=ModelConnectionMode.REMOTE,
+        endpoint="https://models.example.test/v1/",
+        wire_protocol=ModelWireProtocol.RESPONSES,
+    )
+    byok = project(ModelTransport(**remote, stream_max_retries=1, request_max_retries=1))
+    gateway = project(ModelTransport(**remote, stream_max_retries=0, request_max_retries=0))
+    undeclared = project(ModelTransport(**remote))
+    check(
+        "BYOK budget reaches the codex provider verbatim",
+        byok.get("stream_max_retries") == 1 and byok.get("request_max_retries") == 1,
+    )
+    check(
+        "gateway budget of zero survives projection (not dropped as falsy)",
+        gateway.get("stream_max_retries") == 0 and gateway.get("request_max_retries") == 0,
+    )
+    check(
+        "undeclared budget omits the knobs so codex keeps its own default",
+        "stream_max_retries" not in undeclared and "request_max_retries" not in undeclared,
+    )
+
+
 def test_approval_catalog_binding() -> None:
     native = {
         "models": [
@@ -2377,6 +2428,7 @@ def main() -> int:
     test_version_compatibility()
     test_remote_authentication_independence()
     test_vendor_neutral_model_projection()
+    test_remote_retry_budget_projection()
     test_session_scoped_web_search_projection()
     test_opaque_launch_secret_projection()
     test_environment_removal()

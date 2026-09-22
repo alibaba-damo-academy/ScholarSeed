@@ -142,6 +142,7 @@ from service.paths import SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKILL_ROOTS, SERVI
 from service.platform.citations import CITATION_SCHEME
 from service.platform.content import ArtifactScopeKind, RootKind
 from service.settings.capabilities import apply_capability, bundled_registry
+from service.settings.catalog import DEEPRD_GATEWAY_BASE_URL
 from service.workbench.domain.model import WorkbenchFormatPolicy
 
 PRODUCT_SESSION_ID = "product-session"
@@ -3145,6 +3146,57 @@ class CodexServiceContract(unittest.IsolatedAsyncioTestCase):
         upstream = next(iter(completion_bridge._upstreams.values()))
         self.assertEqual(upstream.route_model("codex-auto-review"), "codex-auto-review")
         self.assertEqual(intent.capabilities.tool_protocol.value, "json_schema")
+
+    async def test_retry_budget_follows_endpoint_ownership(self) -> None:
+        """内置网关路 Codex 侧不重试(0)，BYOK 直连路保留一次瞬时重连(1)；0 不被当 falsy 丢掉。"""
+
+        bridge = CompletionBridge(
+            "http://127.0.0.1:9999", source_endpoints=(DEEPRD_GATEWAY_BASE_URL,)
+        )
+        gateway_provider, _ = model_module._codex_provider(
+            {"model_name": "qwen3.8-max", "base_url": DEEPRD_GATEWAY_BASE_URL},
+            bridge,
+        )
+        byok_provider, _ = model_module._codex_provider(
+            {
+                "model_name": "minimax-m2.1",
+                "base_url": "https://byok.example/v1",
+                "api_key": "sk-test",
+            },
+            bridge,
+        )
+        self.assertEqual(
+            gateway_provider["stream_max_retries"], model_module.GATEWAY_STREAM_MAX_RETRIES
+        )
+        self.assertEqual(
+            gateway_provider["request_max_retries"], model_module.GATEWAY_REQUEST_MAX_RETRIES
+        )
+        self.assertEqual(byok_provider["stream_max_retries"], model_module.BYOK_STREAM_MAX_RETRIES)
+        self.assertEqual(
+            byok_provider["request_max_retries"], model_module.BYOK_REQUEST_MAX_RETRIES
+        )
+        self.assertEqual(model_module.GATEWAY_STREAM_MAX_RETRIES, 0)
+        self.assertEqual(model_module.BYOK_STREAM_MAX_RETRIES, 1)
+        gateway_spec = model_module.SessionModelSpec(
+            key="qwen3.8-max",
+            model_name="qwen3.8-max",
+            config={},
+            billing="api",
+            codex_provider=gateway_provider,
+        )
+        intent, _ = gateway_spec.runtime_model()
+        self.assertEqual(intent.transport.stream_max_retries, 0)
+        self.assertEqual(intent.transport.request_max_retries, 0)
+        byok_spec = model_module.SessionModelSpec(
+            key="minimax-m2.1",
+            model_name="minimax-m2.1",
+            config={},
+            billing="api",
+            codex_provider=byok_provider,
+        )
+        byok_intent, _ = byok_spec.runtime_model()
+        self.assertEqual(byok_intent.transport.stream_max_retries, 1)
+        self.assertEqual(byok_intent.transport.request_max_retries, 1)
 
     async def test_thinking_admission_follows_the_declared_form(self) -> None:
         """形态准入读真注册表：没声明过的形态不能存，区间未确认的预算同样不能存。"""

@@ -232,7 +232,23 @@ function PaperMetaDiffView({
 }
 
 const STATUS_CARD_CLASS =
-  'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)]'
+  'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border p-[var(--vds-space-3)]'
+/**
+ * 卡片配色沿用设计系统的状态语义: notice 是「提示」, warning 才是「需要处理的异常」。
+ * 同步元数据是随时可用的常规操作, 因此走 info(notice) 而不是黄色 warning。
+ * 边框色与底色由 tone 单独给全, 避免同一元素上两套 bg/border 任意值互相覆盖。
+ */
+type StatusCardTone = 'default' | 'info' | 'warning'
+const STATUS_CARD_TONE_CLASS: Record<StatusCardTone, string> = {
+  default: 'border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)]',
+  info: 'border-[var(--vds-notice-light-border)] bg-[var(--vds-notice-light-bg-default)]',
+  warning: 'border-[var(--vds-warning-light-border)] bg-[var(--vds-warning-light-bg-default)]'
+}
+const STATUS_CARD_ICON_TONE_CLASS: Record<StatusCardTone, string> = {
+  default: 'text-[var(--vds-text-secondary)]',
+  info: 'text-[var(--vds-notice-text-primary)]',
+  warning: 'text-[var(--vds-warning-text-primary)]'
+}
 const FULLTEXT_ROW_CLASS =
   'grid min-w-0 max-w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-2)] overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)]'
 const FULLTEXT_NAME_CLASS =
@@ -354,19 +370,13 @@ function StatusCard({
   title: string
   reason?: string
   failure?: string
-  tone?: 'default' | 'warning'
+  tone?: StatusCardTone
   testId?: string
   children?: React.ReactNode
 }): React.JSX.Element {
   const { t: literature } = useTranslation('literature')
-  const cardClassName =
-    tone === 'warning'
-      ? `${STATUS_CARD_CLASS} border-[var(--vds-warning-light-border)] bg-[var(--vds-warning-light-bg-default)]`
-      : STATUS_CARD_CLASS
-  const iconClassName =
-    tone === 'warning'
-      ? 'text-[var(--vds-warning-text-primary)]'
-      : 'text-[var(--vds-text-secondary)]'
+  const cardClassName = `${STATUS_CARD_CLASS} ${STATUS_CARD_TONE_CLASS[tone]}`
+  const iconClassName = STATUS_CARD_ICON_TONE_CLASS[tone]
   const iconNode = (
     <span className={`inline-flex shrink-0 ${iconClassName}`}>{icon}</span>
   )
@@ -1819,7 +1829,7 @@ export function LiteratureDetail({
                     testId="literature-sync-banner"
                     icon={<Info size={18} />}
                     title={literature(paperMetaTitleKey(syncQuery.dimension))}
-                    tone="warning"
+                    tone="info"
                     reason={literature(
                       paperMetaDescriptionKey(syncQuery.dimension)
                     )}
