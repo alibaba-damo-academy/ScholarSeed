@@ -1,0 +1,149 @@
+:root {
+  --vds-duration-fast: 120ms;
+  --vds-duration-normal: 180ms;
+  --vds-carousel-transition-duration: 500ms;
+  --vds-carousel-transition-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --vds-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes vds-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes vds-skeleton-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes vds-progress-indeterminate {
+  to {
+    transform: translateX(var(--vds-progress-indeterminate-end));
+  }
+}
+
+@keyframes vds-collapsible-down {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes vds-hover-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes vds-hover-card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+
+@keyframes vds-tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes vds-navigation-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes vds-carousel-slide-next {
+  from {
+    opacity: 0.72;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes vds-carousel-slide-prev {
+  from {
+    opacity: 0.72;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes vds-carousel-slide-down {
+  from {
+    opacity: 0.72;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes vds-carousel-slide-up {
+  from {
+    opacity: 0.72;
+    transform: translateY(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes vds-carousel-indicator-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes vds-breathe {
+  0%,
+  100% {
+    opacity: 0.15;
+    transform: scale(0.96);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.05);
+  }
+}

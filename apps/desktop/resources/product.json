@@ -1,0 +1,56 @@
+{
+  "product_id": "scholarseed",
+  "product_name": "书深",
+  "bundle_id": "com.scholarseed.desktop",
+  "release_lane": "local",
+  "update_channel": "release",
+  "update_base_url": "https://scholarseed.damo.alibaba.com",
+  "expected_team_id": "",
+  "expected_windows_publisher": "",
+  "auth_mode": "account",
+  "account_base_url": "https://scholarseed.damo.alibaba.com",
+  "features": {
+    "feedback_recorder": true
+  },
+  "credential_profiles": {
+    "local": {
+      "key_provider": "mock_keychain",
+      "refresh_namespace": "local",
+      "session_namespace": "local"
+    },
+    "distribution": {
+      "key_provider": "system_keychain",
+      "refresh_namespace": "distribution",
+      "session_namespace": "distribution"
+    }
+  },
+  "default_runtime": "codex",
+  "runtimes": {
+    "codex": {
+      "adapter": "scholarseed-codex",
+      "module": "scholarseed_codex",
+      "enabled": true,
+      "profile": "official",
+      "display_name": "Codex",
+      "client_name": "scholarseed_desktop",
+      "client_title": "书深",
+      "service_name": "scholarseed",
+      "default_permission": {
+        "sandbox": "workspace-write",
+        "approval_policy": "on-request",
+        "full_access_sandbox": "danger-full-access",
+        "no_approval_policy": "never"
+      },
+      "distribution": "official-vendored",
+      "configuration": {
+        "capacity": {
+          "execution_hosts": 16,
+          "control_hosts": 1,
+          "queue_limit": 100,
+          "wait_seconds": 120.0,
+          "idle_seconds": 30.0
+        }
+      }
+    }
+  }
+}

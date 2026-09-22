@@ -1,0 +1,13 @@
+{
+  "id": "minimal-project",
+  "description": "Smoke/fast dataset: 1 markdown + 1 python + 1 single-page PDF. All files are deterministic fixtures committed next to this descriptor.",
+  "project": {
+    "name": "Minimal Project",
+    "files": [
+      { "path": "readme.md", "contentFrom": "minimal-project/readme.md" },
+      { "path": "hello.py", "contentFrom": "minimal-project/hello.py" },
+      { "path": "sample.pdf", "contentFrom": "minimal-project/sample.pdf", "binary": true }
+    ]
+  },
+  "auth": "none"
+}

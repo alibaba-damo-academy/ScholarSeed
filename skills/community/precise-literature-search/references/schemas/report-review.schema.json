@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "report-review.schema.json",
+  "title": "Decision after reviewing a full-text report",
+  "type": "object",
+  "required": ["schema_version", "run_id", "search_round", "decision", "feedback", "report_path", "reviewed_at", "archived_artifacts"],
+  "properties": {
+    "schema_version": {"enum": ["1.0", "1.1"]},
+    "run_id": {"type": "string", "minLength": 1},
+    "search_round": {"type": "integer", "minimum": 1},
+    "decision": {"enum": ["complete", "refine"]},
+    "decision_source": {"enum": ["user_explicit", "host_agent"]},
+    "feedback": {"type": ["string", "null"]},
+    "report_path": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string"},
+    "archived_artifacts": {
+      "type": "object",
+      "additionalProperties": {"type": "string"}
+    }
+  }
+}

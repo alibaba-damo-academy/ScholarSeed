@@ -1,0 +1,10 @@
+{
+  "blurb": "Generate & develop research ideas",
+  "category": "书深技能",
+  "fingerprint": "sha256:c19c0e0656f6db53bcafacbc612d57a682f5a50044c18949da9d29b0098a9c78",
+  "icon": "skills",
+  "manifest_sha256": "8e92730bb02cd6cb6628aec95b1f4e7983aa11430935ef0ee18a62e225845ca7",
+  "origin": "skillhub:scholarseed/research-idea-partner",
+  "package_sha256": "f86d5d5f5d6843b79aed85184e5ff5ab2f1240d97baadc0068abb3ae718ce404",
+  "version": "1.0.1"
+}

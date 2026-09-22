@@ -1,0 +1,10 @@
+{
+  "id": "onboarding-fresh",
+  "description": "Fresh-user dataset: represents absence, not content. Build on a createRuntime() isolated home with no seeded preferences, no projects, and no config; nothing is materialized from this directory.",
+  "auth": "none",
+  "expected": {
+    "projects": [],
+    "preferencesSeeded": false,
+    "configSeeded": false
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "dependencies": {
+    "imports": [
+      "playwright"
+    ]
+  },
+  "files": [
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "d699f9e7153821169cc4858207117811bffaa1e766177a6c3e956d45a4d22659",
+      "size": 4084
+    },
+    {
+      "mode": 420,
+      "path": "agents/openai.yaml",
+      "sha256": "24f571c319f40316945258e14f5327b65596a6947732e9f306ceb25f1ef84baf",
+      "size": 287
+    },
+    {
+      "mode": 420,
+      "path": "scripts/browser.py",
+      "sha256": "e17cb06447a554d013f696bff09dac773643aa193f129f1287da1bde812f2da1",
+      "size": 20685
+    },
+    {
+      "mode": 420,
+      "path": "scripts/invoke.py",
+      "sha256": "6bcc6d1500e44fde39fcd9fc9f404df08b4cfd567385fa29730fd71805deed1a",
+      "size": 4719
+    },
+    {
+      "mode": 420,
+      "path": "scripts/official.py",
+      "sha256": "61acc5cd86f2058b40c2e45dd45d570b86b63307a1dcc39c9002d18b0d841c98",
+      "size": 12042
+    },
+    {
+      "mode": 420,
+      "path": "scripts/providers.py",
+      "sha256": "8e9d98d332ddbcacfa99ea12b85e723b89139b674185cc27f3cbda9252d7fabe",
+      "size": 10341
+    },
+    {
+      "mode": 420,
+      "path": "scripts/smoke.py",
+      "sha256": "217ef16c74f0698c9513c7a943a8afcd6f4ca70448a46a280a4c2fd5bff0b8b4",
+      "size": 9434
+    },
+    {
+      "mode": 420,
+      "path": "scripts/test_search.py",
+      "sha256": "c2cc2d94ec0f7dc4747b6fe60f4d41cfd2818271e2d687f73ae15275f10b33d4",
+      "size": 24300
+    }
+  ],
+  "name": "web-search",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "2abf05b038408587eb709ee38cba62b0b0724d0a050031c03db398f620445398",
+  "version": "0.0.0"
+}

@@ -1,0 +1,12 @@
+{
+  "dialogs": {
+    "importResource": "选择文件或文件夹",
+    "importFile": "选择文件",
+    "importDirectory": "选择文件夹",
+    "workspace": "选择 / 新建研究工作目录",
+    "codex": "选择 Codex 可执行文件",
+    "saveCopy": "保存副本",
+    "insertImage": "插入图片",
+    "images": "图片"
+  }
+}

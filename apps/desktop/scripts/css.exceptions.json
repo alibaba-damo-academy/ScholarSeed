@@ -1,0 +1,93 @@
+{
+  "$comment": "仅登记经审查的第三方内部覆盖；每项必须含path/scope/selector/library/reason/verification。现有CSS不是整文件例外。",
+  "overrides": [
+    {
+      "path": "src/renderer/src/shell/workbench.css",
+      "scope": ".vds-markdown-crepe",
+      "selector": ".vds-markdown-crepe .katex .cjk_fallback",
+      "library": "katex 0.18.1 via @milkdown/crepe 7.22.1",
+      "reason": "KaTeX generates cjk_fallback spans with its serif math font inheritance, and its public rendering options do not expose a font family for these Unicode text nodes.",
+      "verification": "Real Desktop Markdown visual editor rendering inline colored CJK LaTeX beside an H1 heading; inspect the computed font family and screenshot."
+    },
+    {
+      "path": "src/renderer/src/shell/workbench.css",
+      "scope": ".vds-markdown-crepe",
+      "selector": ".vds-markdown-crepe .ProseMirror .katex",
+      "library": "katex 0.18.1 via @milkdown/crepe 7.22.1",
+      "reason": "KaTeX applies a fixed 1.21em font shorthand to every rendered formula, and Milkdown exposes no theme option for matching formula size to the surrounding ProseMirror body text.",
+      "verification": "Real Desktop Markdown visual editor rendering inline and fenced LaTeX; compare computed formula and paragraph font sizes and inspect light and dark screenshots."
+    },
+    {
+      "path": "src/renderer/src/shell/workbench.css",
+      "scope": ".vds-markdown-crepe",
+      "selector": ".vds-markdown-crepe .ProseMirror span[data-type='math_inline']",
+      "library": "@milkdown/crepe 7.22.1 with katex 0.18.1",
+      "reason": "Crepe renders inline math as an inline-block aligned to the bottom, with no public theme option for preserving the surrounding paragraph baseline and inherited line height.",
+      "verification": "Real Desktop Markdown visual editor rendering a fraction inline beside plain text; compare its paragraph height with a plain reference line and inspect for clipping or overlap."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/pdf/pdf.css",
+      "scope": ".vds-pdf-page",
+      "selector": ".vds-pdf-page .textLayer .endOfContent",
+      "library": "pdfjs-dist 6.3.289",
+      "reason": "TextLayerBuilder generates selection sentinel and br nodes; its public API has no styles for Chromium drag boundary handling. These match the installed PDF.js viewer rules.",
+      "verification": "Real Desktop drag selection on annotated phenology PDF, forward/reverse across lines and formulas, at multiple scales."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/pdf/pdf.css",
+      "scope": ".vds-pdf-page",
+      "selector": ".vds-pdf-page .textLayer.selecting .endOfContent",
+      "library": "pdfjs-dist 6.3.289",
+      "reason": "TextLayerBuilder generates selection sentinel and br nodes; its public API has no styles for Chromium drag boundary handling. These match the installed PDF.js viewer rules.",
+      "verification": "Real Desktop drag selection on annotated phenology PDF, forward/reverse across lines and formulas, at multiple scales."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/pdf/pdf.css",
+      "scope": ".vds-pdf-page",
+      "selector": ".vds-pdf-page .textLayer br::selection",
+      "library": "pdfjs-dist 6.3.289",
+      "reason": "TextLayerBuilder generates selection sentinel and br nodes; its public API has no styles for Chromium drag boundary handling. These match the installed PDF.js viewer rules.",
+      "verification": "Real Desktop drag selection on annotated phenology PDF, forward/reverse across lines and formulas, at multiple scales."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/editor.css",
+      "scope": ".vds-code-document",
+      "selector": ".vds-code-document .vds-monaco:has(.find-widget:hover) > .context-view:has(.monaco-hover[role='tooltip'])",
+      "library": "monaco-editor 0.56.0",
+      "reason": "Monaco can position find-control tooltips outside the viewport or over the controls when the editor starts near the viewport edge; the public find options do not expose hover placement.",
+      "verification": "Real Desktop Markdown source editor with the replace widget open; hover an internal control and confirm its tooltip is fully visible above the widget without covering controls."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/editor.css",
+      "scope": ".vds-code-document",
+      "selector": ".vds-code-document .vds-monaco:has(.find-widget:focus-within) > .context-view:has(.monaco-hover[role='tooltip'])",
+      "library": "monaco-editor 0.56.0",
+      "reason": "Monaco can position find-control tooltips outside the viewport or over the controls when the editor starts near the viewport edge; the public find options do not expose hover placement.",
+      "verification": "Real Desktop Markdown source editor with the replace widget open; keyboard-focus an internal control and confirm its tooltip is fully visible above the widget without covering controls."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/editor.css",
+      "scope": ".vds-markdown-workbench",
+      "selector": ".vds-markdown-workbench .vds-markdown-source:has(.find-widget:hover), .vds-markdown-workbench .vds-code-document:has(.find-widget:hover), .vds-markdown-workbench .vds-code-document .vds-monaco:has(.find-widget:hover)",
+      "library": "monaco-editor 0.56.0",
+      "reason": "The tooltip is rendered outside Monaco's host to stay above the find controls, so the host must temporarily expose it above the adjacent document toolbar.",
+      "verification": "Real Desktop Markdown source editor with the find widget open; hover an internal control and confirm the complete tooltip is visible above the widget without covering controls."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/editor.css",
+      "scope": ".vds-markdown-workbench",
+      "selector": ".vds-markdown-workbench .vds-markdown-source:has(.find-widget:focus-within), .vds-markdown-workbench .vds-code-document:has(.find-widget:focus-within), .vds-markdown-workbench .vds-code-document .vds-monaco:has(.find-widget:focus-within)",
+      "library": "monaco-editor 0.56.0",
+      "reason": "The tooltip is rendered outside Monaco's host to stay above the find controls, so the host must temporarily expose it above the adjacent document toolbar.",
+      "verification": "Real Desktop Markdown source editor with the find widget open; keyboard-focus an internal control and confirm the complete tooltip is visible above the widget without covering controls."
+    },
+    {
+      "path": "src/renderer/src/features/workbench/editor.css",
+      "scope": ".vds-markdown-workbench",
+      "selector": ".vds-markdown-workbench .vds-markdown-source:has(.find-widget:hover), .vds-markdown-workbench .vds-markdown-source:has(.find-widget:focus-within)",
+      "library": "monaco-editor 0.56.0",
+      "reason": "The Markdown source pane normally clips editor overflow; while Monaco displays a find-control tooltip above the widget, the pane must expose and layer that tooltip over the adjacent header.",
+      "verification": "Real Desktop Markdown source editor with the find widget open; hover and keyboard-focus internal controls and confirm tooltip text stays visible above the widget without covering controls."
+    }
+  ]
+}

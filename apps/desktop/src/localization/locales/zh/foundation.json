@@ -1,0 +1,27 @@
+{
+  "preferences": {
+    "failed": "设置未能完成同步。请重试。",
+    "retry": "重试"
+  },
+  "startup": {
+    "failed": "界面语言初始化失败，请重新打开应用。",
+    "brand": "书深",
+    "preparing": "正在准备书深…",
+    "connecting": "正在连接已有服务…",
+    "startingBackend": "正在启动本地服务…",
+    "opening": "正在打开工作台…",
+    "backendFailed": "书深后端启动失败",
+    "interfaceFailed": "书深界面加载失败",
+    "backendUnavailable": "书深后端不可用",
+    "applicationFailed": "书深启动失败"
+  },
+  "backendFailure": {
+    "pythonMissing": "找不到用于启动本地服务的 Python：{{path}}",
+    "pythonInvalid": "本地服务的 Python 环境校验失败。",
+    "startupFailed": "本地服务启动失败。",
+    "exited": "本地服务在通过健康检查前退出（退出码：{{code}}；信号：{{signal}}）。",
+    "healthTimeout": "本地服务健康检查超时。",
+    "notReady": "本地服务未能就绪。",
+    "recovering": "本地服务正在恢复，请稍后重试。"
+  }
+}

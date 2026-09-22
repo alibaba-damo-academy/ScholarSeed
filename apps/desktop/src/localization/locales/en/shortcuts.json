@@ -1,0 +1,140 @@
+{
+  "nav": "Keyboard shortcuts",
+  "title": "Keyboard shortcuts",
+  "description": "View and edit ScholarSeed's global and file-editor shortcuts in one place. New commands and conflict handling use this catalog.",
+  "searchLabel": "Search keyboard shortcuts",
+  "searchPlaceholder": "Search commands, groups, or keys",
+  "emptyTitle": "No shortcuts found",
+  "emptyDescription": "Try another command name, group, or key.",
+  "edit": "Edit",
+  "unassigned": "Unassigned",
+  "editor": {
+    "title": "Edit “{{command}}”",
+    "fallbackTitle": "Edit shortcut",
+    "description": "Focus the area below and press a new shortcut. {{primary}}, Option/Alt chords, and safe navigation keys are supported.",
+    "recordPrompt": "Press a new shortcut",
+    "invalid": "Use a non-reserved chord or navigation key. Printable keys require {{primary}} or Option/Alt.",
+    "conflict": "Conflicts with “{{command}}” in the same scope. Choose another shortcut.",
+    "restoreDefault": "Restore default",
+    "clear": "Clear shortcut",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "groups": {
+    "markdown": "Markdown editor",
+    "code": "Code editor",
+    "pdf": "PDF reader"
+  },
+  "commands": {
+    "markdownSave": {
+      "title": "Save Markdown",
+      "description": "Save the current Markdown file."
+    },
+    "markdownUndo": {
+      "title": "Undo Markdown edit",
+      "description": "Undo the latest change in the visual Markdown editor."
+    },
+    "markdownRedo": {
+      "title": "Redo Markdown edit",
+      "description": "Redo the latest reverted change in the visual Markdown editor."
+    },
+    "markdownFind": {
+      "title": "Find in Markdown",
+      "description": "Open in-document search in the visual Markdown editor."
+    },
+    "markdownSelectAll": {
+      "title": "Select all Markdown content",
+      "description": "Select all content in the visual Markdown editor."
+    },
+    "markdownBold": {
+      "title": "Toggle bold",
+      "description": "Toggle bold formatting for the selection."
+    },
+    "markdownItalic": {
+      "title": "Toggle italic",
+      "description": "Toggle italic formatting for the selection."
+    },
+    "markdownStrikethrough": {
+      "title": "Toggle strikethrough",
+      "description": "Toggle strikethrough formatting for the selection."
+    },
+    "markdownInlineCode": {
+      "title": "Toggle inline code",
+      "description": "Toggle inline code formatting for the selection."
+    },
+    "markdownLink": {
+      "title": "Insert link",
+      "description": "Add or edit a link for the selection."
+    },
+    "markdownParagraph": {
+      "title": "Set paragraph",
+      "description": "Set the current block to body text."
+    },
+    "markdownHeading1": {
+      "title": "Set heading 1",
+      "description": "Set the current block to heading level 1."
+    },
+    "markdownHeading2": {
+      "title": "Set heading 2",
+      "description": "Set the current block to heading level 2."
+    },
+    "markdownHeading3": {
+      "title": "Set heading 3",
+      "description": "Set the current block to heading level 3."
+    },
+    "markdownHeading4": {
+      "title": "Set heading 4",
+      "description": "Set the current block to heading level 4."
+    },
+    "markdownHeading5": {
+      "title": "Set heading 5",
+      "description": "Set the current block to heading level 5."
+    },
+    "markdownHeading6": {
+      "title": "Set heading 6",
+      "description": "Set the current block to heading level 6."
+    },
+    "codeSave": {
+      "title": "Save code file",
+      "description": "Save the current code or Markdown source file."
+    },
+    "codeSaveAll": { "title": "Save all", "description": "Save every dirty, writable file in the current project in order." },
+    "codeUndo": {
+      "title": "Undo code edit",
+      "description": "Undo the latest change in the current code editor."
+    },
+    "codeRedo": {
+      "title": "Redo code edit",
+      "description": "Redo the latest reverted change in the current code editor."
+    },
+    "codeFind": { "title": "Find in code", "description": "Open in-document search in the code editor." },
+    "codeReplace": { "title": "Replace in code", "description": "Open find and replace in the code editor." },
+    "codeGoToLine": { "title": "Go to line", "description": "Enter a line number and jump to it in the code file." },
+    "codeLineComment": { "title": "Toggle line comment", "description": "Toggle line comments for the current or selected lines." },
+    "codeIndent": { "title": "Indent", "description": "Indent the current line or selection." },
+    "codeOutdent": { "title": "Outdent", "description": "Reduce indentation for the current line or selection." },
+    "pdfFind": {
+      "title": "Find in PDF",
+      "description": "Open in-document search for the current PDF."
+    },
+    "pdfFindNext": { "title": "Next match", "description": "Move to the next PDF search match." },
+    "pdfFindPrevious": { "title": "Previous match", "description": "Move to the previous PDF search match." },
+    "pdfPreviousPage": { "title": "Previous page", "description": "Go to the previous PDF page." },
+    "pdfNextPage": { "title": "Next page", "description": "Go to the next PDF page." },
+    "pdfFirstPage": { "title": "First page", "description": "Go to the first PDF page." },
+    "pdfLastPage": { "title": "Last page", "description": "Go to the final PDF page." },
+    "pdfGoToPage": { "title": "Go to page", "description": "Enter a page number and navigate to it in the PDF." },
+    "pdfZoomIn": { "title": "Zoom in PDF", "description": "Increase the PDF display scale." },
+    "pdfZoomOut": { "title": "Zoom out PDF", "description": "Decrease the PDF display scale." },
+    "pdfActualSize": { "title": "Actual size", "description": "Restore the PDF display scale to 100%." },
+    "pdfScrollUp": { "title": "Scroll up", "description": "Scroll upward in the PDF pages." },
+    "pdfScrollDown": { "title": "Scroll down", "description": "Scroll downward in the PDF pages." },
+    "pdfScrollLeft": { "title": "Scroll left", "description": "Scroll left in the PDF pages." },
+    "pdfScrollRight": { "title": "Scroll right", "description": "Scroll right in the PDF pages." },
+    "pdfScrollPageDown": { "title": "Scroll one screen down", "description": "Scroll down by the visible PDF viewport height." },
+    "pdfScrollPageUp": { "title": "Scroll one screen up", "description": "Scroll up by the visible PDF viewport height." },
+    "pdfHighlight": { "title": "Highlight selected text", "description": "Highlight selected PDF text with the current color; unassigned by default." },
+    "pdfComment": { "title": "Comment on selected text", "description": "Open comment input for selected PDF text; unassigned by default." },
+    "pdfCopyText": { "title": "Copy selected text", "description": "Copy the current PDF text selection; unassigned by default." }
+  }
+}

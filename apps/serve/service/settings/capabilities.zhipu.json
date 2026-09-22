@@ -1,0 +1,342 @@
+{
+  "schema_version": 1,
+  "provider": "zhipu",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "glm-5.2": {
+      "limits": {
+        "context": 1048576,
+        "max_input": 1048576,
+        "max_output": 131072,
+        "max_reasoning": 131072,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          },
+          {
+            "kind": "effort",
+            "values": [
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/glm-5-2",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-06-13",
+      "last_updated": "2026-06-13",
+      "notes": [
+        "百炼口径。智谱官方另一口径：thinking.type enabled/disabled + reasoning_effort max/high/low（5.2 另加 xhigh/medium/minimal/none），只给 1M/128K 缩写。",
+        "effort 档位 [high,max] 取自 models.dev(registry, 2026-09-21 核对)，OpenRouter z-ai/glm-5.2 亦列 reasoning_effort；百炼形态仍为 enable_thinking/thinking_budget(vendor-doc)，二者并存。",
+        "models.dev/LiteLLM(zai)列 context 1000000，百炼与 OpenRouter 列 1048576；冲突未决，维持百炼口径。"
+      ]
+    },
+    "glm-5.1": {
+      "limits": {
+        "context": 202745,
+        "max_input": 202745,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": 169984
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/glm-5-1",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-03-27",
+      "last_updated": "2026-03-27",
+      "notes": [
+        "百炼口径给出思考态输入降至 169984，智谱官方页无此栏。",
+        "2026-09-21 核对：models.dev/LiteLLM 列 context 200000，OpenRouter 列 204800；与百炼 202745 冲突未决。"
+      ]
+    },
+    "glm-5.3": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/zhipuai/glm-5.3",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-08-14",
+      "last_updated": "2026-08-14",
+      "notes": [
+        "models.dev 标 attachment=false，输入仅 text。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "2026-09-21 核对：OpenRouter 列 ctx 1310720 与 models.dev 1000000 不一致，按 models.dev 登记；OpenRouter 列 reasoning_effort，与 effort 形态核对一致。"
+      ]
+    },
+    "glm-5.3-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/zhipuai/glm-5.3-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-08-26",
+      "last_updated": "2026-08-26",
+      "notes": [
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "2026-09-21 核对：OpenRouter 列 ctx 1310720 且输入未列 pdf；models.dev 列 1000000 含 pdf，按 models.dev 登记。"
+      ]
+    },
+    "glm-5.3-flashx": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "high",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/zhipuai/glm-5.3-flashx",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-18",
+      "last_updated": "2026-09-18",
+      "notes": [
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "2026-09-21 核对：OpenRouter 列 ctx 1048576 与 models.dev 1000000 不一致，按 models.dev 登记。"
+      ]
+    },
+    "glm-5v-turbo": {
+      "limits": {
+        "context": 200000,
+        "max_input": null,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/zhipuai/glm-5v-turbo",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-04-01",
+      "last_updated": "2026-04-01",
+      "notes": [
+        "视觉模型，仅 toggle 形态。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。",
+        "2026-09-21 核对：OpenRouter 列 ctx 202752，models.dev 列 200000，按 models.dev 登记。"
+      ]
+    }
+  }
+}

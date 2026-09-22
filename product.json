@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "product_id": "scholarseed",
+  "product_name": "ScholarSeed",
+  "bundle_id": "com.scholarseed.desktop",
+  "default_runtime": "codex",
+  "runtimes": {
+    "codex": {
+      "adapter": "scholarseed-codex",
+      "module": "scholarseed_codex",
+      "enabled": true,
+      "profile": "official",
+      "display_name": "Codex",
+      "client_name": "scholarseed_desktop",
+      "client_title": "ScholarSeed",
+      "service_name": "scholarseed",
+      "default_model_key": "qwen3.8-max",
+      "default_model_label": "Qwen 3.8 Max",
+      "default_permission": {
+        "sandbox": "workspace-write",
+        "approval_policy": "on-request",
+        "full_access_sandbox": "danger-full-access",
+        "no_approval_policy": "never"
+      },
+      "executable_sha256": "95a3af73d52372a6d98f288114f7bafcbc4d12711b874d51ffc277539bd6daad",
+      "reported_version": "0.147.0",
+      "configuration": {
+        "capacity": {
+          "execution_hosts": 16,
+          "control_hosts": 1,
+          "queue_limit": 100,
+          "wait_seconds": 120.0,
+          "idle_seconds": 30.0
+        }
+      }
+    }
+  }
+}

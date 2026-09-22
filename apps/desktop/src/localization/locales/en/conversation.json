@@ -1,0 +1,190 @@
+{
+  "turn": {
+    "duration": "Turn duration: {{duration}}"
+  },
+  "header": {
+    "recent": "Recent",
+    "home": "Back to home",
+    "monitor": "Show task monitor",
+    "session": "Session {{id}}"
+  },
+  "resume": {
+    "title": "Resuming conversation",
+    "codex": "Connecting to the Codex session and loading history…",
+    "agent": "Connecting to the Agent session and loading history…",
+    "reconnect": "Reconnecting to the session…",
+    "retry": "Connection incomplete. Retrying ({{attempt}}/{{maximum}})…",
+    "reconnected": "Session reconnected",
+    "stopped": "Session recovery stopped. Check sign-in, version, or session status before reconnecting.",
+    "retrying": "The session cannot be resumed yet. Retrying ({{attempt}}/{{maximum}})"
+  },
+  "preflight": {
+    "title": "Codex Runtime is not ready",
+    "message": "ScholarSeed cannot start a Codex session.",
+    "settings": "Open settings",
+    "actions": {
+      "install": "Install Codex CLI (npm install -g @openai/codex), then check again.",
+      "login": "Run codex login in a terminal to sign in, then check again.",
+      "upgrade": "This Codex CLI version is unsupported. Upgrade, then check again.",
+      "configure": "Select the local Codex executable.",
+      "retry": "Check Codex CLI, then try again."
+    }
+  },
+  "runtime": {
+    "retrying": "Agent connection interrupted. Recovering…",
+    "retryingCount": "Agent connection interrupted. Recovering ({{attempt}}/{{maximum}})…",
+    "providerRetrying": "The model service is retrying",
+    "recovered": "Agent connection restored",
+    "recoveryFailed": "Agent recovery failed. Check runtime sign-in, version, and network before retrying.",
+    "failed": "An Agent runtime event needs attention. Check the current operation and runtime status.",
+    "detected": "Agent runtime event detected",
+    "transportRetrying": "Reconnecting to the local ScholarSeed service…",
+    "transportRecovered": "Local ScholarSeed service connection restored",
+    "detail": ": {{detail}}",
+    "reason": {
+      "codex_process_exit": "Agent runtime exited",
+      "runtime_transport_lost": "Local Agent runtime transport disconnected",
+      "runtime_rpc_timeout": "Agent runtime request acknowledgment timed out",
+      "codex_process_unavailable": "Agent runtime is temporarily unavailable",
+      "thread_resume_failed": "The current session could not be resumed",
+      "codex_turn_retrying": "The model service is retrying",
+      "codex_terminal_outcome_conflict": "Conflicting terminal outcomes detected; the first authoritative result was retained",
+      "codex_thread_not_loaded": "The Agent session is no longer attached to this process",
+      "codex_thread_closed": "The Agent session connection closed",
+      "credit_balance_exhausted": "The account credit balance is exhausted"
+    },
+    "closed": "✓ The entire session has been terminated. History is retained; you cannot send more messages in this session.",
+    "legacyNotice": "Agent runtime notice: {{detail}}",
+    "nonterminal": "The Agent runtime reported a nonterminal event."
+  },
+  "models": {
+    "deferred": "Model and reasoning effort apply next turn.",
+    "effortReset": "The new model does not support the previous reasoning effort. The model's default level has been restored.",
+    "nextTurn": "Model and reasoning effort changes will apply on the next turn."
+  },
+  "reasoning": {
+    "noneShort": "None",
+    "minimalShort": "Minimal",
+    "lowShort": "Low",
+    "mediumShort": "Medium",
+    "highShort": "High",
+    "xhighShort": "Extra high",
+    "maxShort": "Max",
+    "ultraShort": "Ultra",
+    "none": "none",
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+    "max": "max",
+    "ultra": "ultra",
+    "default": "Model default",
+    "label": "Reasoning effort",
+    "selected": "Effort · {{effort}}",
+    "fixed": "Thinking · Always on",
+    "unavailable": "Unavailable ({{value}})"
+  },
+  "retry": {
+    "attachmentsGone": "The original attachments are unavailable. Select the files again.",
+    "contextNotReady": "Conversation context is not ready. Please retry later.",
+    "continueUnknown": "The continuation submission could not be confirmed. Check the result in pending messages.",
+    "regenerateUnknown": "The regeneration submission could not be confirmed. Check the result in pending messages.",
+    "continueUnconfirmed": "The service did not confirm continuing."
+  },
+  "reply": {
+    "skipped": "Skipped",
+    "answerLabel": "Answer to “{{question}}”: {{answer}}"
+  },
+  "card": {
+    "foldAction": "Fold",
+    "keepAction": "Keep",
+    "abandonAction": "Abandon"
+  },
+  "failure": {
+    "contentPolicy": {
+      "message": "This content did not pass safety review. Please edit it and try again."
+    },
+    "title": "Answer generation failed",
+    "frame": "The model service returned an unrecognized error.",
+    "runtime": "The request did not reach Codex Runtime.",
+    "quota": {
+      "message": "The allocated model quota has been exhausted.",
+      "action": "Built-in models use credits. When your credits run out, you cannot continue the conversation. Open “Remaining credits” to check your balance and get more credits, or switch models."
+    },
+    "credits": {
+      "message": "Your credit balance is exhausted, so generation has stopped.",
+      "action": "Open Remaining credits or the credits page to check your balance and get more credits, then try again. Your question and context for this turn are kept."
+    },
+    "rateLimit": {
+      "message": "Too many model requests. Try again later.",
+      "action": "Your question and context have been retained."
+    },
+    "auth": {
+      "message": "Model service authentication failed.",
+      "action": "Check your login or model credentials."
+    },
+    "unavailable": {
+      "message": "The model service is temporarily unavailable.",
+      "action": "The model service or network connection is temporarily unavailable. Your question and context have been retained."
+    },
+    "request": {
+      "message": "The model service did not accept this request.",
+      "action": "Check the model, permissions, and input."
+    },
+    "modelConfig": {
+      "message": "This model is not supported by the current endpoint.",
+      "action": "Check that the model name is correct, or switch to another model in settings. Your question and context have been retained."
+    },
+    "unknown": {
+      "action": "An error occurred during generation. Your question and context have been retained."
+    }
+  },
+  "delivery": {
+    "current": "This delivery",
+    "untitled": "Untitled artifact",
+    "legacy": "Delivery: {{title}}"
+  },
+  "request": {
+    "historyUnavailable": "The conversation history could not be loaded.",
+    "timeout": "Request timed out",
+    "unavailable": "The request could not reach the backend.",
+    "invalidRecovery": "The session recovery snapshot is invalid. Recovery stopped to prevent duplicate submissions.",
+    "failed": "Request failed",
+    "authentication": "Authentication required",
+    "resourceReviewRequired": "This turn created file changes that still need review. Review them before regenerating.",
+    "httpFailure": "Request failed ({{status}}): {{detail}}",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "toolActions": {
+    "command": "Terminal command",
+    "read": "Read file",
+    "edit": "Edit file",
+    "image": "View image",
+    "skill": "Use skill {{name}}"
+  },
+  "context": {
+    "compacting": "Compacting context…",
+    "compacted": "Context compacted. Continuing execution."
+  },
+  "artifactFailure": {
+    "missing": "The file does not exist, so the artifact could not be displayed.",
+    "changed": "The file has changed, so this version could not be published.",
+    "conflict": "The artifact declaration conflicts with an existing record and was not published again.",
+    "invalid": "The artifact declaration failed validation, so the file could not be displayed."
+  },
+  "hil": {
+    "handled": "Handled",
+    "invalidRequest": "A request without request_id was received and safely rejected."
+  },
+  "turnUnknown": {
+    "title": "Previous task interrupted",
+    "action": "Continue the conversation?",
+    "reason": {
+      "timeout": "Waiting for the task result timed out. Some operations may have completed.",
+      "transportLost": "The connection was interrupted during the task. Some operations may have completed.",
+      "processExit": "The app was interrupted before the task finished. Some operations may have completed.",
+      "unconfirmed": "The app was interrupted before the task finished. Some operations may have completed."
+    }
+  }
+}

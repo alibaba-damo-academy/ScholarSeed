@@ -1,0 +1,300 @@
+{
+  "writing.configure": [
+    {
+      "user_requests": [
+        "正文中文，摘要内容英文。"
+      ],
+      "effective_requirements": "保留原研究范围；正文、标题和图注中文，摘要内容英文。",
+      "language": "CHINESE",
+      "publication": {
+        "format": "latex_pdf",
+        "citation_style": "numeric"
+      }
+    },
+    {
+      "user_requests": [
+        "不需要摘要。"
+      ],
+      "effective_requirements": "保留原研究范围；不生成摘要。",
+      "constraints": [
+        {
+          "id": "omit-abstract",
+          "kind": "forbidden_section",
+          "value": {
+            "title": "摘要",
+            "role": "abstract"
+          },
+          "verbatim": "不需要摘要。"
+        }
+      ]
+    },
+    {
+      "retrieval": {
+        "corpus_size": {
+          "target": 40
+        }
+      }
+    },
+    {
+      "retrieval": {
+        "time_range": {
+          "start_year": 2010,
+          "end_year": 2020
+        },
+        "temporal_policy": "soft_preference"
+      }
+    },
+    {
+      "user_requests": [
+        "后续按推荐设置直接继续，不用再确认出版选项。"
+      ],
+      "effective_requirements": "保留原研究范围；后续按推荐设置直接继续，不再询问出版选项。",
+      "outline_review": "auto",
+      "auto_authorization": "后续按推荐设置直接继续，不用再确认出版选项。"
+    },
+    {
+      "user_requests": [
+        "只写第3章，突出适用条件，正文2000至3000字，目标2500字。"
+      ],
+      "effective_requirements": "仅生成已确认大纲第3章，突出适用条件；中文正文2000至3000字，目标2500字。",
+      "language": "CHINESE",
+      "output_scope": "section",
+      "selected_section_ids": [
+        "3"
+      ],
+      "section_instructions": {
+        "3": "突出每项理论保证的适用条件及局限。"
+      },
+      "length_min": 2000,
+      "length_max": 3000,
+      "length_target": 2500,
+      "length_unit": "cjk_chars"
+    },
+    {
+      "user_requests": [
+        "至少一张示意图，并包含一张比较表。"
+      ],
+      "effective_requirements": "保留原研究范围；至少一张示意图，并包含一张比较表。",
+      "constraints": [
+        {
+          "id": "diagram-min",
+          "kind": "figure_count",
+          "value": {
+            "min": 1
+          },
+          "verbatim": "至少一张示意图"
+        },
+        {
+          "id": "comparison-table",
+          "kind": "table_count",
+          "value": {
+            "min": 1,
+            "max": 1
+          },
+          "verbatim": "一张比较表"
+        }
+      ]
+    }
+  ],
+  "writing.approve": [
+    {
+      "packet_id": "<value returned by review-packet>",
+      "user_response": "大纲确认，使用数字引用。",
+      "publication": {
+        "citation_style": "numeric"
+      }
+    }
+  ],
+  "outline.configure": [
+    {
+      "survey_title": "Mechanisms and Conditions: A Review",
+      "topic": "Supported mechanisms and their conditions",
+      "description": "Compare mechanisms and their evidence boundaries.",
+      "review_thesis": "Which mechanisms are supported under which conditions?",
+      "organizing_axis": "Mechanism, assumptions and evidence limitations",
+      "prerequisites": [
+        {
+          "id": "P1",
+          "kind": "concept",
+          "requirement": "Define the comparison terms.",
+          "owner_section_id": "1",
+          "paper_ids": [
+            "p1"
+          ]
+        }
+      ],
+      "outline_tree": [
+        {
+          "section_id": "0",
+          "title": "Abstract",
+          "description": "Summarize scope, synthesis and limitations.",
+          "role": "abstract",
+          "paper_ids": [],
+          "requires": [],
+          "analysis_tasks": []
+        },
+        {
+          "section_id": "1",
+          "title": "Foundations",
+          "description": "Define the shared concepts and scope.",
+          "role": "foundation",
+          "paper_ids": [
+            "p1"
+          ],
+          "requires": [],
+          "analysis_tasks": []
+        },
+        {
+          "section_id": "2",
+          "title": "Mechanisms and Evidence",
+          "description": "Compare mechanisms under explicit assumptions.",
+          "role": "analysis",
+          "paper_ids": [
+            "p1",
+            "p2"
+          ],
+          "requires": [
+            "P1"
+          ],
+          "depends_on": [
+            "1"
+          ],
+          "analysis_tasks": [
+            {
+              "task_id": "A2",
+              "kind": "compare",
+              "question": "How do the mechanisms differ under comparable conditions?",
+              "axes": [
+                "Mechanism",
+                "Assumptions"
+              ],
+              "completion": "Explain supported differences and noncomparable settings."
+            }
+          ],
+          "figures": [
+            {
+              "figure_id": "F1",
+              "purpose": "Explain the mechanism relationship.",
+              "content_plan": "Show the evidence-supported stages and their connections.",
+              "caption_draft": "The stages connect under stated assumptions.",
+              "visual_guidance": "A clear labelled schematic.",
+              "paper_ids": [
+                "p1"
+              ],
+              "qualifications": [
+                "Illustrative relationship, not a measured performance result."
+              ]
+            }
+          ],
+          "subsections": [
+            {
+              "section_id": "2.1",
+              "title": "Comparable Conditions",
+              "description": "Compare evidence under common definitions.",
+              "paper_ids": [
+                "p1",
+                "p2"
+              ],
+              "tables": [
+                {
+                  "table_id": "T1",
+                  "purpose": "Compare mechanisms and assumptions.",
+                  "content_plan": "Each row is one supported approach with its applicable conditions.",
+                  "caption_draft": "Approaches differ in assumptions and supported findings.",
+                  "row_unit": "Approach",
+                  "comparison_dimensions": [
+                    "Assumptions",
+                    "Supported finding"
+                  ],
+                  "paper_ids": [
+                    "p1",
+                    "p2"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "section_id": "3",
+          "title": "Synthesis and Open Questions",
+          "description": "Synthesize supported conclusions and remaining questions.",
+          "role": "conclusion",
+          "paper_ids": [],
+          "requires": [],
+          "analysis_tasks": []
+        }
+      ]
+    }
+  ],
+  "evidence.build": [
+    {
+      "extra_fields": [
+        "card.method.novelty",
+        "common_fields.limitations"
+      ],
+      "max_input_bytes": 2000000
+    }
+  ],
+  "figures.plan": [
+    {
+      "preparation_id": "<from brief>",
+      "items": [
+        {
+          "figure_id": "F1",
+          "_render_mode": "image",
+          "_prompt": "Draw a process diagram with a labelled input on the left, a processing stage in the centre and an output on the right. Arrows show the supported data flow. Use the requested language and style, without a title or caption inside the image.",
+          "_caption": "The processing pipeline links its input, transformation stage and output.",
+          "_image_size": "wide"
+        }
+      ]
+    },
+    {
+      "preparation_id": "<from brief>",
+      "items": [
+        {
+          "figure_id": "F1",
+          "_render_mode": "forest_taxonomy",
+          "_prompt": null,
+          "_caption": "The approaches are organized by their defining mechanisms.",
+          "_latex_body": "\\begin{forest} [Approaches [Mechanism A] [Mechanism B]] \\end{forest}",
+          "_chart_spec": null
+        }
+      ]
+    },
+    {
+      "preparation_id": "<from brief>",
+      "items": [
+        {
+          "figure_id": "F1",
+          "_render_mode": "data_chart",
+          "_prompt": null,
+          "_latex_body": null,
+          "_caption": "Corpus papers are grouped by publication year.",
+          "_chart_spec": {
+            "statistic": "papers_per_year",
+            "chart_type": "bar",
+            "x_label": "Year",
+            "y_label": "Number of papers"
+          }
+        }
+      ]
+    }
+  ],
+  "papers.import-local": [
+    {
+      "files": [
+        "/absolute/papers",
+        {
+          "path": "/absolute/a.pdf",
+          "title": "Actual title",
+          "authors": [
+            "Actual author"
+          ],
+          "year": 2024,
+          "doi": "10.example/actual-id"
+        }
+      ]
+    }
+  ]
+}

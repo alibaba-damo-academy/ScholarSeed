@@ -1,0 +1,35 @@
+{
+  "build_id": "zeta-24-2-20250513",
+  "source": "https://cdn.zetaoffice.net/zetaoffice_latest/",
+  "source_last_modified": "2025-05-13T15:18:14Z",
+  "files": {
+    "locales.data": {
+      "bytes": 3793352,
+      "sha256": "e4a7ef658c850e6298623f7d13b77cad24e2c91b761705ae6f8fcafd305b8f6b"
+    },
+    "locales.json": {
+      "bytes": 8244,
+      "sha256": "b05caa80197a1494dd1b3f71ff4fa2bf8111ce98d29bd52f659a0e519447f42b"
+    },
+    "locales-residuals.json": {
+      "bytes": 20074,
+      "sha256": "9bbc81eca0cb837b916ed1efc79c68c98f6935fbd94840409cb8dd7ea7857b55"
+    },
+    "soffice.js": {
+      "bytes": 858124,
+      "sha256": "5143e5354f470b87f86ba272bcfef857bd13e6f07b59666e48a7ccb89643cd77"
+    },
+    "soffice.wasm": {
+      "bytes": 161667499,
+      "sha256": "9ebd9a487e849a24b9c69f843ebdb451709c27b7722c010e36846433474a5bd4"
+    },
+    "soffice.data": {
+      "bytes": 99520604,
+      "sha256": "3dab0a5448e599dccc1b1e69f4f86ea9eb30777c3f1ed7b9c386a5f4163e361c"
+    },
+    "soffice.data.js.metadata": {
+      "bytes": 215180,
+      "sha256": "5d9d909d0b9b38443c0f19704032d0fc12d654f6c9c24c2c3b237739c4848ae3"
+    }
+  }
+}

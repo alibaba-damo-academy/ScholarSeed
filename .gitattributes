@@ -1,0 +1,17 @@
+# Vendored Office runtime assets are byte-exact and digest-verified, so the
+# whole tree defaults to binary and must never be text-normalized; new files
+# added to any build directory are covered automatically. Only the notices
+# markdown stays text, and the two large artifacts keep their LFS filter.
+apps/desktop/src/renderer/public/office/** -text
+apps/desktop/src/renderer/public/office/THIRD_PARTY_NOTICES.md text
+apps/desktop/src/renderer/public/office/**/soffice.wasm filter=lfs diff=lfs merge=lfs -text
+apps/desktop/src/renderer/public/office/**/soffice.data filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/python-build-standalone/*-pc-windows-msvc-*.tar.gz filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/ripgrep/*-pc-windows-msvc/rg.exe filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/codex/*.tgz filter=lfs diff=lfs merge=lfs -text
+scripts/vendor/texlive/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+*.pdf binary
+apps/desktop/resources/notices/*.txt -text
+apps/desktop/resources/notices/*.json text eol=lf
+apps/desktop/resources/notices/*.md text eol=lf
+wiki/design/assets/mermaid.min.js binary

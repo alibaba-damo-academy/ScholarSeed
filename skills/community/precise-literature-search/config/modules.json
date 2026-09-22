@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.1",
+  "modules": {
+    "intent": {
+      "type": "host_llm",
+      "module_dir": "modules/intent",
+      "prompt": "modules/intent/clarification.md",
+      "placeholder": false
+    },
+    "search": {
+      "type": "host_llm",
+      "module_dir": "modules/search",
+      "prompt": "modules/search/BALANCE_AGENT.md",
+      "strategy_version": "search-skill-balanced-v1",
+      "default_profile": "balance",
+      "profiles": {
+        "fast_mock": {
+          "prompt": "modules/search/SEARCH_AGENT.md",
+          "strategy_version": "search-skill-fast-mock-v1",
+          "max_results": 1,
+          "max_iterations": 1
+        },
+        "full": {
+          "prompt": "modules/search/FULL_AGENT.md",
+          "strategy_version": "search-skill-entity-probes-v1",
+          "default_max_results": 20,
+          "max_iterations": 8,
+          "planning": "model"
+        },
+        "balance": {
+          "prompt": "modules/search/BALANCE_AGENT.md",
+          "strategy_version": "search-skill-balanced-v1",
+          "default_max_results": 20,
+          "max_results": 20,
+          "max_iterations": 1,
+          "time_budget_seconds": 3600,
+          "planning": "model",
+          "runner": "modules/search/tools/balance_search.py",
+          "upstream_policy": "balanced"
+        }
+      },
+      "execution": {
+        "preferred": "host",
+        "optional": "dedicated_agent",
+        "agents_per_outer_round": 1
+      },
+      "prepare_command": [
+        "{python}",
+        "{skill_dir}/modules/search/tools/prepare_search.py"
+      ],
+      "finalize_command": [
+        "{python}",
+        "{skill_dir}/modules/search/finalize.py"
+      ],
+      "placeholder": false
+    },
+    "open-download": {
+      "type": "command",
+      "module_dir": "modules/open-download",
+      "stream_output": true,
+      "command": [
+        "{python}",
+        "{skill_dir}/modules/open-download/adapter.py"
+      ],
+      "placeholder": false
+    },
+    "paid-download": {
+      "type": "command",
+      "module_dir": "modules/paid-download",
+      "stream_output": true,
+      "command": [
+        "{python}",
+        "{skill_dir}/modules/paid-download/adapter.py"
+      ],
+      "placeholder": false
+    },
+    "pdf-reader": {
+      "type": "host_llm",
+      "module_dir": "modules/pdf-reader",
+      "prompt": "modules/pdf-reader/PDF_READER_AGENT.md",
+      "execution": {
+        "agents_per_run": 1
+      },
+      "placeholder": false
+    },
+    "final-report": {
+      "type": "host_llm",
+      "module_dir": "modules/final-report",
+      "prompt": "modules/final-report/FINAL_REPORT_AGENT.md",
+      "execution": {
+        "agents_per_completion": 1
+      },
+      "placeholder": false
+    }
+  }
+}

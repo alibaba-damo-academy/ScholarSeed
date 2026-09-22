@@ -1,0 +1,64 @@
+.vds-pdf-document { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--text-1); background: var(--bg-2); }
+.vds-pdf-reader { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.vds-pdf-reader.has-sidebar { grid-template-columns: minmax(140px, 190px) minmax(0, 1fr); }
+.vds-pdf-sidebar { overflow: auto; border-right: 1px solid var(--border-soft); background: var(--bg-1); padding: 8px; }
+.vds-pdf-sidebar nav { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 12px; }
+.vds-pdf-thumbnail { display: grid; gap: 5px; text-align: center; }
+.vds-pdf-thumbnail-page { position: relative; background: white; overflow: hidden; }
+.vds-pdf-pages { overflow: auto; padding: 16px; min-height: 0; min-width: 0; overflow-anchor: none; scrollbar-gutter: stable both-edges; }
+.vds-pdf-page { position: relative; margin: 0 auto 16px; background: white; color: black; box-shadow: var(--shadow); line-height: 1; flex-shrink: 0; }
+.vds-pdf-page canvas, .vds-pdf-thumbnail-page canvas { display: block; }
+.vds-pdf-page-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: #6b6b6b; font-size: 12px; pointer-events: none; }
+.vds-pdf-page .textLayer { position: absolute; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-align: initial; letter-spacing: normal; word-spacing: normal; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; user-select: text; -webkit-user-select: text; --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+.vds-pdf-page .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0 0; user-select: text; -webkit-user-select: text; }
+.vds-pdf-page .textLayer > :not(.markedContent), .vds-pdf-page .textLayer .markedContent span:not(.markedContent) { z-index: var(--vds-z-content); --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg; transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+.vds-pdf-page .textLayer .markedContent { display: contents; }
+.vds-pdf-page .textLayer ::selection { background: rgb(52 120 246 / 35%); }
+.vds-pdf-annotation-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.vds-pdf-annotation-layer .has-comment::after { content: '“'; position: absolute; right: -12px; top: -10px; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: white; font: 700 12px/1 sans-serif; opacity: 1; }
+.vds-pdf-annotation-text {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.5rem;
+}
+.vds-pdf-annotation-text.is-expanded {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+.vds-pdf-annotation-source-preview,
+.vds-pdf-annotation-comment {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.5rem;
+}
+.vds-pdf-annotation-comment {
+  margin: 0;
+  color: var(--vds-text-primary);
+}
+.vds-pdf-annotation-comment.is-expanded {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+.vds-pdf-note-form { display: flex; align-items: center; gap: 8px; padding: 8px; }
+.vds-pdf-note-form textarea { flex: 1; }
+.vds-pdf-status, .vds-pdf-loading { padding: 8px 12px; font-size: 12px; overflow-wrap: anywhere; }
+.vds-pdf-records-empty { color: var(--text-3); font-size: 12px; line-height: 1.5; }
+
+/* PDF.js TextLayerBuilder selection boundary; public theme APIs do not expose these internals. */
+.vds-pdf-page .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: var(--vds-z-base); cursor: default; user-select: none; }
+.vds-pdf-page .textLayer.selecting .endOfContent { top: 0; }
+.vds-pdf-page .textLayer br::selection { background: transparent; }

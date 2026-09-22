@@ -1,0 +1,302 @@
+---
+name: literature-review
+version: "2026.9.21+2"
+description: >-
+  Produce or revise an evidence-grounded literature review, survey, related-work
+  section, or individual chapter from a precise research intent. Discover papers,
+  extract cards, design an outline, draft with citations, generate figures and
+  tables, and verify Markdown or PDF deliverables. Requires configured model
+  backends and the independent agentic-search skill for new literature discovery.
+description_zh: >-
+  从一句精准的研究意图出发，生成或修订有证据支撑的文献综述、调研报告、
+  相关工作章节或单独章节。完成论文检索发现、paper card 证据抽取、大纲设计、
+  带引用的正文撰写、图表生成，并核验 Markdown 或 PDF 交付物。需要已配置的
+  模型后端，新文献检索依赖独立安装的 agentic-search skill。
+---
+
+# Literature review — main-agent contract
+
+## Roles and your loop
+
+- Main owns task interpretation, delegation, outline revisions, user-visible choices, concrete exception decisions, final PDF inspection and full-manuscript corrections.
+- Scripts own evidence processing, initial outline generation, concurrent chapter requests, assembly of complete native v1, one full-input delta refinement into editable v2, and publication.
+- Search and figure subagents read their own role briefs; scripts supply the outline, chapter and refinement models' authoring instructions. Do not duplicate their authoring work or switch to legacy section-writing commands.
+
+Run the stage command → read its compact result → take the action for that stage.
+
+- For a needed input shape not covered here, query that command's `--describe-input` before guessing fields: `writing configure/approve`, `outline configure`, `figures plan`, `evidence build`, or `papers import-local`.
+- `--describe-input` returns required fields, supported variants and complete examples without writes or model calls; it is not a routine extra startup step. Use actual IDs and user quotes, never illustrative values.
+- `outline configure --describe-input` also returns the current full outline and selected paper IDs when a workspace is available. Evidence-view options are for concrete exceptions only.
+- On failure, start with the command's field-specific error, `next_action` and named artifact/log. Inspect implementation only for a concrete defect unresolved by public diagnostics, not to rediscover request shapes.
+- CLI defaults to the compact main view; `--full` returns complete supported command reports. Full artifacts/logs remain on disk; do not open them merely to reproduce a progress message.
+- Send short updates at startup, stage transitions, before long calls and on concrete exceptions; during waits use observed status. Distinguish retrieved papers, fulltext sources, abstract cards and finished figures. No invented percentages/times and no routine approval questions.
+
+## The path
+
+After understanding the user's request and scope, before the first long-running
+operation, create a visible TODO list using the host's native plan tool (such as
+`update_plan`) when available. Default full-survey stages, in the user's language:
+
+1. Determine research scope and output requirements.
+2. Discover papers and prepare evidence.
+3. Generate the outline and resolve publication choices.
+4. Generate text and figures concurrently, then refine the manuscript.
+5. Publish, inspect and deliver.
+
+| Stage | Commands / work | Result → next action |
+|---|---|---|
+| Configure | `doctor --no-network` → `init` → `writing configure` | Bound launcher and authoritative task → supply papers |
+| Papers | `papers import-local` when applicable → `papers budget` → delegate discovery when needed | Imported sources → `run retrieval_adapt` |
+| Evidence | `run retrieval_adapt` → product-owned retrieval checkpoint → `workflow evidence --from fulltext` | Handle error/review boundaries; `outline_display` → display the packet |
+| Confirm | Display `outline review-packet`; `writing approve` for a real decision | Honor applicable authorization → `manuscript prepare` |
+| Generate | `manuscript prepare` → figure branch and `manuscript generate` concurrently | v1 assembly and one refinement → editable v2 |
+| Publish | `workflow publish` → bounded page check (first page + figure/table pages) → fix observed issues and republish | Deliver; report checks done and their limits |
+
+## 1. Configure
+
+### Do
+
+- Use the supplied skill path and caller directory. Run `<skill>/scripts/slr doctor --no-network`, then `<skill>/scripts/slr init --workspace <caller/topic> --intent "<original request>"`.
+- Use a separate workspace per deliverable; do not overwrite an existing survey. Explicit output destinations take precedence.
+- For an existing task without a launcher, omit `--intent` to preserve its task.
+- Init returns a launcher; use `./<topic>/slr` from the fixed caller directory for later calls. Do not rely on persistent cd, aliases or exported variables.
+- Discover paths only for an invalid entry or a dependency doctor reports missing. The launcher uses the product Python 3.12.x; `<skill>/scripts/setup` verifies that environment.
+- Configure the sole task through `writing configure --request FILE` (or `-` for stdin).
+- `01_input/writing_request.json` owns immutable original intent, ordered verbatim follow-ups and current effective interpretation. Derived query/output files and stage advice cannot override it; retired requirements files are ignored.
+- Keep local language/scope exceptions and only requested modules. Do not invent length or section quotas from corpus size.
+
+### Request rules
+
+- The request `language` is the document default. Each top-level outline chapter uses `language: default|chinese|english`; choose `default` unless the user explicitly requested a chapter exception. Preparation resolves defaults and hard-injects the result into every independent chapter task.
+
+```json
+{"user_requests":["正文中文，摘要内容英文。"],
+ "effective_requirements":"保留研究范围；正文、标题和图注中文，摘要内容英文。",
+ "language":"CHINESE","publication":{"format":"latex_pdf","citation_style":"numeric"}}
+```
+
+- Copy only actual user follow-ups, never this example. Follow-ups require `effective_requirements`.
+- `publication` and `retrieval` merge immediate keys; `constraints` replaces the complete list, so retain all still-applicable constraints. Other supplied fields replace those fields.
+- Every constraint needs unique `id`, `kind`, typed `value` and `verbatim` copied from recorded user instructions:
+
+| Kind | Value |
+|---|---|
+| required_section / forbidden_section | `{title, role?, position?}` |
+| figure_count / table_count / total_citations | `{min?, max?}` |
+| min_papers_per_section / min_paper_citations | nonnegative integer |
+| venue_whitelist | nonempty string array |
+| must_include_paper | object with title and optional identifiers |
+| excluded_topic / angle / other | nonempty string |
+
+- Section constraint `role` is optional; normally omit it and let the outline model choose from the section's meaning. Its only values are `foundation`, `background`, `introduction`, `analysis`, `synthesis`, `conclusion`, `abstract`, `component`; do not invent new role strings.
+- Roles are operational, not topic names: algorithm taxonomies and cross-problem comparisons normally use `analysis`; scientific scope belongs in the title/description and analytical tasks. Terminal roles (`abstract`, `synthesis`, `conclusion`) receive the full corpus.
+- Section `position` accepts `first`, `last`, `any`, or `after:<section title>`.
+- Explicit length uses `length_min`, `length_max`, `length_target`, optional `length_unit` (words, cjk_chars, characters, pages).
+- Full surveys default to `writing_strategy:"chapter_delta"` and an abstract unless excluded; `output_scope` is `survey`, which is also the default when omitted. Components use `output_scope:"section"`, optional `selected_section_ids`, and no survey abstract requirement. All native generation uses the same chapter-task and full-source delta pipeline.
+- Retrieval accepts `corpus_size:{target:40}` (optional positive min/max), dimensions, time_range, temporal_policy and mode; corpus_size is never a bare integer. Init supplies the default 40-paper target, independent of manuscript length.
+- `time_range` uses integer `start_year` and `end_year`, not `start`/`end`. Use the actual requested years; query `writing configure --describe-input` when an example is needed, without treating example years as a default time window.
+
+### Framework-owned routing and configuration failures
+
+- Text/image scripts prefer the environment's public `skill_model_client`; only import failure selects direct transport. Runtime context or request failures do not fall back.
+- The framework owns routing, provenance and moderation; main never constructs protocol metadata or guesses session IDs. File-producing text calls mark only the current task text; image calls pass the actual drawing prompt.
+- Standalone direct text/image defaults: `https://scholarseed.damo.alibaba.com/v1/`. Text uses `SCHOLARSEED_ACCOUNT_TOKEN`; images prefer `IMAGE_API_KEY` and fall back to `SCHOLARSEED_ACCOUNT_TOKEN` when unset or empty. `TEXT_BASE_URL` / `IMAGE_BASE_URL` override endpoints.
+- PaperHub binary downloads independently use `SCHOLARSEED_API_KEY` / `PAPERHUB_URL`, default `https://scholarseed.damo.alibaba.com/paperhub`. Known retired defaults migrate; custom overrides remain supported.
+- Never write secrets to task/artifact files.
+
+## 2. Papers
+
+### Do: import local sources and obtain the search budget
+
+For local PDFs, first use `papers import-local --request FILE`:
+
+```json
+{"files":["/absolute/papers",{"path":"/absolute/a.pdf","title":"Actual title",
+ "authors":["Actual author"],"year":2024,"doi":"10.example/actual-id"}]}
+```
+
+- Use actual paths and known true metadata; directories are supported. Import copies local snapshots without uploading PDFs, deduplicates identical bytes and reports `metadata_gaps`.
+- Inspect the first page and resubmit true metadata when available. Never infer year from file times or authors from PDF producer fields; unknown metadata stays unknown.
+- Snapshots survive moved originals; changed/missing snapshots or changed local configuration need explicit reimport.
+- Per-file objects accept only path, title, authors (an array of names), year, doi and optional abstract (actual source text, never an invented summary). Directory entries contain only path; metadata belongs to individual PDF files.
+- Run `papers budget`; pass its `search_target` verbatim and reliable local titles/DOIs to discovery. Default without local PDFs is 40; N>=40 unique local PDFs keeps all locals and skips search. Do not silently trim supplied papers.
+
+### Do: delegate discovery when search_target > 0 and discovery is needed
+
+Spawn one fresh search subagent with `fork_turns:"none"`; never a second concurrent
+or repeat searcher for the same task. Before spawning, state the intended agent
+count and disjoint write scope; record and reuse the returned agent id, including
+after timeouts or interruptions. Supply this complete delegation:
+
+- Fixed caller directory, workspace launcher, skill path and [searcher role brief](references/roles/slr-searcher.md), which the child reads itself.
+- One precise natural-language literature-search intent translated once from the authoritative task. Preserve all research semantics. Include the explicit time range or task's recent-five-year default as a **soft preference**, retaining earlier foundational work; do not phrase it as a hard before/after cutoff.
+- Task retrieval dimensions, exact search_target, reliable supplied titles/DOIs to exclude from supplemental discovery, and every retrieval constraint verbatim.
+- Explicit `balanced` mode unless the user selected another mode/budget. Require complete, unabridged real abstracts, named authors and source publication years for selected discovered papers. Exclude missing/placeholder/truncated records; no abstract-recovery search or padding to fill the count.
+- Invoke the independent `$agentic-search` through its existing interfaces; do not supply an AS installation/config path, invent flags or modify AS. The child imports its result with `import-search --source <AS-result-dir>` and returns compact status/limitations, not its paper pool.
+
+### Return and ownership
+
+- Read the searcher's `status_reason` for unresolved exclusions and shortfalls. After import, or for a local-only task, run `run retrieval_adapt` as its own command. Never start `workflow evidence` without `--from`.
+- Venue/citation-floor screening belongs to the deterministic adapter. The search subagent implements excluded-topic requirements semantically during discovery; there is no keyword recheck or extra excluded-topic LLM.
+- AS owns its fallback; do not repeat PaperHub checks or ask for tokens after Web fallback.
+
+## 3. Evidence
+
+### Do
+
+Run `run retrieval_adapt` as its own command. Resolve any reported retrieval case
+that needs main's judgement before continuing. Once retrieval is usable, and before
+any full-text or processing command, wait in this same turn for the product-owned
+checkpoint:
+
+`scholarseed-bridge literature review --json '{"workspace":"<actual survey directory relative to the session workdir>","checkpoint":"retrieval"}'`
+
+Keep waiting on that command until it returns. Do not call `request_user_input`,
+construct or relay an authorization question, or poll another tool. When it returns
+`authorization.disposition=authorized`, first mark retrieval complete and full text
+in progress in the existing host plan, then run `workflow evidence --from fulltext`.
+That workflow continues fulltext → processing → outline generate → review-packet,
+without new model stages, and stops on errors or the outline display boundary. On
+rejection, failure, interruption or stale state, make no full-text or later-stage
+writes and end the turn with the retrieval artifacts retained.
+
+The workflow runner also enforces this boundary: an accidental `workflow evidence`
+or `workflow evidence --from retrieval_adapt` can run retrieval only and returns
+`fulltext_authorization`; it never enters full text. Treat that return as a demand to
+execute the same product checkpoint, never as authorization. Use
+`status --stage workflow` for observed progress.
+
+### Return → action
+
+| Returned boundary | Main action |
+|---|---|
+| retrieval_review | Read reasons/flagged records; report shortfalls and unresolved exclusions. When acceptable, run the blocking product checkpoint; only then continue with `workflow evidence --from fulltext`. |
+| fulltext_authorization | Run the blocking product checkpoint above; only an authorized disposition permits `workflow evidence --from fulltext`. |
+| error / stage_review | Handle the named issue; check the failed stage and current preceding inputs before resuming explicitly from that stage, not from discovery. |
+| outline_display | Display the supplied packet using the Confirm sequence, even with automatic continuation authorization. |
+
+- Report `outside_time_range_retained.count` briefly without listing/rechecking foundational papers.
+- User venue/citation constraints that removed most papers may need their decision; an empty requested subtopic or misleadingly thin corpus needs a concrete exception.
+- A shortfall after adequate search does not by itself justify another search or a question; ask only when fulfilling the task requires a change to user scope, constraints or delivery commitments.
+- Do not ask a time-window question already answered by the task. Disclose exclusion uncertainty reported by the search subagent.
+- Partial status is not an automatic question to the user: resolve/report what is already authorized.
+
+### Recovery and work owned by scripts
+
+- `fulltext_candidates = 0`: continue using actual supplied abstracts and report the reading-depth limitation, not an unnecessary permission question. Never describe abstract cards as full-text reading.
+- Processing success is enough to proceed, with no card-by-card audit.
+- For named processing errors, use `status --stage processing` and `papers show --ids ...`, correct the reported source/configuration issue, then resume the failed stage.
+- Selected discovery papers already passed abstract eligibility; there is no `papers repair` command or HTML abstract-recovery step.
+- Local PDFs retain their original import/parse path: if neither parsed text nor a real abstract is available, report the missing source and reimport a corrected readable file when available. Do not drop supplied PDFs or invent text to satisfy readiness. Valid extraction results are retained.
+- Resume only after checking the failed stage in `status --stage workflow` and that its preceding inputs are current.
+- `--from STAGE` executes that stage and all later steps in the evidence chain; it does not automatically skip completed steps.
+- After an outline exists, use `--from review-packet` to display it. `outline generate` validates/reuses an existing outline without another model call; it is not a revision mechanism.
+
+## 4. Confirm
+
+### Do: display and record publication choices
+
+Use `result` inside the workflow response (or the direct `outline review-packet`
+response) in exactly this order, even with automatic continuation authorization:
+
+1. Summarize the user's research request and personalized preferences in 1–2 sentences.
+2. Display `outline_markdown`: hierarchical chapters/subsections with each figure or table ID and caption nested under its owner. No paper lists/counts, descriptions, analytical tasks, rationale, purposes or separate planning tables. Show language only beside non-default chapters, within this packet rather than a separate language-confirmation gate.
+3. Ask for citation format and template together using available packet options. Reuse prior explicit choices and automatic-continuation authorization. Do not add a separate outline-confirmation question or repeat unchanged choices.
+
+- Complete surveys retain this combined confirmation unless explicitly waived. An explicit waiver uses `outline_review:"auto"` plus `auto_authorization` quoting an actual recorded user request; components default to auto.
+- Record a real decision with `writing approve --request FILE`, using packet_id, actual user_response and optional publication changes (and message_id if supplied by the host).
+- Reading the packet is not displaying it. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation. Never fabricate a user response or packet ID.
+
+### Revisions → action
+
+Changes update only affected requirements; revised plans must be displayed and
+honor applicable approval. Main edits the complete current outline; the outline
+model is not a revision mechanism.
+
+| Situation | Action |
+|---|---|
+| User requests additions, removals, splits or table/figure changes | Obtain the current outline and fields via `outline configure --describe-input` (or read current outline.json). Main edits it completely and submits `outline configure --request FILE`; do not call the outline model again. Then display `outline review-packet` and reuse or obtain the applicable real publication choice. |
+| Initial outline validation fails on local schema, ID, enum, caption, duplication or ownership | Repair the saved `candidate_path` and submit the complete candidate via `outline configure --request FILE` instead of rerunning the model; display the revised plan and honor applicable approval. |
+| Initial candidate is unreadable, truncated, or needs substantive scientific redesign that cannot be made safely from the task and evidence | Only then rerun the outline model. |
+| Paper changes after v2 handoff | Edit v2 directly. |
+
+`outline configure` only validates and saves; it does not call an LLM or grant approval.
+
+## 5. Generate
+
+### Do: prepare and start the concurrent branches
+
+- Run `manuscript prepare` once; check its section, figure and table slots against those confirmed by the user. Task packets preserve the complete assigned evidence, requirements and analytical tasks; they are not output schemas or caches.
+- If figures exist, immediately dispatch one fresh-context figure subagent before waiting on the manuscript command. Exactly one owns every figure id; never split figures across concurrent subagents or re-dispatch the role for the same task.
+- Before spawning, state the intended agent count and disjoint write scope; record and reuse the returned id, including after timeouts or interruptions.
+- Supply caller directory, launcher, skill path, returned figure_brief path and [figure-planner role brief](references/roles/slr-figure-planner.md). The child reads its full inputs, queries `figures context --ids ...` for required prerequisite prose, authors prompt/caption together, submits `figures plan --request`, and runs `figures plan-generate`.
+- Complete actual images, postprocessing and LaTeX wrappers before v1 assembly. No placeholders, extra image review or semantic image regeneration. Technical failures can retry unfinished figure tasks; completed siblings are retained.
+- Run `manuscript generate` concurrently with figures. All top-level chapters, including abstract, synthesis and conclusion, start concurrently. No additional critic or generated-image review follows this pipeline.
+- Use `status --stage writing` for observed progress.
+
+### Script-owned generation contract
+
+- The task supplies a fixed chapter opening at the prompt end (`\section{...}` and label for LaTeX, `## ...` for Markdown); the model returns only raw continuation. Scripts save opening plus continuation under `05_generation/chapters/` and assemble without duplicating headings.
+- Abstracts receive the appropriate opening/closing wrapper; unsectioned components receive no invented heading. No model-authored JSON wrapper or JSON backslash escaping is required.
+- Chapters write planned subheadings, mathematics, citations and native tables; the assembler adds the document template and byline. Figure-owning prose explains the figure and uses `\ref{fig:F1}`; it never writes a placeholder, image path, figure environment, figure caption or label.
+- Scripts wait for all chapter calls and the completed figure branch, then assemble `05_generation/full_draft_v1.tex` (or `.md`) with actual figure wrappers and captions.
+- One refinement model receives the entire source, local included text, requirements, outline and evidence; it can repair the full assembled publication source, including templates, headings, formulas and captions.
+- LaTeX chapters with planned tables receive a width-bounded authoring contract. Deterministic table layout preflight after v1 assembly adds precise warnings and repair instructions to that refinement request only if a table fails; if all pass, no table-specific instruction or status field is added.
+- The refinement delta uses target/before/after with unique exact matches and no overlapping replacements; no hashes are needed. Applying it produces `05_generation/full_draft_v2.tex` (or `.md`).
+
+### Return / failure → action
+
+| Situation | Action |
+|---|---|
+| Transport failure or blocking call configuration / failed image request | Retry only the failed task. Correct the blocking issue and resume with `manuscript generate`; completed chapter task files and responses remain as task results. |
+| Received chapter response is incomplete or has content/format defects | Preserve it; refinement and main repair it. Never regenerate chapters for editorial defects. |
+| Refinement delta is malformed or unapplicable | Preserve raw response and report issues; v1 is handed off as the editable v2 base. No second refinement or chapter rewrite follows. |
+| Editable v2 is handed off | Continue with `workflow publish`; main owns corrections. |
+
+There are no chapter/refine/image/compile caches, acceptance receipts, asset seals
+or hash-based edit permissions.
+
+## 6. Publish
+
+### Do: publish the current v2
+
+- Use one entry: `workflow publish`. It checks the current source, compiles/exports it and renders PDF pages 1–3.
+- Check messages describe the current source and bibliography; old outline coverage is advisory, not an editing permission.
+- The final PDF is named from the document title; whitespace, colons and other cross-platform unsafe filename characters are normalized to underscores.
+
+### Return → inspect, repair and deliver
+
+- Compilation failure is blocking and leaves the source available for direct repair.
+- Main owns all paper-related corrections after handoff: prose, claims, formulas, section structure, captions, tables, citations, templates and layout.
+- Directly edit `05_generation/full_draft_v2.tex` and the local files it actually uses, including `.tex`, `.bib`, images and styles. Use the Markdown v2 for native Markdown tasks.
+- Exported `06_output/survey.*` files are delivery copies; edit the v2 source, then run `workflow publish` again.
+- Visual check scope: open the first-page image and the rendered pages that contain a figure or table, and inspect clipping, math, duplicated headings/captions, blank space and glyphs. Do not open any other page image in the default flow; widen the scope only on an explicit user request or when a check message names a specific page.
+- Fix observed issues directly in v2 and repeat the same publication command.
+- Report actual checks, pages inspected, remaining issues and evidence limits. Reporting this limit is the complete required action; it is not a request to additionally verify uninspected pages or scientific content.
+
+### Post-publish scope limits
+
+- After handoff, correct only issues observed in inspected pages, named in check messages, or raised by the user. The single refinement already covered editorial quality; no proactive full-manuscript re-reading follows publication.
+- No claim-by-claim or theorem-by-theorem verification of the manuscript against source papers in the default flow.
+- The bibliography is assembled deterministically from retrieved metadata; do not re-verify or normalize entries (years, venues, author names, DOIs) against the web or other external sources. Report a suspected metadata defect instead of silently researching and rewriting it.
+- Deliver the exported `06_output` files as-is; no extra packaging or standalone source archives unless the user asked.
+
+### Publication boundaries and existing workspaces
+
+- `workflow publish` never regenerates chapters, invokes refinement or reassembles v2 from earlier outputs.
+- Do not update JSON, run accept, or repair old pipeline state. Generation JSON can be absent without preventing publication.
+- Historical v3 files are not batch-renamed. For an old workspace, explicitly copy its final publication source and dependencies into a separate publication workspace as v2; do not confuse an old intermediate v2 with the final v3.
+- Existing reviews remain unchanged until explicitly imported or revised.
+
+## Invariants
+
+- At most one live search subagent and one live figure subagent; neither role is dispatched twice for the same task. The cap does not limit concurrency inside one CLI call: scripted chapter, image and refinement model calls remain as parallel as possible.
+- Before each `spawn_agent`, state the intended agent count and disjoint write scope; record the returned id and use only that id for `wait_agent`, `send_input` and `resume_agent`. Never re-spawn after a timeout, interruption or slow result; keep waiting on or resume the recorded id.
+- If a duplicate is detected, `close_agent` the extra one before it writes task state, then report the incident.
+- Never fabricate a user response or packet ID. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation.
+- Preserve received chapter responses, even incomplete ones, and completed figure siblings; use the one refinement or main's v2 edits for editorial repairs, never semantic regeneration or a second refinement.
+- Post-publish checking is bounded: first page plus figure/table pages only, no claim-by-claim or theorem-by-theorem source verification, and no bibliography re-verification. Wider checks require an explicit user request or a named error.
+- One workspace per deliverable; never overwrite an existing survey. Secrets stay out of task/artifact files.
+- Only searcher and figure-planner role briefs are active; there are no separate stage reference documents. Obsolete role instructions and design history are recoverable from Git, not runtime inputs. No legacy section-writing commands.
+- Do not launch experiments or claim speed/quality improvements without authorization and measurements.
+- Necessary small file operations outside public CLI use the bound Python; ordinary JSON operations do not require a Node REPL.

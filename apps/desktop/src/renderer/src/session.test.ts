@@ -1,0 +1,137 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { Trans } from 'react-i18next'
+import { createInstance } from 'i18next'
+import zh from '../../localization/locales/zh/assistant.json' with { type: 'json' }
+import en from '../../localization/locales/en/assistant.json' with { type: 'json' }
+import { draftSessionTitle, mergedSessionTitle, openedSessionTitle, sessionDisplayTime, sessionDisplayTitle } from './session.ts'
+import { serveSessionNode, searchSessionTitles } from './tree.ts'
+import { notificationIntents } from './attention.ts'
+import type { ServeSession } from './api'
+
+async function localization() {
+  const instance = createInstance()
+  await instance.init({ lng: 'zh', fallbackLng: false, interpolation: { escapeValue: false }, resources: {
+    zh: { assistant: zh }, en: { assistant: en }
+  } })
+  return instance
+}
+
+test('catalog defaults redraw while user names, legacy same-name titles and unknown provenance remain literal', async () => {
+  const locale = await localization()
+  const t = locale.getFixedT(null, 'assistant')
+  const generated = { title: '新对话', title_fallback: 'new_session' as const }
+  const user = { title: '新对话', title_fallback: null }
+  const legacy = { title: '新对话' }
+  const unknown = { title: 'User / & <中英>', title_fallback: 'future' }
+  const before = JSON.stringify([generated, user, legacy, unknown])
+  assert.equal(sessionDisplayTitle(generated, t), '新对话')
+  await locale.changeLanguage('en')
+  assert.equal(sessionDisplayTitle(generated, t), 'New conversation')
+  assert.equal(sessionDisplayTitle(user, t), '新对话')
+  assert.equal(sessionDisplayTitle(legacy, t), '新对话')
+  assert.equal(sessionDisplayTitle(unknown as typeof generated, t), unknown.title)
+  assert.equal(JSON.stringify([generated, user, legacy, unknown]), before)
+})
+
+test('attachment-only draft uses the authoritative title pair; natural-language provisional titles stay literal', () => {
+  assert.deepEqual(draftSessionTitle('', { title: '新对话', title_fallback: 'new_session' }), { title: '新对话', title_fallback: 'new_session' })
+  assert.deepEqual(draftSessionTitle('', { title: '新对话', title_fallback: null }), { title: '新对话', title_fallback: null })
+  assert.deepEqual(draftSessionTitle('first prompt', { title: '新对话', title_fallback: 'new_session' }), { title: 'first prompt', title_fallback: null })
+  assert.deepEqual(draftSessionTitle('', {}), { title: '新对话', title_fallback: 'new_session' })
+})
+
+test('open recovery updates both fields, clears replaced provenance and tolerates legacy absent titles', () => {
+  const local = { title: '新对话', title_fallback: 'new_session' as const }
+  assert.deepEqual({ ...local, ...openedSessionTitle({ title: '新对话', title_fallback: null }) }, { title: '新对话', title_fallback: null })
+  assert.deepEqual({ ...local, ...openedSessionTitle({ title: 'actual name' }) }, { title: 'actual name', title_fallback: null })
+  assert.deepEqual({ ...local, ...openedSessionTitle({}) }, local)
+  assert.deepEqual(openedSessionTitle({ title: '', title_fallback: 'unknown' }), { title: '', title_fallback: null })
+})
+
+test('catalog/local merge keeps original title precedence and takes metadata from the selected title', () => {
+  const marked = { title: '新对话', title_fallback: 'new_session' as const }
+  assert.deepEqual(mergedSessionTitle(marked, { title: 'local prompt' }, 'session-id'), { title: 'local prompt', title_fallback: null })
+  assert.deepEqual(mergedSessionTitle({ title: 'renamed by user' }, marked, 'session-id'), { title: 'renamed by user', title_fallback: null })
+  assert.deepEqual(mergedSessionTitle({ title: '新对话' }, marked, 'session-id'), marked)
+  assert.deepEqual(mergedSessionTitle(marked, { title: '' }, 'session-id'), marked)
+  assert.deepEqual(mergedSessionTitle(undefined, { title: '' }, 'session-id'), { title: 'session-', title_fallback: null })
+})
+
+test('catalog projection and notification intents preserve provenance without changing canonical search', async () => {
+  const locale = await localization()
+  const node = serveSessionNode({ session_id: 'new-session', title: '新对话', title_fallback: 'new_session', runtime_id: 'codex', workdir: '/workspace', mtime: 5 } as ServeSession, {}, null)
+  assert.equal(node.title_fallback, 'new_session')
+  const [intent] = notificationIntents({ 'new-session': 'running' }, [node], null, false)
+  assert.equal(intent.title_fallback, 'new_session')
+  await locale.changeLanguage('en')
+  assert.equal(sessionDisplayTitle(intent, locale.getFixedT(null, 'assistant')), 'New conversation')
+  assert.equal(searchSessionTitles([node], '新对话').length, 1)
+  assert.equal(searchSessionTitles([node], 'New conversation').length, 0)
+  assert.equal(node.title, '新对话')
+})
+
+
+test('delete confirmation redraws stored error keys and interpolates original conversation names in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, interpolation: { escapeValue: false }, resources: Object.fromEntries(['zh', 'en'].map(language => [language, {
+    shell: JSON.parse(readFileSync(new URL(`../../localization/locales/${language}/shell.json`, import.meta.url), 'utf8'))
+  }])) })
+  const storedError = 'delete.running'
+  const t = locale.getFixedT(null, 'shell')
+  assert.match(t(storedError), /正在运行/)
+  await locale.changeLanguage('en')
+  assert.equal(storedError, 'delete.running')
+  assert.match(t(storedError), /is running/)
+  for (const language of ['zh', 'en']) {
+    await locale.changeLanguage(language)
+    for (const name of [
+      '原始 & <unknown>title</unknown> {{name}}',
+      '<name>会话名</name>',
+      '<strong>原始标题</strong><br/>下一行',
+      '</name><br><name>原始标题',
+    ]) {
+      const rendered = renderToStaticMarkup(createElement(Trans, {
+        i18n: locale, ns: 'shell', i18nKey: 'delete.irreversible', components: { name: createElement('b', null, name) }
+      }))
+      const titleNode = renderToStaticMarkup(createElement('b', null, name))
+      assert.equal(rendered, language === 'zh'
+        ? `删除 ${titleNode} 后无法撤销。`
+        : `Deleting ${titleNode} cannot be undone.`)
+    }
+  }
+  const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
+  const dialog = source.slice(source.indexOf('function ConfirmDialog()'))
+  assert.match(dialog, /if \(r.status === 409\) setErr\('delete.running'\)/)
+  assert.match(dialog, /act.removeSession\(cd.sessionId, cd.surface\)/)
+  assert.match(dialog, /onClick=\{onDelete\}\s+disabled=\{busy\}/)
+  assert.match(dialog, /onClick=\{\(\) => !busy && set\(\{ confirmDelete: null \}\)\}/)
+  assert.doesNotMatch(dialog, /<button/)
+  assert.doesNotMatch(dialog, /values=\{\{ name:/)
+})
+
+
+test('catalog timestamps redraw in both languages while explicit time labels remain unchanged', () => {
+  const now = new Date(2026, 8, 14, 12)
+  const timestamp = new Date(2026, 8, 13, 18).getTime() / 1_000
+  const node = serveSessionNode({ session_id: 'dated-session', title: 'Original title', created_at: timestamp } as ServeSession, {}, null)
+  const format = (locale: string) => ({
+    date: (value: Date | number, options?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, options).format(value),
+    relative: (value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions) => new Intl.RelativeTimeFormat(locale, options).format(value, unit),
+    number: (value: number) => String(value)
+  })
+  assert.equal(node.timeLabel, undefined)
+  assert.equal(sessionDisplayTime(node, format('zh-CN'), now), '昨天')
+  assert.equal(sessionDisplayTime(node, format('en-US'), now), 'yesterday')
+  assert.equal(node.createdAt, timestamp)
+  assert.equal(sessionDisplayTime({ ...node, timeLabel: '上游原文 Yesterday' }, format('en-US'), now), '上游原文 Yesterday')
+  assert.equal(sessionDisplayTime({}, format('en-US'), now), '')
+  assert.equal(sessionDisplayTime({ createdAt: Number.NaN }, format('en-US'), now), '')
+  const today = new Date(2026, 8, 14, 9, 5)
+  assert.equal(sessionDisplayTime({ createdAt: today.getTime() / 1_000 }, format('en-US'), now), new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit' }).format(today))
+  const older = new Date(2026, 8, 12, 18)
+  assert.equal(sessionDisplayTime({ createdAt: older.getTime() / 1_000 }, format('zh-CN'), now), new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(older))
+})

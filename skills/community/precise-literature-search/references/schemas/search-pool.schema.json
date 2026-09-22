@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-pool.schema.json",
+  "title": "Normalized candidate pool for one outer search round",
+  "type": "object",
+  "required": ["schema_version", "papers"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "papers": {"type": "array", "items": {"type": "object"}},
+    "updated_at": {"type": "string"}
+  }
+}
