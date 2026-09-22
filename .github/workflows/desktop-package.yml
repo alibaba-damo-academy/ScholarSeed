@@ -1,0 +1,79 @@
+name: Desktop unsigned package
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Native packaging target
+        required: true
+        type: choice
+        default: darwin-arm64
+        options:
+          - darwin-arm64
+          - darwin-x86_64
+          - win32-x86_64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-package-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    timeout-minutes: 120
+    runs-on: ${{ inputs.target == 'win32-x86_64' && 'windows-2022' || inputs.target == 'darwin-arm64' && 'macos-15' || 'macos-15-intel' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff
+        with:
+          version: '0.12.12'
+          enable-cache: false
+      - name: Install locked dependencies
+        run: |
+          npm install --global npm@11.13.0
+          npm ci
+      - name: Build development installer
+        run: npm run package -- --result "${{ github.workspace }}/apps/desktop/release/package-result.json"
+      - name: Select verified installer
+        id: artifact
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const crypto = require('node:crypto')
+          const result = JSON.parse(fs.readFileSync('apps/desktop/release/package-result.json', 'utf8'))
+          const installer = result.artifacts?.[process.platform === 'darwin' ? 'dmg' : 'exe']
+          if (result.status !== 'passed' || result.release?.type !== 'dev' || !installer?.path) {
+            throw new Error('Verified development installer missing from result')
+          }
+          const filename = path.resolve(installer.path)
+          const digest = crypto.createHash('sha256').update(fs.readFileSync(filename)).digest('hex')
+          if (digest !== installer.sha256) throw new Error('Installer checksum mismatch')
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `installer=${filename}\n`)
+          NODE
+      - name: Upload installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-unsigned-${{ inputs.target }}-${{ github.run_id }}
+          path: |
+            apps/desktop/release/package-result.json
+            ${{ steps.artifact.outputs.installer }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save failed build result
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-unsigned-failure-${{ inputs.target }}-${{ github.run_id }}
+          path: apps/desktop/release/package-result.json
+          if-no-files-found: warn
+          retention-days: 7

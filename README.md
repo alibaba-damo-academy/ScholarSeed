@@ -235,6 +235,8 @@ npm run package:dist
 
 Release credentials must be supplied through protected CI variables or the local secure credential store. Certificates, private keys, notarization secrets, and internal upload addresses must never be committed.
 
+For a development installer without release credentials, open **Actions → Desktop unsigned package → Run workflow** and select macOS arm64, macOS x86_64, or Windows x64. Download the installer from the completed run's **Artifacts** (retained for 14 days). This runs `npm run package`, not `package:check`: macOS uses ad-hoc signing without notarization; Windows is unsigned. These builds may show OS security warnings and are not official signed releases. The workflow must first be committed to the default branch to appear in Actions.
+
 ## Community and Support
 
 Scan the QR code below to join the ScholarSeed community and discuss your experience and research questions.

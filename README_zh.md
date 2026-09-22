@@ -171,6 +171,8 @@ node apps/desktop/scripts/build.cjs --help
 
 默认生成 `dev` 开发包。`preview` 和 `release` 发布构建需配置更新服务和平台签名；macOS 签名发布还需配置公证凭据。
 
+无需发布凭据的安装包：在 **Actions → Desktop unsigned package → Run workflow** 选择 macOS arm64、macOS x86_64 或 Windows x64，运行完成后从 **Artifacts** 下载安装包（保留 14 天）。工作流执行 `npm run package`，不是仅验证的 `package:check`；macOS 使用 ad-hoc 签名且不公证，Windows 不签名，安装时可能出现系统安全提示。这些是开发包，不是正式签名发行版。工作流文件需先提交到默认分支才会出现在 Actions 中。
+
 ## 项目地图
 
 | 路径 | 用途 |
