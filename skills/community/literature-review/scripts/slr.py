@@ -32,6 +32,8 @@ import re
 from main_view import emit
 from datetime import date
 from pathlib import Path
+import review_timeout
+from task_contract import json_input
 from platform_io import run_stream
 from platform_runtime import runtime_info, utf8_env
 
@@ -510,7 +512,6 @@ def cmd_outline(args) -> int:
         if not args.request:raise ValueError('outline configure requires a complete outline --request FILE or -')
         sys.path.insert(0,str(slr_paths.HOME/'scripts'))
         from operator_cli import configure_outline
-        from task_contract import json_input
         print(json.dumps(configure_outline(workspace,json_input(args.request)),ensure_ascii=False,indent=2))
         return 0
     if args.action == 'review-packet':
@@ -611,7 +612,6 @@ def cmd_figures(args) -> int:
     if args.action == 'plan':
         sys.path.insert(0,str(slr_paths.HOME/'scripts'))
         from operator_cli import figure_plan
-        from task_contract import json_input
         if not args.request: raise ValueError('figures plan requires --request FILE or -')
         print(json.dumps(figure_plan(_resolve_workspace(args),json_input(args.request)),ensure_ascii=False))
         return 0
@@ -780,9 +780,20 @@ def cmd_workflow(args):
 
 
 def cmd_writing(args) -> int:
+    if args.action.startswith('review-'):
+        value=json_input(args.request) if args.request else {}
+        if not isinstance(value,dict):raise ValueError('review input must be an object')
+        for field in ('packet_id','wait_seconds'):
+            supplied=getattr(args,field,None)
+            if supplied is not None:
+                if field in value and value[field]!=supplied:raise ValueError('conflicting '+field)
+                value[field]=supplied
+        result=review_timeout.dispatch(_resolve_workspace(args),args.action,value)
+        emit(result,getattr(args,'full',False))
+        return 0
     if args.action in ('configure','approve'):
         if not args.request:raise ValueError(args.action+' requires --request FILE or -')
-        from task_contract import configure,json_input
+        from task_contract import configure
         from operator_cli import approve
         result=(configure if args.action=='configure' else approve)(_resolve_workspace(args),json_input(args.request))
         emit(result,getattr(args,'full',False))
@@ -933,10 +944,13 @@ def main() -> int:
     manuscript.set_defaults(func=cmd_manuscript)
 
     writing = sub.add_parser("writing", help="configure the task and record actual publication decisions")
-    writing.add_argument("action", choices=("configure", "approve", "corpus", "context", "draft", "produce", "review", "apply"),
-                        metavar=None if legacy_help else '{configure,approve}')
+    writing.add_argument("action", choices=("configure", "approve", "review-start","review-status","review-wait","review-response","review-timeout",
+                                          "corpus", "context", "draft", "produce", "review", "apply"),
+                        metavar=None if legacy_help else '{configure,approve,review-start,review-status,review-wait,review-response,review-timeout}')
     writing.add_argument("--workspace")
     writing.add_argument("--request")
+    writing.add_argument("--packet-id",help="current review packet ID for review-* operations")
+    writing.add_argument("--wait-seconds",type=int,help="review-wait polling duration, 0..30 seconds")
     compatibility_help = 'compatibility authoring option' if legacy_help else argparse.SUPPRESS
     writing.add_argument("--only", nargs="+", help=compatibility_help)
     writing.add_argument("--concurrency", type=int, default=3, help=compatibility_help)

@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { createServer, loadConfigFromFile, type UserConfig } from 'vite'
 import { PDFDocument } from 'pdf-lib'
 import { IMPORT_PICKER_TARGET, supportsImportPickerTarget } from '../src/picker'
@@ -34,6 +34,9 @@ const PDF_LONG_SEARCH_REPEAT_COUNT = 4
 const PDF_READER_MIN_WIDTH_PX = 320
 const PDF_WHEEL_ZOOM_DELTA_PX = -120
 const PDF_TRACKPAD_ZOOM_DELTA_PX = -4
+const PDF_TRACKPAD_EVENTS_PER_GESTURE = 12
+const PDF_TRACKPAD_MIN_SCALE_RATIO = 1.3
+const PDF_TRACKPAD_MAX_SCALE_RATIO = 1.4
 const PDF_ZOOM_POINTER_OFFSET_PX = 180
 const PDF_ZOOM_ANCHOR_TOLERANCE_PX = 4
 const PDF_ZOOM_POINTER_X_RATIO = 0.5
@@ -50,6 +53,14 @@ const FORMAT_ON_SAVE_EXPECTED = 'const answer = { value: 42 };\n'
 const FORMAT_ON_SAVE_DISABLED_SOURCE = 'const disabled={value:42}\r\n'
 const HEADING_ONLY_MARKDOWN = '# Heading only'
 const UNFORMATTED_MARKDOWN = '# 123\n```bash\nabcabc\n```'
+
+function monacoContent(frame: Locator): Locator {
+  return frame.contentFrame().locator('#root')
+}
+
+function visibleMonacoEditor(page: Page): Locator {
+  return monacoContent(page.locator('[data-testid="document-editor"]:visible').getByTestId('monaco-editor'))
+}
 
 for (const scope of ['global', 'project'] as const) {
   test(`literature ${scope} collection menu renames and moves within scope`, async ({}, testInfo) => {
@@ -529,7 +540,8 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
     const resources = await seedProject(page, runtime)
     await openFile(page, 'source.json')
     const body = page.locator('.vds-document-view-body:visible')
-    const editor = page.getByTestId('monaco-editor')
+    const editorFrame = page.getByTestId('monaco-editor')
+    const editor = monacoContent(editorFrame)
     const toolbar = page.getByTestId('source-document-toolbar')
     await expect(editor.locator('.view-lines')).toContainText('"answer": 42')
     await expect(page.locator('.vds-document-toolbar:visible')).toHaveCount(0)
@@ -546,7 +558,7 @@ test('non-Markdown text editors use the unified source toolbar and fill the docu
     expect(saveBox).not.toBeNull()
     expect(Math.abs(historyBox!.y - findBox!.y)).toBeLessThanOrEqual(1)
     expect(Math.abs(saveBox!.y - findBox!.y)).toBeLessThanOrEqual(1)
-    const [bodyBox, editorBox] = await Promise.all([body.boundingBox(), editor.boundingBox()])
+    const [bodyBox, editorBox] = await Promise.all([body.boundingBox(), editorFrame.boundingBox()])
     expect(bodyBox).not.toBeNull()
     expect(editorBox).not.toBeNull()
     expect(editorBox!.height).toBeGreaterThan(bodyBox!.height * 0.9)
@@ -586,22 +598,24 @@ test('Markdown source selection and code block copy write exact text through the
 
     await openFile(page, 'acceptance.md')
     await page.getByRole('tab', { name: '源码', exact: true }).click()
-    await expect(page.locator('[data-testid="document-editor"]:visible textarea.inputarea')).toHaveCount(1)
+    await expect(visibleMonacoEditor(page).locator('textarea.inputarea')).toHaveCount(1)
     await page.locator('[data-testid^="document-tab-"]').filter({ hasText: 'acceptance.md' }).click({ button: 'right' })
     await page.getByTestId('tab-split-right').click()
     await openFile(page, 'source.txt')
-    const sourceHeading = page.locator('[data-testid="document-editor"]:visible .view-line').filter({ hasText: '# Acceptance document' })
+    const markdownSource = monacoContent(page.getByTestId('markdown-source-editor').getByTestId('monaco-editor'))
+    const sourceHeading = markdownSource.locator('.view-line').filter({ hasText: '# Acceptance document' })
     await expect(sourceHeading).toBeVisible()
     const headingText = '# Acceptance document'
     const copiedHeading = 'Acceptance'
-    const textBounds = await sourceHeading.evaluate(element => {
+    const [textBounds, frameBounds] = await Promise.all([sourceHeading.evaluate(element => {
       const range = document.createRange()
       range.selectNodeContents(element)
       const bounds = range.getBoundingClientRect()
       return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
-    })
+    }), page.locator('[data-testid="document-editor"]:visible').getByTestId('monaco-editor').boundingBox()])
+    expect(frameBounds).not.toBeNull()
     const characterWidth = textBounds.width / headingText.length
-    const selectionY = textBounds.y + textBounds.height / 2
+    const selectionY = frameBounds!.y + textBounds.y + textBounds.height / 2
     const sourceWindow = await desktop.app!.browserWindow(page)
     await sourceWindow.evaluate(window => { window.show(); window.focus() })
     const receiverOpened = desktop.app!.waitForEvent('window')
@@ -613,7 +627,7 @@ test('Markdown source selection and code block copy write exact text through the
     for (const shortcut of new Set(['Control', SHORTCUT])) {
       for (const expectedText of [copiedHeading, 'document', copiedHeading]) {
         await sourceWindow.evaluate(window => window.focus())
-        const start = textBounds.x + characterWidth * headingText.indexOf(expectedText)
+        const start = frameBounds!.x + textBounds.x + characterWidth * headingText.indexOf(expectedText)
         await page.mouse.move(start, selectionY)
         await page.mouse.down()
         await page.mouse.move(start + characterWidth * expectedText.length, selectionY, { steps: expectedText.length })
@@ -648,13 +662,14 @@ test('Markdown source selection and code block copy write exact text through the
       await page.keyboard.press(`${SHORTCUT}+a`)
       await desktop.app!.evaluate(({ clipboard }, text) => clipboard.writeText(text), pastedText)
       if (nativeMenu) {
+        await sourceWindow.evaluate(window => { window.show(); window.focus() })
+        await expect(markdownSource.locator('textarea').first()).toBeFocused()
         await desktop.app!.evaluate(({ Menu }) => Menu.sendActionToFirstResponder('paste:'))
       } else await sourceWindow.evaluate((window, modifier) => {
         window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: [modifier] })
         window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: [modifier] })
       }, NATIVE_SHORTCUT_MODIFIER)
-      const markdownSource = page.locator('[data-testid="document-editor"]:visible').filter({ hasText: pastedText.split('\n')[0] })
-      await expect(markdownSource).toBeVisible()
+      await expect(markdownSource.locator('.view-lines')).toContainText(pastedText.split('\n')[0])
       await page.keyboard.press(`${SHORTCUT}+a`)
       await page.keyboard.press(`${SHORTCUT}+c`)
       await expect.poll(() => desktop.app!.evaluate(({ clipboard }) => clipboard.readText())).toBe(pastedText)
@@ -722,7 +737,7 @@ test('Markdown and source editors preserve native copy and paste shortcuts', asy
     await page.screenshot({ path: join(runtime.artifacts, 'markdown-native-clipboard.png') })
 
     await openFile(page, 'source.txt')
-    const source = page.locator('[data-testid="document-editor"]:visible')
+    const source = visibleMonacoEditor(page)
     await expect(source.locator('.view-lines')).toContainText('plain answer 42')
     await source.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
@@ -775,7 +790,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     writeFileSync(join(resources, 'source.js'), 'const original={value:1}\r\n')
     await page.getByTestId('resource-refresh').click()
     await openFile(page, 'source.js')
-    let editor = page.locator('[data-testid="document-editor"]:visible')
+    let editor = visibleMonacoEditor(page)
     await expect(editor).toBeVisible()
     await expect(page.locator('[data-testid="source-document-save-dirty"]:visible')).toHaveCount(0)
     await editor.locator('.view-lines').click()
@@ -792,7 +807,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await page.keyboard.press('Escape')
 
     await openFile(page, 'source.ts')
-    editor = page.locator('[data-testid="document-editor"]:visible')
+    editor = visibleMonacoEditor(page)
     await expect(editor).toBeVisible()
     await editor.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
@@ -824,7 +839,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await page.getByTestId('resource-refresh').click()
     await openFile(page, 'projection.md')
     await page.locator('[data-testid="markdown-open-source"]:visible').click()
-    editor = page.locator('[data-testid="document-editor"]:visible')
+    editor = visibleMonacoEditor(page)
     await editor.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+a`)
     await page.keyboard.insertText(UNFORMATTED_MARKDOWN)
@@ -836,7 +851,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toHaveCount(0)
     await page.waitForTimeout(300)
     await page.locator('[data-testid="markdown-open-source"]:visible').click()
-    editor = page.locator('[data-testid="document-editor"]:visible')
+    editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-line')).toHaveCount(4)
     await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toHaveCount(0)
     expect(readFileSync(join(resources, 'projection.md'), 'utf8')).toBe(UNFORMATTED_MARKDOWN)
@@ -847,7 +862,7 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
     await page.keyboard.press('End')
     await page.keyboard.insertText(' changed')
     await page.locator('[data-testid="markdown-open-source"]:visible').click()
-    editor = page.locator('[data-testid="document-editor"]:visible')
+    editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-lines')).toContainText('123 changed')
     await expect(editor.locator('.view-lines')).toContainText('abcabc')
     await expect(page.locator('[data-testid="markdown-save-dirty"]:visible')).toBeVisible()
@@ -858,12 +873,16 @@ test('format on save defaults off, formats code when enabled, and opening Markdo
 
 test('version history opens a resizable read-only text comparison tab', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
   const desktop = new DesktopSession(runtime, testInfo)
+  const otherProjectName = 'Version scope Beta'
   try {
     const page = await desktop.launch()
+    const otherProject = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: otherProjectName } })
+    expect(otherProject.ok(), await otherProject.text()).toBe(true)
     await seedProject(page, runtime)
     await openFile(page, 'source.txt')
-    const editor = page.getByTestId('monaco-editor')
+    const editor = monacoContent(page.getByTestId('monaco-editor'))
     await expect(editor.locator('.view-lines')).toContainText('plain answer 42')
     await editor.locator('.view-lines').click()
     await page.keyboard.press(`${SHORTCUT}+End`)
@@ -876,8 +895,9 @@ test('version history opens a resizable read-only text comparison tab', async ({
     await expect(rows).toHaveCount(2)
     await rows.nth(1).getByTestId('version-history-row-action').click()
 
-    const comparison = page.getByTestId('version-text-diff')
-    await expect(comparison).toBeVisible()
+    const comparisonFrame = page.getByTestId('version-text-diff')
+    const comparison = monacoContent(comparisonFrame)
+    await expect(comparisonFrame).toBeVisible()
     await expect(page.getByRole('tab', { name: /版本对比 · v1 · source\.txt/ })).toBeVisible()
     await expect(comparison.locator('.original .view-lines')).toContainText('plain answer 42')
     await expect(comparison.locator('.modified .view-lines')).toContainText('current version addition')
@@ -892,7 +912,19 @@ test('version history opens a resizable read-only text comparison tab', async ({
     const after = await divider.boundingBox()
     expect(after).not.toBeNull()
     expect(after!.x).toBeGreaterThan(before!.x + 80)
-    await page.screenshot({ path: join(runtime.artifacts, 'version-text-diff.png') })
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${otherProjectName}`).click()
+    await expect(page.getByRole('tab', { name: /版本对比 · v1 · source\.txt/ })).toHaveCount(0)
+    await expect(comparison).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'version-diff-hidden-in-other-project.png') })
+
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId('project-menu-option-Library acceptance').click()
+    const restoredComparisonTab = page.getByRole('tab', { name: /版本对比 · v1 · source\.txt/ })
+    await expect(restoredComparisonTab).toHaveCount(1)
+    await restoredComparisonTab.click()
+    await expect(comparison).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'version-diff-restored-in-owner-project.png') })
     desktop.assertNoPageErrors()
   } finally { await desktop.attachArtifacts() }
 })
@@ -944,7 +976,7 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
     await openProject('Tab scope Alpha')
     await openFile(page, 'alpha.md')
     await page.getByTestId('markdown-open-source').click()
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-lines')).toContainText('ALPHA')
     await expect(page.getByRole('tab', { name: /alpha\.md/ })).toBeVisible()
     await expect(page.getByTestId('document-version-history')).toBeVisible()
@@ -1098,7 +1130,8 @@ test('Markdown source supports highlighted editing, replace, undo, redo and dura
     const resources = await seedProject(page, runtime)
     await openFile(page, 'acceptance.md')
     await page.getByTestId('markdown-open-source').click()
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editorFrame = page.locator('[data-testid="document-editor"]:visible').getByTestId('monaco-editor')
+    const editor = monacoContent(editorFrame)
     for (const testId of ['markdown-undo', 'markdown-redo', 'markdown-find', 'markdown-replace']) {
       await expect(page.getByTestId(testId)).toBeVisible()
       await expect(page.getByTestId(testId).locator('svg')).toHaveCount(1)
@@ -1118,7 +1151,7 @@ test('Markdown source supports highlighted editing, replace, undo, redo and dura
     expect(Math.abs(lineWithFind!.y - lineBeforeFind!.y)).toBeLessThanOrEqual(1)
     const regexToggle = widget.getByRole('checkbox', { name: /正则表达式|Regular Expression/ })
     await regexToggle.hover()
-    const monacoTooltip = page.locator('.monaco-hover[role="tooltip"]:visible')
+    const monacoTooltip = editor.locator('.monaco-hover[role="tooltip"]:visible')
     await expect(monacoTooltip).toBeVisible()
     const [tooltipBox, widgetBox] = await Promise.all([
       monacoTooltip.boundingBox(),
@@ -1157,7 +1190,7 @@ test('Markdown source supports highlighted editing, replace, undo, redo and dura
     await expect.poll(async () => {
       const [widgetBox, hostBox] = await Promise.all([
         widget.boundingBox(),
-        editor.getByTestId('monaco-editor').boundingBox()
+        editorFrame.boundingBox()
       ])
       return Boolean(widgetBox && hostBox && widgetBox.y + widgetBox.height <= hostBox.y)
     }).toBe(true)
@@ -1199,19 +1232,21 @@ test('PRD source suffixes resolve real syntax grammars and code folds through th
     await seedProject(page, runtime)
     for (const [suffix, language] of SOURCE_CASES) {
       await openFile(page, `source.${suffix}`)
-      const editor = page.locator('[data-testid="document-editor"]:visible')
-      await expect(editor).toHaveAttribute('data-language', language)
+      const editorSurface = page.locator('[data-testid="document-editor"]:visible')
+      const editor = visibleMonacoEditor(page)
+      await expect(editorSurface).toHaveAttribute('data-language', language)
       await expect(editor.locator('.view-lines')).not.toBeEmpty()
       if (language !== 'plaintext') {
         await expect.poll(async () => new Set(await editor.locator('.view-lines span[class*="mtk"]').evaluateAll((spans) => spans.map((span) => span.className))).size).toBeGreaterThan(1)
       }
     }
     await openFile(page, 'source.js')
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editor = visibleMonacoEditor(page)
     await expect(editor.locator('.view-lines')).toContainText('return 42')
-    const iconFont = await page.evaluate(async () => {
-      const faces = await document.fonts.load('16px codicon')
-      return { count: faces.length, loaded: faces.every(face => face.status === 'loaded'), ready: document.fonts.check('16px codicon') }
+    const iconFont = await editor.evaluate(async (element) => {
+      const fonts = element.ownerDocument.fonts
+      const faces = await fonts.load('16px codicon')
+      return { count: faces.length, loaded: faces.every(face => face.status === 'loaded'), ready: fonts.check('16px codicon') }
     })
     expect(iconFont.count).toBeGreaterThan(0)
     expect(iconFont.loaded && iconFont.ready).toBe(true)
@@ -1235,7 +1270,7 @@ test('code editor shortcuts apply language comments and indentation', async ({},
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
     await openFile(page, 'source.py')
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editor = visibleMonacoEditor(page)
     const input = editor.locator('textarea').first()
     await editor.locator('.view-line').first().click()
     await input.press('Tab')
@@ -1269,6 +1304,44 @@ test('code editor shortcuts apply language comments and indentation', async ({},
   } finally { await desktop.attachArtifacts() }
 })
 
+test('Monaco preserves cursor movement, selection and backspace editing', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    await openFile(page, 'source.txt')
+    const editor = visibleMonacoEditor(page)
+    const input = editor.locator('textarea').first()
+    await input.press(`${SHORTCUT}+a`)
+    await input.pressSequentially('abc')
+    await input.press('Enter')
+    await input.pressSequentially('def')
+    await editor.locator('.view-line').last().click()
+    await input.press('End')
+    await input.press('ArrowUp')
+    await input.pressSequentially('X')
+    await input.press('ArrowDown')
+    await input.pressSequentially('Y')
+    await input.press('ArrowLeft')
+    await input.press('Backspace')
+    await input.press('Shift+ArrowLeft')
+    await expect(editor.locator('.selected-text')).toHaveCount(1)
+    await input.pressSequentially('Z')
+    await expect(editor.locator('.view-lines')).toContainText('abcX')
+    await expect(editor.locator('.view-lines')).toContainText('dZY')
+    await expect(page.getByTestId('source-document-save-dirty')).toBeVisible()
+    await page.getByTestId('source-document-save').click()
+    await expect.poll(() => readFileSync(join(resources, 'source.txt'), 'utf8')).toBe('abcX\ndZY')
+    await page.screenshot({ path: join(runtime.artifacts, 'monaco-keyboard-editing.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
 test('language switch reloads open code editors without leaving the current project or file', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
@@ -1281,14 +1354,11 @@ test('language switch reloads open code editors without leaving the current proj
     const resources = await seedProject(page, runtime)
     await openFile(page, 'source.cpp')
     await openFile(page, 'source.py')
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editor = visibleMonacoEditor(page)
     const editorInput = editor.locator('textarea').first()
     const runtimeFrames = page.locator('iframe[title="Monaco runtime"]')
     const expectMonacoPresentation = async (): Promise<void> => {
       await expect(runtimeFrames).toHaveCount(2)
-      await expect.poll(async () => runtimeFrames.evaluateAll((frames) => (
-        frames.every((frame) => getComputedStyle(frame).display === 'none')
-      ))).toBe(true)
       const firstLineNumber = editor.locator('.margin-view-overlays .line-numbers').first()
       await expect(firstLineNumber).toBeVisible()
       await expect(firstLineNumber).toHaveText('1')
@@ -1341,14 +1411,19 @@ test('language switch reloads open code editors without leaving the current proj
       const [buttonBounds, tooltipBounds] = await Promise.all([nextMatch.boundingBox(), findTooltip.boundingBox()])
       if (!buttonBounds || !tooltipBounds) return false
       const buttonCenter = buttonBounds.x + buttonBounds.width / 2
+      const buttonBottom = buttonBounds.y + buttonBounds.height
       const tooltipBottom = tooltipBounds.y + tooltipBounds.height
-      const verticalGap = buttonBounds.y - tooltipBottom
-      return tooltipBottom <= buttonBounds.y
+      const tooltipIsAbove = tooltipBottom <= buttonBounds.y
+      const tooltipIsBelow = tooltipBounds.y >= buttonBottom
+      const verticalGap = tooltipIsAbove
+        ? buttonBounds.y - tooltipBottom
+        : tooltipBounds.y - buttonBottom
+      return (tooltipIsAbove || tooltipIsBelow)
         && verticalGap <= POPOVER_ANCHOR_MAX_GAP_PX
         && buttonCenter >= tooltipBounds.x
         && buttonCenter <= tooltipBounds.x + tooltipBounds.width
     }).toBe(true)
-    const tooltipPointer = findTooltip.locator('.workbench-hover-pointer.bottom')
+    const tooltipPointer = findTooltip.locator('.workbench-hover-pointer')
     await expect(tooltipPointer).toHaveCount(1)
     await expect.poll(() => tooltipPointer.evaluate((pointer) => (
       getComputedStyle(pointer, '::after').content
@@ -1362,6 +1437,13 @@ test('language switch reloads open code editors without leaving the current proj
       )
       return Boolean(topmost && tooltip.contains(topmost))
     })).toBe(true)
+    const reloadedEditor = visibleMonacoEditor(page)
+    const reloadedInput = reloadedEditor.locator('textarea').first()
+    await reloadedEditor.locator('.view-line').last().click()
+    await reloadedInput.press('End')
+    await reloadedInput.press('Enter')
+    await reloadedInput.pressSequentially('# editing still works')
+    await expect(reloadedEditor.locator('.view-lines')).toContainText('editing still works')
     expect(runtimeLoadErrors).toEqual([])
     await page.screenshot({ path: join(runtime.artifacts, 'code-language-hot-switch-state-preserved.png') })
     desktop.assertNoPageErrors()
@@ -1998,10 +2080,12 @@ test('PDF modifier wheel zoom preserves its pointer anchor', async ({}, testInfo
     expect(await canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeCloseTo(modifiedWidth, 0)
     if (process.platform === 'darwin') {
       await page.keyboard.down('Control')
-      await page.mouse.wheel(0, PDF_TRACKPAD_ZOOM_DELTA_PX)
-      await page.mouse.wheel(0, PDF_TRACKPAD_ZOOM_DELTA_PX)
+      for (let index = 0; index < PDF_TRACKPAD_EVENTS_PER_GESTURE; index += 1) {
+        await page.mouse.wheel(0, PDF_TRACKPAD_ZOOM_DELTA_PX)
+      }
       await page.keyboard.up('Control')
-      await expect.poll(() => canvas.evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(modifiedWidth)
+      await expect.poll(() => canvas.evaluate((node, baselineWidth) => node.getBoundingClientRect().width / baselineWidth, modifiedWidth)).toBeGreaterThanOrEqual(PDF_TRACKPAD_MIN_SCALE_RATIO)
+      expect(await canvas.evaluate((node, baselineWidth) => node.getBoundingClientRect().width / baselineWidth, modifiedWidth)).toBeLessThanOrEqual(PDF_TRACKPAD_MAX_SCALE_RATIO)
     }
     await page.screenshot({ path: join(runtime.artifacts, 'pdf-pointer-zoom.png') })
     desktop.assertNoPageErrors()
@@ -3695,7 +3779,7 @@ test('file tree separates disk edits, warnings and global policy setup without v
     await page.getByTestId('resource-refresh').click()
     await openFile(page, 'source.h')
     const dirty = page.getByTestId('tree-dirty-resources/source.h')
-    const editor = page.locator('[data-testid="document-editor"]:visible')
+    const editor = visibleMonacoEditor(page)
     await expect(editor).toBeVisible({ timeout: TREE_EDITOR_LOAD_TIMEOUT_MS })
     await expect(dirty).toHaveCount(0)
     await expect(page.getByTestId('tree-version-resources/source.h')).toHaveCount(0)
@@ -3824,8 +3908,10 @@ test('file tree review indicator follows a real Agent file edit', async ({}, tes
     await review.hover()
     await expect(page.getByRole('tooltip')).toHaveText('待审阅 · 查看并处理修改')
     await review.click()
-    await expect(page.getByTestId('snapshot-review')).toBeVisible()
-    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-panel.png') })
+    await expect(page.getByRole('tab', { name: /审阅修改/ })).toBeVisible()
+    await expect(page.getByRole('group', { name: '审阅文件列表' })).toBeVisible()
+    await expect(page.getByTestId('snapshot-review')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-page.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.page?.screenshot({ path: join(runtime.artifacts, 'tree-final-state.png') }).catch(() => undefined)

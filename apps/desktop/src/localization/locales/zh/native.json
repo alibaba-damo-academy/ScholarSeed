@@ -8,5 +8,16 @@
     "saveCopy": "保存副本",
     "insertImage": "插入图片",
     "images": "图片"
+  },
+  "tray": {
+    "tooltip": "书深",
+    "show": "显示窗口",
+    "quit": "退出应用",
+    "closeTitle": "关闭书深窗口？",
+    "closeMessage": "关闭书深窗口？",
+    "closeDetail": "最小化到托盘后，Agent 和后台任务会继续运行；退出应用会停止正在进行的工作。",
+    "minimize": "最小化到托盘",
+    "cancel": "取消",
+    "doNotAskAgain": "不再询问"
   }
 }

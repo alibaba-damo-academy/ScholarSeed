@@ -225,11 +225,29 @@ declare module 'i18next' {
         "translation": {
             "title": "翻译",
             "close": "关闭",
-            "sourceLanguage": "源语言",
-            "auto": "自动",
-            "english": "英语",
-            "chinese": "中文",
             "targetLanguage": "目标语言",
+            "searchLanguage": "搜索目标语言",
+            "noLanguages": "未找到目标语言",
+            "languages": {
+                "zh-CN": "简体中文",
+                "zh-TW": "繁体中文",
+                "en": "英语",
+                "ja": "日语",
+                "ko": "韩语",
+                "fr": "法语",
+                "de": "德语",
+                "es": "西班牙语",
+                "pt": "葡萄牙语",
+                "it": "意大利语",
+                "ru": "俄语",
+                "ar": "阿拉伯语",
+                "hi": "印地语",
+                "th": "泰语",
+                "vi": "越南语",
+                "id": "印度尼西亚语",
+                "tr": "土耳其语",
+                "nl": "荷兰语"
+            },
             "retranslate": "重新翻译",
             "retry": "重试",
             "loading": "翻译中…",
@@ -681,6 +699,8 @@ declare module 'i18next' {
             "screenshot": "截图标注",
             "markProblem": "截图标记",
             "drag": "拖动位置",
+            "dragHint": "按住拖动到其他位置",
+            "stepsToggle": "操作步骤（{{count}}）",
             "guidance": "继续操作会自动记录；遇到问题，填写说明或截图标记。",
             "recording": "录制中 · {{seconds}} 秒",
             "paused": "已暂停 · {{seconds}} 秒",
@@ -726,7 +746,8 @@ declare module 'i18next' {
                     "rect": "矩形",
                     "arrow": "箭头",
                     "pen": "画笔",
-                    "text": "文字"
+                    "text": "文字",
+                    "redact": "遮挡"
                 }
             },
             "review": {
@@ -743,6 +764,7 @@ declare module 'i18next' {
                 "screenshotAlt": "问题标注截图",
                 "screenshotNote": "截图说明",
                 "zoomScreenshot": "放大截图",
+                "editScreenshot": "点击重新编辑",
                 "copyScreenshot": "复制图片",
                 "copyMarkdown": "复制内容",
                 "markdownOperation": "操作",
@@ -803,6 +825,7 @@ declare module 'i18next' {
                 "capture_empty": "页面截图为空，请重试。",
                 "capture_too_large": "页面截图超过大小限制。",
                 "screenshotRequiresStep": "请先完成一次页面操作，再保存截图。",
+                "screenshotMissing": "截图已不存在，请返回报告后重试。",
                 "invalid_sender": "截图请求来源无效。",
                 "descriptionLimit": "问题描述不能超过 {{limit}} 个字符。"
             }
@@ -1188,7 +1211,6 @@ declare module 'i18next' {
             "checkFailed": "暂时无法检查发送结果，内容仍已保留。",
             "submissionRecovered": "消息已经成功提交，已恢复对应任务状态。",
             "notSubmitted": "已确认消息未提交，可以重新发送。",
-            "stillUnknown": "服务端仍无法确认是否已执行；为避免重复执行，请稍后再次检查。",
             "attachmentTitle": "附件 · {{name}}",
             "skillPath": "技能 {{name}} 缺少可用路径。",
             "skillDisabled": "技能 {{name}} 尚未启用。",
@@ -2038,10 +2060,10 @@ declare module 'i18next' {
             "transportRecovered": "本地书深服务连接已恢复",
             "detail": "：{{detail}}",
             "reason": {
-                "codex_process_exit": "Agent 运行时已退出",
+                "agent_runtime_exit": "Agent 运行时已退出",
                 "runtime_transport_lost": "Agent 运行时本地传输已断开",
                 "runtime_rpc_timeout": "Agent 运行时请求确认超时",
-                "codex_process_unavailable": "Agent 运行时暂时不可用",
+                "agent_runtime_unavailable": "Agent 运行时暂时不可用",
                 "thread_resume_failed": "当前会话恢复失败",
                 "codex_turn_retrying": "模型服务正在重试",
                 "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
@@ -2122,6 +2144,7 @@ declare module 'i18next' {
             },
             "unavailable": {
                 "message": "模型服务暂时不可用。",
+                "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
                 "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
             },
             "request": {
@@ -3208,7 +3231,8 @@ declare module 'i18next' {
                 "failed": "失败",
                 "interrupted": "已中断",
                 "unknown": "状态未知",
-                "empty": "无结果"
+                "empty": "无结果",
+                "search_interrupted": "搜索被中断"
             },
             "elapsedHours": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒",
             "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
@@ -3677,6 +3701,17 @@ declare module 'i18next' {
             "saveCopy": "保存副本",
             "insertImage": "插入图片",
             "images": "图片"
+        },
+        "tray": {
+            "tooltip": "书深",
+            "show": "显示窗口",
+            "quit": "退出应用",
+            "closeTitle": "关闭书深窗口？",
+            "closeMessage": "关闭书深窗口？",
+            "closeDetail": "最小化到托盘后，Agent 和后台任务会继续运行；退出应用会停止正在进行的工作。",
+            "minimize": "最小化到托盘",
+            "cancel": "取消",
+            "doNotAskAgain": "不再询问"
         }
     },
     "onboarding": {
@@ -3792,10 +3827,6 @@ declare module 'i18next' {
             "image": "原文框选图表"
         },
         "translation": {
-            "direction": "翻译方向",
-            "auto": "自动识别",
-            "toEnglish": "中译英",
-            "toChinese": "英译中",
             "unlocated": "未定位到原文依据"
         },
         "outline": {
@@ -3897,10 +3928,11 @@ declare module 'i18next' {
                 "region_required": "请在当前页框选图或表。",
                 "region_out_of_range": "框选区域超出页面，请重新框选。",
                 "region_too_small": "框选区域过小，请重新框选清晰图表。",
+                "region_missing": "未找到对应的公式、图片或表格区域，请重新选择。",
                 "module_unsupported": "未知解读模块。",
-                "result_rejected": "模型无法处理此内容；本版翻译仅支持中英互译。",
-                "translation_language_invalid": "模型未返回有效的中英互译结果，请重试。",
-                "translation_direction_mismatch": "模型返回的翻译方向与所选方向不符，请重试。",
+                "result_rejected": "模型无法处理此内容，请重试或更换模型。",
+                "translation_language_invalid": "模型未返回有效的源语言识别结果，请重试。",
+                "translation_direction_mismatch": "模型返回的目标语言与所选语言不符，请重试。",
                 "translation_incomplete": "全文译文不完整，未覆盖全部页面；旧结果已保留，请更换输出容量更大的模型。",
                 "translation_content_missing": "全文译文存在空页或缺失段落，请重试。",
                 "interpretation_incomplete": "解读模块输出不完整，旧结果已保留。",
@@ -3911,7 +3943,7 @@ declare module 'i18next' {
                 "translation_sentence_incomplete": "逐句译文不完整，请重试。",
                 "task_missing": "任务不存在",
                 "pdf_input_unsupported": "当前模型未声明支持 PDF 文件输入，请在设置 → 模型服务确认能力或切换模型。",
-                "image_input_unsupported": "当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。",
+                "image_input_unsupported": "当前模型未声明支持图片输入，请切换支持图片的模型。",
                 "generation_failed": "生成失败，请检查模型连接并重试。",
                 "literature_deleted": "文献已删除，本次结果不再写入。",
                 "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
@@ -4088,6 +4120,14 @@ declare module 'i18next' {
             "exported": "导出成功",
             "search": "搜索 PDF"
         },
+        "visualRegions": {
+            "explain": "解释",
+            "copyFormula": "复制 LaTeX",
+            "copyImage": "复制图片",
+            "formulaCopied": "已复制 LaTeX",
+            "imageCopied": "已复制图片",
+            "copyFailed": "复制失败"
+        },
         "internalLink": "跳转到 PDF 内部链接：{{label}}",
         "internalLinkFallback": "文档目标",
         "goToPageDialog": {
@@ -4263,6 +4303,15 @@ declare module 'i18next' {
             "title": "取消关联「{{name}}」？",
             "description": "资料树中的整个关联入口都会移除：<path>{{path}}</path>",
             "warning": "原文件会完整保留在 <path>{{path}}</path>；正在运行的 Agent 会在下一轮更新权限。"
+        },
+        "linkSupersede": {
+            "label": "父目录关联选择",
+            "title": "它的子目录已经关联过了",
+            "description": "你要关联的目录包含资料库里已单独关联的子目录。可以取代这些子关联并挂载这个父目录，或不挂载、直接打开已有的子目录。",
+            "coveredLabel_other": "将被取代的子关联（{{count}} 个）",
+            "warning": "取代只撤销这些子关联在资料库里的挂载入口，不会删除或移动你的原文件；挂载父目录后，这些子目录会出现在父目录关联之下。",
+            "openExistingAction": "不挂载，打开已有子目录",
+            "mountAction": "取代并挂载父目录"
         },
         "delete": {
             "folderTitle": "删除文件夹",
@@ -4496,6 +4545,8 @@ declare module 'i18next' {
             "unlinkedInterrupted_other": "已取消关联 {{name}}，原文件保持不变，并中断 {{count}} 个运行中任务。",
             "importReplaced_other": "已覆盖 {{count}} 项，导入内容已保存为新版本",
             "importRenamed_other": "已重命名并导入 {{count}} 项",
+            "linkSuperseded_other": "已取代 {{count}} 个子关联并挂载父目录，原文件保持不变。",
+            "linkSupersedeCleanupFailed_other": "已取代 {{count}} 个子关联并挂载父目录，但子页签或 Agent 引用同步失败。",
             "createUncertain": "本地服务没有返回创建结果。请先刷新资料树确认文件是否已创建，再决定是否重试。",
             "linkedCreateFailed": "关联目录不可用或授权已失效，未创建文件。请重新关联原目录后重试。",
             "created": "已创建 {{name}}",
@@ -4526,6 +4577,8 @@ declare module 'i18next' {
             "same_parent": "资料已经在这个目录中。",
             "copy_into_self": "不能把文件夹复制到它自己里面。",
             "source_not_found": "选中的本地文件或文件夹已不存在。",
+            "source_overlap": "该目录已被父级关联覆盖。",
+            "source_covers_links": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
             "too_many_duplicates": "同名副本太多，先整理一下。",
             "file_too_large": "文件过大，本版本不在工作台内预览。",
             "not_text_file": "这不是文本文件，无法按文本打开。",
@@ -4547,6 +4600,7 @@ declare module 'i18next' {
             "unknown": "资料操作失败。",
             "version_admission_unavailable": "文件当前不可加入版本管理，请刷新后重试。",
             "version_admission_failed": "加入版本管理失败。",
+            "review_batch_unavailable": "未找到这份资料对应的待审阅批次，请刷新后重试。",
             "disk_revision_conflict": "文件已变化，请刷新后重试。",
             "resource_import_interrupted": "资料导入已中断，请重试。",
             "resource_import_failed": "资料导入失败，请重试。"
@@ -4754,9 +4808,6 @@ declare module 'i18next' {
                 "replacement_timeout": "编辑器尚未确认结果，请检查原文，不要重复替换。",
                 "replacement_stale": "文件或选区已变化，无法替换，请重新选择。"
             },
-            "direction": "翻译方向",
-            "toEnglish": "中译英",
-            "toChinese": "英译中",
             "pending": "AI 建议 · 尚未写入",
             "resultHint": "AI 生成内容，请结合原文核验",
             "copyFailed": "复制失败，请重试。",
@@ -5379,6 +5430,8 @@ declare module 'i18next' {
                 "importFailed": "导入失败，请检查源文件和目录权限。",
                 "copyFailed": "复制失败，请检查目录权限。",
                 "rootExists": "同名关联来源已经存在。",
+                "sourceOverlap": "该目录已被父级关联覆盖。",
+                "sourceCoversLinks": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
                 "diskFull": "磁盘空间不足，请清理空间后重试。",
                 "storageIoFailed": "本地存储读写失败，请检查磁盘状态后重试。",
                 "interrupted": "导入被应用退出或服务重启中断。",
@@ -5837,7 +5890,18 @@ declare module 'i18next' {
             "catalog": "正在索引系统字体…",
             "reading": "已读取 {{done}}/{{total}} 个字体（{{size}} MiB）",
             "runtime": "字体已就绪，正在初始化 Office…",
-            "error": "Office 字体预热失败",
+            "slow": "当前设备初始化时间较长，Office 仍在后台继续准备。",
+            "recoveringTitle": "正在恢复 Office 预热",
+            "recovering": "运行资源加载中断，正在进行第 {{attempt}} 次自动重试。",
+            "errorTitle": "Office 预热未完成",
+            "failures": {
+                "fontPermission": "无法获得系统字体访问权限，请检查系统设置后重试。",
+                "fontCatalog": "无法读取系统字体目录，请检查字体访问设置后重试。",
+                "fontRead": "系统字体读取未完成，请重试。",
+                "runtimeAssets": "Office 运行资源未能完整加载，请重试。",
+                "runtimeInitialization": "Office 引擎初始化失败，请重试。",
+                "runtimeExecution": "Office 运行时发生错误，请重试。"
+            },
             "retry": "重试"
         },
         "markdown": {

@@ -9,7 +9,7 @@
   "targets": {
     "darwin-arm64": {
       "archive": "texlive-2026-universal-darwin.tar.gz",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/texlive-2026-universal-darwin.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/texlive/texlive-2026-universal-darwin.tar.gz",
       "sha256": "4a828b7cce9e2fecae157dccfafe7888ba3955700ee3db97c2879e60a34aa527",
       "bytes": 122633816,
       "bin_relative": "texlive/bin/universal-darwin",
@@ -17,7 +17,7 @@
     },
     "darwin-x64": {
       "archive": "texlive-2026-universal-darwin.tar.gz",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/texlive-2026-universal-darwin.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/texlive/texlive-2026-universal-darwin.tar.gz",
       "sha256": "4a828b7cce9e2fecae157dccfafe7888ba3955700ee3db97c2879e60a34aa527",
       "bytes": 122633816,
       "bin_relative": "texlive/bin/universal-darwin",
@@ -25,7 +25,7 @@
     },
     "win32-x64": {
       "archive": "texlive-2026-windows.tar.gz",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/texlive-2026-windows.tar.gz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/texlive/texlive-2026-windows.tar.gz",
       "sha256": "e04cf7ea516b07765dcec4be229d38e1a2af65b43cb77f196ccb5c51e705abe3",
       "bytes": 121897446,
       "bin_relative": "texlive/bin/windows",

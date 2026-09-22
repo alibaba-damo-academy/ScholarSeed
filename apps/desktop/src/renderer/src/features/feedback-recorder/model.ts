@@ -105,17 +105,68 @@ export interface AnnotationPoint {
 
 export type Annotation =
   | { type: 'rect'; color: string; x: number; y: number; width: number; height: number }
+  | { type: 'redact'; x: number; y: number; width: number; height: number }
   | { type: 'arrow'; color: string; points: [AnnotationPoint, AnnotationPoint] }
   | { type: 'pen'; color: string; points: AnnotationPoint[] }
   | { type: 'text'; color: string; x: number; y: number; text: string }
 
 export interface RecordedScreenshot {
+  automatic?: boolean
   screenshotId: string
   stepId?: string
   note: string
-  file: File
+  sourceFile: File
+  renderedFile: File
   previewUrl: string
   annotations: Annotation[]
+}
+
+export type ScreenshotRendering = Pick<RecordedScreenshot, 'annotations' | 'note' | 'previewUrl' | 'renderedFile'>
+
+type InitialScreenshot = Pick<RecordedScreenshot, 'previewUrl' | 'renderedFile' | 'screenshotId' | 'sourceFile'>
+
+export function appendInitialScreenshot(
+  session: RecordingSession,
+  screenshot: InitialScreenshot
+): RecordingSession {
+  const initialStep = session.steps[0]
+  if (!initialStep) return session
+  return {
+    ...session,
+    screenshots: [...session.screenshots, {
+      ...screenshot,
+      annotations: [],
+      automatic: true,
+      note: '',
+      stepId: initialStep.stepId
+    }]
+  }
+}
+
+type RectangleAnnotation = Extract<Annotation, { type: 'rect' | 'redact' }>
+
+export function normalizeRectangleAnnotation<T extends RectangleAnnotation>(annotation: T): T {
+  return {
+    ...annotation,
+    x: annotation.width < 0 ? annotation.x + annotation.width : annotation.x,
+    y: annotation.height < 0 ? annotation.y + annotation.height : annotation.y,
+    width: Math.abs(annotation.width),
+    height: Math.abs(annotation.height)
+  }
+}
+
+export function replaceRecordedScreenshot(
+  screenshot: RecordedScreenshot,
+  rendering: ScreenshotRendering
+): RecordedScreenshot {
+  return { ...screenshot, ...rendering }
+}
+
+export function selectFeedbackImages(session: RecordingSession): File[] {
+  const stepIds = new Set(session.steps.map((step) => step.stepId))
+  return session.screenshots
+    .filter((screenshot) => Boolean(screenshot.stepId && stepIds.has(screenshot.stepId)))
+    .map((screenshot) => screenshot.renderedFile)
 }
 
 export interface SummaryFields {
@@ -184,5 +235,5 @@ export function normalizeNote(value: string): string {
 export function requiresDiscardConfirmation(session: RecordingSession): boolean {
   return session.steps.length > 1
     || Object.values(session.notes).some((note) => Boolean(note.trim()))
-    || session.screenshots.length > 0
+    || session.screenshots.some((screenshot) => !screenshot.automatic || screenshot.annotations.length > 0 || Boolean(screenshot.note.trim()))
 }

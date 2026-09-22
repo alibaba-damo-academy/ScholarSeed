@@ -51,6 +51,7 @@ import {
 } from './components'
 import type { ProvisionedComponents } from './components'
 import { isFirstRun, writeStartupMarker } from './startupmarker'
+import { clientVersion } from './version'
 
 export interface BackendHandle {
   port: number
@@ -606,7 +607,7 @@ export function startBackend(log: LogSink, options: BackendStartOptions = {}): B
       [PATH_ENV]: executablePath,
       PYTHONUNBUFFERED: '1',
       [SCHOLARSEED_DESKTOP_ENV]: '1',
-      [SCHOLARSEED_APP_VERSION_ENV]: app.getVersion(),
+      [SCHOLARSEED_APP_VERSION_ENV]: clientVersion(app.getVersion(), productConfig.buildNumber),
       [SCHOLARSEED_LOG_LEVEL_ENV]: logLevel,
       [SCHOLARSEED_ACCOUNT_BASE_URL_ENV]: accountBase,
       [SCHOLARSEED_CODEX_EXECUTABLE_ENV]: codexExecutable,

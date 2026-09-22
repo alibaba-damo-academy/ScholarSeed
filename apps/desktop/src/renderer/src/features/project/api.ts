@@ -202,16 +202,22 @@ export function listExternalRoots(projectId: string): Promise<ExternalRootListin
   return operation.promise
 }
 
-/** 授权一处项目外文件或目录，登记成项目内挂载点。 */
+/** 授权一处项目外文件或目录，登记成项目内挂载点。
+ *
+ * `supersede` 用于反方向关联 (先子后父): 新源是已生效子关联的父目录时, 后端会在
+ * **同一事务**里原子撤销被覆盖的子关联再挂载父目录, 不留双身份窗口。默认 false。
+ */
 export async function authorizeRoot(
   projectId: string,
   source: string,
-  mount: string
+  mount: string,
+  supersede = false
 ): Promise<{ ok: boolean; error?: ContentErrorCode | string; root?: ExternalRootRef }> {
   const result = await sendJson('/api/content/roots', 'POST', {
     project: projectId,
     source,
-    mount
+    mount,
+    ...(supersede ? { supersede: true } : {})
   })
   if (!result.ok) return { ok: false, error: result.error }
   await listExternalRoots(projectId)

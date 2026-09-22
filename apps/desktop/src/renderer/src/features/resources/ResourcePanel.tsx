@@ -184,12 +184,13 @@ function TreeRow({
   const menuOpen = resource.nodeMenu?.path === node.path
   const [createOpen, setCreateOpen] = useState(false)
 
-  const open = (): void => {
+  const open = (event: React.MouseEvent<HTMLDivElement>): void => {
     if (node.kind === 'dir') {
       // 展开可能要向后端续取更深的层级，所以交给 store 动作而不是本地翻标志。
       void act.toggleResourceDir(node.path)
       return
     }
+    if (event.detail > 1) return
     act.openResourceFile(node.path)
   }
 

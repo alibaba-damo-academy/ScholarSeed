@@ -14,24 +14,31 @@ import {
   Input
 } from '../../components/ui'
 import { commitActiveTextDraft, type TextDraft } from './draft'
-import { RECORDER_NOTE_MAX_LENGTH, type Annotation, type AnnotationPoint } from './model'
+import {
+  RECORDER_NOTE_MAX_LENGTH,
+  normalizeRectangleAnnotation,
+  type Annotation,
+  type AnnotationPoint
+} from './model'
 
 type Tool = Annotation['type']
 
-const TOOLS: readonly Tool[] = ['rect', 'arrow', 'pen', 'text']
+const TOOLS: readonly Tool[] = ['rect', 'arrow', 'pen', 'text', 'redact']
 const ANNOTATION_COLOR_TOKEN = '--vds-error-text-primary'
+const REDACTION_COLOR = 'black'
 const ANNOTATION_LINE_WIDTH = 4
 const ANNOTATION_FONT_SIZE = 24
 const ARROW_HEAD_LENGTH = 18
 
 export interface AnnotatorResult {
-  file: File
-  previewUrl: string
+  renderedFile: File
   annotations: Annotation[]
   note: string
 }
 
 interface AnnotatorProps {
+  initialAnnotations: readonly Annotation[]
+  initialNote: string
   source: File
   onCancel: () => void
   onSave: (result: AnnotatorResult) => void
@@ -67,6 +74,13 @@ export function undoAnnotation(annotations: readonly Annotation[]): Annotation[]
 
 export function drawAnnotation(context: CanvasRenderingContext2D, annotation: Annotation): void {
   context.save()
+  if (annotation.type === 'redact') {
+    context.globalAlpha = 1
+    context.fillStyle = REDACTION_COLOR
+    context.fillRect(annotation.x, annotation.y, annotation.width, annotation.height)
+    context.restore()
+    return
+  }
   context.strokeStyle = annotation.color
   context.fillStyle = annotation.color
   context.lineWidth = ANNOTATION_LINE_WIDTH
@@ -120,10 +134,11 @@ function toolLabel(t: TFunction<'components'>, tool: Tool): string {
   if (tool === 'rect') return t('feedbackRecorder.annotator.tools.rect')
   if (tool === 'arrow') return t('feedbackRecorder.annotator.tools.arrow')
   if (tool === 'pen') return t('feedbackRecorder.annotator.tools.pen')
-  return t('feedbackRecorder.annotator.tools.text')
+  if (tool === 'text') return t('feedbackRecorder.annotator.tools.text')
+  return t('feedbackRecorder.annotator.tools.redact')
 }
 
-export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.JSX.Element {
+export function Annotator({ initialAnnotations, initialNote, source, onCancel, onSave }: AnnotatorProps): React.JSX.Element {
   const { t } = useTranslation('components')
   const canvasRef = React.useRef<HTMLCanvasElement>(null)
   const surfaceRef = React.useRef<HTMLDivElement>(null)
@@ -134,8 +149,8 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
   const textInputRef = React.useRef<HTMLInputElement>(null)
   const [tool, setTool] = React.useState<Tool>('rect')
   const [textDraft, setTextDraftState] = React.useState<TextDraft | null>(null)
-  const [note, setNote] = React.useState('')
-  const [annotations, setAnnotations] = React.useState<Annotation[]>([])
+  const [note, setNote] = React.useState(initialNote)
+  const [annotations, setAnnotations] = React.useState<Annotation[]>([...initialAnnotations])
   const [saving, setSaving] = React.useState(false)
   const [copying, setCopying] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
@@ -161,11 +176,11 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
       canvas.width = image.naturalWidth
       canvas.height = image.naturalHeight
       imageRef.current = image
-      redraw([])
+      redraw(initialAnnotations)
     }
     image.src = url
     return () => URL.revokeObjectURL(url)
-  }, [source, redraw])
+  }, [initialAnnotations, source, redraw])
 
   React.useEffect(() => redraw(annotations), [annotations, redraw])
 
@@ -215,7 +230,9 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
       ? { type: 'pen', color: annotationColor(), points: [origin] }
       : tool === 'rect'
         ? { type: 'rect', color: annotationColor(), ...origin, width: 0, height: 0 }
-        : { type: 'arrow', color: annotationColor(), points: [origin, origin] }
+        : tool === 'redact'
+          ? { type: 'redact', ...origin, width: 0, height: 0 }
+          : { type: 'arrow', color: annotationColor(), points: [origin, origin] }
   }
 
   const finishTextBeforeCanvasPointer = (event: React.PointerEvent<HTMLCanvasElement>): void => {
@@ -230,7 +247,7 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
     if (!draft) return
     const current = point(event, event.currentTarget)
     if (draft.type === 'pen') draftRef.current = { ...draft, points: [...draft.points, current] }
-    else if (draft.type === 'rect') draftRef.current = { ...draft, width: current.x - draft.x, height: current.y - draft.y }
+    else if (draft.type === 'rect' || draft.type === 'redact') draftRef.current = { ...draft, width: current.x - draft.x, height: current.y - draft.y }
     else if (draft.type === 'arrow') draftRef.current = { ...draft, points: [draft.points[0], current] }
     redraw(annotations, draftRef.current)
   }
@@ -241,7 +258,12 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
     }
     const draft = draftRef.current
     draftRef.current = null
-    if (draft) setAnnotations((current) => [...current, draft])
+    if (draft) {
+      const annotation = draft.type === 'rect' || draft.type === 'redact'
+        ? normalizeRectangleAnnotation(draft)
+        : draft
+      setAnnotations((current) => [...current, annotation])
+    }
   }
 
   const save = async (): Promise<void> => {
@@ -255,8 +277,8 @@ export function Annotator({ source, onCancel, onSave }: AnnotatorProps): React.J
     try {
       redraw(finalAnnotations)
       const blob = await canvasBlob(canvas)
-      const file = new File([blob], `feedback-${Date.now()}.png`, { type: 'image/png' })
-      onSave({ file, previewUrl: URL.createObjectURL(file), annotations: finalAnnotations, note: note.trim() })
+      const renderedFile = new File([blob], `feedback-${Date.now()}.png`, { type: 'image/png' })
+      onSave({ renderedFile, annotations: finalAnnotations, note: note.trim() })
     } finally {
       setSaving(false)
     }

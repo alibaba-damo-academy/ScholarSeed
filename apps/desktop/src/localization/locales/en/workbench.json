@@ -342,7 +342,18 @@
     "catalog": "Indexing system fonts…",
     "reading": "Read {{done}}/{{total}} fonts ({{size}} MiB)",
     "runtime": "Fonts are ready. Initializing Office…",
-    "error": "Office font prewarm failed",
+    "slow": "Initialization is taking longer on this device. Office is still preparing in the background.",
+    "recoveringTitle": "Recovering Office prewarm",
+    "recovering": "Runtime resource loading was interrupted. Automatic retry {{attempt}} is in progress.",
+    "errorTitle": "Office prewarm did not complete",
+    "failures": {
+      "fontPermission": "System font access was denied. Check system settings and retry.",
+      "fontCatalog": "The system font catalog could not be read. Check font access settings and retry.",
+      "fontRead": "System fonts could not be fully read. Retry the operation.",
+      "runtimeAssets": "Office runtime resources did not load completely. Retry the operation.",
+      "runtimeInitialization": "The Office engine could not initialize. Retry the operation.",
+      "runtimeExecution": "The Office runtime encountered an error. Retry the operation."
+    },
     "retry": "Retry"
   },
   "markdown": {

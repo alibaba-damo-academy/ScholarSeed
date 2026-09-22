@@ -36,19 +36,58 @@ def decode_events(body: str) -> list[dict]:
 
 
 class FigureStreamContracts(unittest.IsolatedAsyncioTestCase):
-    async def test_direct_stream_emits_prepared_delta_and_authoritative_result(self):
-        payload = b"unchanged PDF source"
-        revision = hashlib.sha256(payload).hexdigest()
-        request = AnalysisRequest(
+    def test_detected_region_preparation_accepts_authoritative_rect(self):
+        submitted_request = AnalysisRequest(
             literature_id="paper",
             model_key="selected",
             kind=ActionKind.FIGURE,
-            rect=(0.1, 0.1, 0.5, 0.3),
+            page=1,
+            region_id="r_detected",
+            visual_kind="formula",
+            client_action_id="action",
+            client_attempt_id="attempt",
+        )
+        prepared_request = submitted_request.model_copy(update={"rect": (0.1, 0.1, 0.5, 0.3)})
+        prepared = PreparedAnalysis(
+            prepared_request,
+            "revision",
+            "Paper",
+            ("First",),
+            Mock(),
+            "crop",
+        )
+        indexes = Mock()
+        service = FigureActionService(
+            actions=Mock(),
+            tasks=Mock(),
+            repository=Mock(),
+            pdf=Mock(),
+            indexes=indexes,
+        )
+
+        with patch(
+            "service.literature.service.figure.prepare", return_value=prepared
+        ) as prepare_mock:
+            result = service.prepare(submitted_request)
+
+        self.assertEqual(result.request.rect, (0.1, 0.1, 0.5, 0.3))
+        self.assertIs(prepare_mock.call_args.kwargs["indexes"], indexes)
+
+    async def test_direct_stream_emits_prepared_delta_and_authoritative_result(self):
+        payload = b"unchanged PDF source"
+        revision = hashlib.sha256(payload).hexdigest()
+        submitted_request = AnalysisRequest(
+            literature_id="paper",
+            model_key="selected",
+            kind=ActionKind.FIGURE,
             page=2,
+            region_id="r_detected",
+            visual_kind="figure",
             instruction="先解释坐标轴，再说明趋势。",
             client_action_id="action",
             client_attempt_id="attempt",
         )
+        request = submitted_request.model_copy(update={"rect": (0.1, 0.1, 0.5, 0.3)})
         compiled = CompiledAssistantAction(
             "literature.figure_explanation",
             "pdf-figure/v1",
@@ -119,7 +158,7 @@ class FigureStreamContracts(unittest.IsolatedAsyncioTestCase):
                 response = await client.post(
                     "/api/literature/ai/figure",
                     headers={"Accept": "text/event-stream"},
-                    json=request.model_dump(mode="json"),
+                    json=submitted_request.model_dump(mode="json"),
                 )
 
         self.assertEqual(response.status_code, 200, response.text)

@@ -52,7 +52,7 @@ class RequestExampleTest(unittest.TestCase):
         self.assertEqual(report['expected_type'],'string')
         choices={'formats':['latex_pdf'],'templates':[{'id':'neurips','usable':True}],
                  'citation_styles':[{'id':'numeric','usable':True}]}
-        with patch('operator_cli.publication_options',return_value=choices):
+        with patch('publication.publication_options',return_value=choices):
             packet=review_packet(f.ws)
             self.assertEqual(packet['confirmation']['state'],'auto')
             with self.assertRaises(ValueError) as error:

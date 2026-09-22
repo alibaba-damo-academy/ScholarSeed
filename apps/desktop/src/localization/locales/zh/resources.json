@@ -54,6 +54,15 @@
     "description": "资料树中的整个关联入口都会移除：<path>{{path}}</path>",
     "warning": "原文件会完整保留在 <path>{{path}}</path>；正在运行的 Agent 会在下一轮更新权限。"
   },
+  "linkSupersede": {
+    "label": "父目录关联选择",
+    "title": "它的子目录已经关联过了",
+    "description": "你要关联的目录包含资料库里已单独关联的子目录。可以取代这些子关联并挂载这个父目录，或不挂载、直接打开已有的子目录。",
+    "coveredLabel_other": "将被取代的子关联（{{count}} 个）",
+    "warning": "取代只撤销这些子关联在资料库里的挂载入口，不会删除或移动你的原文件；挂载父目录后，这些子目录会出现在父目录关联之下。",
+    "openExistingAction": "不挂载，打开已有子目录",
+    "mountAction": "取代并挂载父目录"
+  },
   "delete": {
     "folderTitle": "删除文件夹",
     "fileTitle": "删除资料",
@@ -286,6 +295,8 @@
     "unlinkedInterrupted_other": "已取消关联 {{name}}，原文件保持不变，并中断 {{count}} 个运行中任务。",
     "importReplaced_other": "已覆盖 {{count}} 项，导入内容已保存为新版本",
     "importRenamed_other": "已重命名并导入 {{count}} 项",
+    "linkSuperseded_other": "已取代 {{count}} 个子关联并挂载父目录，原文件保持不变。",
+    "linkSupersedeCleanupFailed_other": "已取代 {{count}} 个子关联并挂载父目录，但子页签或 Agent 引用同步失败。",
     "createUncertain": "本地服务没有返回创建结果。请先刷新资料树确认文件是否已创建，再决定是否重试。",
     "linkedCreateFailed": "关联目录不可用或授权已失效，未创建文件。请重新关联原目录后重试。",
     "created": "已创建 {{name}}",
@@ -316,6 +327,8 @@
     "same_parent": "资料已经在这个目录中。",
     "copy_into_self": "不能把文件夹复制到它自己里面。",
     "source_not_found": "选中的本地文件或文件夹已不存在。",
+    "source_overlap": "该目录已被父级关联覆盖。",
+    "source_covers_links": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
     "too_many_duplicates": "同名副本太多，先整理一下。",
     "file_too_large": "文件过大，本版本不在工作台内预览。",
     "not_text_file": "这不是文本文件，无法按文本打开。",
@@ -337,6 +350,7 @@
     "unknown": "资料操作失败。",
     "version_admission_unavailable": "文件当前不可加入版本管理，请刷新后重试。",
     "version_admission_failed": "加入版本管理失败。",
+    "review_batch_unavailable": "未找到这份资料对应的待审阅批次，请刷新后重试。",
     "disk_revision_conflict": "文件已变化，请刷新后重试。",
     "resource_import_interrupted": "资料导入已中断，请重试。",
     "resource_import_failed": "资料导入失败，请重试。"
@@ -544,9 +558,6 @@
       "replacement_timeout": "编辑器尚未确认结果，请检查原文，不要重复替换。",
       "replacement_stale": "文件或选区已变化，无法替换，请重新选择。"
     },
-    "direction": "翻译方向",
-    "toEnglish": "中译英",
-    "toChinese": "英译中",
     "pending": "AI 建议 · 尚未写入",
     "resultHint": "AI 生成内容，请结合原文核验",
     "copyFailed": "复制失败，请重试。",

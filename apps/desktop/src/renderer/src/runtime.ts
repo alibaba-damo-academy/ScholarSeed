@@ -21,19 +21,19 @@ const UNKNOWN_RESPONSE_RPC_METHODS = new Set(['server-response/hil', 'server-res
 const TURN_UNKNOWN_MESSAGES: Record<string, string> = {
   runtime_rpc_timeout: '请求可能已经送达运行时，但客户端没有在时限内收到确认。',
   runtime_transport_lost: '请求提交期间与 Agent 运行时的本地连接断开，执行结果尚未确认。',
-  codex_process_exit: '请求提交期间 Agent 运行时已退出，执行结果尚未确认。'
+  agent_runtime_exit: '请求提交期间 Agent 运行时已退出，执行结果尚未确认。'
 }
 const TURN_UNKNOWN_MESSAGE_KEYS = {
   runtime_rpc_timeout: 'timeout',
   runtime_transport_lost: 'transportLost',
-  codex_process_exit: 'processExit'
+  agent_runtime_exit: 'processExit'
 } as const
 export const SESSION_RESUME_REQUEST_EVENT = 'scholarseed:session-resume-request'
 const INCIDENT_MESSAGE_KEYS = {
-  codex_process_exit: 'runtime.reason.codex_process_exit',
+  agent_runtime_exit: 'runtime.reason.agent_runtime_exit',
   runtime_transport_lost: 'runtime.reason.runtime_transport_lost',
   runtime_rpc_timeout: 'runtime.reason.runtime_rpc_timeout',
-  codex_process_unavailable: 'runtime.reason.codex_process_unavailable',
+  agent_runtime_unavailable: 'runtime.reason.agent_runtime_unavailable',
   thread_resume_failed: 'runtime.reason.thread_resume_failed',
   codex_turn_retrying: 'runtime.reason.codex_turn_retrying',
   codex_terminal_outcome_conflict: 'runtime.reason.codex_terminal_outcome_conflict',

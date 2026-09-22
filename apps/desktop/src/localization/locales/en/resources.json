@@ -54,6 +54,16 @@
     "description": "The entire linked entry will be removed from the resource tree: <path>{{path}}</path>",
     "warning": "Original files will remain intact at <path>{{path}}</path>. Running Agents will update their permissions on the next turn."
   },
+  "linkSupersede": {
+    "label": "Parent folder link choice",
+    "title": "Its subfolders are already linked",
+    "description": "The folder you want to link contains subfolders that are already linked separately in the library. You can supersede those child links and mount this parent folder, or skip mounting and open the existing subfolder.",
+    "coveredLabel_one": "Child link to be superseded ({{count}})",
+    "coveredLabel_other": "Child links to be superseded ({{count}})",
+    "warning": "Superseding only removes these child links' mount entries in the library; it never deletes or moves your original files. After mounting the parent, these subfolders appear under the parent link.",
+    "openExistingAction": "Don't mount, open existing subfolder",
+    "mountAction": "Supersede and mount parent"
+  },
   "delete": {
     "folderTitle": "Delete folder",
     "fileTitle": "Delete resource",
@@ -292,6 +302,10 @@
     "importReplaced_other": "Replaced {{count}} items and saved the imported content as new versions",
     "importRenamed_one": "Renamed and imported {{count}} item",
     "importRenamed_other": "Renamed and imported {{count}} items",
+    "linkSuperseded_one": "Superseded {{count}} child link and mounted the parent folder. The originals are unchanged.",
+    "linkSuperseded_other": "Superseded {{count}} child links and mounted the parent folder. The originals are unchanged.",
+    "linkSupersedeCleanupFailed_one": "Superseded {{count}} child link and mounted the parent folder, but syncing child tabs or Agent references failed.",
+    "linkSupersedeCleanupFailed_other": "Superseded {{count}} child links and mounted the parent folder, but syncing child tabs or Agent references failed.",
     "createUncertain": "The local service did not return a creation result. Refresh the resource tree to check whether the file was created before deciding to retry.",
     "linkedCreateFailed": "The linked directory is unavailable or its authorization has expired. No file was created. Link the original directory again and retry.",
     "created": "Created {{name}}",
@@ -322,6 +336,8 @@
     "same_parent": "The resource is already in this directory.",
     "copy_into_self": "A folder cannot be copied into itself.",
     "source_not_found": "The selected local file or folder no longer exists.",
+    "source_overlap": "This folder is already covered by a linked parent folder.",
+    "source_covers_links": "Its subfolders are already linked separately. Supersede those child links to mount this parent folder.",
     "too_many_duplicates": "Too many copies have the same name. Remove or rename some copies first.",
     "file_too_large": "This file is too large to preview in the workspace.",
     "not_text_file": "This is not a text file and cannot be opened as text.",
@@ -343,6 +359,7 @@
     "unknown": "The resource operation failed.",
     "version_admission_unavailable": "The file cannot be managed right now. Refresh and retry.",
     "version_admission_failed": "Failed to add the file to version management.",
+    "review_batch_unavailable": "No pending review batch was found for this resource. Refresh and try again.",
     "disk_revision_conflict": "The file changed. Refresh and retry.",
     "resource_import_interrupted": "Resource import was interrupted. Please try again.",
     "resource_import_failed": "Resource import failed. Please try again."
@@ -550,9 +567,6 @@
       "replacement_timeout": "The editor has not confirmed the result. Check the original text before replacing again.",
       "replacement_stale": "The file or selection has changed. Select again before replacing."
     },
-    "direction": "Translation direction",
-    "toEnglish": "Chinese to English",
-    "toChinese": "English to Chinese",
     "pending": "AI suggestion · Not applied",
     "resultHint": "AI-generated content · Verify against the source",
     "copyFailed": "Copy failed. Try again.",

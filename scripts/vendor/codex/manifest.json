@@ -4,7 +4,7 @@
   "artifacts": {
     "darwin-arm64": {
       "file": "codex-0.155.1-darwin-arm64.tgz",
-      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-darwin-arm64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.155.1-darwin-arm64.tgz",
       "sha256": "93cc218b25b71c8da3edb50a013fbd22acf8f39058fb64083fefff638a084976",
       "bytes": 127465533,
       "integrity": "sha512-cYxzGcRRoBrncyHlR8ed4yXwcoVJZC1pipGULSyJkGFKXJw/Uu57BklvzayuAptjJIipamnOk32CfUkk1F0bLw==",
@@ -12,7 +12,7 @@
     },
     "darwin-x64": {
       "file": "codex-0.155.1-darwin-x64.tgz",
-      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-darwin-x64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.155.1-darwin-x64.tgz",
       "sha256": "819db6dbb57a56cc21383a30331fc4115696e02f4c47ba7f686a285a2173fadd",
       "bytes": 135811357,
       "integrity": "sha512-FDpc+PdELYlyDnhd76Ckm6jNLF+1n3x34Ygd4QLQger810Vkxx/InQ5LY5jwkecJYKcbvyhMmuxTspaj1dLZrA==",
@@ -20,7 +20,7 @@
     },
     "win32-x64": {
       "file": "codex-0.155.1-win32-x64.tgz",
-      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.155.1-win32-x64.tgz",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/codex/codex-0.155.1-win32-x64.tgz",
       "sha256": "727fd5bfaeed16fe8fdeb57d1c0faa688f48edda4a0541323a103a3138925350",
       "bytes": 145165338,
       "integrity": "sha512-MO+cCZrgU0Ec7lJP/5NsTe5obJ9/qtRMkQUK0jYWTY1omxLA3lp5IOD2IAmsejlEJB931XRo51LZ7hl178CDjA==",

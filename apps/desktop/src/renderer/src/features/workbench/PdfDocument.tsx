@@ -5,6 +5,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPagePr
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 
 import { openSystemPath } from '../../api'
+import { writeClipboardImage } from '../../components/primitive/clipboard'
 import { useApp } from '../../store'
 import { LiteratureExcerptImport } from '../../components/business/Excerpts'
 import {
@@ -85,6 +86,7 @@ import {
   type PdfLoadFailure
 } from './pdf/loading'
 import { usePdfAnalysis } from './pdf/Reading'
+import { loadPdfVisualRegionImage, loadPdfVisualRegions, type PdfVisualRegion } from './pdf/analysis'
 import { PdfScale } from './pdf/Scale'
 import { pdfWheelScale } from './pdf/zoom'
 
@@ -223,6 +225,7 @@ export function PdfDocument({
   const reading = tab?.viewState
   const isLiterature = session?.source.kind === 'literature'
   const literatureId = session?.source.kind === 'literature' ? session.source.literatureId : ''
+  const attachmentId = session?.source.kind === 'literature' ? session.source.attachmentId : ''
   const citation = reading?.[CITATION_VIEW_STATE_KEY] as CitationFocus | undefined
   const citationPages = citation?.revision === session?.revision ? citation.pages : undefined
   const citationTargets = citationPages?.flatMap(target => citationRegions(target.quads).map((_, region) => ({ page: target.page, region }))) ?? []
@@ -244,6 +247,7 @@ export function PdfDocument({
     : 'outline'
   const [pageCount, setPageCount] = useState(0)
   const [loadedPages, setLoadedPages] = useState<Map<number, PDFPageProxy>>(() => new Map())
+  const [visualRegions, setVisualRegions] = useState<PdfVisualRegion[]>([])
   const [estimatedPageSize, setEstimatedPageSize] = useState<Size>(PDF_DEFAULT_PAGE_SIZE)
   const [selectionDragSpan, setSelectionDragSpan] = useState<SelectionDragSpan | null>(null)
   const cropStart = useRef<{ x: number; y: number; bounds: DOMRect; page: number }>()
@@ -1003,7 +1007,7 @@ export function PdfDocument({
     setCropBox(null)
   }, [])
   const anchoredMarks = sidecar?.records.marks.filter((mark) => mark.anchor_state === 'anchored') ?? []
-  const analysis = usePdfAnalysis({ active, literatureId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
+  const analysis = usePdfAnalysis({ active, literatureId, attachmentId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
     projectId: session?.source.kind === 'project' ? session.source.project ?? '' : '', revision: session?.revision ?? '', tabId,
     page: currentPage, pageCount, selection: selections, canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate), onAddComment: addAiComment, onNavigate: navigate,
     onLocate: (sourcePage, text) => { navigate(sourcePage); requestFocus({ kind: 'reading', page: sourcePage, text }) },
@@ -1013,12 +1017,58 @@ export function PdfDocument({
       update({ records: false })
     }
   })
+  useEffect(() => {
+    setVisualRegions([])
+  }, [sessionId, session?.revision])
+  useEffect(() => {
+    if (!active || !session?.revision || pageCount < 1) return undefined
+    const startPage = Math.max(1, currentPage - PDF_NEAR_PAGE_RADIUS)
+    const endPage = Math.min(pageCount, currentPage + PDF_NEAR_PAGE_RADIUS)
+    let cancelled = false
+    void loadPdfVisualRegions({
+      literatureId,
+      attachmentId,
+      path: session.source.kind === 'project' ? session.source.path : '',
+      projectId: session.source.kind === 'project' ? session.source.project ?? '' : '',
+      revision: session.revision,
+    }, startPage, endPage).then(manifest => {
+      if (cancelled || manifest.source_revision !== session.revision) return
+      const incoming = manifest.pages.flatMap(item => item.regions)
+      setVisualRegions(previous => [
+        ...previous.filter(region => region.page < startPage || region.page > endPage),
+        ...incoming,
+      ])
+    }).catch((error: unknown) => console.error(`[pdf-visual-regions] ${error instanceof Error ? error.message : String(error)}`))
+    return () => { cancelled = true }
+  }, [active, attachmentId, currentPage, literatureId, pageCount, session?.revision, session?.source])
+  const copyVisualRegion = useCallback(async (region: PdfVisualRegion): Promise<void> => {
+    if (!session) return
+    if (region.kind === 'formula') {
+      analysis.copyFormula(region)
+      return
+    }
+    try {
+      const image = await loadPdfVisualRegionImage({
+        literatureId,
+        attachmentId,
+        path: session.source.kind === 'project' ? session.source.path : '',
+        projectId: session.source.kind === 'project' ? session.source.project ?? '' : '',
+        revision: session.revision,
+      }, region)
+      await writeClipboardImage(image)
+      toast({ title: t('visualRegions.imageCopied'), tone: 'success' })
+    } catch {
+      toast({ title: t('visualRegions.copyFailed'), tone: 'error' })
+    }
+  }, [analysis.copyFormula, attachmentId, literatureId, session, t, toast])
   const exitFigureSelection = useCallback((): void => {
     clearFigureSelection()
     analysis.exitFigureSelection()
   }, [analysis.exitFigureSelection, clearFigureSelection])
   const activeDocumentPanelId = activeDocumentPanel?.id
+  const translationSplitOpen = analysis.panel === 'document_translation'
   const rightPanelOpen = Boolean(analysis.panel || recordsOpen || activeDocumentPanelId)
+  const overlayPanelOpen = Boolean((analysis.panel && !translationSplitOpen) || recordsOpen || activeDocumentPanelId)
   useEffect(() => {
     if (!active) return
     set({
@@ -1195,7 +1245,7 @@ export function PdfDocument({
           if (cropBox && cropBox.width >= MIN_FIGURE_SELECTION_PX && cropBox.height >= MIN_FIGURE_SELECTION_PX) analysis.selectFigure(start.page, [(cropBox.left - start.bounds.left) / start.bounds.width, (cropBox.top - start.bounds.top) / start.bounds.height, cropBox.width / start.bounds.width, cropBox.height / start.bounds.height])
           setCropBox(null)
         }} onPointerCancel={() => setSelectionDragSpan(null)}>
-        <div data-testid="pdf-pages-track" className={`box-border min-h-full${rightPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}>
+        <div data-testid="pdf-pages-track" className={`box-border min-h-full${overlayPanelOpen ? ' min-w-[calc(100%+var(--vds-layout-pdf-panel-width))] pr-[var(--vds-layout-pdf-panel-width)]' : ' min-w-full'}`}>
           {!pageCount && loadError === null && <div className="vds-pdf-loading">{t('loading')}</div>}
           {pageNumbers.map(number => <PdfPageSlot
             estimatedSize={estimatedPageSize}
@@ -1213,6 +1263,9 @@ export function PdfDocument({
               ? selections.find(selection => selection.page === number)?.quads
               : undefined}
             citationQuads={citationPages?.find(item => item.page === number)?.quads}
+            visualRegions={visualRegions.filter(region => region.page === number)}
+            visualRegionImageInputAvailable={analysis.visualRegionImageInputAvailable}
+            copyingVisualRegionId={analysis.copyingFormulaRegionId}
             commentMarkIds={sidecar?.records.comments.map(comment => comment.mark_id)}
             onAnnotationOpen={(mark) => {
               setSelections([{ page: mark.page, text: mark.text, quads: mark.quads }])
@@ -1220,6 +1273,8 @@ export function PdfDocument({
               setMarkColors(previous => ({ ...previous, [mark.style]: mark.color }))
             }}
             onInternalLink={navigateInternalLink}
+            onVisualRegionExplain={analysis.explainRegion}
+            onVisualRegionCopy={region => { void copyVisualRegion(region) }}
             renderAnnotation={(mark, close) => <PdfAnnotation
               analyzing={analysis.selectionAnalyzing}
               canAnalyze={analysis.canAnalyzeSelection}

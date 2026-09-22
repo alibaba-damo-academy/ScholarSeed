@@ -269,7 +269,7 @@ export function TodoPanel({
               <StatusMark status={summary.status} />
               <span className="shrink-0 font-medium">{t('todo.title')}</span>
               {total > 0 ? (
-                <Badge size="sm" tone="neutral" className="shrink-0 font-mono tabular-nums" data-testid="todo-progress">
+                <Badge size="sm" tone="neutral" className="shrink-0" data-testid="todo-progress">
                   {todoProgressLabel(items)}
                 </Badge>
               ) : null}

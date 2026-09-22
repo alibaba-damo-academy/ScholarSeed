@@ -1001,19 +1001,12 @@ export async function postSide(
       if (turnErrorCode(error) === TURN_STEER_OUTCOME_UNKNOWN_ERROR) {
         return { ok: false, reason: TURN_STEER_OUTCOME_UNKNOWN_ERROR, unknownOutcome: true }
       }
-      if (!isQueuedMessageNotSendable(failure.code) && !isQueuedMessageNotSendable(error)) {
-        publishBackendFailure(sid, error, undefined, failure.applicationFailure)
-      }
       return { ok: false, reason: error, ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}) }
     }
     const response = (await r.json()) as { ok?: boolean; queued_depth?: number; reason?: string }
-    if (response.ok === false && !isQueuedMessageNotSendable(response.reason)) {
-      publishBackendFailure(sid, response.reason)
-    }
     return response
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
-    publishBackendFailure(sid, error)
     return { ok: false, reason: error }
   }
 }
@@ -1033,19 +1026,12 @@ export async function sendQueuedMessage(
       if (turnErrorCode(error) === SESSION_INTERRUPTING_ERROR) {
         return { ok: false, error, blocked: 'interrupting' }
       }
-      if (!isQueuedMessageNotSendable(failure.code) && !isQueuedMessageNotSendable(error)) {
-        publishBackendFailure(sid, error, BACKEND_ADMISSION_FAILURE, failure.applicationFailure)
-      }
       return { ok: false, error, ...(failure.applicationFailure ? { applicationFailure: failure.applicationFailure } : {}) }
     }
     const response = (await r.json()) as QueuedMessageSendResponse
-    if ((response.ok === false || response.error != null) && !isQueuedMessageNotSendable(response.error)) {
-      publishBackendFailure(sid, response.error, BACKEND_ADMISSION_FAILURE)
-    }
     return response
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e)
-    publishBackendFailure(sid, error, BACKEND_ADMISSION_FAILURE)
     return { ok: false, error }
   }
 }
@@ -1639,7 +1625,7 @@ export type ProductEvent =
   | ProductEventBase<'usage_updated', { input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; cache_creation_tokens?: number }>
   | ProductEventBase<'context_compacted', { phase: 'started' | 'completed' | 'failed'; message?: string }>
   | ProductEventBase<'turn_completed', { stop_reason?: string }>
-  | ProductEventBase<'turn_failed', { code?: string; message: string; retryable?: boolean }>
+  | ProductEventBase<'turn_failed', { code?: string; message: string; retryable?: boolean; automatic_retry_attempts?: number }>
   | ProductEventBase<'turn_interrupted', { reason?: string }>
   | ProductEventBase<'turn_unknown', { code?: string; message: string; incident_id?: string }>
   | ProductEventBase<'operation_state', OperationStateData>

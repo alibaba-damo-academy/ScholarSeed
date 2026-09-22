@@ -468,7 +468,7 @@ function LeafView({
             if (!candidate) return null
             const session = state.sessions[candidate.sessionId]
             const keepMounted = session
-              ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind, session.residency)
+              ? shouldMountDocumentView(candidate.id === tab.id, candidate.viewKind)
               : false
             if (!keepMounted && candidate.id !== tab.id) return null
             return (

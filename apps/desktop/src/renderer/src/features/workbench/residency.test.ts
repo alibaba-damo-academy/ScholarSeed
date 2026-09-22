@@ -2,149 +2,46 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  estimateDocumentResidentBytes,
-  selectLfsEvictions,
-  shouldMountDocumentView,
+  selectLruTabClosures,
   trimTextHistory
 } from './residency.ts'
 
-test('LFS evicts the least selected resident background session first', () => {
-  const evictions = selectLfsEvictions(
+test('editor limit closes least recently used eligible tabs first', () => {
+  const closures = selectLruTabClosures(
     [
-      {
-        id: 'frequent',
-        residentBytes: 8,
-        selectionCount: 3,
-        lastSelectedSequence: 4,
-        protected: false
-      },
-      {
-        id: 'least',
-        residentBytes: 8,
-        selectionCount: 1,
-        lastSelectedSequence: 3,
-        protected: false
-      },
-      {
-        id: 'visible',
-        residentBytes: 8,
-        selectionCount: 0,
-        lastSelectedSequence: 1,
-        protected: true,
-        budgeted: false
-      }
+      { id: 'newest', lastSelectedSequence: 9, protected: false },
+      { id: 'oldest', lastSelectedSequence: 1, protected: false },
+      { id: 'middle', lastSelectedSequence: 5, protected: false }
     ],
-    { maxBackgroundSessions: 1, maxBackgroundBytes: 16 }
+    1
   )
 
-  assert.deepEqual(evictions, ['least'])
+  assert.deepEqual(closures, ['oldest', 'middle'])
 })
 
-test('LFS breaks equal-frequency ties by the oldest selection', () => {
-  const evictions = selectLfsEvictions(
+test('editor limit excludes dirty, visible, and newly opened tabs', () => {
+  const closures = selectLruTabClosures(
     [
-      {
-        id: 'newer',
-        residentBytes: 8,
-        selectionCount: 1,
-        lastSelectedSequence: 7,
-        protected: false
-      },
-      {
-        id: 'older',
-        residentBytes: 8,
-        selectionCount: 1,
-        lastSelectedSequence: 2,
-        protected: false
-      }
+      { id: 'dirty', lastSelectedSequence: 1, protected: true },
+      { id: 'clean', lastSelectedSequence: 2, protected: false },
+      { id: 'visible', lastSelectedSequence: 3, protected: true }
     ],
-    { maxBackgroundSessions: 1, maxBackgroundBytes: 16 }
+    1
   )
 
-  assert.deepEqual(evictions, ['older'])
+  assert.deepEqual(closures, ['clean'])
 })
 
-test('LFS converges both count and byte budgets without selecting protected sessions', () => {
-  const evictions = selectLfsEvictions(
+test('editor limit permits overflow when every tab is protected', () => {
+  const closures = selectLruTabClosures(
     [
-      {
-        id: 'protected',
-        residentBytes: 128,
-        selectionCount: 0,
-        lastSelectedSequence: 0,
-        protected: true,
-        budgeted: false
-      },
-      {
-        id: 'first',
-        residentBytes: 64,
-        selectionCount: 1,
-        lastSelectedSequence: 1,
-        protected: false
-      },
-      {
-        id: 'second',
-        residentBytes: 64,
-        selectionCount: 2,
-        lastSelectedSequence: 2,
-        protected: false
-      },
-      {
-        id: 'third',
-        residentBytes: 64,
-        selectionCount: 3,
-        lastSelectedSequence: 3,
-        protected: false
-      }
+      { id: 'dirty', lastSelectedSequence: 1, protected: true },
+      { id: 'visible', lastSelectedSequence: 2, protected: true }
     ],
-    { maxBackgroundSessions: 2, maxBackgroundBytes: 64 }
+    1
   )
 
-  assert.deepEqual(evictions, ['first', 'second'])
-})
-
-test('protected background bytes still force every safe session out of the budget', () => {
-  const evictions = selectLfsEvictions(
-    [
-      {
-        id: 'dirty',
-        residentBytes: 128,
-        selectionCount: 1,
-        lastSelectedSequence: 1,
-        protected: true
-      },
-      {
-        id: 'clean',
-        residentBytes: 64,
-        selectionCount: 1,
-        lastSelectedSequence: 2,
-        protected: false
-      }
-    ],
-    { maxBackgroundSessions: 1, maxBackgroundBytes: 64 }
-  )
-
-  assert.deepEqual(evictions, ['clean'])
-})
-
-test('resident byte estimates count shared snapshots and equal strings once', () => {
-  const bytes = new Uint8Array(32)
-  assert.equal(
-    estimateDocumentResidentBytes({
-      bytes,
-      savedBytes: bytes,
-      text: 'draft',
-      savedText: 'draft'
-    }),
-    42
-  )
-})
-
-test('suspended edit tabs unmount while resident edit tabs stay mounted', () => {
-  assert.equal(shouldMountDocumentView(false, 'edit', 'resident'), true)
-  assert.equal(shouldMountDocumentView(false, 'edit', 'suspended'), false)
-  assert.equal(shouldMountDocumentView(true, 'edit', 'restoring'), true)
-  assert.equal(shouldMountDocumentView(false, 'preview', 'resident'), false)
+  assert.deepEqual(closures, [])
 })
 
 test('text history trims the globally oldest snapshots to a byte budget', () => {

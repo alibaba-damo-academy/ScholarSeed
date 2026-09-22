@@ -14,6 +14,7 @@ const MENU_ANIMATION_SETTLE_MS = 250
 const FIRST_PROMPT = '请只用一句话回答：上下文运行时验收已开始。'
 const ANNOTATION_COMMENT = '请保留这条验收结论。'
 const UPDATED_ANNOTATION_COMMENT = '请保留并明确强调这条验收结论。'
+const HISTORY_ANNOTATION_COMMENT = '从消息列表修改的注释。'
 const DELETED_ANNOTATION_COMMENT = '这条注释用于验证删除。'
 const CONTEXT_PROMPT = '请只用一句话确认：已收到上一条注释。'
 const INTERNAL_CONTEXT_MARKER = '[SCHOLARSEED_ASSISTANT_CONTEXT v1]'
@@ -39,12 +40,28 @@ async function submitAnnotation(page: Page, sessionId: string, comment: string):
   const input = page.getByLabel('批注内容')
   await input.fill(comment)
   const response = page.waitForResponse((candidate) => (
+    candidate.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
+    && candidate.request().method() === 'PATCH'
+  ))
+  await input.press('Enter')
+  expect((await response).status()).toBe(200)
+}
+
+async function addAnnotation(page: Page, sessionId: string): Promise<void> {
+  const response = page.waitForResponse(candidate => (
     candidate.url().includes(`/api/assistant/sessions/${sessionId}/answers/`)
     && candidate.url().endsWith('/annotations')
     && candidate.request().method() === 'POST'
   ))
-  await input.press('Enter')
-  expect((await response).status()).toBe(200)
+  await page.getByRole('button', { name: '添加到对话', exact: true }).click()
+  const created = await response
+  expect(created.status()).toBe(200)
+  const { annotation } = await created.json()
+  expect(annotation.comment).toBe('')
+  await expect(page.getByLabel('批注内容')).toBeVisible()
+  await expect(page.getByLabel('批注内容')).toHaveAttribute('placeholder', '说明处理方式并添加到对话（选填）')
+  await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveCount(0)
+  await expect(page.getByTestId('ai-context-ref').filter({ hasText: '条注释' })).toBeVisible()
 }
 const POLISH_PROJECT_NAME = 'AI 润色验收项目'
 const POLISH_FILE_RELATIVE = 'resources/polish.md'
@@ -93,12 +110,12 @@ test('Assistant context persists per Session and never leaks its model card into
       timeout: RUNTIME_READY_TIMEOUT_MS
     }).toBe(true)
 
-    await page.getByTestId('topbar-ai').click()
+    await expect(page.getByTestId('ai-panel')).toBeVisible()
     await send(page.getByTestId('ai-panel'), FIRST_PROMPT)
     sessionId = (await waitForFinishedTurn(page)).activeSession ?? ''
     expect(sessionId).not.toBe('')
 
-    const answerLeaf = page.locator('.md-agent [data-md-source-start]').last()
+    const answerLeaf = page.locator('.answer-annotation-root [data-md-source-start]').last()
     await expect(answerLeaf).toBeVisible()
     await answerLeaf.evaluate((element) => {
       const selection = window.getSelection()
@@ -108,16 +125,22 @@ test('Assistant context persists per Session and never leaks its model card into
       selection?.addRange(range)
       element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
     })
-    await page.getByRole('button', { name: '添加到对话' }).click()
+    await addAnnotation(page, sessionId)
     await submitAnnotation(page, sessionId, ANNOTATION_COMMENT)
 
     const inlineAnnotation = page.getByRole('button', { name: new RegExp(ANNOTATION_COMMENT) })
     await expect(inlineAnnotation).toBeVisible()
-    await inlineAnnotation.click()
+    const composerSummary = page.getByTestId('ai-context-ref').filter({ hasText: '1 条注释' })
+    const composerBox = await page.getByTestId('ai-context-workspace').boundingBox()
+    const summaryBox = await composerSummary.boundingBox()
+    expect(composerBox).not.toBeNull()
+    expect(summaryBox).not.toBeNull()
+    expect(summaryBox!.width).toBeLessThan(composerBox!.width)
+    await composerSummary.getByRole('button', { name: '1 条注释' }).hover()
     await expect(page.getByTestId(/^answer-annotation-details-/)).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('assistant-inline-annotation-details.png') })
     await page.getByRole('button', { name: '编辑注释 1' }).click()
-    const editInput = page.getByLabel('编辑注释 1')
+    const editInput = page.getByRole('textbox', { name: '编辑注释 1' })
     await editInput.fill(UPDATED_ANNOTATION_COMMENT)
     const updateResponse = page.waitForResponse((response) => (
       response.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
@@ -143,13 +166,35 @@ test('Assistant context persists per Session and never leaks its model card into
     await expect(page.getByTestId('user-bubble').last()).not.toContainText(INTERNAL_CONTEXT_MARKER)
     const historyAnnotationSummary = page.getByTestId('user-bubble').last()
       .getByRole('button', { name: '1 条注释' })
-    await historyAnnotationSummary.click()
+    await historyAnnotationSummary.hover()
     await page.getByTestId(/^answer-annotation-open-/).click()
     const focusedAnnotation = page.locator('[data-scholarseed-answer-annotation-focused="true"]')
     await expect(focusedAnnotation).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('assistant-annotation-history-focus.png') })
 
-    const latestAnswerLeaf = page.locator('.md-agent [data-md-source-start]').last()
+    await historyAnnotationSummary.hover()
+    await page.getByRole('button', { name: '编辑注释 1' }).click()
+    await editInput.fill(HISTORY_ANNOTATION_COMMENT)
+    const historyUpdateResponse = page.waitForResponse((response) => (
+      response.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
+      && response.request().method() === 'PATCH'
+    ))
+    await editInput.press('Enter')
+    expect((await historyUpdateResponse).status()).toBe(200)
+    await expect(page.getByTestId(/^answer-annotation-details-/)).toContainText(HISTORY_ANNOTATION_COMMENT)
+    const updatedInlineAnnotation = page.getByRole('button', { name: new RegExp(HISTORY_ANNOTATION_COMMENT) })
+    await expect(updatedInlineAnnotation).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('assistant-annotation-history-edited.png') })
+    const historyDeleteResponse = page.waitForResponse((response) => (
+      response.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
+      && response.request().method() === 'DELETE'
+    ))
+    await page.getByRole('button', { name: '移除注释 1' }).click()
+    expect((await historyDeleteResponse).status()).toBe(200)
+    await expect(historyAnnotationSummary).toHaveCount(0)
+    await expect(updatedInlineAnnotation).toHaveCount(0)
+
+    const latestAnswerLeaf = page.locator('.answer-annotation-root [data-md-source-start]').last()
     await expect(latestAnswerLeaf).toBeVisible()
     await latestAnswerLeaf.evaluate((element) => {
       const selection = window.getSelection()
@@ -162,7 +207,7 @@ test('Assistant context persists per Session and never leaks its model card into
     await expect(page.getByRole('button', { name: '添加到对话' })).toBeVisible()
     await expect(page.getByRole('button', { name: '＋ 导入回答到资料库' })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('assistant-second-answer-selection.png') })
-    await page.getByRole('button', { name: '添加到对话' }).click()
+    await addAnnotation(page, sessionId)
     await submitAnnotation(page, sessionId, DELETED_ANNOTATION_COMMENT)
     const deletableAnnotation = page.getByRole('button', { name: new RegExp(DELETED_ANNOTATION_COMMENT) })
     await deletableAnnotation.click()
@@ -190,7 +235,6 @@ test('Assistant context persists per Session and never leaks its model card into
 
     await desktop.close()
     page = await desktop.launch()
-    await page.getByTestId('topbar-ai').click()
     const reloadedPanel = page.getByTestId('ai-panel')
     await reloadedPanel.getByTestId('ai-toggle-dock').click()
     await expect(reloadedPanel).toHaveClass(/is-floating/)
@@ -219,6 +263,7 @@ test('Assistant context persists per Session and never leaks its model card into
     }).toBe(sessionId)
     await expect(page.getByTestId('user-bubble').last()).toContainText(CONTEXT_PROMPT)
     await expect(page.getByTestId('user-bubble').last()).not.toContainText(INTERNAL_CONTEXT_MARKER)
+    await expect(page.getByTestId('user-message-annotations')).toHaveCount(0)
     const resumedContext = await page.evaluate(async ({ base, sid }) => {
       const response = await fetch(`${base}/api/assistant/sessions/${sid}/context`)
       return response.json() as Promise<{ revision: number; search_scope: string }>

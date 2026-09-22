@@ -23,9 +23,11 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, Reference
 from PIL import Image
 
+from apps.serve.tests import pdf as pdf_fixture
 from service.content.domain.model import PREPARED_CONFLICT, ContentError
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import MAX_BYTES, ContentService, ProjectRegistry
+from service.platform.citations import PDF_INDEX_STATE
 from service.platform.web import register_cross_origin_isolation
 from service.resources.api.versions import register_version_routes
 from service.resources.service.history import ResourceVersionService
@@ -34,6 +36,7 @@ from service.resources.service.retention import ResourceRetentionService
 from service.workbench.api.routes import register_workbench_routes
 from service.workbench.domain.model import WORKBENCH_PREVIEW_MAX_BYTES, WorkbenchFormatPolicy
 from service.workbench.persistence.records import PdfRecordCatalog
+from service.workbench.service.indexing import PdfIndexService
 from service.workbench.service.records import PdfRecordStore
 
 PASS = 0
@@ -277,6 +280,60 @@ def test_pdf_identity_conflict_is_a_structured_response() -> None:
             f"status={response.status_code} body={response.text}",
         )
     finally:
+        shutil.rmtree(project, ignore_errors=True)
+
+
+def test_pdf_visual_region_manifest_and_crop_use_the_live_revision() -> None:
+    project = Path(tempfile.mkdtemp(prefix="file-workbench-pdf-regions-"))
+    indexes = None
+    try:
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text(
+                (170, 100),
+                "L(theta) = E[r] - beta * D_KL(pi || pi_ref)",
+                fontsize=13,
+            )
+            (project / "paper.pdf").write_bytes(pdf.tobytes())
+        client = _client(project)
+        opened = client.get("/api/workbench/open", params={"path": "paper.pdf"}).json()
+        indexes = PdfIndexService(client.app.state.content)
+        setattr(client.app.state, PDF_INDEX_STATE, indexes)
+        params = {
+            "path": "paper.pdf",
+            "project": opened["project_id"],
+            "revision": opened["revision"],
+            "start_page": 1,
+            "end_page": 1,
+        }
+        response = client.get("/api/workbench/pdf/regions", params=params)
+        region = response.json()["pages"][0]["regions"][0]
+        crop_params = {
+            key: value for key, value in params.items() if key not in ("start_page", "end_page")
+        }
+        image = client.get(
+            f"/api/workbench/pdf/regions/{region['region_id']}/image",
+            params={**crop_params, "page": 1},
+        )
+        stale = client.get(
+            "/api/workbench/pdf/regions",
+            params={**params, "revision": "sha256:stale"},
+        )
+        check(
+            "PDF 可视区域清单和截图绑定当前 revision",
+            response.status_code == 200
+            and bool(response.json()["detector_version"])
+            and response.json()["unavailable_pages"] == []
+            and region["kind"] == "formula"
+            and image.status_code == 200
+            and image.headers["content-type"] == "image/png"
+            and image.content.startswith(b"\x89PNG")
+            and stale.status_code == 409,
+            f"manifest={response.text} image={image.status_code} stale={stale.text}",
+        )
+    finally:
+        if indexes is not None:
+            indexes.close()
         shutil.rmtree(project, ignore_errors=True)
 
 
@@ -1323,6 +1380,7 @@ if __name__ == "__main__":
     test_open_projects_versioning_without_a_resource_tree_scan()
     test_recreated_pdf_opens_with_an_isolated_identity()
     test_pdf_identity_conflict_is_a_structured_response()
+    test_pdf_visual_region_manifest_and_crop_use_the_live_revision()
     test_unknown_files_are_classified_by_content_for_basic_preview()
     test_head_and_range_use_same_revision()
     test_commit_requires_current_revision()

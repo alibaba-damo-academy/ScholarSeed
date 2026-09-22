@@ -11,10 +11,12 @@ export interface PdfAiFailureRecovery {
   retry: boolean
 }
 
+export const PDF_AI_IMAGE_INPUT_UNSUPPORTED = 'pdf_ai_image_input_unsupported'
+
 const MODEL_CONFIGURATION_CODES = new Set([
   'pdf_ai_preparation_failed',
   'pdf_ai_pdf_input_unsupported',
-  'pdf_ai_image_input_unsupported',
+  PDF_AI_IMAGE_INPUT_UNSUPPORTED,
 ])
 
 const SELECTION_CORRECTION_CODES = new Set([
@@ -33,6 +35,7 @@ const ERROR_KEYS = {
   pdf_ai_region_required: 'reading.errors.region_required',
   pdf_ai_region_out_of_range: 'reading.errors.region_out_of_range',
   pdf_ai_region_too_small: 'reading.errors.region_too_small',
+  pdf_ai_region_missing: 'reading.errors.region_missing',
   pdf_ai_module_unsupported: 'reading.errors.module_unsupported',
   pdf_ai_result_rejected: 'reading.errors.result_rejected',
   pdf_ai_translation_language_invalid: 'reading.errors.translation_language_invalid',

@@ -16,6 +16,7 @@ from service.chat.service.completions import (
     CompletionCredentialError,
     CompletionRegistration,
 )
+from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
 from service.settings.authorization import BrowserAuthorization
 from service.settings.capabilities import INPUT_MODALITIES_KEY, MODALITY_KINDS
 from service.settings.connections import (
@@ -52,7 +53,8 @@ TRANSPORT_ERROR_DETAIL_LIMIT = 200
 SUBSCRIPTION_DIRECTORY_CACHE_SECONDS = 60.0
 #: 上游目录拉取失败后的冷却：避免后台自愈反复锤一个正在 500 的端点（浪费且加剧限流）。
 SUBSCRIPTION_SYNC_FAILURE_COOLDOWN_SECONDS = 300.0
-#: 5xx(上游瞬时故障, 如 "fail to touch upstream")的退避重试次数与初始退避秒数(指数翻倍)。
+#: 上游目录拉取的退避重试次数与初始退避秒数(指数翻倍)；覆盖 5xx(上游瞬时故障,
+#: 如 "fail to touch upstream")与瞬时传输失败(TLS/DNS/连接超时, 与 model bridge 同分类)。
 SUBSCRIPTION_MODELS_RETRY_ATTEMPTS = 3
 SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS = 1.0
 #: 非 2xx 响应体的有界截断长度（仅用于诊断日志，先脱敏）。
@@ -359,10 +361,29 @@ class SubscriptionService:
             except httpx.HTTPError as error:
                 # TLS 信任失败、DNS 失败与超时都归到这一支，只报「不可用」无法区分，
                 # 而错误详情正是唯一能分辨它们的字段。上游响应体与请求头不入日志。
+                diagnostics = transport_diagnostics(error)
+                category = diagnostics["category"]
+                if attempt + 1 < SUBSCRIPTION_MODELS_RETRY_ATTEMPTS and retryable_connect_failure(
+                    error, category
+                ):
+                    delay = SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS * (2**attempt)
+                    LOGGER.warning(
+                        "oauth_models_transport_retry endpoint=%s error_class=%s category=%s "
+                        "attempt=%d max_attempts=%d delay_seconds=%.3f",
+                        policy.models_endpoint,
+                        type(error).__name__,
+                        category,
+                        attempt + 1,
+                        SUBSCRIPTION_MODELS_RETRY_ATTEMPTS,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 LOGGER.warning(
-                    "oauth_models_transport_failed endpoint=%s error_class=%s detail=%s",
+                    "oauth_models_transport_failed endpoint=%s error_class=%s category=%s detail=%s",
                     policy.models_endpoint,
                     type(error).__name__,
+                    category,
                     str(error)[:TRANSPORT_ERROR_DETAIL_LIMIT],
                 )
                 self._sync_failed_at[(owner_id, connection_id)] = time.monotonic()

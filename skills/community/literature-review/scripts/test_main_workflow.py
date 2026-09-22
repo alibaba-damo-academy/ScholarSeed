@@ -81,7 +81,7 @@ class MainViewTest(unittest.TestCase):
             from task_fixtures import planned_outline
             atomic_json(ws / '04_outline/outline.json', planned_outline(outline))
             options = {'formats': ['markdown'], 'templates': [], 'citation_styles': []}
-            with patch('operator_cli.publication_options', return_value=options):
+            with patch('publication.publication_options', return_value=options):
                 full = review_packet(ws)
                 for flag in (False, True):
                     stream = io.StringIO()

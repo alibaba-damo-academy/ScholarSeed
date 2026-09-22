@@ -1,7 +1,7 @@
 import type { SelectionLocator } from '../../contracts/workbench.ts'
+import type { AssistantTranslationTarget } from '../../contracts/assistant.ts'
 import { postActionStream, type ActionActivity } from '../../action.ts'
 import { apiFetch } from '../../api.ts'
-import type { TranslationTarget } from './language.ts'
 
 export type ResourceAction = 'explain' | 'polish' | 'translate'
 export interface ResourceInput {
@@ -16,7 +16,7 @@ export interface ResourceRequest extends ResourceInput {
   client_action_id: string
   client_attempt_id: string
   retry_of_attempt_id?: string
-  target_language?: TranslationTarget
+  target_language?: AssistantTranslationTarget
 }
 export interface ResourceResult {
   task_id: string

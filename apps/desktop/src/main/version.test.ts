@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isNewerRelease, startupBuildNumber } from './version.ts'
+import { clientVersion, isNewerRelease, STARTUP_BUILD_NUMBER, startupBuildNumber } from './version.ts'
+
+test('feedback version includes the packaged build number', () => {
+  assert.equal(clientVersion('0.2.0', '202609221743'), '0.2.0-202609221743')
+})
+
+test('local feedback uses the same stable startup build number as the desktop', () => {
+  const expected = `0.2.0-${STARTUP_BUILD_NUMBER}`
+  assert.match(STARTUP_BUILD_NUMBER, /^\d{12}$/)
+  assert.equal(clientVersion('0.2.0', ''), expected)
+  assert.equal(clientVersion('0.2.0', ''), expected)
+})
 
 test('startup build number uses Beijing time across year and midnight boundaries', () => {
   assert.equal(startupBuildNumber(new Date('2026-09-14T04:30:59Z')), '202609141230')

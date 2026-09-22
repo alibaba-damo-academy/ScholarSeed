@@ -38,6 +38,7 @@ from service.literature.service.analysis import (
 )
 from service.literature.service.figure import FigureActionService, FigureCommand
 from service.literature.service.pdf import LiteraturePdf
+from service.platform.citations import PdfIndexPort
 from service.platform.content import ContentPort
 from service.platform.inference import ModelInvocationStatus
 
@@ -67,6 +68,7 @@ def register_analysis_routes(
     models: ModelService,
     pdf: LiteraturePdf,
     content: ContentPort | None = None,
+    indexes: PdfIndexPort | None = None,
     figures: FigureActionService | None = None,
 ) -> None:
     repository = LiteratureRepository()
@@ -77,6 +79,7 @@ def register_analysis_routes(
         repository=repository,
         pdf=pdf,
         content=content,
+        indexes=indexes,
     )
     running: dict[tuple[str, str], asyncio.Task] = {}
     states: dict[tuple[str, str], dict] = {}
@@ -110,7 +113,9 @@ def register_analysis_routes(
     async def check(payload: AnalysisRequest, owner: str) -> PreparedAnalysis:
         try:
             connection = models.inference_connection(payload.model_key, user_id=owner)
-            if payload.kind.value == "figure_explanation" and not connection.get("image_input"):
+            if payload.kind in (ActionKind.FIGURE, ActionKind.FORMULA_LATEX) and not connection.get(
+                "image_input"
+            ):
                 raise AnalysisError(AnalysisErrorCode.IMAGE_INPUT_UNSUPPORTED)
             return await asyncio.to_thread(
                 prepare,
@@ -118,6 +123,7 @@ def register_analysis_routes(
                 repository,
                 pdf,
                 content,
+                indexes=indexes,
                 max_interpretation_chars=interpretation_input_limit(
                     connection.get("context_window")
                 ),
@@ -395,7 +401,7 @@ def register_analysis_routes(
         # acquiring the operation-scoped publication slot.
         if key in states or tasks.get_attempt(key[1], owner):
             return snapshot(owner, key[1])
-        lock = (payload.source_id, prepared.revision, payload.kind.value)
+        lock = (prepared.request.source_id, prepared.revision, prepared.request.kind.value)
         if lock in locks:
             raise HTTPException(
                 409, {"code": AnalysisErrorCode.OPERATION_BUSY.value, "diagnostic": ""}
@@ -432,11 +438,11 @@ def register_analysis_routes(
             yield sse_encode(
                 {
                     "type": "prepared",
-                    "source_id": payload.source_id,
+                    "source_id": prepared.request.source_id,
                     "source_revision": prepared.revision,
                     "title": prepared.title,
-                    "page": payload.page,
-                    "rect": payload.rect,
+                    "page": prepared.request.page,
+                    "rect": prepared.request.rect,
                     "crop": prepared.crop,
                 }
             )

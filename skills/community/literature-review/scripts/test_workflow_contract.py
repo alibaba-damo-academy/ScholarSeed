@@ -116,7 +116,7 @@ class WorkspaceTest(unittest.TestCase):
         from operator_cli import review_packet, approve
         self.corpus(2); configure(self.ws,{'outline_review':'required','publication':{'format':'markdown'}})
         choices={'formats':['markdown'],'templates':[],'citation_styles':[{'id':'numeric','usable':True},{'id':'author_year','usable':True}]}
-        with patch('operator_cli.publication_options',return_value=choices):
+        with patch('publication.publication_options',return_value=choices):
             packet=review_packet(self.ws)
             self.assertEqual(packet['confirmation']['state'],'required')
             with self.assertRaises(ValueError):approve(self.ws,{'packet_id':packet['packet_id']})

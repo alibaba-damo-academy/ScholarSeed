@@ -277,7 +277,7 @@ class LiveSession:
         # ``ledger.active_turn_id`` 不是一回事 —— 后者是 vendor 轮 id，要等 Codex 的 turnStarted
         # 事件回来才落定，而这一轮的模型调用那时可能已经打出去了（会记到上一轮头上）。
         self.active_product_turn_id = ""
-        self._model_bridge_failure: tuple[str, dict[str, str]] | None = None
+        self._model_bridge_failure: tuple[str, dict[str, Any]] | None = None
         self.active_assistant_snapshot_id = ""
         self.active_assistant_revision: int | None = None
         self.active_task_type = ""
@@ -1405,14 +1405,14 @@ class LiveSession:
         error_code = (
             str(downstream.get("error_code") or "") if isinstance(downstream, Mapping) else ""
         )
-        if not error_code:
+        failure = terminal_provider_failure(fields)
+        if not error_code and not failure:
             # 无结构化 error_code 的 finished 诊断（成功轮 / 空终态）不参与归因，也不冲掉
             # 同 turn 已恢复的值——它没有可覆盖的信息。
             return
         # 同 turn 多次上游调用（Codex 流重试）取最后一条带 error_code 的 finished 诊断：
         # 命中白名单则恢复真实归因，未命中则清空，忠实反映最后一次上游结果。终态事件统一
         # 清槽，故不会跨 turn 串味。
-        failure = terminal_provider_failure(fields)
         self._model_bridge_failure = (client_turn_id, failure) if failure else None
 
     def _recover_incident_attribution(self, event: RuntimeEvent) -> RuntimeEvent:

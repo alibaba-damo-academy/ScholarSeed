@@ -44,6 +44,16 @@ OWNED_ROOT_TABLE = "content_owned_root"
 OWNED_ROOT_CONFLICT = "owned_root_conflict"
 OWNED_ROOT_UNAVAILABLE = "owned_root_unavailable"
 
+#: 新源与已生效关联根存在包含关系时拒绝。同一份物理文件经两个嵌套挂载会得到
+#: 两条「相对项目根」身份, 而文档读写按路径串寻址且无版本冲突检测, 两个页签
+#: 会各自漂移 —— 这正是用户实测「A 路径与 B 路径打开同一文件内容不一致」的根因。
+SOURCE_OVERLAP_ERROR = "source_overlap"
+
+#: 反方向: 新源是某个已生效关联根的**父目录**。此时不是硬拒绝, 而是把选择交给
+#: 用户 —— 可以「取代子关联并挂载父目录」(原子撤销子关联 + 挂载父目录), 也可以
+#: 放弃挂载、直接打开已存在的子关联。前端凭已加载的关联根列表推出被覆盖的子关联。
+SOURCE_COVERS_LINKS_ERROR = "source_covers_links"
+
 
 def registered_roots(database: str) -> dict[RootKind, str]:
     """Read only explicit claims; inspecting a project must not create its database."""
@@ -117,9 +127,17 @@ class ExternalRootService:
         self._catalog = catalog
 
     def authorize(
-        self, project: ProjectRef, source: str, mount: str, *, nested: bool = False
+        self,
+        project: ProjectRef,
+        source: str,
+        mount: str,
+        *,
+        nested: bool = False,
+        supersede: bool = False,
     ) -> ExternalRootRef:
-        return self.authorize_many(project, (source,), (mount,), nested=nested)[0]
+        return self.authorize_many(
+            project, (source,), (mount,), nested=nested, supersede=supersede
+        )[0]
 
     def authorize_many(
         self,
@@ -128,6 +146,7 @@ class ExternalRootService:
         mounts: tuple[str, ...],
         *,
         nested: bool = False,
+        supersede: bool = False,
     ) -> tuple[ExternalRootRef, ...]:
         if len(sources) != len(mounts) or not sources:
             raise ContentError("invalid_root_batch")
@@ -139,10 +158,50 @@ class ExternalRootService:
             {row.mount_path for row in rows}
         ) != len(rows):
             raise ContentError("root_exists")
+        covering = _covering_root_ids(
+            tuple(Path(row.source_path) for row in rows), self._active_paths(project)
+        )
+        if covering and not supersede:
+            raise ContentError(SOURCE_COVERS_LINKS_ERROR)
         try:
-            return tuple(_root_ref(row) for row in self._catalog.authorize_external_roots(rows))
+            return tuple(
+                _root_ref(row)
+                for row in self._catalog.authorize_external_roots(
+                    rows, supersede_root_ids=covering if supersede else ()
+                )
+            )
         except sqlite3.IntegrityError as exc:
             raise ContentError("root_exists") from exc
+
+    def _active_paths(self, project: ProjectRef) -> tuple[tuple[str, Path], ...]:
+        return tuple(
+            (row.root_id, Path(row.source_path)) for row in self._catalog.external_roots(project.id)
+        )
+
+    def assert_linkable(self, project: ProjectRef, sources: tuple[str, ...]) -> None:
+        """关联导入创建任务前的**只读**包含预检。
+
+        后台 job 执行时仍走 `authorize_many` 复检, 那里才是权威; 预检只为让资料库
+        关联导入在创建任务的同一往返里就拿到方向化的错误码: 正向 (新源落在已生效
+        根子树内) 报 `source_overlap` 硬拒绝; 反方向 (新源是已生效根的父目录) 报
+        `source_covers_links`, 让前端弹「取代子关联 / 直接打开子关联」的选择。
+        无法解析或不存在的源在此跳过, 交给 job 用 `source_not_found` 报告, 预检不抢答。
+        """
+
+        active = self._active_paths(project)
+        if not active:
+            return
+        resolved: list[Path] = []
+        for source in sources:
+            try:
+                candidate = Path(source).expanduser().resolve()
+            except OSError:
+                continue
+            if candidate.exists():
+                resolved.append(candidate)
+        covering = _covering_root_ids(tuple(resolved), active)
+        if covering:
+            raise ContentError(SOURCE_COVERS_LINKS_ERROR)
 
     @staticmethod
     def _prepare(
@@ -238,4 +297,49 @@ def _available(source: Path, kind: AssetKind) -> bool:
     return source.is_dir() if kind is AssetKind.DIR else source.is_file()
 
 
-__all__ = ["MOUNT_NAME_MAX_BYTES", "ExternalRootService", "mount_path_for"]
+def _contains(parent: Path, child: Path) -> bool:
+    """child 是否严格落在 parent 子树内 (相等不算)。"""
+
+    return parent != child and parent in child.parents
+
+
+def _overlaps(left: Path, right: Path) -> bool:
+    """两条绝对路径是否存在包含关系 (任一方向)。"""
+
+    return _contains(left, right) or _contains(right, left)
+
+
+def _covering_root_ids(
+    new: tuple[Path, ...], active: tuple[tuple[str, Path], ...]
+) -> tuple[str, ...]:
+    """方向化的包含判定, 返回被新源严格覆盖的已生效根 id。
+
+    只比「新源 ↔ 旧根」与「新源 ↔ 新源」, 不比「旧根 ↔ 旧根」: 历史遗留的嵌套
+    关联不应让一条无关的新授权也失败。完全相等的源由唯一索引兜成 `root_exists`,
+    这里的包含判定是严格包含, 不会把相等误判成重叠。
+
+    正向 (新源落在某个已生效根子树内) 与批内包含没有「取代」的合理语义, 直接抛
+    `source_overlap` 硬拒绝; 只有反方向 (新源是已生效根的父目录) 才收集 id 交回,
+    由调用方决定是硬拒绝还是走取代授权。
+    """
+
+    covering: list[str] = []
+    for index, source in enumerate(new):
+        for root_id, active_path in active:
+            if _contains(active_path, source):
+                raise ContentError(SOURCE_OVERLAP_ERROR)
+            if _contains(source, active_path):
+                covering.append(root_id)
+        for other in new[index + 1 :]:
+            if _overlaps(source, other):
+                raise ContentError(SOURCE_OVERLAP_ERROR)
+    return tuple(covering)
+
+
+__all__ = [
+    "MOUNT_NAME_MAX_BYTES",
+    "SOURCE_COVERS_LINKS_ERROR",
+    "SOURCE_OVERLAP_ERROR",
+    "ExternalRootService",
+    "mount_path_for",
+]

@@ -203,6 +203,33 @@ def test_store_redaction_and_overlay() -> None:
     )
 
 
+def test_profile_preserves_selected_wire_protocol() -> None:
+    """Preset selection must not overwrite the protocol chosen in the editor."""
+    store = ModelProfileStore()
+    chat = store.upsert(profile_values(preset_id="dashscope", wire_api="chat_completions"))
+    reopened = ModelProfileStore(store.path)
+    stored = reopened.profile(chat["id"])
+    resolved = apply_profile(
+        {"model_name": "managed-model"}, chat["id"], reopened, model_id="personal-model"
+    )
+    check(
+        "a preset keeps its selected Chat Completions protocol",
+        chat["wire_api"] == stored["wire_api"] == resolved["wire_api"] == "chat_completions",
+        str(
+            {
+                "saved": chat["wire_api"],
+                "stored": stored["wire_api"],
+                "resolved": resolved["wire_api"],
+            }
+        ),
+    )
+    check(
+        "Chat Completions derives the personal endpoint instead of the built-in gateway",
+        resolved["call_url"] == "https://personal.example.test/v1/chat/completions",
+        str(resolved.get("call_url")),
+    )
+
+
 def test_header_only_openai_profile() -> None:
     """OpenAI-compatible endpoints can own auth entirely through a custom header."""
     store = ModelProfileStore()
@@ -560,16 +587,14 @@ def test_active_profile_never_routes_to_the_builtin_gateway() -> None:
 
     ``call_url`` outranks ``base_url`` when the session provider is built, and the
     product config carries the gateway's one. Inheriting it sent the user's own key to
-    the built-in gateway while silently ignoring their endpoint. Providers are now
-    Responses-only (``profile_wire_api``), so a personal connection derives no
-    ``call_url`` at all — the route is ``base_url`` + wire protocol, and any inherited
-    ``call_url`` must be dropped by the overlay.
+    the built-in gateway while silently ignoring their endpoint. The personal connection
+    must replace it with the endpoint derived from its own selected protocol.
     """
     store = ModelProfileStore()
     service, _selected = build_service(store)
     for existing in store.list()["profiles"]:
         store.delete(existing["id"])
-    profile = store.upsert(profile_values(models=("routed-model",)))
+    profile = store.upsert(profile_values(models=("routed-model",), wire_api="chat_completions"))
     gateway_config = {
         "provider": PERSONAL_PROVIDER,
         "base_url": "https://gateway.example.test/v1",
@@ -588,8 +613,8 @@ def test_active_profile_never_routes_to_the_builtin_gateway() -> None:
         str(spec.config.get("base_url")),
     )
     check(
-        "inherited call_url is dropped so it can never outrank the personal base_url",
-        "call_url" not in spec.config,
+        "the personal Chat Completions URL replaces the inherited gateway URL",
+        spec.config.get("call_url") == "https://personal.example.test/v1/chat/completions",
         str(spec.config.get("call_url")),
     )
     check(
@@ -1780,6 +1805,7 @@ def main() -> int:
     write_builtin_config()
     test_connection_validation_precedes_persistence()
     test_store_redaction_and_overlay()
+    test_profile_preserves_selected_wire_protocol()
     test_header_only_openai_profile()
     test_inference_uses_selected_personal_model()
     test_inference_sends_turn_and_session_metering_headers()

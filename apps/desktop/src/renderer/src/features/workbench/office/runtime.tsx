@@ -33,6 +33,8 @@ import { officePalette } from './theme'
 import { OfficeWarmup } from './Warmup'
 import {
   INITIAL_OFFICE_WARMUP_STATUS,
+  OFFICE_WARMUP_SLOW_THRESHOLD_MS,
+  officeWarmupRetryDelay,
   parseOfficeWarmupStatus,
   type OfficeWarmupStatus
 } from './progress'
@@ -233,6 +235,8 @@ function OfficeHost({
     || Boolean(hasDocument && readyBinding && !documentReady)
   const [warmup, setWarmup] = useState<OfficeWarmupStatus>(INITIAL_OFFICE_WARMUP_STATUS)
   const [showWarmupProgress, setShowWarmupProgress] = useState(false)
+  const [slowWarmup, setSlowWarmup] = useState(false)
+  const [automaticRetryAttempt, setAutomaticRetryAttempt] = useState<number | null>(null)
   const [palette, setPalette] = useState(() => officePalette(document.documentElement))
   const [bounds, setBounds] = useState<OfficeBounds | null>(null)
   const imageFailureText = useImageFailureText()
@@ -246,12 +250,45 @@ function OfficeHost({
   const handledReveal = useRef('')
   const activeRevealRequest = useRef('')
   const revealTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const warmupStartedAt = useRef(performance.now())
+  const warmupRetryAttempt = useRef(0)
+  const warmupRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const warmupSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const serializedImages = useRef<string[]>([])
   const imageLeases = useMemo(() => session ? new OfficeImageLeases<OfficeImageLease>(
     lease => releaseOfficeImage(session.source, lease),
     error => setImageError({ cause: error })
   ) : null, [session?.id])
   useEffect(() => () => imageLeases?.dispose(), [imageLeases])
+
+  const clearWarmupTimers = useCallback((): void => {
+    if (warmupRetryTimer.current) clearTimeout(warmupRetryTimer.current)
+    if (warmupSlowTimer.current) clearTimeout(warmupSlowTimer.current)
+    warmupRetryTimer.current = null
+    warmupSlowTimer.current = null
+  }, [])
+  const beginWarmupWindow = useCallback((visible: boolean): void => {
+    clearWarmupTimers()
+    warmupStartedAt.current = performance.now()
+    warmupRetryAttempt.current = 0
+    setAutomaticRetryAttempt(null)
+    setSlowWarmup(false)
+    setShowWarmupProgress(visible)
+    warmupSlowTimer.current = setTimeout(() => {
+      setSlowWarmup(true)
+      setShowWarmupProgress(true)
+      warmupSlowTimer.current = null
+    }, OFFICE_WARMUP_SLOW_THRESHOLD_MS)
+  }, [clearWarmupTimers])
+  const dismissWarmup = useCallback((): void => {
+    setShowWarmupProgress(false)
+    if (warmupSlowTimer.current) clearTimeout(warmupSlowTimer.current)
+    warmupSlowTimer.current = null
+  }, [])
+  useEffect(() => {
+    beginWarmupWindow(false)
+    return clearWarmupTimers
+  }, [beginWarmupWindow, clearWarmupTimers])
 
   const post = useCallback((type: string, detail: Record<string, unknown> = {}, transfer: Transferable[] = []): void => {
     if (!frame) return
@@ -491,7 +528,40 @@ function OfficeHost({
         const status = parseOfficeWarmupStatus(message)
         if (status) {
           setWarmup(status)
-          if (status.stage === 'ready') setShowWarmupProgress(false)
+          if (status.stage === 'error') {
+            const elapsedMs = performance.now() - warmupStartedAt.current
+            const attempt = warmupRetryAttempt.current
+            const retryDelay = officeWarmupRetryDelay(status, elapsedMs, attempt)
+            console.warn('[office-runtime]', JSON.stringify({
+              hostId: host.id,
+              viewId: host.viewId,
+              stage: 'warmup-failed',
+              failure: status.error,
+              detail: status.detail,
+              elapsedMs,
+              retryInMs: retryDelay
+            }))
+            if (retryDelay !== null) {
+              warmupRetryAttempt.current = attempt + 1
+              setAutomaticRetryAttempt(attempt + 1)
+              if (warmupRetryTimer.current) clearTimeout(warmupRetryTimer.current)
+              warmupRetryTimer.current = setTimeout(() => {
+                setAutomaticRetryAttempt(null)
+                setWarmup(INITIAL_OFFICE_WARMUP_STATUS)
+                setFrameEpoch(epoch => epoch + 1)
+                warmupRetryTimer.current = null
+              }, retryDelay)
+            } else {
+              setAutomaticRetryAttempt(null)
+            }
+          } else if (status.stage === 'ready') {
+            clearWarmupTimers()
+            setAutomaticRetryAttempt(null)
+            setSlowWarmup(false)
+            setShowWarmupProgress(false)
+          } else {
+            setAutomaticRetryAttempt(null)
+          }
         }
       } else if (message.type === 'runtime-ready') {
         setRuntimeReady(true)
@@ -691,7 +761,7 @@ function OfficeHost({
     }
     window.addEventListener('message', receive)
     return () => window.removeEventListener('message', receive)
-  }, [controller, failPendingReplacements, failPendingSearches, finishReveal, frame, host.id, host.viewId, imageLeases, post, publishPresentationState, publishSearchAction, publishSearchResult, session, tab])
+  }, [clearWarmupTimers, controller, failPendingReplacements, failPendingSearches, finishReveal, frame, host.id, host.viewId, imageLeases, post, publishPresentationState, publishSearchAction, publishSearchResult, session, tab])
 
   const visible = Boolean((anchor || switchingDocument) && bounds && bounds.width > 0 && bounds.height > 0)
   const style: React.CSSProperties = visible && bounds
@@ -739,10 +809,13 @@ function OfficeHost({
     {imageError && <Toaster toasts={[{ id: 'office-image-error', tone: 'warning', title: imageError.cause instanceof Error && imageError.cause.message === 'office_image_permission' ? officeFailureText(imageError.cause.message, t) : imageFailureText(imageError.cause) }]} onDismiss={() => setImageError(null)} closeLabel={t('officeDocument.close')} />}
     {notice && <Toaster toasts={[{ id: notice.id, tone: 'warning', title: officeFailureText(notice.message, t), description: notice.detail }]} onDismiss={() => setNotice(null)} closeLabel={t('officeDocument.close')} />}
     <OfficeWarmup
+      automaticRetryAttempt={automaticRetryAttempt}
+      onDismiss={dismissWarmup}
       status={warmup}
+      slow={slowWarmup}
       visible={showWarmupProgress}
       onRetry={() => {
-        setShowWarmupProgress(true)
+        beginWarmupWindow(true)
         setWarmup(INITIAL_OFFICE_WARMUP_STATUS)
         setFrameEpoch(epoch => epoch + 1)
       }}

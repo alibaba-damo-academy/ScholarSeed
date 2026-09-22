@@ -55,7 +55,6 @@ function pythonPath(venv = process.env.VENV || DEFAULT_VENV) {
 async function install() {
   await prepareDevelopmentEnvironment(REPO, process.env)
   skillsInstall()
-  if (process.platform !== 'win32') run('bash', ['scripts/install-git-hooks.sh'])
 }
 
 function checkPython() {

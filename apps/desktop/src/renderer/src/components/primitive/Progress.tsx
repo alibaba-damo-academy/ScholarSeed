@@ -1,6 +1,6 @@
 import React from 'react'
 
-import brandMark from '../../assets/scholarseed-logo-mark.png'
+import brandMark from '../../assets/logo.svg'
 import { Button } from '../ui'
 
 export type ProgressSurface = 'screen' | 'workspace' | 'conversation'

@@ -19,6 +19,7 @@ from service.chat.constants import (
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_SESSION_STATE_IDLE,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
+    PRODUCT_TURN_OUTCOME_UNKNOWN,
 )
 from service.chat.persistence.catalog import SessionStatus
 from service.chat.runtime.live import LiveSession
@@ -221,12 +222,11 @@ class FulltextGate:
         if not turn_id or live.interrupting or live.terminating or live.terminated:
             return
         self._asked.add(self._ask_key(live, checkpoint))
-        interrupted = False
+        terminal_outcome: str | None = None
         if live.running:
             task = live.current_task
             await live.interrupt()
-            interrupted = True
-            await live.ledger.wait_terminal(turn_id)
+            terminal_outcome = await live.ledger.wait_terminal(turn_id)
             if task is not None:
                 await asyncio.wait({task})
         await self._publish_card(live, checkpoint, turn_id)
@@ -240,7 +240,7 @@ class FulltextGate:
         )
         cancelled = decision is not None and bool(decision.get(GATE_DECISION_CANCELLED))
         if decision is not None:
-            await self._settle(live, turn_id, interrupted)
+            await self._settle(live, turn_id, terminal_outcome)
         if cancelled or live.terminating or live.terminated:
             return
         if disposition is AuthorizationDisposition.AUTHORIZED:
@@ -267,17 +267,24 @@ class FulltextGate:
                 payload.get("error"),
             )
 
-    async def _settle(self, live: LiveSession, turn_id: str, interrupted: bool) -> None:
+    async def _settle(
+        self, live: LiveSession, turn_id: str, terminal_outcome: str | None
+    ) -> None:
         """The paused turn has already ended; resolving its product question must not look live."""
 
         if live.running:
             return
-        live.catalog.update_status(
-            live.id,
-            SessionStatus.INTERRUPTED if interrupted else SessionStatus.READY,
-            turn_id=turn_id,
-            turn_status=PRODUCT_TURN_OUTCOME_INTERRUPTED if interrupted else None,
-        )
+        if terminal_outcome == PRODUCT_TURN_OUTCOME_UNKNOWN:
+            if not await live.ledger.reconcile_controlled_interrupt(turn_id):
+                return
+        else:
+            interrupted = terminal_outcome == PRODUCT_TURN_OUTCOME_INTERRUPTED
+            live.catalog.update_status(
+                live.id,
+                SessionStatus.INTERRUPTED if interrupted else SessionStatus.READY,
+                turn_id=turn_id,
+                turn_status=PRODUCT_TURN_OUTCOME_INTERRUPTED if interrupted else None,
+            )
         await live.publish(
             PRODUCT_EVENT_SESSION_STATE,
             {"state": PRODUCT_SESSION_STATE_IDLE, "runtime_id": live.runtime_id},

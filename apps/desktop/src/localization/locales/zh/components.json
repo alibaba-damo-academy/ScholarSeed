@@ -125,6 +125,8 @@
     "screenshot": "截图标注",
     "markProblem": "截图标记",
     "drag": "拖动位置",
+    "dragHint": "按住拖动到其他位置",
+    "stepsToggle": "操作步骤（{{count}}）",
     "guidance": "继续操作会自动记录；遇到问题，填写说明或截图标记。",
     "recording": "录制中 · {{seconds}} 秒",
     "paused": "已暂停 · {{seconds}} 秒",
@@ -170,7 +172,8 @@
         "rect": "矩形",
         "arrow": "箭头",
         "pen": "画笔",
-        "text": "文字"
+        "text": "文字",
+        "redact": "遮挡"
       }
     },
     "review": {
@@ -187,6 +190,7 @@
       "screenshotAlt": "问题标注截图",
       "screenshotNote": "截图说明",
       "zoomScreenshot": "放大截图",
+      "editScreenshot": "点击重新编辑",
       "copyScreenshot": "复制图片",
       "copyMarkdown": "复制内容",
       "markdownOperation": "操作",
@@ -247,6 +251,7 @@
       "capture_empty": "页面截图为空，请重试。",
       "capture_too_large": "页面截图超过大小限制。",
       "screenshotRequiresStep": "请先完成一次页面操作，再保存截图。",
+      "screenshotMissing": "截图已不存在，请返回报告后重试。",
       "invalid_sender": "截图请求来源无效。",
       "descriptionLimit": "问题描述不能超过 {{limit}} 个字符。"
     }
@@ -632,7 +637,6 @@
     "checkFailed": "暂时无法检查发送结果，内容仍已保留。",
     "submissionRecovered": "消息已经成功提交，已恢复对应任务状态。",
     "notSubmitted": "已确认消息未提交，可以重新发送。",
-    "stillUnknown": "服务端仍无法确认是否已执行；为避免重复执行，请稍后再次检查。",
     "attachmentTitle": "附件 · {{name}}",
     "skillPath": "技能 {{name}} 缺少可用路径。",
     "skillDisabled": "技能 {{name}} 尚未启用。",

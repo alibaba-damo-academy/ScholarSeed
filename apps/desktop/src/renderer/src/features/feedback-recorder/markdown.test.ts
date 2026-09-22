@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { RecordingSession, SummaryFields } from './model.ts'
-import { composeReviewHtml, composeReviewMarkdown, type ReviewMarkdownLabels } from './markdown.ts'
+import {
+  compactStepLabel,
+  composeReviewHtml,
+  composeReviewMarkdown,
+  type ReviewMarkdownLabels
+} from './markdown.ts'
 
 const session: RecordingSession = {
   sessionId: 'session-1',
@@ -34,14 +39,16 @@ const session: RecordingSession = {
     screenshotId: 'screenshot-1',
     stepId: 'step-1',
     note: '项目卡片没有响应',
-    file: new File([new Uint8Array([1, 2, 3])], 'feedback.png', { type: 'image/png' }),
+    sourceFile: new File([new Uint8Array([9])], 'feedback-source.png', { type: 'image/png' }),
+    renderedFile: new File([new Uint8Array([1, 2, 3])], 'feedback.png', { type: 'image/png' }),
     previewUrl: 'blob:feedback',
     annotations: []
   }, {
     screenshotId: 'screenshot-2',
     stepId: 'step-1',
     note: '项目区域完整截图',
-    file: new File([new Uint8Array([4, 5, 6])], 'feedback-2.png', { type: 'image/png' }),
+    sourceFile: new File([new Uint8Array([8])], 'feedback-source-2.png', { type: 'image/png' }),
+    renderedFile: new File([new Uint8Array([4, 5, 6])], 'feedback-2.png', { type: 'image/png' }),
     previewUrl: 'blob:feedback-2',
     annotations: []
   }],
@@ -102,4 +109,15 @@ test('review markdown contains visible feedback without hidden request logs', ()
   assert.match(html, /<img src="data:image\/png;base64,BAUG"/)
   assert.match(html, /<figcaption>截图说明 2：项目区域完整截图<\/figcaption>/)
   assert.doesNotMatch(html, /private-log|POST|500/)
+})
+
+test('compact recording step stays readable without input values or request logs', () => {
+  const label = compactStepLabel(session.steps[0], 0, {
+    action: () => '点击',
+    sourcePage: (page) => `在「${page}」页面`,
+    sourceDialog: (page, dialog) => `在「${page}」页面的「${dialog}」弹窗中`
+  })
+
+  assert.equal(label, '1. 在「首页」页面 · 点击 · 新建项目')
+  assert.doesNotMatch(label, /测试项目|private-log|POST|500/)
 })

@@ -9,8 +9,11 @@ import json
 import logging
 import os
 import random
+import socket
+import ssl
+from contextlib import contextmanager
 from io import BytesIO
-from typing import Callable
+from typing import Callable, Iterator
 from unittest.mock import patch
 
 import httpx
@@ -36,6 +39,7 @@ from service.chat.service.completions import (
     responses_to_chat_request,
 )
 from service.chat.service.models import _codex_provider
+from service.chat.service.transport import RETRYABLE_CONNECT_FAILURE_CATEGORIES
 from service.identity.api.routes import register_auth
 from service.identity.service.account_token import (
     CONV_MESSAGE_ID_HEADER,
@@ -72,19 +76,24 @@ def forward_contract(
     wire_protocol: ModelWireProtocol | None = None,
     turn_id_provider: Callable[[str], str] | None = None,
     source_endpoints: tuple[str, ...] = (),
-    send_exc: BaseException | None = None,
+    send_exc: BaseException | tuple[BaseException | None, ...] | None = None,
     source_text: str = "用户原文",
     api_key: str = "contract-key",
     token_provider: Callable[[str], str] | None = None,
     owner_id: str = "",
     upstream_responses: tuple[tuple[int, bytes, dict[str, str]], ...] = (),
+    diagnostics: list[tuple[str, dict]] | None = None,
 ):
     """Exercise the public bridge route against a deterministic upstream transport."""
     captured: list[httpx.Request] = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        if send_exc is not None:
+        if isinstance(send_exc, tuple):
+            attempt_error = send_exc[min(len(captured) - 1, len(send_exc) - 1)]
+            if attempt_error is not None:
+                raise attempt_error
+        elif send_exc is not None:
             raise send_exc
         if upstream_responses:
             response_status, response_body, response_headers = upstream_responses[
@@ -102,6 +111,11 @@ def forward_contract(
         "http://127.0.0.1:8770",
         source_endpoints=source_endpoints,
         source_text=lambda _session, _turn: source_text,
+        on_diagnostic=(
+            (lambda session, fields: diagnostics.append((session, dict(fields))))
+            if diagnostics is not None
+            else None
+        ),
     )
     registration = bridge.register(
         endpoint=CHAT_ENDPOINT,
@@ -256,6 +270,216 @@ def test_internal_unstructured_rate_limit_retries_before_returning() -> None:
     )
 
 
+def test_transient_server_failures_retry_for_all_bridge_upstreams() -> None:
+    payload = {"model": "alias", "stream": False, "input": "Continue"}
+    success = b'{"id":"response-1","output":[]}'
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
+        for status in (500, 502, 503, 504):
+            response, captured = forward_contract(
+                payload,
+                success,
+                upstream_responses=((status, b"temporary", {}), (200, success, {})),
+            )
+            check(
+                f"transient {status} retries before returning",
+                response.status_code == 200 and response.content == success and len(captured) == 2,
+                f"status={response.status_code} calls={len(captured)}",
+            )
+
+        response, captured = forward_contract(
+            payload,
+            success,
+            upstream_responses=((500, b"temporary", {}),),
+        )
+    check(
+        "transient failures stop at the shared retry budget",
+        response.status_code == 500 and len(captured) == 3,
+        f"status={response.status_code} calls={len(captured)}",
+    )
+
+
+class _WarningCapture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+@contextmanager
+def _captured_bridge_warnings() -> Iterator[list[str]]:
+    handler = _WarningCapture()
+    bridge_logger = logging.getLogger("service.chat.service.completions")
+    previous_level = bridge_logger.level
+    bridge_logger.setLevel(logging.WARNING)
+    bridge_logger.addHandler(handler)
+    try:
+        yield handler.messages
+    finally:
+        bridge_logger.removeHandler(handler)
+        bridge_logger.setLevel(previous_level)
+
+
+def _tls_sever() -> httpx.ConnectError:
+    error = httpx.ConnectError("secret-upstream-url-and-token")
+    error.__cause__ = ssl.SSLEOFError()
+    return error
+
+
+def _transient_dns_failure() -> httpx.ConnectError:
+    error = httpx.ConnectError("secret-upstream-url-and-token")
+    error.__cause__ = socket.gaierror(socket.EAI_AGAIN, "secret-dns-host")
+    return error
+
+
+def _permanent_tls_failure(cause: ssl.SSLError) -> httpx.ConnectError:
+    error = httpx.ConnectError("secret-upstream-url-and-token")
+    error.__cause__ = cause
+    return error
+
+
+def test_connect_phase_failures_retry_before_request_is_sent() -> None:
+    payload = {"model": "alias", "stream": False, "input": "Continue"}
+    success = b'{"id":"response-1","output":[]}'
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    with patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
+        # 这条腿走非原生转换: 桥把上游体规整成 Responses 对象, 原样回传字节不是不变量。
+        # 用一次无故障调用固定成功体, 再断言重试恢复后回传同一份规整体。
+        control, _ = forward_contract(payload, success)
+        expected_success = control.content
+        for maker, category in (
+            (_tls_sever, "tls"),
+            (_transient_dns_failure, "dns"),
+            (lambda: httpx.ConnectError("secret-connect-detail"), "connect_error"),
+        ):
+            with _captured_bridge_warnings() as messages:
+                response, captured = forward_contract(
+                    payload,
+                    success,
+                    send_exc=(maker(), maker(), None),
+                )
+            retried = [
+                message
+                for message in messages
+                if message.startswith("model_bridge_upstream_connect_retry")
+            ]
+            check(
+                f"{category} connect failure recovers within the retry budget",
+                response.status_code == 200
+                and response.content == expected_success
+                and len(captured) == 3
+                and len(retried) == 2,
+                f"status={response.status_code} calls={len(captured)} retries={len(retried)}",
+            )
+            check(
+                f"{category} retry log carries the category and no secrets",
+                all(
+                    f"category={category}" in message and "secret-" not in message
+                    for message in retried
+                ),
+                str(retried),
+            )
+
+        diagnostics: list[tuple[str, dict]] = []
+        with _captured_bridge_warnings() as messages:
+            response, captured = forward_contract(
+                payload,
+                success,
+                send_exc=(_tls_sever(),),
+                diagnostics=diagnostics,
+            )
+    failed = [
+        message
+        for message in messages
+        if message.startswith("model_bridge_upstream_transport_failed")
+    ]
+    check(
+        "connect failures stop at the shared retry budget with one 502",
+        response.status_code == 502 and len(captured) == 3 and len(failed) == 1,
+        f"status={response.status_code} calls={len(captured)} failures={len(failed)}",
+    )
+    emitted = diagnostics[-1][1] if diagnostics else {}
+    check(
+        "trace records the exhausted attempt with the tls category",
+        emitted.get("transport_category") == "tls" and emitted.get("attempt") == 3,
+        str(emitted),
+    )
+    check(
+        "connect retry allow-list stays pinned to pre-request categories",
+        RETRYABLE_CONNECT_FAILURE_CATEGORIES == frozenset(("connect_error", "connect_timeout")),
+        str(sorted(RETRYABLE_CONNECT_FAILURE_CATEGORIES)),
+    )
+
+
+def test_permanent_tls_failures_do_not_retry() -> None:
+    payload = {"model": "alias", "stream": False, "input": "Continue"}
+    permanent_failures = (
+        ssl.SSLCertVerificationError(1, "secret-certificate-detail"),
+        ssl.SSLError(ssl.SSL_ERROR_SSL, "secret-protocol-detail"),
+    )
+
+    for failure in permanent_failures:
+        diagnostics: list[tuple[str, dict]] = []
+        with _captured_bridge_warnings() as messages:
+            response, captured = forward_contract(
+                payload,
+                b"",
+                send_exc=_permanent_tls_failure(failure),
+                diagnostics=diagnostics,
+            )
+        retries = [
+            message
+            for message in messages
+            if message.startswith("model_bridge_upstream_connect_retry")
+        ]
+        emitted = diagnostics[-1][1] if diagnostics else {}
+        check(
+            f"{type(failure).__name__} fails without retry",
+            response.status_code == 502
+            and len(captured) == 1
+            and not retries
+            and emitted.get("attempt") == 1
+            and emitted.get("transport_category") == "tls",
+            f"status={response.status_code} calls={len(captured)} retries={len(retries)}",
+        )
+
+
+def test_permanent_dns_failure_does_not_retry() -> None:
+    payload = {"model": "alias", "stream": False, "input": "Continue"}
+    error = httpx.ConnectError("secret-upstream-url-and-token")
+    error.__cause__ = socket.gaierror(socket.EAI_NONAME, "secret-dns-host")
+    diagnostics: list[tuple[str, dict]] = []
+
+    with _captured_bridge_warnings() as messages:
+        response, captured = forward_contract(
+            payload,
+            b"",
+            send_exc=error,
+            diagnostics=diagnostics,
+        )
+    retries = [
+        message for message in messages if message.startswith("model_bridge_upstream_connect_retry")
+    ]
+    emitted = diagnostics[-1][1] if diagnostics else {}
+    check(
+        "permanent DNS failure fails without retry",
+        response.status_code == 502
+        and len(captured) == 1
+        and not retries
+        and emitted.get("attempt") == 1
+        and emitted.get("transport_category") == "dns",
+        f"status={response.status_code} calls={len(captured)} retries={len(retries)}",
+    )
+
+
 def test_transport_failure_is_attributable() -> None:
     payload = {
         "model": "alias",
@@ -265,9 +489,10 @@ def test_transport_failure_is_attributable() -> None:
     }
     code = errno_module.ECONNRESET
     text = os.strerror(code)
-    sever = httpx.ReadError("")
-    sever.__cause__ = ConnectionResetError(code, text)
+    sever = httpx.ReadError("secret-upstream-url-and-token")
+    sever.__cause__ = ConnectionResetError(code, "secret-reset-detail")
     records: list[logging.LogRecord] = []
+    diagnostics: list[tuple[str, dict]] = []
 
     class _Capture(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
@@ -279,7 +504,12 @@ def test_transport_failure_is_attributable() -> None:
     bridge_logger.setLevel(logging.WARNING)
     bridge_logger.addHandler(handler)
     try:
-        response, captured = forward_contract(payload, b"", send_exc=sever)
+        response, captured = forward_contract(
+            payload,
+            b"",
+            send_exc=sever,
+            diagnostics=diagnostics,
+        )
     finally:
         bridge_logger.removeHandler(handler)
         bridge_logger.setLevel(previous_level)
@@ -311,6 +541,24 @@ def test_transport_failure_is_attributable() -> None:
         "cause_chain=ReadError>ConnectionResetError" in message,
         message,
     )
+    emitted = diagnostics[-1][1] if diagnostics else {}
+    check(
+        "trace records the request-stage connection reset",
+        emitted.get("transport_stage") == "request"
+        and emitted.get("transport_category") == "connection_reset"
+        and emitted.get("transport_cause_chain") == "ReadError>ConnectionResetError"
+        and emitted.get("transport_root_type") == "ConnectionResetError"
+        and emitted.get("transport_errno") == code
+        and emitted.get("transport_errno_name") == "ECONNRESET",
+        str(emitted),
+    )
+    serialized = json.dumps(diagnostics)
+    check(
+        "trace keeps transport exception messages out",
+        "secret-upstream-url-and-token" not in serialized
+        and "secret-reset-detail" not in serialized,
+        serialized,
+    )
     check("log records the first-byte wait", "elapsed_ms=" in message, message)
     check(
         "log records request scale for attribution",
@@ -325,32 +573,35 @@ def test_transport_failure_is_attributable() -> None:
     )
 
 
-def test_native_protocol_rejection_is_independent_of_effort() -> None:
-    payload = {"model": "alias", "input": "Hello", "tools": [{"type": "web_search"}]}
+def test_chat_protocol_omits_only_native_tools() -> None:
+    payload = {
+        "model": "alias",
+        "stream": False,
+        "input": "Hello",
+        "tools": [
+            {"type": "web_search"},
+            {"type": "function", "name": "inspect", "parameters": {"type": "object"}},
+        ],
+    }
+    body = b'{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}'
     for effort in ("", "low"):
-        with patch("service.chat.service.completions.logger.warning") as warning:
-            response, requests = forward_contract(
-                payload,
-                b"{}",
-                reasoning_effort=effort,
-                wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
-            )
+        response, requests = forward_contract(
+            payload,
+            body,
+            reasoning_effort=effort,
+            wire_protocol=ModelWireProtocol.CHAT_COMPLETIONS,
+        )
+        forwarded = json.loads(requests[0].content)
         check(
-            f"native protocol rejection is local at effort {effort or 'default'}",
-            response.status_code == 400
-            and response.json()["error"]["code"] == MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED
-            and not requests,
+            f"Chat protocol remains usable at effort {effort or 'default'}",
+            response.status_code == 200
+            and len(requests) == 1
+            and str(requests[0].url) == CHAT_ENDPOINT,
         )
         check(
-            "protocol diagnostic includes safe session, tool types and effort only",
-            warning.call_args.args[1:]
-            == (
-                "search-contract",
-                "chat_completions",
-                ["web_search"],
-                effort or "default",
-                MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED,
-            ),
+            "Chat conversion omits native tools but preserves function tools",
+            [tool["function"]["name"] for tool in forwarded["tools"]] == ["inspect"],
+            str(forwarded.get("tools")),
         )
 
 
@@ -455,6 +706,42 @@ def converted_stream_chunk_events(contents: list[str]) -> list[dict]:
     return asyncio.run(_collect())
 
 
+def converted_reasoning_stream_events() -> list[dict]:
+    chunks = [
+        {
+            "id": "chat-response",
+            "choices": [{"delta": {"reasoning_content": "think"}, "finish_reason": None}],
+        },
+        {
+            "id": "chat-response",
+            "choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}],
+        },
+    ]
+    upstream = httpx.Response(
+        200,
+        content=(
+            "\n\n".join(f"data: {json.dumps(chunk)}" for chunk in chunks) + "\n\ndata: [DONE]\n\n"
+        ).encode(),
+    )
+
+    async def _collect() -> list[dict]:
+        rows = []
+        async for chunk in chat_stream_to_responses(upstream):
+            data = next(
+                (
+                    line.removeprefix("data:").strip()
+                    for line in chunk.decode().splitlines()
+                    if line.startswith("data:")
+                ),
+                "",
+            )
+            if data:
+                rows.append(json.loads(data))
+        return rows
+
+    return asyncio.run(_collect())
+
+
 def test_streamed_provider_error_becomes_failed_response() -> None:
     events = converted_stream_events(
         json.dumps(
@@ -499,16 +786,104 @@ def test_json_answer_remains_a_successful_answer() -> None:
 def test_normal_stream_keeps_deltas_and_complete_message() -> None:
     events = converted_stream_chunk_events(["normal ", "answer"])
     deltas = [row.get("delta") for row in events if row.get("type") == "response.output_text.delta"]
-    message = next(
-        row["item"]
+    message_started = next(
+        row
+        for row in events
+        if row.get("type") == "response.output_item.added"
+        and row.get("item", {}).get("type") == "message"
+    )
+    content_started = next(
+        row for row in events if row.get("type") == "response.content_part.added"
+    )
+    message_completed = next(
+        row
         for row in events
         if row.get("type") == "response.output_item.done"
         and row.get("item", {}).get("type") == "message"
     )
+    event_types = [row.get("type") for row in events]
     check("normal prose keeps streamed deltas", deltas == ["normal ", "answer"], str(events))
     check(
         "normal prose keeps its complete message event",
-        message["content"][0]["text"] == "normal answer",
+        message_completed["item"]["content"][0]["text"] == "normal answer",
+        str(events),
+    )
+    check(
+        "message lifecycle starts before text deltas",
+        event_types.index("response.output_item.added")
+        < event_types.index("response.content_part.added")
+        < event_types.index("response.output_text.delta"),
+        str(event_types),
+    )
+    check(
+        "message lifecycle keeps one stable item identity",
+        message_started["item"]["id"]
+        == content_started["item_id"]
+        == message_completed["item"]["id"],
+        str(events),
+    )
+    check(
+        "text deltas carry their message identity and indexes",
+        all(
+            row.get("item_id") == message_started["item"]["id"]
+            and row.get("output_index") == 0
+            and row.get("content_index") == 0
+            for row in events
+            if row.get("type") == "response.output_text.delta"
+        ),
+        str(events),
+    )
+    check(
+        "converted response events have monotonic sequence numbers",
+        [row.get("sequence_number") for row in events] == list(range(len(events))),
+        str(events),
+    )
+    check(
+        "text completion closes content before the message item",
+        event_types.index("response.output_text.done")
+        < event_types.index("response.content_part.done")
+        < event_types.index("response.output_item.done"),
+        str(events),
+    )
+
+
+def test_reasoning_completes_before_answer_stream_starts() -> None:
+    events = converted_reasoning_stream_events()
+    event_types = [row.get("type") for row in events]
+    reasoning_started = next(
+        row
+        for row in events
+        if row.get("type") == "response.output_item.added"
+        and row.get("item", {}).get("type") == "reasoning"
+    )
+    reasoning_delta = next(
+        row for row in events if row.get("type") == "response.reasoning_summary_text.delta"
+    )
+    message_started_index = next(
+        index
+        for index, row in enumerate(events)
+        if row.get("type") == "response.output_item.added"
+        and row.get("item", {}).get("type") == "message"
+    )
+    check(
+        "reasoning completes before the answer message starts",
+        event_types.index("response.reasoning_summary_text.done")
+        < event_types.index("response.reasoning_summary_part.done")
+        < next(
+            index
+            for index, row in enumerate(events)
+            if row.get("type") == "response.output_item.done"
+            and row.get("item", {}).get("type") == "reasoning"
+        )
+        < message_started_index
+        < event_types.index("response.output_text.delta"),
+        str(event_types),
+    )
+    check(
+        "reasoning deltas keep the started item identity",
+        reasoning_delta.get("item_id") == reasoning_started["item"]["id"]
+        and reasoning_delta.get("output_index") == 0
+        and reasoning_delta.get("summary_index") == 0,
         str(events),
     )
 
@@ -1078,12 +1453,17 @@ def main() -> int:
     test_native_tools_preserve_request_and_response()
     test_native_errors_and_nonstream_responses_are_preserved()
     test_internal_unstructured_rate_limit_retries_before_returning()
+    test_transient_server_failures_retry_for_all_bridge_upstreams()
+    test_connect_phase_failures_retry_before_request_is_sent()
+    test_permanent_tls_failures_do_not_retry()
+    test_permanent_dns_failure_does_not_retry()
     test_transport_failure_is_attributable()
     test_function_only_calls_keep_chat_conversion()
-    test_native_protocol_rejection_is_independent_of_effort()
+    test_chat_protocol_omits_only_native_tools()
     test_streamed_provider_error_becomes_failed_response()
     test_json_answer_remains_a_successful_answer()
     test_normal_stream_keeps_deltas_and_complete_message()
+    test_reasoning_completes_before_answer_stream_starts()
     test_large_inline_image_is_fitted()
     test_small_inline_image_is_preserved()
     test_text_only_oversize_is_not_silently_truncated()

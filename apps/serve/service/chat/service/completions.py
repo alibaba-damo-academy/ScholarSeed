@@ -5,16 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import errno as errno_module
 import json
 import logging
-import os
 import random
 import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
+from enum import Enum
 from http import HTTPStatus
 from io import BytesIO
 from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -26,6 +25,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
+from service.chat.service.rejections import TRANSIENT_PROVIDER_HTTP_STATUSES
 from service.chat.service.streams import (
     RESPONSE_FAILED,
     CompletionDiagnostic,
@@ -33,6 +33,7 @@ from service.chat.service.streams import (
     StreamEnd,
     metadata_token,
 )
+from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
 from service.inference.reasoning import (
     ThinkingParameters,
@@ -69,7 +70,6 @@ RESPONSES_SUFFIX = "/responses"
 MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED = "model_bridge_native_tools_unsupported"
 MODEL_BRIDGE_CLOSED = "model_bridge_closed"
 UPSTREAM_ERROR_MESSAGE_LIMIT = 500
-EXCEPTION_CHAIN_LIMIT = 8
 MODEL_FIELD = "model"
 RESPONSE_FIELD = "response"
 SSE_DATA_PREFIX = b"data:"
@@ -81,11 +81,17 @@ MODEL_BRIDGE_INVALID_TOOL_INPUT = "model_bridge_invalid_tool_input"
 MODEL_BRIDGE_CREDENTIAL_REQUIRED = "model_bridge_credential_required"
 MODEL_UPSTREAM_STREAM_ERROR = "model_upstream_stream_error"
 UPSTREAM_RATE_LIMIT_STATUS = HTTPStatus.TOO_MANY_REQUESTS
-UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS = 3
-UPSTREAM_RATE_LIMIT_BASE_DELAY_SECONDS = 1.0
-UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS = 8.0
-UPSTREAM_RATE_LIMIT_JITTER_RATIO = 0.2
+UPSTREAM_RETRY_MAX_ATTEMPTS = 3
+UPSTREAM_RETRY_BASE_DELAY_SECONDS = 1.0
+UPSTREAM_RETRY_MAX_DELAY_SECONDS = 8.0
+UPSTREAM_RETRY_JITTER_RATIO = 0.2
 UPSTREAM_RETRY_AFTER_HEADER = "retry-after"
+
+
+class TransportStage(str, Enum):
+    REQUEST = "request"
+    RESPONSE_BODY = "response_body"
+
 
 # 账号腿脱敏分支把上游 >=400 一律折成该码：上游体内可能带厂商内部信息或凭据片段，
 # 不能进 Codex 子进程与 renderer。
@@ -651,14 +657,13 @@ class CompletionBridge:
         self, upstream: CompletionUpstream, payload: Mapping[str, Any], call: CompletionCall
     ) -> Response:
         upstream.last_used_at = time.monotonic()
-        if upstream.wire_protocol is not ModelWireProtocol.RESPONSES:
-            try:
-                payload, converted_items = normalize_response_input(payload)
-            except ValueError:
-                return JSONResponse(
-                    {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
-                )
-            call.diagnostic.converted_input_items = converted_items
+        try:
+            payload, converted_items = normalize_response_input(payload)
+        except ValueError:
+            return JSONResponse(
+                {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
+            )
+        call.diagnostic.converted_input_items = converted_items
         native_tool_types = sorted(
             {
                 str(tool.get("type") or "")
@@ -667,19 +672,15 @@ class CompletionBridge:
             }
         )
         if native_tool_types and upstream.wire_protocol == ModelWireProtocol.CHAT_COMPLETIONS:
-            logger.warning(
-                "model_bridge_protocol_rejected session_id=%s wire=%s native_tools=%s effort=%s code=%s",
+            logger.info(
+                "model_bridge_native_tools_omitted session_id=%s wire=%s native_tools=%s effort=%s",
                 upstream.session_id,
                 upstream.wire_protocol.value,
                 native_tool_types,
                 upstream.reasoning_effort or "default",
-                MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED,
             )
-            return JSONResponse(
-                {"error": {"code": MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED}}, status_code=400
-            )
-        native_response = upstream.wire_protocol == ModelWireProtocol.RESPONSES or bool(
-            native_tool_types
+        native_response = upstream.wire_protocol == ModelWireProtocol.RESPONSES or (
+            upstream.wire_protocol is None and bool(native_tool_types)
         )
         if native_response:
             chat_request = dict(payload)
@@ -860,6 +861,7 @@ class CompletionBridge:
             trust_env=upstream.trust_env,
         )
         call.client = client
+        call.diagnostic.max_attempts = UPSTREAM_RETRY_MAX_ATTEMPTS
         send_started_at = time.perf_counter()
         attempt = 1
         try:
@@ -870,32 +872,55 @@ class CompletionBridge:
                     json=chat_request,
                     headers=headers,
                 )
-                response = await client.send(request, stream=True)
+                call.diagnostic.attempt = attempt
+                try:
+                    response = await client.send(request, stream=True)
+                except httpx.TransportError as error:
+                    diagnostics = transport_diagnostics(error)
+                    if attempt >= UPSTREAM_RETRY_MAX_ATTEMPTS or not retryable_connect_failure(
+                        error, diagnostics["category"]
+                    ):
+                        raise
+                    delay = _retry_backoff_delay(attempt)
+                    logger.warning(
+                        "model_bridge_upstream_connect_retry session_id=%s "
+                        "failure_type=%s category=%s attempt=%d max_attempts=%d "
+                        "delay_seconds=%.3f",
+                        upstream.session_id,
+                        diagnostics["failure_type"],
+                        diagnostics["category"],
+                        attempt,
+                        UPSTREAM_RETRY_MAX_ATTEMPTS,
+                        delay,
+                    )
+                    attempt += 1
+                    await asyncio.sleep(delay)
+                    if call.revoked or not upstream.active:
+                        raise asyncio.CancelledError() from error
+                    continue
                 if call.revoked:
                     await response.aclose()
                     raise asyncio.CancelledError()
+                retryable = response.status_code in TRANSIENT_PROVIDER_HTTP_STATUSES
                 if response.status_code == UPSTREAM_RATE_LIMIT_STATUS:
-                    body = await response.aread()
-                    if (
-                        attempt < UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS
-                        and _retryable_internal_rate_limit(upstream, body)
-                    ):
-                        delay = _upstream_retry_delay(response, attempt)
-                        logger.warning(
-                            "model_bridge_upstream_retry session_id=%s status=%d "
-                            "attempt=%d max_attempts=%d delay_seconds=%.3f",
-                            upstream.session_id,
-                            response.status_code,
-                            attempt,
-                            UPSTREAM_RATE_LIMIT_MAX_ATTEMPTS,
-                            delay,
-                        )
-                        await response.aclose()
-                        attempt += 1
-                        await asyncio.sleep(delay)
-                        if call.revoked or not upstream.active:
-                            raise asyncio.CancelledError()
-                        continue
+                    retryable = _retryable_internal_rate_limit(upstream, await response.aread())
+                if attempt < UPSTREAM_RETRY_MAX_ATTEMPTS and retryable:
+                    delay = _upstream_retry_delay(response, attempt)
+                    logger.warning(
+                        "model_bridge_upstream_retry session_id=%s status=%d "
+                        "attempt=%d max_attempts=%d delay_seconds=%.3f",
+                        upstream.session_id,
+                        response.status_code,
+                        attempt,
+                        UPSTREAM_RETRY_MAX_ATTEMPTS,
+                        delay,
+                    )
+                    await response.aclose()
+                    attempt += 1
+                    await asyncio.sleep(delay)
+                    if call.revoked or not upstream.active:
+                        raise asyncio.CancelledError()
+                    continue
                 break
             call.response = response
             call.diagnostic.status_code = response.status_code
@@ -908,21 +933,27 @@ class CompletionBridge:
             call.diagnostic.emit("headers")
         except Exception as exc:  # noqa: BLE001 - translate transport failure at HTTP boundary
             call.diagnostic.upstream_end = StreamEnd.TRANSPORT_ERROR.value
-            call.diagnostic.failure_type = type(exc).__name__
+            diagnostics = _record_transport_failure(
+                call.diagnostic,
+                exc,
+                stage=TransportStage.REQUEST,
+                endpoint=endpoint,
+            )
             await call.close()
-            diagnostics = _transport_diagnostics(exc)
             metrics = _chat_request_metrics(chat_request)
             logger.warning(
                 "model_bridge_upstream_transport_failed session_id=%s model=%s wire=%s "
-                "endpoint=%s elapsed_ms=%.1f failure_type=%s cause_chain=%s root_type=%s "
-                "errno=%s errno_name=%s errno_text=%s native_tools=%s request_bytes=%d "
-                "messages_bytes=%d message_count=%d tool_count=%d max_message_bytes=%d",
+                "endpoint=%s elapsed_ms=%.1f failure_type=%s category=%s "
+                "cause_chain=%s root_type=%s errno=%s errno_name=%s errno_text=%s "
+                "native_tools=%s request_bytes=%d messages_bytes=%d message_count=%d "
+                "tool_count=%d max_message_bytes=%d",
                 upstream.session_id,
                 chat_request.get("model"),
                 "responses" if native_response else "chat_completions",
                 _redacted_endpoint(endpoint),
                 (time.perf_counter() - send_started_at) * 1000,
                 diagnostics["failure_type"],
+                diagnostics["category"],
                 diagnostics["cause_chain"],
                 diagnostics["root_type"],
                 diagnostics["errno"],
@@ -1084,12 +1115,17 @@ class CompletionBridge:
                 call.diagnostic.upstream_end = StreamEnd.CONSUMER_CLOSED.value
                 raise
             except Exception as error:
-                call.diagnostic.upstream_end = (
-                    StreamEnd.TRANSPORT_ERROR.value
-                    if isinstance(error, httpx.TransportError)
-                    else StreamEnd.BRIDGE_ERROR.value
-                )
-                call.diagnostic.failure_type = type(error).__name__
+                if isinstance(error, httpx.TransportError):
+                    call.diagnostic.upstream_end = StreamEnd.TRANSPORT_ERROR.value
+                    _record_transport_failure(
+                        call.diagnostic,
+                        error,
+                        stage=TransportStage.RESPONSE_BODY,
+                        endpoint=endpoint,
+                    )
+                else:
+                    call.diagnostic.upstream_end = StreamEnd.BRIDGE_ERROR.value
+                    call.diagnostic.failure_type = type(error).__name__
                 raise
             finally:
                 try:
@@ -1290,6 +1326,18 @@ def _retryable_internal_rate_limit(upstream: CompletionUpstream, body: bytes) ->
     return not (isinstance(document, Mapping) and isinstance(document.get("error"), Mapping))
 
 
+def _retry_backoff_delay(attempt: int) -> float:
+    base = min(
+        UPSTREAM_RETRY_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1)),
+        UPSTREAM_RETRY_MAX_DELAY_SECONDS,
+    )
+    jitter = base * UPSTREAM_RETRY_JITTER_RATIO
+    return min(
+        random.uniform(max(0.0, base - jitter), base + jitter),
+        UPSTREAM_RETRY_MAX_DELAY_SECONDS,
+    )
+
+
 def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float:
     retry_after = str(response.headers.get(UPSTREAM_RETRY_AFTER_HEADER) or "").strip()
     if retry_after:
@@ -1301,16 +1349,8 @@ def _upstream_retry_delay(response: httpx.Response, attempt: int) -> float:
             except (TypeError, ValueError, OverflowError):
                 delay = -1.0
         if delay >= 0:
-            return min(delay, UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS)
-    base = min(
-        UPSTREAM_RATE_LIMIT_BASE_DELAY_SECONDS * (2 ** max(0, attempt - 1)),
-        UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS,
-    )
-    jitter = base * UPSTREAM_RATE_LIMIT_JITTER_RATIO
-    return min(
-        random.uniform(max(0.0, base - jitter), base + jitter),
-        UPSTREAM_RATE_LIMIT_MAX_DELAY_SECONDS,
-    )
+            return min(delay, UPSTREAM_RETRY_MAX_DELAY_SECONDS)
+    return _retry_backoff_delay(attempt)
 
 
 def _product_error_code(body: bytes) -> str:
@@ -1327,27 +1367,24 @@ def _product_error_code(body: bytes) -> str:
     return code if code in PRODUCT_UPSTREAM_ERROR_CODES else ""
 
 
-def _transport_diagnostics(exc: BaseException) -> dict[str, Any]:
-    """Bounded transport diagnostics: recovers the errno that empty str(ReadError) loses."""
-
-    chain: list[str] = []
-    current: BaseException | None = exc
-    root: BaseException = exc
-    while current is not None and len(chain) < EXCEPTION_CHAIN_LIMIT:
-        root = current
-        chain.append(type(current).__name__)
-        current = current.__cause__ or current.__context__
-    error_number = root.errno if isinstance(root, OSError) else None
-    return {
-        "failure_type": type(exc).__name__,
-        "cause_chain": ">".join(chain),
-        "root_type": type(root).__name__,
-        "errno": error_number,
-        "errno_name": (
-            errno_module.errorcode.get(error_number, "") if error_number is not None else ""
-        ),
-        "errno_text": os.strerror(error_number) if error_number is not None else "",
-    }
+def _record_transport_failure(
+    diagnostic: CompletionDiagnostic,
+    exc: BaseException,
+    *,
+    stage: TransportStage,
+    endpoint: str,
+) -> dict[str, Any]:
+    details = transport_diagnostics(exc)
+    diagnostic.failure_type = details["failure_type"]
+    diagnostic.transport.stage = stage.value
+    diagnostic.transport.category = details["category"]
+    diagnostic.transport.cause_chain = details["cause_chain"]
+    diagnostic.transport.root_type = details["root_type"]
+    diagnostic.transport.errno = details["errno"]
+    diagnostic.transport.errno_name = details["errno_name"]
+    diagnostic.transport.errno_text = details["errno_text"]
+    diagnostic.transport.endpoint = _redacted_endpoint(endpoint)
+    return details
 
 
 def _redacted_endpoint(endpoint: str) -> str:
@@ -1614,6 +1651,7 @@ async def chat_stream_to_responses(
 ) -> AsyncIterator[bytes]:
     response_id = f"resp_{uuid.uuid4().hex}"
     message_id = f"msg_{uuid.uuid4().hex}"
+    reasoning_id = f"rs_{uuid.uuid4().hex}"
     text_parts: list[str] = []
     pending_text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -1621,7 +1659,100 @@ async def chat_stream_to_responses(
     usage: dict[str, Any] = {}
     finish_reason = ""
     possible_stream_error = True
-    yield _sse({"type": "response.created", "response": {"id": response_id}})
+    sequence_number = 0
+    reasoning_started = False
+    reasoning_completed = False
+    message_started = False
+
+    def response_event(payload: dict[str, Any]) -> bytes:
+        nonlocal sequence_number
+        event = {**payload, "sequence_number": sequence_number}
+        sequence_number += 1
+        return _sse(event)
+
+    def message_output_index() -> int:
+        return int(reasoning_started)
+
+    def output_text_part(text: str) -> dict[str, Any]:
+        return {
+            "type": "output_text",
+            "text": text,
+            "annotations": [],
+            "logprobs": [],
+        }
+
+    def start_message() -> list[bytes]:
+        nonlocal message_started
+        if message_started:
+            return []
+        message_started = True
+        output_index = message_output_index()
+        return [
+            response_event(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "id": message_id,
+                        "status": "in_progress",
+                        "content": [],
+                    },
+                }
+            ),
+            response_event(
+                {
+                    "type": "response.content_part.added",
+                    "item_id": message_id,
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": output_text_part(""),
+                }
+            ),
+        ]
+
+    def complete_reasoning() -> list[bytes]:
+        nonlocal reasoning_completed
+        if not reasoning_started or reasoning_completed:
+            return []
+        reasoning_completed = True
+        reasoning_text = "".join(reasoning_parts)
+        summary = {"type": "summary_text", "text": reasoning_text}
+        return [
+            response_event(
+                {
+                    "type": "response.reasoning_summary_text.done",
+                    "item_id": reasoning_id,
+                    "output_index": 0,
+                    "summary_index": 0,
+                    "text": reasoning_text,
+                }
+            ),
+            response_event(
+                {
+                    "type": "response.reasoning_summary_part.done",
+                    "item_id": reasoning_id,
+                    "output_index": 0,
+                    "summary_index": 0,
+                    "part": summary,
+                }
+            ),
+            response_event(
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": {
+                        "type": "reasoning",
+                        "id": reasoning_id,
+                        "status": "completed",
+                        "summary": [summary],
+                    },
+                }
+            ),
+        ]
+
+    yield response_event({"type": "response.created", "response": {"id": response_id}})
     async for line in response.aiter_lines():
         if on_line is not None:
             on_line(line)
@@ -1649,6 +1780,8 @@ async def chat_stream_to_responses(
             continue
         content = delta.get("content")
         if isinstance(content, str) and content:
+            for event in complete_reasoning():
+                yield event
             text_parts.append(content)
             if possible_stream_error:
                 pending_text_parts.append(content)
@@ -1656,16 +1789,63 @@ async def chat_stream_to_responses(
                 stripped = pending_text.lstrip()
                 possible_stream_error = not stripped or stripped.startswith("{")
                 if not possible_stream_error:
-                    yield _sse({"type": "response.output_text.delta", "delta": pending_text})
+                    for event in start_message():
+                        yield event
+                    yield response_event(
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": message_id,
+                            "output_index": message_output_index(),
+                            "content_index": 0,
+                            "delta": pending_text,
+                            "logprobs": [],
+                        }
+                    )
                     pending_text_parts.clear()
             else:
-                yield _sse({"type": "response.output_text.delta", "delta": content})
+                for event in start_message():
+                    yield event
+                yield response_event(
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": message_id,
+                        "output_index": message_output_index(),
+                        "content_index": 0,
+                        "delta": content,
+                        "logprobs": [],
+                    }
+                )
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
         if isinstance(reasoning, str) and reasoning:
+            if not reasoning_started:
+                reasoning_started = True
+                yield response_event(
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {
+                            "type": "reasoning",
+                            "id": reasoning_id,
+                            "status": "in_progress",
+                            "summary": [],
+                        },
+                    }
+                )
+                yield response_event(
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": reasoning_id,
+                        "output_index": 0,
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": ""},
+                    }
+                )
             reasoning_parts.append(reasoning)
-            yield _sse(
+            yield response_event(
                 {
                     "type": "response.reasoning_summary_text.delta",
+                    "item_id": reasoning_id,
+                    "output_index": 0,
                     "delta": reasoning,
                     "summary_index": 0,
                 }
@@ -1683,18 +1863,8 @@ async def chat_stream_to_responses(
                     current["name"] += str(function.get("name"))
                 if function.get("arguments"):
                     current["arguments"] += str(function.get("arguments"))
-    if reasoning_parts:
-        reasoning_text = "".join(reasoning_parts)
-        yield _sse(
-            {
-                "type": "response.output_item.done",
-                "item": {
-                    "type": "reasoning",
-                    "id": f"rs_{uuid.uuid4().hex}",
-                    "summary": [{"type": "summary_text", "text": reasoning_text}],
-                },
-            }
-        )
+    for event in complete_reasoning():
+        yield event
     if text_parts:
         text = "".join(text_parts)
         stream_error = _structured_stream_error(text)
@@ -1715,7 +1885,7 @@ async def chat_stream_to_responses(
                     )
                 ),
             )
-            yield _sse(
+            yield response_event(
                 {
                     "type": "response.failed",
                     "response": {
@@ -1730,24 +1900,59 @@ async def chat_stream_to_responses(
             )
             return
         if pending_text_parts:
-            yield _sse({"type": "response.output_text.delta", "delta": text})
-        yield _sse(
+            for event in start_message():
+                yield event
+            yield response_event(
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_id,
+                    "output_index": message_output_index(),
+                    "content_index": 0,
+                    "delta": text,
+                    "logprobs": [],
+                }
+            )
+        output_index = message_output_index()
+        yield response_event(
+            {
+                "type": "response.output_text.done",
+                "item_id": message_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "text": text,
+                "logprobs": [],
+            }
+        )
+        yield response_event(
+            {
+                "type": "response.content_part.done",
+                "item_id": message_id,
+                "output_index": output_index,
+                "content_index": 0,
+                "part": output_text_part(text),
+            }
+        )
+        yield response_event(
             {
                 "type": "response.output_item.done",
+                "output_index": output_index,
                 "item": {
                     "type": "message",
                     "role": "assistant",
                     "id": message_id,
-                    "content": [{"type": "output_text", "text": text}],
+                    "status": "completed",
+                    "content": [output_text_part(text)],
                 },
             }
         )
+    next_output_index = int(reasoning_started) + int(message_started)
     for index in sorted(tool_calls):
         call = tool_calls[index]
         call_id = call["id"] or f"call_{uuid.uuid4().hex}"
-        yield _sse(
+        yield response_event(
             {
                 "type": "response.output_item.done",
+                "output_index": next_output_index,
                 "item": {
                     "type": "function_call",
                     "id": f"fc_{uuid.uuid4().hex}",
@@ -1757,7 +1962,8 @@ async def chat_stream_to_responses(
                 },
             }
         )
-    yield _sse(
+        next_output_index += 1
+    yield response_event(
         {
             "type": "response.completed",
             "response": {

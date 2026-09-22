@@ -26,6 +26,12 @@ export interface ReviewMarkdownLabels {
   time: string
 }
 
+export interface CompactStepLabels {
+  action: (kind: StepKind) => string
+  sourcePage: (page: string) => string
+  sourceDialog: (page: string, dialog: string) => string
+}
+
 export function formatClockTime(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return UNKNOWN_CLOCK_LABEL
@@ -39,6 +45,18 @@ export function formatClockTime(value: string): string {
 export function reviewTargetLabel(step: RecordingSession['steps'][number]): string {
   if (PAGE_LANDMARK_TAGS.has(step.target.tag) && step.page.label) return step.page.label
   return targetDisplayLabel(step.target)
+}
+
+export function compactStepLabel(
+  step: RecordingSession['steps'][number],
+  index: number,
+  labels: CompactStepLabels
+): string {
+  const page = step.page.label || step.page.title
+  const source = step.page.dialogLabel
+    ? labels.sourceDialog(page, step.page.dialogLabel)
+    : labels.sourcePage(page)
+  return `${index + STEP_NUMBER_OFFSET}. ${source} · ${labels.action(step.kind)} · ${reviewTargetLabel(step)}`
 }
 
 export function composeReviewMarkdown(
@@ -139,8 +157,8 @@ export async function screenshotDataUrls(
   screenshots: RecordingSession['screenshots']
 ): Promise<Readonly<Record<string, string>>> {
   const entries = await Promise.all(screenshots.map(async (screenshot) => {
-    const bytes = new Uint8Array(await screenshot.file.arrayBuffer())
-    const mimeType = screenshot.file.type || 'image/png'
+    const bytes = new Uint8Array(await screenshot.renderedFile.arrayBuffer())
+    const mimeType = screenshot.renderedFile.type || 'image/png'
     return [screenshot.screenshotId, `data:${mimeType};base64,${bytesToBase64(bytes)}`] as const
   }))
   return Object.fromEntries(entries)

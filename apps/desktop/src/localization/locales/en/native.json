@@ -8,5 +8,16 @@
     "saveCopy": "Save a copy",
     "insertImage": "Insert image",
     "images": "Images"
+  },
+  "tray": {
+    "tooltip": "ScholarSeed",
+    "show": "Show window",
+    "quit": "Quit application",
+    "closeTitle": "Close the ScholarSeed window?",
+    "closeMessage": "Close the ScholarSeed window?",
+    "closeDetail": "After minimizing to the tray, agents and background tasks keep running. Quitting the application stops active work.",
+    "minimize": "Minimize to tray",
+    "cancel": "Cancel",
+    "doNotAskAgain": "Do not ask again"
   }
 }

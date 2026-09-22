@@ -90,7 +90,8 @@ export interface LiteratureTask {
   id: string; kind: string; status: string; progress: number; completed_count: number
   total_count: number; error?: string | null; error_code?: string | null; imported_ids?: string[]
 }
-export type LiteratureSearchStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown' | 'empty'
+/** search_interrupted: 重启后磁盘上只剩创建记录、无法恢复执行的检索（serve 读侧投影）。 */
+export type LiteratureSearchStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown' | 'empty' | 'search_interrupted'
 export interface LiteratureSearchPaper {
   url?: string | null
   paper_id: string; title: string; authors: string[]; year: number | null; venue: string

@@ -26,7 +26,6 @@ import type {
   AssistantSelectionActionResult,
   AssistantSelectionStreamOptions,
   AssistantSelectionEvent,
-  AssistantTranslationLanguage,
   AssistantTranslationTarget
 } from '../../contracts/assistant'
 import type {
@@ -620,7 +619,6 @@ export interface StartOneShotRequest extends InvocationIdentity {
 
 export interface StartTranslationRequest extends InvocationIdentity {
   text: string
-  source_language: AssistantTranslationLanguage
   target_language: AssistantTranslationTarget
   source_id?: string
   source_revision?: string | null

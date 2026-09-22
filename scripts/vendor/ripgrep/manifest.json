@@ -4,21 +4,21 @@
     "darwin-arm64": {
       "triple": "aarch64-apple-darwin",
       "file": "rg",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/ripgrep-15.1.0-aarch64-apple-darwin-rg",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/ripgrep/aarch64-apple-darwin/rg",
       "sha256": "4fdf1d8365af224bc70e3c1490d8461d859c37cc70e739a11e987af0215f3e94",
       "bytes": 4048816
     },
     "darwin-x64": {
       "triple": "x86_64-apple-darwin",
       "file": "rg",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/ripgrep-15.1.0-x86_64-apple-darwin-rg",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/ripgrep/x86_64-apple-darwin/rg",
       "sha256": "3bafa7e6ee51ba3ac4ed065883484a309be09b26ea6dad561ae4049bfe049c50",
       "bytes": 4442900
     },
     "win32-x64": {
       "triple": "x86_64-pc-windows-msvc",
       "file": "rg.exe",
-      "url": "https://github.com/alibaba-damo-academy/ScholarSeed/releases/download/runtime-assets-2026.09.22/ripgrep-15.1.0-x86_64-pc-windows-msvc-rg.exe",
+      "url": "https://deep-rd.oss-cn-hangzhou.aliyuncs.com/scholarseed-vendor/vendor/ripgrep/x86_64-pc-windows-msvc/rg.exe",
       "sha256": "decdd4992f3f1b9a5ef9898f1b40ab16886d579d6516b4efd3d5eaa19364e408",
       "bytes": 4266496
     }

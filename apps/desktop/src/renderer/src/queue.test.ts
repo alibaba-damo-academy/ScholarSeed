@@ -302,7 +302,7 @@ test('queue failure codes translate while unknown codes use state-specific fallb
     'runtime_credential_alignment_failed'
   ]) {
     const message = queuedMessageErrorText(errorCode, 'outcome_unknown', translate)
-    assert.equal(message, zh.composer.stillUnknown)
+    assert.equal(message, zh.composer.runtimeTurnFailed)
     assert.notEqual(message, errorCode)
   }
   await instance.changeLanguage('en')

@@ -686,6 +686,7 @@ def create_app(
         models=app.state.model_service,
         pdf=literature_pdf,
         content=content,
+        indexes=pdf_indexes,
     )
     register_workbench_routes(app)
     register_selection_action_routes(app)

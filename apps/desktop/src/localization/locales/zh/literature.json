@@ -358,7 +358,8 @@
       "failed": "失败",
       "interrupted": "已中断",
       "unknown": "状态未知",
-      "empty": "无结果"
+      "empty": "无结果",
+      "search_interrupted": "搜索被中断"
     },
     "elapsedHours": "{{hours}} 小时 {{minutes}} 分 {{seconds}} 秒",
     "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",

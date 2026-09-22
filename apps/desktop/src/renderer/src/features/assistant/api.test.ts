@@ -382,7 +382,7 @@ test('rejected message admission is scoped separately from an active turn failur
     const queued = await sendQueuedMessage('session-1', 'client-2')
     assert.equal(initial?.ok, false)
     assert.equal(queued?.ok, false)
-    assert.equal(failures.length, 2)
+    assert.equal(failures.length, 1)
     for (const failure of failures) {
       assert.equal(failure.type, BACKEND_FAILURE_EVENT)
       assert.equal(failure.detail.sessionId, 'session-1')
@@ -468,7 +468,7 @@ test('generic and translation calls use distinct authenticated Assistant endpoin
       kind: observed.length === 1 ? 'complete' : 'translate',
       project_id: 'project-1',
       source: { source_id: '', source_revision: null },
-      prompt_version: observed.length === 1 ? 'one-shot/v1' : 'translate/v1',
+      prompt_version: observed.length === 1 ? 'one-shot/v1' : 'translate/v2',
       status: 'completed',
       detected_source_language: null,
       target_language: observed.length === 1 ? '' : 'zh-CN',
@@ -493,8 +493,7 @@ test('generic and translation calls use distinct authenticated Assistant endpoin
       client_attempt_id: 'attempt-2',
       project_id: 'project-1',
       text: 'explicit selected text',
-      source_language: 'en',
-      target_language: 'zh-CN',
+      target_language: 'ja',
       source_id: 'paper.pdf'
     })
 
@@ -506,6 +505,8 @@ test('generic and translation calls use distinct authenticated Assistant endpoin
     ])
     assert.equal(observed[0].credentials, 'include')
     assert.equal(observed[1].body.text, 'explicit selected text')
+    assert.equal(observed[1].body.target_language, 'ja')
+    assert.equal('source_language' in observed[1].body, false)
   } finally {
     restore()
   }
@@ -1134,7 +1135,7 @@ test('assistant mutation adapters identify every locally generated request fallb
     }),
     () => patchAssistantContext('session', { expected_revision: 1, project_policy: 'explicit_only', search_scope: 'web', refs: [] }),
     () => importAttachmentToResources('session', 'project', 'attachment', { parent: '', name: 'original.pdf' }),
-    () => startAssistantTranslation({ client_action_id: 'action', client_attempt_id: 'attempt', project_id: 'project', text: '原文', source_language: 'auto', target_language: 'en' }),
+    () => startAssistantTranslation({ client_action_id: 'action', client_attempt_id: 'attempt', project_id: 'project', text: '原文', target_language: 'en' }),
     () => startAssistantSelectionAction({
       action: 'translate', client_action_id: 'action', client_attempt_id: 'attempt',
       project_id: 'project', source_id: 'text.md', source_revision: 'revision',

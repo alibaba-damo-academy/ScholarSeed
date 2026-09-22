@@ -1,22 +1,27 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
-import { translationTarget } from './language.ts'
+import { ASSISTANT_TRANSLATION_TARGETS } from '../../contracts/assistant.ts'
 
-test('translation initially chooses the opposite of the selected dominant language', () => {
-  assert.equal(translationTarget('温度升高后效率降低。'), 'en')
-  assert.equal(translationTarget('The efficiency falls as the temperature rises.'), 'zh')
-  assert.equal(translationTarget('温度升高后效率降低。Efficiency decreased.'), 'en')
+test('resource translation reuses the complete mainstream target catalog', () => {
+  assert.deepEqual(ASSISTANT_TRANSLATION_TARGETS, [
+    'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'pt',
+    'it', 'ru', 'ar', 'hi', 'th', 'vi', 'id', 'tr', 'nl'
+  ])
 })
 
-test('resource translation keeps current source and explicit direction on its independent API', () => {
+test('resource translation keeps current source and exposes only the shared target picker', () => {
   const suggestion = readFileSync(new URL('./Suggestion.tsx', import.meta.url), 'utf8')
   const selection = readFileSync(new URL('../workbench/Selection.tsx', import.meta.url), 'utf8')
   assert.match(selection, /w\('selection\.translate'\)/)
   assert.match(selection, /session\.capabilities\.can_edit && selection\.locator\.kind !== "pdf"/)
   assert.match(selection, /activeAction !== "translate"/)
   assert.doesNotMatch(selection, /POLISH_SUFFIX/)
-  assert.match(suggestion, /target_language: target/)
+  assert.match(suggestion, /target_language: targetLanguage/)
+  assert.match(suggestion, /<TranslationTargetPicker/)
+  assert.match(suggestion, /startsWith\('en'\) \? 'en' : 'zh-CN'/)
+  assert.doesNotMatch(suggestion, /translationTarget\(selectedText\)/)
+  assert.doesNotMatch(suggestion, /suggestion\.toEnglish|suggestion\.toChinese/)
   assert.match(suggestion, /\{selectedText\}/)
   assert.match(suggestion, /stream.current === abort/)
 })

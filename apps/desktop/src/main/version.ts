@@ -4,6 +4,11 @@ const SEMVER_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/
 export const BUILD_NUMBER_PATTERN = /^\d{12}$/
 const BUILD_NUMBER_TIME_ZONE = 'Asia/Shanghai'
 const BUILD_NUMBER_PARTS = ['year', 'month', 'day', 'hour', 'minute'] as const
+export const STARTUP_BUILD_NUMBER = startupBuildNumber(new Date())
+
+export function clientVersion(version: string, buildNumber: string): string {
+  return `${version}-${buildNumber || STARTUP_BUILD_NUMBER}`
+}
 
 /** Display identity for a source run without a packaged build number. */
 export function startupBuildNumber(startedAt: Date): string {

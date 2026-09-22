@@ -5,6 +5,7 @@ import type { PreferenceLanguage } from '../../../../../preferences'
 export const MONACO_FRAME_MESSAGE = 'scholarseed:monaco-frame-ready'
 export const MONACO_FRAME_LANGUAGE_PARAM = 'language'
 export const MONACO_FRAME_TOKEN_PARAM = 'token'
+export const MONACO_FRAME_HOST_ID = 'root'
 
 export interface MonacoRuntime {
   editorFor: (

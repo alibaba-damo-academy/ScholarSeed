@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from service.assistant.domain.language import TranslationTarget
 from service.workbench.domain.selection import SelectionDraftEvidence, SelectionEvidenceReference
 
 
@@ -10,11 +11,6 @@ class ResourceAction(str, Enum):
     EXPLAIN = "explain"
     POLISH = "polish"
     TRANSLATE = "translate"
-
-
-class TranslationTarget(str, Enum):
-    ENGLISH = "en"
-    CHINESE = "zh"
 
 
 class ResourceScope(str, Enum):

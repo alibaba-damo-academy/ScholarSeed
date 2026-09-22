@@ -105,6 +105,8 @@ const RESOURCE_IMPORT_ERROR_KEYS = {
   import_failed: 'resourceImport.errors.importFailed',
   copy_failed: 'resourceImport.errors.copyFailed',
   root_exists: 'resourceImport.errors.rootExists',
+  source_overlap: 'resourceImport.errors.sourceOverlap',
+  source_covers_links: 'resourceImport.errors.sourceCoversLinks',
   disk_full: 'resourceImport.errors.diskFull',
   storage_io_failed: 'resourceImport.errors.storageIoFailed',
   resource_import_interrupted: 'resourceImport.errors.interrupted',

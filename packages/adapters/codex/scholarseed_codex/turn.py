@@ -258,7 +258,6 @@ class CodexTurnRuntime:
             phase = self.message_phases.get(item_id)
             if phase is None and item_id:
                 self.pending_message_deltas.setdefault(item_id, []).append(text)
-                return
             self.streamed_messages.add(item_id)
             payload: dict[str, JsonValue] = {"text": text}
             if phase is not None:
@@ -971,7 +970,10 @@ class CodexTurnRuntime:
         if pending is None:
             return
         item_id, text = pending
-        await self._emit_assistant_message(turn_id, item_id, text, phase)
+        if item_id not in self.streamed_messages:
+            await self._emit_assistant_message(turn_id, item_id, text, phase)
+        elif phase == MessagePhase.FINAL_ANSWER:
+            self.final_text = text
         await self._complete_assistant_message(turn_id, item_id, text, phase)
 
     async def _flush_pending_message_deltas(
@@ -981,7 +983,7 @@ class CodexTurnRuntime:
         phase: MessagePhase,
     ) -> None:
         pending = self.pending_message_deltas.pop(item_id, [])
-        if pending:
+        if pending and item_id not in self.streamed_messages:
             await self._emit_assistant_message(turn_id, item_id, "".join(pending), phase)
 
     async def _complete_assistant_message(
@@ -1142,21 +1144,18 @@ class CodexTurnRuntime:
             if item_id and phase is not None:
                 self.message_phases[item_id] = phase
             if phase is None:
-                if text and item_id not in self.streamed_messages:
+                if text:
                     await self._flush_unknown_message(
                         turn_id,
                         MessagePhase.COMMENTARY,
                     )
                     self.pending_unknown_messages[turn_id] = (item_id, text)
-                elif text:
-                    self.final_text = text
-                    await self._complete_assistant_message(turn_id, item_id, text, phase)
                 return
             await self._flush_unknown_message(
                 turn_id,
                 MessagePhase.COMMENTARY,
             )
-            if text and (item_id not in self.streamed_messages or pending):
+            if text and item_id not in self.streamed_messages:
                 await self._emit_assistant_message(turn_id, item_id, text, phase)
             elif text and phase != MessagePhase.COMMENTARY:
                 self.final_text = text

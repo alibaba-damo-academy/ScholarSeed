@@ -549,10 +549,12 @@ export function Composer({
     documents: Object.keys(documents.tabs).length > 0
   })
   const composing = React.useRef(false)
+  const submissionInFlight = React.useRef(false)
   const composerInputRef = React.useRef<HTMLTextAreaElement>(null)
   const attachmentInputRef = React.useRef<HTMLInputElement>(null)
   const dragDepthRef = React.useRef(0)
   const [attaching, setAttaching] = React.useState(false)
+  const [submittingMessage, setSubmittingMessage] = React.useState(false)
   const [loginPromptOpen, setLoginPromptOpen] = React.useState(false)
   const [draggingFiles, setDraggingFiles] = React.useState(false)
   const [queuedActionId, setQueuedActionId] = React.useState<string | null>(
@@ -1495,9 +1497,9 @@ export function Composer({
     return true
   }
 
-  const submit = async (
-    message = text,
-    references = pendingRefs
+  const submitOnce = async (
+    message: string,
+    references: ComposerReference[]
   ): Promise<boolean> => {
     // Fail closed at the action boundary as well as through disabled UI.  This
     // also covers Enter and the desktop driver during a live/authorization turn.
@@ -1974,6 +1976,19 @@ export function Composer({
     return true
   }
 
+  const submit = (
+    message = text,
+    references = pendingRefs
+  ): Promise<boolean> => {
+    if (submissionInFlight.current) return Promise.resolve(false)
+    submissionInFlight.current = true
+    setSubmittingMessage(true)
+    return submitOnce(message, references).finally(() => {
+      submissionInFlight.current = false
+      setSubmittingMessage(false)
+    })
+  }
+
   React.useEffect(() => {
     window.__scholarseedSubmitMessage = (message: string) => submit(message, [])
     return () => {
@@ -2075,7 +2090,6 @@ export function Composer({
       syncQueue()
       if (queued.state === 'waiting_resources' || queued.state === 'submitting') return
       if (queued.state === 'outcome_unknown') {
-        set({ foregroundError: feedback('components', 'composer.stillUnknown') })
         return
       }
     }
@@ -2114,7 +2128,7 @@ export function Composer({
             (item) => item.queuedMessageId !== queuedMessageId
           )
         }))
-        await act.loadAiContext(sessionId)
+        void act.loadAiContext(sessionId)
         return
       }
       await refreshQueuedMessages(sessionId)
@@ -2196,9 +2210,15 @@ export function Composer({
           return
         }
         await refreshQueuedMessages(sessionId)
+        if (result?.reason === QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED) {
+          setQueuedActionId(null)
+          return
+        }
         set({
           foregroundError: feedback('components', 'composer.adjustFailed', {
-            error: result?.applicationFailure ? requestFailureFeedback(result.applicationFailure) : result?.reason != null ? String(result.reason) : feedback('components', 'composer.stateChanged')
+            error: result?.applicationFailure
+              ? requestFailureFeedback(result.applicationFailure)
+              : queuedMessageErrorText(result?.reason ?? '', queued.state, t)
           })
         })
         setQueuedActionId(null)
@@ -2213,9 +2233,15 @@ export function Composer({
           return
         }
         await refreshQueuedMessages(sessionId)
+        if (result?.error === QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED) {
+          setQueuedActionId(null)
+          return
+        }
         set({
           foregroundError: feedback('components', 'composer.pendingFailed', {
-            error: result?.applicationFailure ? requestFailureFeedback(result.applicationFailure) : result?.error != null ? String(result.error) : feedback('components', 'composer.stateChanged')
+            error: result?.applicationFailure
+              ? requestFailureFeedback(result.applicationFailure)
+              : queuedMessageErrorText(result?.error ?? '', queued.state, t)
           })
         })
         setQueuedActionId(null)
@@ -2727,7 +2753,7 @@ export function Composer({
                   {!atRoot &&
                     !skillRowsLoading &&
                     !contextCandidatesLoading && (
-                      <span className="min-w-[18px] rounded-full bg-[var(--bg-3)] px-[6px] py-px text-center text-[9px] text-[var(--text-3)] [font-variant-numeric:tabular-nums]">
+                      <span className="min-w-[18px] rounded-full bg-[var(--bg-3)] px-[6px] py-px text-center text-[9px] text-[var(--text-3)]">
                         {atSkill
                           ? `${skillCandidates.length}${matchedSkills.length > AT_CANDIDATE_LIMIT ? '+' : ''}`
                           : `${contextCandidates.length}${matchedContextCandidates.length > AT_CANDIDATE_LIMIT ? '+' : ''}`}
@@ -3605,24 +3631,30 @@ export function Composer({
                 <Button
                   data-testid="composer-send"
                   data-state={
-                    launching
+                    submittingMessage
+                      ? 'submitting'
+                      : launching
                       ? 'opening'
                       : running || interrupting
                         ? 'queueing'
                         : 'idle'
                   }
-                  aria-busy={launching}
+                  aria-busy={launching || submittingMessage}
                   aria-label={
                     running || interrupting
                       ? RUNNING_SEND_HINT_TITLE
                       : t('composer.sendMessage')
                   }
                   onClick={() => void submit()}
-                  disabled={!canSend}
+                  disabled={!canSend || submittingMessage}
                   variant={surface === 'assistant' ? 'primary' : 'ghostIcon'}
                   size={surface === 'assistant' ? 'md' : 'icon'}
                   unstyled
-                  className={sendButtonClass(surface, canSend, launching)}
+                  className={sendButtonClass(
+                    surface,
+                    canSend,
+                    launching || submittingMessage
+                  )}
                   title={
                     running || interrupting
                       ? RUNNING_SEND_HINT_TITLE
@@ -3637,7 +3669,7 @@ export function Composer({
                           : t('composer.sendMessage')
                   }
                 >
-                  {launching ? (
+                  {launching || submittingMessage ? (
                     <Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />
                   ) : (
                     <Icon name="send" size={16} sw={2} color="currentColor" />

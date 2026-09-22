@@ -21,7 +21,7 @@ Current source:
 - macOS archive: `texlive-2026-universal-darwin.tar.gz` (top-level member `texlive/`)
 - Windows archive: `texlive-2026-windows.tar.gz` (top-level member `texlive/`)
 - archive URL, byte length and SHA-256: see `manifest.json`
-- archives are published as GitHub Release assets and are not stored in Git or Git LFS
+- archives are published as public-read OSS objects and are not stored in Git or Git LFS
 - macOS extracted tree: 306 MB; archive: 117 MB
 - licenses: `texlive/LICENSE.TL` and `texlive/LICENSE.CTAN` inside the archive;
   per-package licenses ship with their own files

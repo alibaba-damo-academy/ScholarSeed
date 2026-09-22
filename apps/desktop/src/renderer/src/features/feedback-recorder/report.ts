@@ -224,7 +224,7 @@ export function buildRecordingReport(
       screenshotId: screenshot.screenshotId,
       ...(screenshot.stepId ? { stepId: screenshot.stepId } : {}),
       note: screenshot.note,
-      filename: screenshot.file.name
+      filename: screenshot.renderedFile.name
     })),
     summary,
     truncated: session.truncated

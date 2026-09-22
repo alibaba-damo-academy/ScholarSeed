@@ -320,6 +320,27 @@ export async function fetchResourceReviewBatch(
   } catch { return null }
 }
 
+const ACTIVE_REVIEW_BATCH_STATES: readonly ResourceReviewBatchState[] = ['open', 'applying', 'failed']
+
+export async function fetchResourceReviewBatchForPath(
+  project: string,
+  path: string
+): Promise<ResourceReviewBatch | null> {
+  for (const state of ACTIVE_REVIEW_BATCH_STATES) {
+    let cursor = ''
+    do {
+      const page = await fetchResourceReviewBatches(project, state, cursor)
+      if (!page) return null
+      const batch = page.items.find((candidate) => candidate.members.some((member) => (
+        member.path === path && member.state !== 'completed'
+      )))
+      if (batch) return batch
+      cursor = page.next_cursor ?? ''
+    } while (cursor)
+  }
+  return null
+}
+
 export async function hasDirtyReviewEditor(
   projectId: string,
   projectPath: string,

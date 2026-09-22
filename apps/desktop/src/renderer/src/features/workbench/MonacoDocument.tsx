@@ -40,7 +40,7 @@ import { formatTextOnSave } from './format'
 import { languageFor } from './language'
 import { encodeTextForSave, textForMonaco } from './text'
 import './editor.css'
-import { editorPerformanceFor } from './limits'
+import { countEditorLines, editorPerformanceFor } from './limits'
 import { restoreView, saveView } from './monaco'
 import { MonacoFrame } from './monaco/host'
 import type { MonacoFrameContext, MonacoRuntime } from './monaco/contract'
@@ -56,20 +56,25 @@ import {
 
 function editorSelectionViewport(
   editor: Monaco.editor.IStandaloneCodeEditor,
-  selection: Monaco.Selection
+  selection: Monaco.Selection,
+  frameElement: HTMLIFrameElement
 ): SelectionViewport | null {
   const host = editor.getDomNode()
   const end = editor.getScrolledVisiblePosition(selection.getEndPosition())
   if (!host || !end) return null
   const start = editor.getScrolledVisiblePosition(selection.getStartPosition()) ?? end
   const bounds = host.getBoundingClientRect()
-  const left = bounds.left + Math.min(start.left, end.left)
-  const top = bounds.top + Math.min(start.top, end.top)
-  const right = bounds.left + Math.max(start.left, end.left) + 1
-  const bottom = bounds.top + Math.max(start.top + start.height, end.top + end.height)
+  const frameBounds = frameElement.getBoundingClientRect()
+  const left = frameBounds.left + bounds.left + Math.min(start.left, end.left)
+  const top = frameBounds.top + bounds.top + Math.min(start.top, end.top)
+  const right = frameBounds.left + bounds.left + Math.max(start.left, end.left) + 1
+  const bottom = frameBounds.top + bounds.top + Math.max(start.top + start.height, end.top + end.height)
   return selectionViewport(
     { left, top, right, bottom, width: right - left, height: bottom - top },
-    { x: bounds.left + end.left + 1, y: bounds.top + end.top + end.height }
+    {
+      x: frameBounds.left + bounds.left + end.left + 1,
+      y: frameBounds.top + bounds.top + end.top + end.height
+    }
   )
 }
 
@@ -262,7 +267,7 @@ export function MonacoDocument({
     const monaco = frame.runtime.monaco
     const isMarkdownSource = session.viewer === 'markdown' && viewKind === 'preview'
     const lightweight = session.lightweightText
-    const performance = editorPerformanceFor(session.bytes.byteLength)
+    const performance = editorPerformanceFor(session.bytes.byteLength, countEditorLines(session.text))
     const editor = frame.runtime.editorFor(host, sessionId, session.source.path, session.text, {
       readOnly: (!isMarkdownSource && viewKind === 'preview') || !session.capabilities.can_edit,
       editContext: false,
@@ -312,7 +317,7 @@ export function MonacoDocument({
         return
       }
       const current = controller.getSnapshot().sessions[sessionId]
-      const viewport = editorSelectionViewport(editor, selection)
+      const viewport = editorSelectionViewport(editor, selection, frame.element)
       if (!current || !viewport) {
         controller.setSelection(tabId, null)
         return

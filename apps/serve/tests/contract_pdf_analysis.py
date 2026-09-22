@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
@@ -52,6 +53,7 @@ from service.literature.service.analysis import (
     validate_result,
     verify_evidence,
 )
+from service.platform.citations import LITERATURE_STORAGE, PdfPageContent
 from service.platform.inference import (
     ModelAttachment,
     ModelInvocationLimits,
@@ -62,11 +64,107 @@ from service.platform.inference import (
 from service.platform.pdf import PdfPageLayout, PdfRect, PdfTextBlock, pdf_page_layout
 from service.settings.capabilities import GATEWAY_CONNECTION
 from service.settings.catalog import DEEPRD_GATEWAY_RESPONSES_URL
+from service.workbench.service.extraction import extract
 
 GATEWAY_MODEL = "qwen3.8-max"
 
 
 class PdfAnalysisContracts(unittest.TestCase):
+    def test_detected_region_uses_exact_literature_attachment_and_shared_index(self):
+        with pdf_fixture.open() as document:
+            page = document.new_page(width=600, height=800)
+            page.insert_text((170, 100), "L(theta) = E[r] - beta * D_KL(pi || pi_ref)", fontsize=13)
+            payload = document.tobytes()
+        detected = next(region for region in extract(payload).regions if region.kind == "formula")
+        repository = Mock()
+        repository.get.return_value = SimpleNamespace(title="Paper")
+        pdf = Mock()
+        pdf.attachment.return_value = SimpleNamespace(name="supplement.pdf")
+        pdf.read_attachment.return_value = (
+            payload,
+            "application/pdf",
+            hashlib.sha256(payload).hexdigest(),
+        )
+        indexes = Mock()
+        indexes.pages.return_value = (PdfPageContent(page=1, fragments=(), regions=(detected,)),)
+        request = AnalysisRequest(
+            literature_id="paper",
+            attachment_id="supplement",
+            revision="sha256:" + hashlib.sha256(payload).hexdigest(),
+            model_key="vision-model",
+            kind=ActionKind.FORMULA_LATEX,
+            page=1,
+            region_id=detected.region_id,
+            visual_kind="formula",
+            client_action_id="formula",
+            client_attempt_id="formula-attempt",
+        )
+
+        prepared = prepare(request, repository, pdf, indexes=indexes)
+
+        self.assertEqual(
+            prepared.request.rect,
+            (
+                detected.quad[0],
+                detected.quad[1],
+                detected.quad[2] - detected.quad[0],
+                detected.quad[3] - detected.quad[1],
+            ),
+        )
+        pdf.read_attachment.assert_called_once_with("paper", "supplement")
+        pdf.read.assert_not_called()
+        indexed_document = indexes.pages.call_args.args[0]
+        self.assertEqual(indexed_document.path, "paper/supplement")
+        self.assertEqual(indexed_document.title, "supplement.pdf")
+        self.assertEqual(indexed_document.revision, request.revision)
+        self.assertEqual(indexed_document.storage_scope, LITERATURE_STORAGE)
+        self.assertEqual(request.source_id, "paper/supplement")
+
+    def test_formula_latex_uses_only_a_revision_bound_detected_region(self):
+        with pdf_fixture.open() as document:
+            page = document.new_page(width=600, height=800)
+            page.insert_text((170, 100), "L(theta) = E[r] - beta * D_KL(pi || pi_ref)", fontsize=13)
+            payload = document.tobytes()
+        detected = next(region for region in extract(payload).regions if region.kind == "formula")
+        repository = Mock()
+        repository.get.return_value = Mock(title="Paper")
+        pdf = Mock()
+        pdf.attachment.return_value = SimpleNamespace(name="paper.pdf")
+        pdf.read_attachment.return_value = (
+            payload,
+            "application/pdf",
+            hashlib.sha256(payload).hexdigest(),
+        )
+        request = AnalysisRequest(
+            literature_id="paper",
+            attachment_id="primary",
+            revision="sha256:" + hashlib.sha256(payload).hexdigest(),
+            model_key="vision-model",
+            kind=ActionKind.FORMULA_LATEX,
+            page=1,
+            region_id=detected.region_id,
+            visual_kind="formula",
+            client_action_id="formula",
+            client_attempt_id="formula-attempt",
+        )
+        indexes = Mock()
+        indexes.pages.return_value = (PdfPageContent(page=1, fragments=(), regions=(detected,)),)
+
+        prepared = prepare(request, repository, pdf, indexes=indexes)
+        self.assertEqual(prepared.compiled.attachments[0].media_type, "image/png")
+        self.assertIsNotNone(prepared.request.rect)
+        result = validate_result(json.dumps({"latex": r"L(\theta)=\mathbb{E}[r]"}), prepared)
+        self.assertEqual(result["latex"], "L(\\theta)=\\mathbb{E}[r]")
+        self.assertEqual(result["region_id"], detected.region_id)
+
+        with self.assertRaisesRegex(AnalysisError, AnalysisErrorCode.REGION_MISSING.value):
+            prepare(
+                request.model_copy(update={"region_id": "r_missing"}),
+                repository,
+                pdf,
+                indexes=indexes,
+            )
+
     def test_project_figure_reads_content_and_preserves_identity(self):
         request = AnalysisRequest(
             literature_id="",
@@ -519,7 +617,7 @@ class PdfAnalysisContracts(unittest.TestCase):
         ):
             result = {
                 "source_language": "en",
-                "target_language": "zh",
+                "target_language": "zh-CN",
                 "pages": translated_pages,
             }
             with self.assertRaises(ValueError):
@@ -528,19 +626,28 @@ class PdfAnalysisContracts(unittest.TestCase):
     def test_page_translation_complete(self):
         result = {
             "source_language": "en",
-            "target_language": "zh",
+            "target_language": "zh-CN",
             "pages": [
                 {"page": 1, "blocks": [{"source_text": "First page", "translated_text": "译文"}]}
             ],
         }
         self.assertEqual(len(validate_result(json.dumps(result), self.prepared())["pages"]), 1)
 
-    def test_invalid_language_rejected(self):
-        with self.assertRaises(ValueError):
-            validate_result(
-                json.dumps({"source_language": "fr", "target_language": "zh", "text": "test"}),
-                self.prepared(ActionKind.WORD_TRANSLATION),
-            )
+    def test_detected_source_language_accepts_mainstream_languages(self):
+        prepared = self.prepared(ActionKind.WORD_TRANSLATION)
+        prepared = replace(
+            prepared,
+            request=prepared.request.model_copy(
+                update={"text": "Bonjour", "target_language": TranslationDirection.JAPANESE}
+            ),
+        )
+        result = {
+            "source_language": "fr",
+            "target_language": "ja",
+            "text": "こんにちは",
+            "blocks": [{"source_text": "Bonjour", "translated_text": "こんにちは"}],
+        }
+        self.assertEqual(validate_result(json.dumps(result), prepared)["source_language"], "fr")
 
     def test_summary_requires_structured_content(self):
         with self.assertRaises(ValueError):
@@ -556,7 +663,7 @@ class PdfAnalysisContracts(unittest.TestCase):
         )
         value = {
             "source_language": "en",
-            "target_language": "zh",
+            "target_language": "zh-CN",
             "text": "第一页",
             "blocks": [{"source_text": "First page", "translated_text": "第一页"}],
         }
@@ -599,9 +706,9 @@ class PdfAnalysisContracts(unittest.TestCase):
         self.assertEqual(result["modules"]["summary"]["paper_type"], "研究论文")
         self.assertFalse(result["modules"]["summary"]["contribution"]["uncertain"])
 
-    def test_manual_direction_overrides_mixed_or_same_language_detection(self):
-        for source in ("mixed", "en", "zh"):
-            for target in (TranslationDirection.TO_ENGLISH, TranslationDirection.TO_CHINESE):
+    def test_explicit_target_overrides_mixed_or_same_language_detection(self):
+        for source in ("mixed", "en", "zh-CN", "fr"):
+            for target in (TranslationDirection.ENGLISH, TranslationDirection.JAPANESE):
                 prepared = self.prepared(ActionKind.WORD_TRANSLATION)
                 prepared = replace(
                     prepared,
@@ -618,7 +725,7 @@ class PdfAnalysisContracts(unittest.TestCase):
                 self.assertTrue(
                     validate_result(json.dumps(result), prepared)["blocks"][0]["located"]
                 )
-                result["target_language"] = "zh" if target.value == "en" else "en"
+                result["target_language"] = "ja" if target.value == "en" else "en"
                 with self.assertRaises(AnalysisError) as raised:
                     validate_result(json.dumps(result), prepared)
                 self.assertEqual(

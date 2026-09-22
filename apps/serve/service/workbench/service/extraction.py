@@ -18,18 +18,20 @@ from pdfplumber.page import Page
 
 from service.platform.citations import (
     PDF_CAPTION,
+    PDF_TEXT_EXCLUDE,
     CitationPage,
     PdfFragment,
     PdfIndex,
     PdfOmission,
     PdfSpan,
+    PdfVisualRegion,
 )
 from service.platform.pdf import pdf_image_bounds
 from service.workbench.service.fonts import GlyphResourceManager
 from service.workbench.service.layout import classify
 from service.workbench.service.sentences import TRUNCATED, SentenceBlock, assemble, sentence_ends
 
-EXTRACTOR_VERSION = f"pdfplumber-{pdfplumber.__version__}/pdfium-images/captions-spans-v11"
+EXTRACTOR_VERSION = f"pdfplumber-{pdfplumber.__version__}/pdfium-images/visual-regions-v14"
 MAX_DOCUMENT_FRAGMENTS = 100_000
 QUARTER_TURN = 90
 FULL_TURN = 360
@@ -200,6 +202,7 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
     blocks: list[SentenceBlock] = []
     unavailable: list[int] = []
     omissions: list[PdfOmission] = []
+    visual_regions: list[PdfVisualRegion] = []
     native_regions: list[CitationPage] = []
     characters = 0
     image_pages = pdf_image_bounds(payload)
@@ -242,15 +245,40 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
             )
             layout = classify(page, chars, images=images)
             excluded = {ordinal for ordinal, char in enumerate(chars) if layout.omitted(char)}
+            seen_regions: set[tuple[str, tuple[float, ...]]] = set()
             for region in layout.regions:
-                native_regions.append(_page_geometry(region.bounds, bounds, page.page_number))
-                omissions.append(
-                    PdfOmission(
-                        region.kind,
-                        region.reason,
-                        (_page_geometry(region.bounds, bounds, page.page_number, rotation),),
-                    )
-                )
+                displayed = _page_geometry(region.bounds, bounds, page.page_number, rotation)
+                quad = displayed.quads[0]
+                if region.interactive:
+                    region_key = (region.kind, quad)
+                    if region_key not in seen_regions:
+                        seen_regions.add(region_key)
+                        visual_regions.append(
+                            PdfVisualRegion(
+                                "r_"
+                                + hashlib.sha256(
+                                    json.dumps(
+                                        [
+                                            EXTRACTOR_VERSION,
+                                            revision,
+                                            page.page_number,
+                                            region.kind,
+                                            quad,
+                                        ],
+                                        separators=(",", ":"),
+                                    ).encode()
+                                ).hexdigest(),
+                                region.kind,
+                                region.reason,
+                                region.text_policy,
+                                page.page_number,
+                                quad,
+                            )
+                        )
+                if region.text_policy == PDF_TEXT_EXCLUDE:
+                    native = _page_geometry(region.bounds, bounds, page.page_number)
+                    native_regions.append(native)
+                    omissions.append(PdfOmission(region.kind, region.reason, (displayed,)))
             # pdfminer layout boxes preserve column boundaries. Unassigned characters
             # are not folded into an arbitrary full-page paragraph.
             assigned: set[int] = set()
@@ -380,7 +408,15 @@ def extract(payload: bytes, start_page: int = 0, end_page: int = 0) -> PdfIndex:
         )
         for item in assembled
     )
-    return PdfIndex(identity, revision, indexed, page_count, tuple(unavailable), tuple(omissions))
+    return PdfIndex(
+        identity,
+        revision,
+        indexed,
+        page_count,
+        tuple(unavailable),
+        tuple(omissions),
+        tuple(visual_regions),
+    )
 
 
 def decode_index(payload: dict) -> PdfIndex:
@@ -416,6 +452,17 @@ def decode_index(payload: dict) -> PdfIndex:
                 ),
             )
             for item in payload["omissions"]
+        ),
+        tuple(
+            PdfVisualRegion(
+                item["region_id"],
+                item["kind"],
+                item["reason"],
+                item["text_policy"],
+                int(item["page"]),
+                tuple(item["quad"]),
+            )
+            for item in payload.get("regions", [])
         ),
     )
 

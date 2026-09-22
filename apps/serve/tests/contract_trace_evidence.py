@@ -215,6 +215,30 @@ class TraceEvidenceContract(unittest.TestCase):
             self.assertEqual(response["attributes"]["decision"], OPTION)
             self.assertIs(response["attributes"]["cancelled"], False)
 
+    def test_transport_failure_details_survive_portable_export(self) -> None:
+        details = {
+            "phase": "finished",
+            "failure_type": "ConnectError",
+            "transport_stage": "request",
+            "transport_category": "dns",
+            "transport_cause_chain": "ConnectError>gaierror",
+            "transport_root_type": "gaierror",
+            "transport_errno": -2,
+            "transport_errno_name": "EAI_NONAME",
+            "transport_errno_text": "",
+            "transport_endpoint": "https://provider.example/v1/responses",
+        }
+        self.trace.completion(details)
+        original = self.events()
+        bundle = diagnostic_bundle([self.trace.path], session_id=SESSION, versions={})
+        with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+            exported = [json.loads(line) for line in archive.read("trace.jsonl").splitlines()]
+        for rows in (original, exported):
+            event = next(row for row in rows if row["name"] == "model_bridge.diagnostic")
+            for key, value in details.items():
+                if key != "phase" or rows is original:
+                    self.assertEqual(event["attributes"].get(key), value)
+
     def test_cli_summary_requires_outcome_and_preserves_cancellation(self) -> None:
         self.runtime(RuntimeEventKind.TURN_STARTED, "pending", {})
         for kind, _, _ in OUTCOMES:

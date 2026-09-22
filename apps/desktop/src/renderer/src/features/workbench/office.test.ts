@@ -138,6 +138,16 @@ test('Office runtime errors do not rewrite completed font warmup as a font failu
   assert.doesNotMatch(source, /loading\.hidden=false;warmup\('error'/)
 })
 
+test('Office startup reports stable warmup failure categories', () => {
+  assert.match(source, /fail\('font-permission'/)
+  assert.match(source, /failureReason='font-catalog'/)
+  assert.match(source, /failureReason='font-read'/)
+  assert.match(source, /fail\('runtime-assets'/)
+  assert.match(source, /fail\('runtime-initialization'/)
+  assert.match(source, /fail\('runtime-execution'/)
+  assert.doesNotMatch(source, /warmup\('error',\{error:'zeta-/)
+})
+
 test('Office document switches hide the previous canvas and correlate readiness to the active binding', () => {
   assert.match(source, /canvas\.style\.visibility='hidden'/)
   assert.match(source, /loading\.hidden=false/)

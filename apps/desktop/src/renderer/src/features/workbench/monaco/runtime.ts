@@ -9,12 +9,17 @@ import 'monaco-editor/editor/contrib/linesOperations/browser/linesOperations'
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import '@fontsource/ibm-plex-mono/600.css'
+import './frame.css'
 
 import { languageFor } from '../language'
+import { registerDocumentResourceReclaimer } from '../reclaim'
 import { textForMonaco } from '../text'
 import '../syntax'
+import { sweepModels } from './models'
 
 const models = new Map<string, monaco.editor.ITextModel>()
+
+registerDocumentResourceReclaimer((activeSessionIds) => sweepModels(models, activeSessionIds))
 
 const monacoHost = self as typeof self & {
   MonacoEnvironment: { getWorker: () => Worker }

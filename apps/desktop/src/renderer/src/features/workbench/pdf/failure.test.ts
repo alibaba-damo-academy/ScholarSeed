@@ -52,10 +52,10 @@ test('every backend PDF application error code has a translation in both languag
   }
 })
 
-test('image capability failures tell users to switch to a multimodal model in both languages', async () => {
+test('image capability failures tell users to select a model that declares image input support', async () => {
   const expected = {
-    zh: '当前模型不支持图片输入，请切换到支持图片输入的多模态模型后重试。',
-    en: 'The current model does not support image input. Switch to a multimodal model that supports images, then try again.'
+    zh: '当前模型未声明支持图片输入，请切换支持图片的模型。',
+    en: 'The current model does not declare image input support. Select a model that supports images.'
   }
   for (const language of ['zh', 'en'] as const) {
     const i18n = await translator(language)

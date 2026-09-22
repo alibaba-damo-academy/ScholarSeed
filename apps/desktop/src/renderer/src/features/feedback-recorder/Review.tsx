@@ -31,6 +31,7 @@ import {
   type ReviewMarkdownLabels
 } from './markdown'
 import { writeClipboardContent, writeClipboardImage } from '../../components/primitive/clipboard'
+import { Icon } from '../../icons'
 
 const STEP_NUMBER_OFFSET = 1
 const STEP_ACTION_TONES: Record<StepKind, 'brand' | 'neutral' | 'success' | 'warning'> = {
@@ -55,6 +56,7 @@ interface ReviewProps {
   summary: SummaryFields
   onCancel: () => void
   onDeleteScreenshot: (screenshotId: string) => void
+  onEditScreenshot: (screenshotId: string) => void
   onNoteChange: (stepId: string, text: string) => void
   onScreenshotNoteChange: (screenshotId: string, text: string) => void
   onSubmit: () => void
@@ -64,12 +66,12 @@ interface ReviewProps {
 interface ScreenshotEditorProps {
   screenshot: RecordedScreenshot
   onDelete: (screenshotId: string) => void
+  onEdit: (screenshotId: string) => void
   onNoteChange: (screenshotId: string, text: string) => void
 }
 
-function ScreenshotEditor({ screenshot, onDelete, onNoteChange }: ScreenshotEditorProps): React.JSX.Element {
+function ScreenshotEditor({ screenshot, onDelete, onEdit, onNoteChange }: ScreenshotEditorProps): React.JSX.Element {
   const { t } = useTranslation('components')
-  const [zoomed, setZoomed] = React.useState(false)
   const [copying, setCopying] = React.useState(false)
   const [copied, setCopied] = React.useState(false)
   const copy = async (): Promise<void> => {
@@ -77,20 +79,28 @@ function ScreenshotEditor({ screenshot, onDelete, onNoteChange }: ScreenshotEdit
     setCopying(true)
     setCopied(false)
     try {
-      await writeClipboardImage(screenshot.file)
+      await writeClipboardImage(screenshot.renderedFile)
       setCopied(true)
     } finally {
       setCopying(false)
     }
   }
   return (
-    <>
     <div
       className="space-y-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] p-[var(--vds-space-3)]"
       data-testid={`feedback-recorder-step-screenshot-${screenshot.screenshotId}`}
     >
-      <Button variant="ghost" className="!h-auto !w-full !p-0" aria-label={t('feedbackRecorder.review.zoomScreenshot')} onClick={() => setZoomed(true)}>
+      <Button
+        variant="ghost"
+        className="group relative !h-auto !w-full overflow-hidden !p-0"
+        aria-label={t('feedbackRecorder.review.editScreenshot')}
+        onClick={() => onEdit(screenshot.screenshotId)}
+      >
         <img className="max-h-64 w-full rounded-[var(--vds-radius-2)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] object-contain" src={screenshot.previewUrl} alt={t('feedbackRecorder.review.screenshotAlt')} />
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-[var(--vds-space-2)] bg-[var(--vds-other-overlay-1)] text-sm font-medium text-[var(--vds-text-primary)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+          <Icon name="edit-square" size={16} />
+          {t('feedbackRecorder.review.editScreenshot')}
+        </span>
       </Button>
       <Textarea
         label={t('feedbackRecorder.review.screenshotNote')}
@@ -103,20 +113,6 @@ function ScreenshotEditor({ screenshot, onDelete, onNoteChange }: ScreenshotEdit
         <Button variant="secondary" onClick={() => onDelete(screenshot.screenshotId)}>{t('feedbackRecorder.review.deleteScreenshot')}</Button>
       </div>
     </div>
-    <Dialog open={zoomed} onOpenChange={setZoomed}>
-      <DialogPortal>
-        <DialogContent
-          aria-label={t('feedbackRecorder.review.zoomScreenshot')}
-          className="!top-0 !left-0 !z-[var(--vds-z-feedback-recorder-nested-dialog)] !h-screen !w-screen !max-w-none !translate-x-0 !translate-y-0 !transform-none !flex !flex-col !rounded-none !border-0 !p-[var(--vds-space-4)]"
-          overlayClassName="!z-[var(--vds-z-feedback-recorder-nested-overlay)]"
-        >
-          <DialogHeader><DialogTitle>{t('feedbackRecorder.review.zoomScreenshot')}</DialogTitle></DialogHeader>
-          <img className="min-h-0 min-w-0 flex-1 rounded-[var(--vds-radius-2)] border border-[var(--vds-border-default)] object-contain" src={screenshot.previewUrl} alt={t('feedbackRecorder.review.screenshotAlt')} />
-          <DialogFooter><Button variant="secondary" loading={copying} onClick={() => void copy()}>{copied ? t('feedbackRecorder.review.copied') : t('feedbackRecorder.review.copyScreenshot')}</Button></DialogFooter>
-        </DialogContent>
-      </DialogPortal>
-    </Dialog>
-    </>
   )
 }
 
@@ -129,6 +125,7 @@ export function Review({
   summary,
   onCancel,
   onDeleteScreenshot,
+  onEditScreenshot,
   onNoteChange,
   onScreenshotNoteChange,
   onSubmit,
@@ -159,14 +156,18 @@ export function Review({
       <DialogPortal>
         <DialogContent
           hideCloseButton
-          className="!z-[var(--vds-z-feedback-recorder-dialog)] !flex !h-[calc(100vh-32px)] !w-[calc(100vw-32px)] !max-w-none flex-col gap-[var(--vds-space-3)] overflow-hidden !p-[var(--vds-space-4)]"
+          className="![inset:0] !z-[var(--vds-z-feedback-recorder-dialog)] !m-0 !flex !h-auto !w-auto !max-w-none !translate-x-0 !translate-y-0 !transform-none flex-col overflow-hidden !rounded-none !border-0 !p-0 ![box-shadow:none]"
           overlayClassName="!z-[var(--vds-z-feedback-recorder-overlay)]"
           data-feedback-recorder-root="review"
+          data-testid="feedback-recorder-review"
         >
-        <DialogHeader>
+        <DialogHeader
+          className="shrink-0 px-[calc(var(--vds-space-10)+var(--vds-space-3))] pt-[var(--vds-space-10)]"
+          data-testid="feedback-recorder-review-header"
+        >
           <DialogTitle>{t('feedbackRecorder.review.title')}</DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 flex-1 space-y-[var(--vds-space-4)] overflow-y-auto pr-[var(--vds-space-1)]">
+        <div className="min-h-0 flex-1 space-y-[var(--vds-space-4)] overflow-y-auto px-[calc(var(--vds-space-10)+var(--vds-space-3))] py-[var(--vds-space-3)]">
           <Card className="space-y-[var(--vds-space-3)] p-[var(--vds-space-4)]">
             <h3 className="text-sm font-semibold text-[var(--vds-text-primary)]">{t('feedbackRecorder.review.summary')}</h3>
             <p className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]">
@@ -175,7 +176,7 @@ export function Review({
             <Textarea
               aria-label={t('feedbackRecorder.review.final')}
               placeholder={t('feedbackRecorder.review.summaryPlaceholder')}
-              rows={6}
+              rows={3}
               value={summary.final}
               onChange={(event) => onSummaryChange('final', event.currentTarget.value)}
             />
@@ -265,6 +266,7 @@ export function Review({
                               key={screenshot.screenshotId}
                               screenshot={screenshot}
                               onDelete={onDeleteScreenshot}
+                              onEdit={onEditScreenshot}
                               onNoteChange={onScreenshotNoteChange}
                             />
                           ))}
@@ -277,32 +279,34 @@ export function Review({
             </ol>
           </Card>
         </div>
-        <p
-          data-testid="feedback-recorder-diagnostics-notice"
-          className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
-        >
-          {hasSession
-            ? t('feedbackRecorder.review.diagnosticsNotice')
-            : t('feedbackRecorder.review.diagnosticsNoticeNoSession')}
-        </p>
-        <DialogFooter>
-          <Button disabled={submitting} variant="secondary" onClick={onCancel}>{t('feedbackRecorder.cancel')}</Button>
-          <CopyButton
-            copiedLabel={t('feedbackRecorder.review.copied')}
-            disabled={submitting}
-            getValue={async () => {
-              const screenshotSources = await screenshotDataUrls(session.screenshots)
-              clipboardHtmlRef.current = composeReviewHtml(session, summary, markdownLabels, screenshotSources)
-              return composeReviewMarkdown(session, summary, markdownLabels)
-            }}
-            idleLabel={t('feedbackRecorder.review.copyMarkdown')}
-            size="md"
-            writeText={(text) => writeClipboardContent(text, clipboardHtmlRef.current)}
-          />
-          <Button data-testid="feedback-recorder-submit" disabled={!summary.final.trim()} loading={submitting} onClick={onSubmit}>
-            {t('feedbackRecorder.review.submit')}
-          </Button>
-        </DialogFooter>
+        <div className="shrink-0 space-y-[var(--vds-space-3)] border-t border-[var(--vds-border-default)] px-[calc(var(--vds-space-10)+var(--vds-space-3))] pb-[var(--vds-space-5)] pt-[var(--vds-space-3)]">
+          <p
+            data-testid="feedback-recorder-diagnostics-notice"
+            className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
+          >
+            {hasSession
+              ? t('feedbackRecorder.review.diagnosticsNotice')
+              : t('feedbackRecorder.review.diagnosticsNoticeNoSession')}
+          </p>
+          <DialogFooter>
+            <Button disabled={submitting} variant="secondary" onClick={onCancel}>{t('feedbackRecorder.cancel')}</Button>
+            <CopyButton
+              copiedLabel={t('feedbackRecorder.review.copied')}
+              disabled={submitting}
+              getValue={async () => {
+                const screenshotSources = await screenshotDataUrls(session.screenshots)
+                clipboardHtmlRef.current = composeReviewHtml(session, summary, markdownLabels, screenshotSources)
+                return composeReviewMarkdown(session, summary, markdownLabels)
+              }}
+              idleLabel={t('feedbackRecorder.review.copyMarkdown')}
+              size="md"
+              writeText={(text) => writeClipboardContent(text, clipboardHtmlRef.current)}
+            />
+            <Button data-testid="feedback-recorder-submit" disabled={!summary.final.trim()} loading={submitting} onClick={onSubmit}>
+              {t('feedbackRecorder.review.submit')}
+            </Button>
+          </DialogFooter>
+        </div>
         </DialogContent>
       </DialogPortal>
     </Dialog>

@@ -231,6 +231,30 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertNotIn(b"secret-access", response.body)
 
+    async def test_transient_server_failure_retries_before_returning(self) -> None:
+        calls = []
+
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        def handler(request):
+            calls.append(request)
+            if len(calls) == 1:
+                return httpx.Response(500, text="temporary")
+            return httpx.Response(200, json={"object": "response", "output": []})
+
+        async def no_delay(_seconds: float) -> None:
+            return None
+
+        registration = self.register(resolve)
+        transport, _ = self.transport(handler)
+        with transport, patch(
+            "service.chat.service.completions.asyncio.sleep", new=no_delay
+        ):
+            response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(calls), 2)
+
     async def test_registered_product_error_code_passes_the_redaction_branch(self) -> None:
         async def resolve(owner, connection):
             return ModelCredential(api_key="secret-access")

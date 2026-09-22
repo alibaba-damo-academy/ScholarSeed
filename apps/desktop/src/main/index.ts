@@ -74,7 +74,7 @@ import { createHandoffCoordinator } from './handoff-local'
 import { findCallbackUrl, parseCallbackUrl } from './handoff-url'
 import { showStartupScreen, type StartupScreen } from './startup'
 import * as updater from './updater'
-import { startupBuildNumber } from './version'
+import { STARTUP_BUILD_NUMBER } from './version'
 import type { StartUpdateResult, UpdateCheckResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '../updates'
 import { LOCAL_LANE_UPDATE_REASON, updateCandidateKey } from '../updates'
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
@@ -95,6 +95,7 @@ import { sanitizeDesktopNotification } from '../notifications'
 import { externalWebUrl } from './external'
 import { DEFAULT_SERVE_URL } from '../../endpoints'
 import { installApplicationMenu } from './menu'
+import { createWindowsCloseController } from './tray'
 import {
   IMPORT_PICKER_TARGET,
   isImportPickerTarget,
@@ -108,13 +109,17 @@ import {
   type ClipboardContentPayload
 } from '../clipboard'
 
-const STARTUP_BUILD_NUMBER = startupBuildNumber(new Date())
-
 let backend: BackendHandle | null = null
 let lastBackendFailure: BackendFailure | null = null
 let mainWindow: BrowserWindow | null = null
 let setLoginWindowVisible: ((visible: boolean) => void) | null = null
 let startupScreen: StartupScreen | null = null
+const windowsCloseController = createWindowsCloseController({
+  localizer: mainLocalization,
+  revealWindow: (reason) => revealMainWindow(reason),
+  markQuitting: () => { appQuitting = true },
+  log: pushLog
+})
 const SCHOLARSEED_DEFAULT_WORKSPACE_ENV = 'SCHOLARSEED_DEFAULT_WORKSPACE'
 const SCHOLARSEED_DEVTOOLS_ENV = 'SCHOLARSEED_DEVTOOLS'
 const MACOS_PLATFORM = 'darwin'
@@ -1454,6 +1459,10 @@ async function createWindow(): Promise<void> {
     event.preventDefault()
     mainWindow?.hide()
     pushLog('[shell] main window hidden; renderer session remains attached\n')
+  })
+  mainWindow.on('close', (event) => {
+    if (appQuitting || headless) return
+    if (mainWindow) windowsCloseController.handleClose(mainWindow, event)
   })
 
   mainWindow.on('closed', () => {

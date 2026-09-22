@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import errno as errno_module
 import json
+import socket
+import ssl
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +28,7 @@ from service.chat.service.streams import (
     CompletionDiagnostic,
     StreamObservation,
 )
+from service.chat.service.transport import transport_diagnostics
 
 
 class BrokenBody(httpx.AsyncByteStream):
@@ -191,8 +195,56 @@ class CompletionBridgeContract(unittest.TestCase):
         fields = self.diagnostics[-1][1]
         self.assertEqual(fields["upstream_end"], "transport_error")
         self.assertEqual(fields["failure_type"], "ReadTimeout")
+        self.assertEqual(fields["transport_stage"], "response_body")
+        self.assertEqual(fields["transport_category"], "read_timeout")
+        self.assertEqual(fields["transport_cause_chain"], "ReadTimeout")
+        self.assertEqual(fields["transport_root_type"], "ReadTimeout")
+        self.assertIsNone(fields["transport_errno"])
+        self.assertEqual(
+            fields["transport_endpoint"],
+            "https://provider.example/v1/responses",
+        )
         self.assertEqual(fields["upstream"]["last_event"], "response.created")
         self.assertNotIn("secret-url-and-token", json.dumps(self.diagnostics))
+
+    def test_transport_categories_use_types_and_errno_without_messages(self):
+        cases: list[tuple[str, BaseException]] = [
+            ("proxy", httpx.ProxyError("secret-proxy-url")),
+            ("connect_timeout", httpx.ConnectTimeout("secret-connect-token")),
+            ("read_timeout", httpx.ReadTimeout("secret-read-token")),
+        ]
+        dns = httpx.ConnectError("secret-dns-host")
+        dns.__cause__ = socket.gaierror(socket.EAI_NONAME, "secret-dns-host")
+        cases.append(("dns", dns))
+        tls = httpx.ConnectError("secret-tls-host")
+        tls.__cause__ = ssl.SSLError(ssl.SSL_ERROR_SSL, "secret-certificate-detail")
+        cases.append(("tls", tls))
+        refused = httpx.ConnectError("secret-refused-host")
+        refused.__cause__ = ConnectionRefusedError(
+            errno_module.ECONNREFUSED,
+            "secret-refused-host",
+        )
+        cases.append(("connection_refused", refused))
+        reset = httpx.ReadError("secret-reset-host")
+        reset.__cause__ = ConnectionResetError(
+            errno_module.ECONNRESET,
+            "secret-reset-host",
+        )
+        cases.append(("connection_reset", reset))
+
+        for expected, error in cases:
+            with self.subTest(category=expected):
+                diagnostics = transport_diagnostics(error)
+                self.assertEqual(diagnostics["category"], expected)
+                self.assertNotIn("secret", json.dumps(diagnostics))
+        self.assertEqual(
+            transport_diagnostics(refused)["errno_name"],
+            "ECONNREFUSED",
+        )
+        self.assertEqual(
+            transport_diagnostics(reset)["cause_chain"],
+            "ReadError>ConnectionResetError",
+        )
 
     def test_diagnostics_record_upstream_http_rejection(self):
         self.model_response(b'{"error":{"code":"rejected"}}', streaming=True, status=429)
@@ -431,6 +483,30 @@ class CompletionBridgeContract(unittest.TestCase):
         # 白名单外的码不放行到产品面，继续折叠（恢复源返回空）。
         self.assertEqual(terminal_provider_failure(fields), {})
 
+    def test_exhausted_transient_http_failure_recovers_retry_metadata(self):
+        fields = {
+            "phase": "finished",
+            "status_code": 500,
+            "attempt": 3,
+            "max_attempts": 3,
+            "downstream": {},
+        }
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "The model provider is temporarily unavailable.",
+                "error_code": "service_unavailable",
+                "safe_error": "The model provider is temporarily unavailable.",
+                "retryability": "user_retryable",
+                "provider_http_status": 500,
+                "automatic_retry_attempts": 3,
+            },
+        )
+        self.assertEqual(
+            terminal_provider_failure({**fields, "attempt": 2}),
+            {},
+        )
+
     def test_chat_structured_error_terminal_upgrades_to_provider_error(self):
         # chat 路合成 response.failed 终态后同样升格 provider_error（与原生路共用 settle）。
         error_content = json.dumps(
@@ -462,7 +538,7 @@ class CompletionBridgeContract(unittest.TestCase):
         # 故恢复源返回空——R4 只修诊断记录，不改产品归因来源。
         self.assertEqual(terminal_provider_failure(fields), {})
 
-    def test_bridge_preserves_native_lite_and_only_translates_chat_tools(self):
+    def test_bridge_projects_tool_prefix_for_native_and_chat_requests(self):
         tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
         items = [
             {"type": "additional_tools", "role": "developer", "id": "at_local", "tools": tools},
@@ -476,8 +552,8 @@ class CompletionBridgeContract(unittest.TestCase):
         for native in (True, False):
             self.model_response(b'{"choices":[]}', native=native, inputs=items)
             if native:
-                self.assertEqual(self.requests[0]["input"], items)
-                self.assertNotIn("tools", self.requests[0])
+                self.assertEqual(self.requests[0]["input"], items[1:])
+                self.assertEqual(self.requests[0]["tools"], tools)
             else:
                 self.assertEqual(
                     self.requests[0]["messages"], [{"role": "user", "content": "review"}]
@@ -485,7 +561,7 @@ class CompletionBridgeContract(unittest.TestCase):
                 self.assertEqual(self.requests[0]["tools"][0]["function"]["name"], "exec")
             self.assertEqual(
                 self.diagnostics[-1][1]["converted_input_items"],
-                {} if native else {"additional_tools": 1},
+                {"additional_tools": 1},
             )
         self.assertEqual(items[0]["id"], "at_local")
 

@@ -396,9 +396,9 @@ test('editor reload preparation leaves non-Monaco documents untouched', async ()
   assert.equal(workspace.getSnapshot().sessions[workspace.getSnapshot().tabs[pdfTab].sessionId].dirty, true)
 })
 
-test('registry suspends the least frequently selected clean background session without closing its tab', async () => {
+test('registry closes the least recently used clean background tab', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    budget: { maxBackgroundSessions: 1, maxBackgroundBytes: Number.MAX_SAFE_INTEGER }
+    limit: 2
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -407,22 +407,33 @@ test('registry suspends the least frequently selected clean background session w
   const secondTab = await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
   const secondSession = workspace.getSnapshot().tabs[secondTab].sessionId
   workspace.focusTab(firstTab)
-  workspace.focusTab(firstTab)
   const thirdTab = await workspace.open({ ...source, path: 'notes/third.md' }, 'edit')
 
   const state = workspace.getSnapshot()
   assert.ok(state.tabs[firstTab])
-  assert.ok(state.tabs[secondTab])
+  assert.equal(state.tabs[secondTab], undefined)
   assert.ok(state.tabs[thirdTab])
-  assert.equal(state.sessions[firstSession].residency, 'resident')
-  assert.equal(state.sessions[secondSession].residency, 'suspended')
-  assert.equal(state.sessions[secondSession].bytes.byteLength, 0)
-  assert.equal(state.sessions[secondSession].text, null)
+  assert.ok(state.sessions[firstSession])
+  assert.equal(state.sessions[secondSession], undefined)
 })
 
-test('registry protects dirty and visible sessions from suspension', async () => {
+test('registry enforces the default ten editor limit', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader())
+  registry.activateProject('project-one')
+  const workspace = registry.forProject('project-one')
+  const opened: string[] = []
+  for (let index = 0; index < 11; index += 1) {
+    opened.push(await workspace.open({ ...source, path: `notes/${index}.md` }, 'edit'))
+  }
+
+  assert.equal(workspace.getSnapshot().tabs[opened[0]], undefined)
+  assert.equal(Object.keys(workspace.getSnapshot().tabs).length, 10)
+  assert.equal(Object.keys(workspace.getSnapshot().sessions).length, 10)
+})
+
+test('registry protects dirty and visible tabs and permits temporary overflow', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+    limit: 1
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -430,63 +441,48 @@ test('registry protects dirty and visible sessions from suspension', async () =>
   const dirtySession = workspace.getSnapshot().tabs[dirtyTab].sessionId
   workspace.updateText(dirtySession, '# unsaved')
   const visibleTab = await workspace.open({ ...source, path: 'notes/visible.md' }, 'edit')
-  const visibleSession = workspace.getSnapshot().tabs[visibleTab].sessionId
 
-  assert.equal(workspace.getSnapshot().sessions[dirtySession].residency, 'resident')
-  assert.equal(workspace.getSnapshot().sessions[visibleSession].residency, 'resident')
+  assert.ok(workspace.getSnapshot().tabs[dirtyTab])
+  assert.ok(workspace.getSnapshot().tabs[visibleTab])
+  assert.ok(workspace.getSnapshot().sessions[dirtySession])
 })
 
-test('selecting a suspended tab reloads its payload and preserves view state', async () => {
-  const loads: string[] = []
-  const base = loader()
-  const registry = new DocumentWorkspaceRegistry({
-    ...base,
-    async load(requested) {
-      loads.push(requested.path)
-      return base.load(requested)
-    }
-  }, {
-    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
-  })
-  registry.activateProject('project-one')
-  const workspace = registry.forProject('project-one')
-  const firstTab = await workspace.open({ ...source, path: 'notes/first.md' }, 'edit')
-  const firstSession = workspace.getSnapshot().tabs[firstTab].sessionId
-  workspace.setTabViewState(firstTab, { cursor: 17 })
-  await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
-  assert.equal(workspace.getSnapshot().sessions[firstSession].residency, 'suspended')
-
-  workspace.focusTab(firstTab)
-  await workspace.waitForResidency()
-
-  const state = workspace.getSnapshot()
-  assert.deepEqual(loads, ['notes/first.md', 'notes/second.md', 'notes/first.md'])
-  assert.equal(state.sessions[firstSession].residency, 'resident')
-  assert.equal(state.sessions[firstSession].text, '# Draft\n')
-  assert.deepEqual(state.tabs[firstTab].viewState, { cursor: 17 })
-})
-
-test('registry applies one residency budget across inactive project workspaces', async () => {
+test('registry applies one editor limit across project workspaces', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+    limit: 1
   })
   const first = registry.forProject('project-one')
   const firstTab = await first.open({ ...source, project: 'project-one' }, 'edit')
-  const firstSession = first.getSnapshot().tabs[firstTab].sessionId
   registry.activateProject('project-two')
   const second = registry.forProject('project-two')
   await second.open({ ...source, project: 'project-two' }, 'edit')
 
-  assert.equal(first.getSnapshot().sessions[firstSession].residency, 'suspended')
+  assert.equal(first.getSnapshot().tabs[firstTab], undefined)
+  assert.equal(Object.keys(first.getSnapshot().sessions).length, 0)
 })
 
-test('registry reclaims viewer caches against globally resident sessions and all live tabs', async () => {
-  let residentSessionIds = new Set<string>()
+test('closing one split projection retains its shared session until the last reference closes', async () => {
+  const registry = new DocumentWorkspaceRegistry(loader(), { limit: 2 })
+  const first = registry.forProject('project-one')
+  const firstTab = await first.open({ ...source, project: 'project-one' }, 'edit')
+  const sessionId = first.getSnapshot().tabs[firstTab].sessionId
+  assert.ok(await first.splitTab(firstTab, 'right', false))
+
+  registry.activateProject('project-two')
+  const second = registry.forProject('project-two')
+  await second.open({ ...source, project: 'project-two' }, 'edit')
+
+  assert.equal(Object.keys(first.getSnapshot().tabs).length, 1)
+  assert.ok(first.getSnapshot().sessions[sessionId])
+})
+
+test('registry reclaims viewer caches after closing the last session reference', async () => {
+  let liveSessionIds = new Set<string>()
   let liveTabIds = new Set<string>()
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 },
+    limit: 1,
     reclaim: (sessions, tabs) => {
-      residentSessionIds = new Set(sessions)
+      liveSessionIds = new Set(sessions)
       liveTabIds = new Set(tabs)
     }
   })
@@ -497,14 +493,15 @@ test('registry reclaims viewer caches against globally resident sessions and all
   const secondTab = await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
   const secondSession = workspace.getSnapshot().tabs[secondTab].sessionId
 
-  assert.deepEqual([...residentSessionIds], [secondSession])
-  assert.deepEqual(new Set(liveTabIds), new Set([firstTab, secondTab]))
-  assert.equal(residentSessionIds.has(firstSession), false)
+  assert.deepEqual([...liveSessionIds], [secondSession])
+  assert.deepEqual([...liveTabIds], [secondTab])
+  assert.equal(liveSessionIds.has(firstSession), false)
+  assert.equal(liveTabIds.has(firstTab), false)
 })
 
-test('suspension removes a document text undo history', async () => {
+test('closing a clean tab removes its document text undo history', async () => {
   const registry = new DocumentWorkspaceRegistry(loader(), {
-    budget: { maxBackgroundSessions: 0, maxBackgroundBytes: 0 }
+    limit: 1
   })
   registry.activateProject('project-one')
   const workspace = registry.forProject('project-one')
@@ -514,7 +511,7 @@ test('suspension removes a document text undo history', async () => {
   assert.equal(await workspace.save(firstSession), true)
   await workspace.open({ ...source, path: 'notes/second.md' }, 'edit')
 
-  assert.equal(workspace.getSnapshot().sessions[firstSession].residency, 'suspended')
+  assert.equal(workspace.getSnapshot().sessions[firstSession], undefined)
   assert.equal(workspace.undo(firstSession), false)
 })
 
@@ -2323,6 +2320,54 @@ test('reopening the same Office document preserves its sole editor tab', async (
   assert.equal(nextEditTabId, editTabId)
   assert.equal(state.tabs[nextEditTabId].viewKind, 'edit')
   assert.equal(state.sessions[sessionId].dirty, true)
+  assert.equal(Object.keys(state.tabs).length, 1)
+})
+
+test('concurrent opens for one Markdown document share one loading session and tab', async () => {
+  let releaseLoad: (() => void) | undefined
+  let loadCount = 0
+  const loadGate = new Promise<void>((resolve) => {
+    releaseLoad = resolve
+  })
+  const workspace = new DocumentWorkspace({
+    async load(requested): Promise<LoadedDocument> {
+      loadCount += 1
+      await loadGate
+      return {
+        documentId: documentIdFor(requested),
+        source: requested,
+        viewer: 'markdown',
+        processor: null,
+        capabilities: {
+          can_preview: true,
+          can_edit: true,
+          can_select: true,
+          can_annotate: false,
+          can_save: true,
+          can_version: false,
+          can_diff: false,
+          pending: []
+        },
+        revision: 'sha256:markdown-initial',
+        mediaType: 'text/markdown',
+        contentKind: 'text',
+        bytes: new TextEncoder().encode('# Concurrent\n')
+      }
+    },
+    async commit() {
+      return { ok: false, error: 'unavailable' }
+    }
+  })
+
+  const first = workspace.open(source, 'edit')
+  const second = workspace.open(source, 'edit')
+  releaseLoad?.()
+
+  const [firstTabId, secondTabId] = await Promise.all([first, second])
+  const state = workspace.getSnapshot()
+  assert.equal(secondTabId, firstTabId)
+  assert.equal(loadCount, 1)
+  assert.equal(Object.keys(state.sessions).length, 1)
   assert.equal(Object.keys(state.tabs).length, 1)
 })
 

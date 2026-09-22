@@ -22,7 +22,7 @@ export function ResourceStatus({ node }: { node: ResourceNode }): React.JSX.Elem
     {indicators.needsReview && <Tooltip portalled content={t('treeStatus.review')}><IconButton
       size="sm" variant="ghostIcon" title={undefined} label={t('treeStatus.review')} data-testid={`tree-review-${node.path}`}
       icon={<span className="relative"><MessageSquare size={RESOURCE_STATUS_ICON_SIZE} /><BadgeDot tone="neutral" className="absolute -right-0.5 -top-0.5" /></span>}
-      onClick={() => void act.openResourceHistory(node.path)} /></Tooltip>}
+      onClick={() => void act.openResourceReview(node.path)} /></Tooltip>}
     {indicators.warnings.length > 0 && <Popover>
       <Tooltip portalled content={warningLabel}><PopoverTrigger asChild><IconButton size="sm" variant="ghostIcon" title={undefined} label={warningLabel}
         className="text-[var(--vds-warning-text-primary)]" data-testid={`tree-warning-${node.path}`} icon={<TriangleAlert size={RESOURCE_STATUS_ICON_SIZE} />} /></PopoverTrigger></Tooltip>

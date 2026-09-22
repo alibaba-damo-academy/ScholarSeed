@@ -16,7 +16,6 @@ import type {
   AssistantContextRef,
   AssistantInvocationResult,
   AssistantTranslationInput,
-  AssistantTranslationLanguage,
   AssistantTranslationTarget,
   ProjectContextPolicy,
   SearchScope
@@ -43,7 +42,6 @@ export interface AssistantTranslationView {
   input: AssistantTranslationInput
   clientActionId: string
   clientAttemptId: string
-  sourceLanguage: AssistantTranslationLanguage
   targetLanguage: AssistantTranslationTarget
   loading: boolean
   invocation: AssistantInvocationResult | null

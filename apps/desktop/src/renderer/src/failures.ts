@@ -88,6 +88,7 @@ export function describeTurnFailure(data: {
   code?: string
   message?: string
   retryable?: boolean
+  automatic_retry_attempts?: number
 }): Extract<ConvItem, { kind: 'error' }> {
   const rawMessage = String(data.message || '').trim()
   const frame = providerFrame(rawMessage)
@@ -99,10 +100,14 @@ export function describeTurnFailure(data: {
   const retry = data.retryable === true && (kind === 'rate_limit' || kind === 'unavailable' || kind === 'unknown')
     ? { runtimeAction: 'continue_turn' as const, actionState: 'idle' as const }
     : {}
+  const automaticRetryAttempts = Number.isInteger(data.automatic_retry_attempts) &&
+    Number(data.automatic_retry_attempts) > 1
+    ? Number(data.automatic_retry_attempts)
+    : undefined
   return {
     kind: 'error', title: '', action: '',
     message: kind === 'unknown' && fallback === 'raw' ? rawMessage : '',
-    failure: { kind, fallback },
+    failure: { kind, fallback, ...(automaticRetryAttempts ? { automaticRetryAttempts } : {}) },
     ...retry
   }
 }
@@ -112,10 +117,13 @@ export function formatTurnFailure(
 ): { title: string; message: string; action: string } {
   if (!item.failure) return item
   const labels = FAILURE_TEXT[item.failure.kind]
+  const exhausted = item.failure.kind === 'unavailable' && item.failure.automaticRetryAttempts
   return {
     title: t('failure.title'),
     action: t(labels.actionKey),
-    message: item.failure.kind !== 'unknown' ? t(labels.messageKey)
+    message: exhausted
+      ? t('failure.unavailable.exhausted', { count: item.failure.automaticRetryAttempts })
+      : item.failure.kind !== 'unknown' ? t(labels.messageKey)
       : item.failure.fallback === 'raw' ? item.message
         : item.failure.fallback === 'frame' ? t('failure.frame') : t('failure.runtime')
   }

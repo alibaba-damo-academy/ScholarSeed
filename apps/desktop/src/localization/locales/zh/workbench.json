@@ -332,7 +332,18 @@
     "catalog": "正在索引系统字体…",
     "reading": "已读取 {{done}}/{{total}} 个字体（{{size}} MiB）",
     "runtime": "字体已就绪，正在初始化 Office…",
-    "error": "Office 字体预热失败",
+    "slow": "当前设备初始化时间较长，Office 仍在后台继续准备。",
+    "recoveringTitle": "正在恢复 Office 预热",
+    "recovering": "运行资源加载中断，正在进行第 {{attempt}} 次自动重试。",
+    "errorTitle": "Office 预热未完成",
+    "failures": {
+      "fontPermission": "无法获得系统字体访问权限，请检查系统设置后重试。",
+      "fontCatalog": "无法读取系统字体目录，请检查字体访问设置后重试。",
+      "fontRead": "系统字体读取未完成，请重试。",
+      "runtimeAssets": "Office 运行资源未能完整加载，请重试。",
+      "runtimeInitialization": "Office 引擎初始化失败，请重试。",
+      "runtimeExecution": "Office 运行时发生错误，请重试。"
+    },
     "retry": "重试"
   },
   "markdown": {

@@ -1,21 +1,38 @@
 """Public, compact operations for task decisions and per-paper/figure inputs."""
+from confirmation import lock, SECONDS, packet_identity
+from review_timeout import status, record_response_locked
+import publication as publication_choices
 from pathlib import Path
 import json
 import shutil
 import uuid
 from task_contract import read_request, atomic_json, json_input, publication_view, configure, digest
 
+from paper_materials import load, material_state
+from local_papers import import_pdfs
+from local_papers import budget
+from manuscript import validate_plan
+from submission_normalization import outline_assets
+from writing_contract import read_request, select_outline, digest
+from outline.render_outline_md import render
+from writing_contract import approval_snapshot, require_approval
+from writing_contract import select_outline
+from language_plan import resolved_language_map,publication_language
+from writing_contract import approval_snapshot
+from task_contract import validate_template_value
+from manuscript import check_contract
+from validate_figures_meta import _shape_errors
+from figure_caption import caption_text
+from figure_dependencies import context
+
 APPROVAL_FIELDS = {'packet_id','user_response','publication','message_id'}
 FIGURE_RENDER_FIELDS = {'_render_mode','_prompt','_caption','_latex_body','_image_size','_chart_spec'}
 
 def papers(workspace,action,ids,request=None):
-    from paper_materials import load, material_state
     ws=Path(workspace)
     if action=='import-local':
-        from local_papers import import_pdfs
         return import_pdfs(ws,request)
     if action=='budget':
-        from local_papers import budget
         return {'status':'SUCCESS',**budget(ws)}
     if action!='show':raise ValueError('papers supports show, import-local and budget')
     if not ids: raise ValueError('papers show requires --ids; use status for the corpus summary')
@@ -25,45 +42,13 @@ def papers(workspace,action,ids,request=None):
         'material_state':material_state(selected[pid],info.get(pid))} for pid in ids]}
 
 
-def publication_options(ws):
-    from templates import list_templates, resolve_citation_style
-    from processing.audit_citation_metadata import audit
-    request=read_request(ws); language=request['language']; fmt=publication_view(request)['format']
-    outline_path=Path(ws)/'04_outline/outline.json'
-    if outline_path.exists():
-        from language_plan import resolved_language_map,publication_language
-        outline=json.loads(outline_path.read_text())
-        language=publication_language(resolved_language_map(outline,language)).upper()
-    templates=[]
-    for row in list_templates():
-        if row.get('language','ENGLISH')!=language: continue
-        compiler='xelatex' if language=='CHINESE' else 'pdflatex'
-        usable=row['status']=='installed' and bool(shutil.which(compiler)) and bool(shutil.which('bibtex'))
-        if language=='CHINESE' and usable:
-            import subprocess
-            found=subprocess.run(['kpsewhich','ctexart.cls'],capture_output=True,text=True) if shutil.which('kpsewhich') else None
-            usable=bool(found and found.returncode==0 and found.stdout.strip())
-        templates.append({'id':row['id'],'title':row['title'],'usable':usable})
-    if not (Path(ws)/'03_process/references.bib').exists():
-        from processing.build_bib import build
-        _, status = build(Path(ws))
-        if status['status']=='FAILED': raise ValueError(status.get('status_reason','bibliography preparation failed'))
-    try: metadata=audit(ws)['styles']
-    except (ValueError,OSError): metadata={}
-    citations=[]
-    for sid in ('numeric','author_year','ieee','acm'):
-        row=resolve_citation_style(sid); coverage=metadata.get(sid,{})
-        citations.append({'id':sid,'label':row.get('label',sid),
-            'usable':bool(row.get('available')) and bool(coverage) and coverage.get('minimum_ready')==coverage.get('entries'),
-            'metadata':{k:coverage.get(k) for k in ('minimum_ready','entries','metadata_risk')}})
-    return {'templates':templates,'citation_styles':citations,'formats':['markdown']+(['latex_pdf'] if any(x['usable'] for x in templates) else [])}
-
 
 def configure_outline(ws,value):
-    from manuscript import validate_plan
-    from submission_normalization import outline_assets
-    from writing_contract import read_request, select_outline, digest
-    from outline.render_outline_md import render
+    with lock(ws):
+        return _configure_outline(ws,value)
+
+
+def _configure_outline(ws,value):
     ws=Path(ws)
     normalized=outline_assets(value)
     validate_plan(ws,normalized)
@@ -76,52 +61,77 @@ def configure_outline(ws,value):
 
 
 def review_packet(ws):
-    from writing_contract import approval_snapshot, require_approval
+    with lock(ws):
+        return _review_packet(ws)
+
+
+def _review_packet(ws):
     ws=Path(ws); outline=json.loads((ws/'04_outline/outline.json').read_text())
-    from manuscript import validate_plan
-    from writing_contract import select_outline
-    from outline.render_outline_md import render
     outline=select_outline(outline,read_request(ws))
     validate_plan(ws,outline)
     rendered=render(outline)
-    options=publication_options(ws)
+    options=publication_choices.publication_options(ws)
     snapshot=approval_snapshot(ws)
     previous_path=ws/'04_outline/review_packet.json'
     previous=json.loads(previous_path.read_text()) if previous_path.exists() else {}
-    packet_id=previous.get('packet_id') if previous.get('snapshot')==snapshot else None
+    packet_id=packet_identity(ws,previous,snapshot)
     publication=publication_view(read_request(ws))
-    from language_plan import resolved_language_map,publication_language
     if publication.get('format')=='latex_pdf' and publication_language(
             resolved_language_map(outline,read_request(ws)['language']))=='chinese':
         publication['template']='ctexart'
+    publication_display={
+        'format':options.get('format_labels',{}).get(publication.get('format'),publication.get('format')),
+        'citation_style':next((row.get('label',row['id']) for row in options['citation_styles']
+                               if row['id']==publication.get('citation_style')),publication.get('citation_style')),
+    }
     review_mode=read_request(ws)['outline_review']
     confirmation_state='auto' if review_mode=='auto' else 'approved'
-    if review_mode=='required':
+    if review_mode!='auto':
         try:require_approval(ws)
         except ValueError:confirmation_state='required'
+    timed=review_mode=='timeout_auto' and confirmation_state=='required'
     display='Summarize the actual user requirements in 1-2 sentences, then display the indented outline_markdown with asset captions; do not expand descriptions, paper lists, analytical tasks or placement rationale.'
     if confirmation_state=='auto':
         action='Reuse the recorded automatic-continuation policy and publication settings; continue with manuscript prepare without another question.'
     elif confirmation_state=='approved':
         action='The current outline/task/publication snapshot already has a real approval; continue with manuscript prepare without another question.'
+    elif timed:
+        action=('Display the publication settings and five-minute timeout notice, then call writing review-start after actual display. '
+                'Keep an interruptible host wait active or use bounded writing review-wait calls; record any user reply immediately with writing review-response. '
+                'At expiry, process pending messages before writing review-timeout. Deliver its notice before manuscript prepare; do not fabricate user approval.')
     else:
         action=('Retain publication choices explicitly stated by the user; do not ask the user to choose them again. '
                 'The current review still needs a real confirmation: ask once for missing choices or confirmation of the current settings, offering only usable options, '
                 'then record the actual reply with writing approve --request. Configured defaults alone are not user approval.')
     result={'status':'SUCCESS','packet_id':packet_id or uuid.uuid4().hex,'snapshot':snapshot,'outline':outline,
         'outline_markdown':rendered,'display_instructions':display+' '+action,
-        'publication':publication, 'options':options,
+        'publication':publication, 'publication_display':publication_display, 'options':options,
         'summary_inputs':{k:read_request(ws).get(k) for k in ('user_requests','effective_requirements','constraints')},
         'outline_review':review_mode,
         'confirmation':{'state':confirmation_state,'approval_record_needed':confirmation_state=='required',
                         'publication_settings_are_not_proof_of_user_choice':True},
         'next_action':display+' '+action}
     atomic_json(ws/'04_outline/review_packet.json',result)
+    if review_mode=='timeout_auto':
+        wait_state=status(ws,result['packet_id'])
+        result['confirmation'].update(wait_state,timeout_seconds=SECONDS,
+            timeout_notice=('请在 5 分钟内确认或提出修改；若未回复，将按以上推荐设置继续。' if read_request(ws)['language']=='CHINESE' else
+                            'Please confirm or request changes within five minutes. Without a reply, the displayed settings will be used.'),
+            host_integration='Start only after actual display. Schedule wakeup at deadline_at or keep this turn alive with review-wait (<=30s). On reply arrival, call review-response before interpretation. No background scheduler is installed by this CLI.')
+        if wait_state['state']!='awaiting_display':
+            result['next_action']=display+' '+wait_state['next_action']
+            result['display_instructions']=result['next_action']
+        atomic_json(ws/'04_outline/review_packet.json',result)
     return result
 
 
 def approve(ws,decision):
-    from writing_contract import approval_snapshot
+    with lock(ws):
+        return _approve(ws,decision)
+
+
+
+def _approve(ws,decision):
     ws=Path(ws)
     if not isinstance(decision,dict) or set(decision)-APPROVAL_FIELDS: raise ValueError('decision accepts packet_id, user_response, publication, message_id')
     if not isinstance(decision.get('user_response'),str) or not decision['user_response'].strip(): raise ValueError('approval requires the actual user response; no approval on the user behalf')
@@ -129,25 +139,21 @@ def approve(ws,decision):
     if not packet_path.exists(): raise ValueError('display outline review-packet before recording a decision')
     packet=json.loads(packet_path.read_text())
     if decision.get('packet_id')!=packet['packet_id'] or packet['snapshot']!=approval_snapshot(ws): raise ValueError('decision belongs to a stale outline or task; display the current packet')
+    record_response_locked(ws,decision['packet_id'],decision['user_response'],decision.get('message_id'))
     publication=decision.get('publication',{})
     if not isinstance(publication,dict):raise ValueError('publication must be an object')
     if 'template' in publication:
-        from task_contract import validate_template_value
         validate_template_value(publication['template'])
     choice={**packet['publication'],**publication}
-    options=publication_options(ws)
-    if choice.get('format') not in options['formats']: raise ValueError('selected output format is not available in this environment')
-    if choice.get('format')=='latex_pdf' and not any(x['id']==choice.get('template') and x['usable'] for x in options['templates']): raise ValueError('selected template is not usable for the current language/environment')
-    if not any(x['id']==choice.get('citation_style') and x['usable'] for x in options['citation_styles']): raise ValueError('citation style metadata is incomplete; repair the named corpus metadata first')
+    publication_choices.validate_publication_choice(ws,choice)
     configure(ws,{'publication':choice})
-    result={'status':'SUCCESS','snapshot':approval_snapshot(ws),'user_response':decision['user_response'],
+    result={'status':'SUCCESS','snapshot':approval_snapshot(ws),'decision_source':'user','user_response':decision['user_response'],
             'publication':choice,'message_id':decision.get('message_id'),'source_packet_id':packet['packet_id']}
     atomic_json(ws/'04_outline/approval.json',result)
     return result
 
 
 def figure_plan(ws,value):
-    from manuscript import check_contract
     ws=Path(ws); check_contract(ws)
     path=ws/'05_generation/_internal/figures_worklist.json'; current=json.loads(path.read_text())
     if not isinstance(value,dict) or set(value)-{'preparation_id','items'}: raise ValueError('figure plan must contain preparation_id and items')
@@ -169,12 +175,9 @@ def figure_plan(ws,value):
         wanted_type=dict if mode=='data_chart' else str
         if not isinstance(candidate.get(field),wanted_type) or not candidate[field]: raise ValueError(loc+'/'+field+': expected nonempty '+wanted_type.__name__+' for '+mode)
         if mode=='image' and candidate.get('_image_size') not in ('wide','square','tall'): raise ValueError(loc+'/_image_size: expected wide, square or tall')
-        from validate_figures_meta import _shape_errors
-        from figure_caption import caption_text
         problems=_shape_errors(candidate,candidate)
         if problems: raise ValueError(loc+': '+'; '.join(problems))
         if read_request(ws)['writing_strategy']=='chapter_delta':
-            from figure_dependencies import context
             dependency=context(ws,fid)
             if dependency['status']!='READY':raise ValueError('figure awaits prerequisite chapters: '+', '.join(dependency['missing_sections']))
         items[fid].update({**patch,'_caption':caption_text(candidate['_caption'])})

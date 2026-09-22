@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from service.assistant.domain.language import TRANSLATION_TARGET_CODES
 from service.assistant.domain.model import ANSWER_ANNOTATION_COMMENT_MAX_CHARS
 from service.assistant.service.actions import (
     ONE_SHOT_MAXIMUM_INPUT_CHARS,
@@ -290,17 +291,17 @@ class AssistantTranslationStartRequest(BaseModel):
     retry_of_attempt_id: str | None = None
     project_id: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=ONE_SHOT_MAXIMUM_INPUT_CHARS)
-    source_language: Literal["auto", "en", "zh-CN"] = "auto"
-    target_language: Literal["en", "zh-CN"]
+    target_language: str
     source_id: str = ""
     source_revision: str | None = None
     model_key: str = ""
 
-    @model_validator(mode="after")
-    def language_pair(self) -> "AssistantTranslationStartRequest":
-        if self.source_language == self.target_language:
-            raise ValueError("source and target language must differ")
-        return self
+    @field_validator("target_language")
+    @classmethod
+    def supported_target(cls, value: str) -> str:
+        if value not in TRANSLATION_TARGET_CODES:
+            raise ValueError("unsupported target language")
+        return value
 
 
 __all__ = [

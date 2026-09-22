@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
+import ssl
 import tempfile
 import time
 import unittest
@@ -18,7 +20,10 @@ from fastapi.testclient import TestClient
 from service.chat.api.settings import mount_setting_routes
 from service.chat.service.completions import CompletionBridge, mount_completion_bridge
 from service.chat.service.models import ModelService, SessionModelUnavailableError
-from service.chat.service.subscriptions import SubscriptionService
+from service.chat.service.subscriptions import (
+    SUBSCRIPTION_MODELS_RETRY_ATTEMPTS,
+    SubscriptionService,
+)
 from service.identity.utils import LOCAL_USER_ID, OWNERSHIP_AXIS_MACHINE
 from service.settings.connections import ModelProfileStore, UnknownProfileError, personal_model_key
 from service.settings.credentials import CredentialState, ModelCredentialStore, OAuthTokens
@@ -27,6 +32,22 @@ from service.settings.oauth import OAuthFailure
 OWNER = "owner"
 OTHER = "other"
 MODEL = "authorized-model"
+UPSTREAM_MODELS_PAYLOAD = {
+    "models": [
+        {
+            "slug": MODEL,
+            "display_name": "Authorized model",
+            "visibility": "list",
+            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
+            "default_reasoning_level": "low",
+            "input_modalities": ["text", "image", "pdf"],
+            "tool_mode": "code_mode",
+            "use_responses_lite": True,
+            "model_messages": {"instructions_template": "provider instructions"},
+        },
+        {"slug": "hidden-model", "visibility": "hide"},
+    ]
+}
 
 
 class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
@@ -38,30 +59,22 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.credentials = ModelCredentialStore(root / "credentials.sqlite3", root / "locks")
         self.bridge = CompletionBridge("http://127.0.0.1:8770")
         self.requests = []
+        self.reinstall(lambda request: httpx.Response(200, json=UPSTREAM_MODELS_PAYLOAD))
+        self.values = {
+            "authentication": "oauth",
+            "oauth_provider": "chatgpt",
+            "selected_models": [],
+        }
 
-        def upstream(request):
+    def reinstall(self, handler) -> None:
+        """Rebuild the subscription service against another mocked upstream."""
+
+        def tracking(request):
             self.requests.append(request)
-            return httpx.Response(
-                200,
-                json={
-                    "models": [
-                        {
-                            "slug": MODEL,
-                            "display_name": "Authorized model",
-                            "visibility": "list",
-                            "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}],
-                            "default_reasoning_level": "low",
-                            "input_modalities": ["text", "image", "pdf"],
-                            "tool_mode": "code_mode",
-                            "use_responses_lite": True,
-                            "model_messages": {"instructions_template": "provider instructions"},
-                        },
-                        {"slug": "hidden-model", "visibility": "hide"},
-                    ]
-                },
-            )
+            return handler(request)
 
-        client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+        self.requests.clear()
+        client = httpx.AsyncClient(transport=httpx.MockTransport(tracking))
         self.subscriptions = SubscriptionService(
             self.profiles, self.credentials, self.bridge, client=client
         )
@@ -72,11 +85,6 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
             profiles=self.profiles,
             subscriptions=self.subscriptions,
         )
-        self.values = {
-            "authentication": "oauth",
-            "oauth_provider": "chatgpt",
-            "selected_models": [],
-        }
 
     async def connected(self):
         result = await self.models.save_profile(self.values, user_id=OWNER)
@@ -182,6 +190,75 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.credentials.read(OWNER, connection).state, CredentialState.DISCONNECTED
         )
+
+    async def test_transient_tls_connect_failure_retries_before_serving_directory(self):
+        attempts = {"count": 0}
+
+        def flaky(request):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                error = httpx.ConnectError("peer closed during handshake")
+                error.__cause__ = ssl.SSLEOFError(ssl.SSL_ERROR_EOF, "eof in handshake")
+                raise error
+            return httpx.Response(200, json=UPSTREAM_MODELS_PAYLOAD)
+
+        self.reinstall(flaky)
+        with patch(
+            "service.chat.service.subscriptions.SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS", 0.0
+        ):
+            connection = await self.connected()
+        self.assertEqual(attempts["count"], SUBSCRIPTION_MODELS_RETRY_ATTEMPTS - 1)
+        self.assertEqual(len(self.requests), SUBSCRIPTION_MODELS_RETRY_ATTEMPTS - 1)
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+        self.assertFalse(self.subscriptions.sync_on_cooldown(OWNER, connection))
+
+    async def test_transient_dns_failure_retries_before_serving_directory(self):
+        attempts = {"count": 0}
+
+        def flaky(request):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                error = httpx.ConnectError("temporary name resolution failure")
+                error.__cause__ = socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+                raise error
+            return httpx.Response(200, json=UPSTREAM_MODELS_PAYLOAD)
+
+        self.reinstall(flaky)
+        with patch(
+            "service.chat.service.subscriptions.SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS", 0.0
+        ):
+            connection = await self.connected()
+        self.assertEqual(attempts["count"], 2)
+        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+        self.assertFalse(self.subscriptions.sync_on_cooldown(OWNER, connection))
+
+    async def test_retryable_transport_failures_exhaust_attempts_before_unavailable(self):
+        connection = await self.connected()
+        self.assertEqual(len(self.requests), 1)
+
+        def always_fail(request):
+            raise httpx.ConnectError("handshake never completes")
+
+        self.reinstall(always_fail)
+        with patch(
+            "service.chat.service.subscriptions.SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS", 0.0
+        ):
+            with self.assertRaises(OAuthFailure):
+                await self.subscriptions.sync_directory(OWNER, connection)
+        self.assertEqual(len(self.requests), SUBSCRIPTION_MODELS_RETRY_ATTEMPTS)
+        self.assertTrue(self.subscriptions.sync_on_cooldown(OWNER, connection))
+
+    async def test_non_retryable_transport_failure_fails_without_retry(self):
+        connection = await self.connected()
+
+        def read_failure(request):
+            raise httpx.ReadError("connection reset mid-body")
+
+        self.reinstall(read_failure)
+        with self.assertRaises(OAuthFailure):
+            await self.subscriptions.sync_directory(OWNER, connection)
+        self.assertEqual(len(self.requests), 1)
 
     async def test_runtime_catalog_preserves_the_selected_connection_metadata(self):
         connection = await self.connected()

@@ -142,8 +142,32 @@ export type AssistantInvocationStatus =
   | 'cancelled'
   | 'unknown'
 
-export type AssistantTranslationLanguage = 'auto' | 'en' | 'zh-CN'
-export type AssistantTranslationTarget = Exclude<AssistantTranslationLanguage, 'auto'>
+export const ASSISTANT_TRANSLATION_TARGETS = [
+  'zh-CN',
+  'zh-TW',
+  'en',
+  'ja',
+  'ko',
+  'fr',
+  'de',
+  'es',
+  'pt',
+  'it',
+  'ru',
+  'ar',
+  'hi',
+  'th',
+  'vi',
+  'id',
+  'tr',
+  'nl'
+] as const
+export type AssistantTranslationTarget = typeof ASSISTANT_TRANSLATION_TARGETS[number]
+
+export function isAssistantTranslationTarget(value: unknown): value is AssistantTranslationTarget {
+  return typeof value === 'string'
+    && (ASSISTANT_TRANSLATION_TARGETS as readonly string[]).includes(value)
+}
 
 /** 不进入会话列表的一次性 Agent 调用。 */
 export interface AssistantOneShotInput {
@@ -155,7 +179,6 @@ export interface AssistantOneShotInput {
 /** Viewer/业务 Feature 发起翻译时提供的页面数据。 */
 export interface AssistantTranslationInput {
   text: string
-  source_language?: AssistantTranslationLanguage
   target_language?: AssistantTranslationTarget
   source_id?: string
   source_revision?: string | null

@@ -35,6 +35,7 @@ from scholarseed_codex.protocol.session import (
     CodexToolResponse,
 )
 from scholarseed_codex.protocol.state import (
+    AGENT_RUNTIME_STOP_TIMEOUT_SECONDS,
     CODEX_APP_SERVER_LISTEN,
     CODEX_BENIGN_NOTIFICATION_METHODS,
     CODEX_DEFAULT_APPROVAL_POLICY,
@@ -53,7 +54,6 @@ from scholarseed_codex.protocol.state import (
     CODEX_MAX_RUNTIME_EVIDENCE,
     CODEX_MAX_THREADS_PER_HOST,
     CODEX_MULTI_AGENT_MODES,
-    CODEX_PROCESS_STOP_TIMEOUT_SECONDS,
     CODEX_RECOVERY_BACKOFF_MULTIPLIER,
     CODEX_RECOVERY_INITIAL_DELAY_SECONDS,
     CODEX_RECOVERY_JITTER_RATIO,
@@ -311,7 +311,7 @@ class CodexProcessHost:
             version=self.version or str(self.initialize_result.get("userAgent") or ""),
             authenticated=True if ready else None,
             process_state=self.state.value,
-            safe_error="" if ready else "codex_process_not_ready",
+            safe_error="" if ready else "agent runtime not ready",
             process_generation=self._generation,
             recovery_attempt=self._recovery_attempt,
             max_recovery_attempts=self.max_recovery_attempts,
@@ -369,13 +369,13 @@ class CodexProcessHost:
                 return
             raise AppServerError(
                 "Codex App Server recovery did not restore the process",
-                safe_error="codex_process_unavailable",
+                safe_error="agent_runtime_unavailable",
             )
         async with self._start_lock:
             if self._closed or self.state == CodexProcessState.CLOSING:
                 raise AppServerError(
                     "Codex App Server host is closed",
-                    safe_error="codex_process_closed",
+                    safe_error="agent_runtime_closed",
                     retryability=RuntimeRetryability.TERMINAL,
                 )
             if (
@@ -391,7 +391,7 @@ class CodexProcessHost:
             # Transport EOF does not prove that the owned OS process has exited.
             raise AppServerError(
                 "Codex App Server process exit is still pending",
-                safe_error="codex_process_unavailable",
+                safe_error="agent_runtime_unavailable",
                 generation=self._generation,
                 retryability=RuntimeRetryability.IN_PROGRESS,
             )
@@ -1678,7 +1678,7 @@ class CodexProcessHost:
         self._watcher.reset()
         error = AppServerError(
             "Codex App Server connection closed",
-            safe_error="codex_process_exit",
+            safe_error="agent_runtime_exit",
             generation=exit_generation,
             retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
         )
@@ -1690,7 +1690,7 @@ class CodexProcessHost:
             kind=RuntimeIncidentKind.PROCESS_EXIT,
             strategy=RuntimeRecoveryStrategy.AUTO_RESTART,
             retryability=RuntimeRetryability.IN_PROGRESS,
-            safe_error="codex_process_exit",
+            safe_error="agent_runtime_exit",
             process_generation=exit_generation,
             max_attempts=self.max_recovery_attempts,
             process_exit_code=process_exit_code,
@@ -1847,7 +1847,7 @@ class CodexProcessHost:
         if proc.stdin is not None and not proc.stdin.is_closing():
             proc.stdin.close()
         try:
-            await asyncio.wait_for(proc.wait(), timeout=CODEX_PROCESS_STOP_TIMEOUT_SECONDS)
+            await asyncio.wait_for(proc.wait(), timeout=AGENT_RUNTIME_STOP_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             if proc.returncode is None:
                 proc.kill()
@@ -1896,7 +1896,7 @@ class CodexProcessHost:
             await asyncio.gather(*tasks, return_exceptions=True)
         closed_error = AppServerError(
             "Codex App Server host closed",
-            safe_error="codex_process_closed",
+            safe_error="agent_runtime_closed",
             retryability=RuntimeRetryability.TERMINAL,
         )
         self._rpc_requests.close(closed_error)

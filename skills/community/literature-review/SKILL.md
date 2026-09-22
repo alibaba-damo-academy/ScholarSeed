@@ -12,7 +12,7 @@ description_zh: >-
   带引用的正文撰写、图表生成，并核验 Markdown 或 PDF 交付物。需要已配置的
   模型后端，新文献检索依赖独立安装的 agentic-search skill。
 metadata:
-  version: "2026.9.22+1"
+  version: "2026.9.22+2"
 ---
 
 # Literature review — main-agent contract
@@ -206,13 +206,23 @@ response) in exactly this order, even with automatic continuation authorization:
 
 1. Summarize the user's research request and personalized preferences in 1–2 sentences.
 2. Display `outline_markdown`: hierarchical chapters/subsections with each figure or table ID and caption nested under its owner. No paper lists/counts, descriptions, analytical tasks, rationale, purposes or separate planning tables. Show language only beside non-default chapters, within this packet rather than a separate language-confirmation gate.
-3. Follow `confirmation.state`: `auto` or `approved` needs no new question after display; `required` needs a real confirmation. Retain publication choices the user already stated, asking once only for missing choices or confirmation of the current settings. Offer usable packet options only; do not add a separate outline-confirmation question or make the user choose unchanged settings again.
+3. Follow `confirmation.state`: `auto` or `approved` continues after display; `required` needs a real confirmation; `awaiting_display` starts the five-minute sequence below. Retain explicit user publication choices and use only usable packet options. Do not make the user choose unchanged settings again.
 
-- Complete surveys retain this combined confirmation unless explicitly waived. An explicit waiver uses `outline_review:"auto"` plus `auto_authorization` quoting an actual recorded user request; components default to auto.
+For publication choices, display only usable `options.format_labels` and `options.citation_styles[].label` values. Use `publication_display` for the current settings. Each label is the complete user-facing description; do not append explanations, examples, template IDs, compiler details, source names, or metadata fields. The PDF format label already describes its output, so do not separately present its template as another choice.
+
+- New complete surveys default to `outline_review:"timeout_auto"` with `review_timeout_seconds:300`. Preserve existing tasks' policies. If the user explicitly requires waiting for approval, use `required`; immediate automatic continuation still uses `auto` plus a real `auto_authorization` quote. Components default to auto.
 - Configured publication settings alone do not establish user approval. A preference to minimize questions does not supply a missing confirmation; an existing valid approval or explicit automatic-continuation policy does.
-- Use a question tool only when the host permits it in the active mode. A listed `request_user_input` may be Plan-only; if unavailable in Default mode, ask the single needed question in ordinary text and wait for the real reply. Do not switch modes just to ask.
+- Use a question tool only when the host permits it in the active mode. A listed `request_user_input` may be Plan-only. For timed review, use a nonblocking display/notice followed by the wait sequence; do not enter an indefinite blocking question tool. Do not switch modes just to ask.
 - Record a real decision with `writing approve --request FILE`, using packet_id, actual user_response and optional publication changes (and message_id if supplied by the host).
-- Reading the packet is not displaying it. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation. Never fabricate a user response or packet ID.
+- Reading the packet is not displaying it. A timeout is a policy decision only when the displayed `timeout_auto` window has actually expired and `review-timeout` has recorded it; never fabricate a user response or packet ID. Other modes retain their existing approval rules.
+
+### Five-minute review
+
+1. Display the outline and `publication_display` settings together with `confirmation.timeout_notice`: the user has five minutes to reply, otherwise those settings will be used. Then call `writing review-start --request FILE` with the actual `packet_id` and `displayed:true`; include a host message ID only when available. Generating or rereading a packet does not start/reset the timer.
+2. Keep this turn alive with an interruptible host wait, or call `writing review-wait --packet-id ID --wait-seconds 30` repeatedly, processing incoming messages between calls. A host scheduler can instead wake this same task at the returned `deadline_at`. Do not end the turn merely saying “waiting” unless the host has actually arranged its wakeup. The CLI does not install a background scheduler or wake a stopped agent by itself.
+3. On any user reply, immediately call `writing review-response --request FILE` with the current packet ID and actual reply before interpreting it. This stops the timer, including for “wait”, cancellation or revision requests. Use `writing approve` only for real confirmation. A revised task/outline needs its new packet displayed before a new timer starts; do not restart a paused packet automatically.
+4. When status is `expired`, first handle any pending user input, then call `writing review-timeout --packet-id ID`. Send its `notice` to the user before `manuscript prepare`, stating that no reply was received and naming the default settings. This records `decision_source:timeout_default` with `user_response:null` and preserves all user-specified choices. Unavailable publication choices require repair, not silent substitution.
+5. Repeated callbacks reuse `decision_id` and `notice_id`. Resume the same task and deduplicate notices; do not spawn a second generation branch. `STATE_BUSY` means retry the same queued event after the current writer finishes. Late replies are follow-ups. On recovery, query `writing review-status`; keep the saved deadline and discard callbacks for stale packets.
 
 ### Revisions → action
 
@@ -304,7 +314,7 @@ or hash-based edit permissions.
 - At most one live search subagent and one live figure subagent; neither role is dispatched twice for the same task. The cap does not limit concurrency inside one CLI call: scripted chapter, image and refinement model calls remain as parallel as possible.
 - Before each `spawn_agent`, state the intended agent count and disjoint write scope; record the returned id and use only that id for `wait_agent`, `send_input` and `resume_agent`. Never re-spawn after a timeout, interruption or slow result; keep waiting on or resume the recorded id.
 - If a duplicate is detected, `close_agent` the extra one before it writes task state, then report the incident.
-- Never fabricate a user response or packet ID. Defaults, preselection, silence and timeout are not authorization; no reply means no dependent generation.
+- Never fabricate a user response or packet ID. Timed continuation requires the displayed `timeout_auto` policy and a validated expired-window receipt; it is not a user approval. Manual `required` mode cannot be bypassed by a timeout.
 - Preserve received chapter responses, even incomplete ones, and completed figure siblings; use the one refinement or main's v2 edits for editorial repairs, never semantic regeneration or a second refinement.
 - Post-publish checking is bounded: first page plus figure/table pages only, no claim-by-claim or theorem-by-theorem source verification, and no bibliography re-verification. Wider checks require an explicit user request or a named error.
 - One workspace per deliverable; never overwrite an existing survey. Secrets stay out of task/artifact files.

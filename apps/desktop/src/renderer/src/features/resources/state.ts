@@ -367,6 +367,7 @@ export type ResourceNoticeMessage = ResourceErrorMessage | {
   detail?: string
 } | {
   key: 'feedback.importReplaced' | 'feedback.importRenamed'
+    | 'feedback.linkSuperseded' | 'feedback.linkSupersedeCleanupFailed'
   count: number
   detail?: string
 }
@@ -396,6 +397,20 @@ export interface DeleteConfirmState {
 export interface UnlinkConfirmState extends ResourceLinkRoot {
   name: string
   interruptRunning?: boolean
+}
+
+/**
+ * 反方向关联 (先子后父) 的选择弹窗。
+ *
+ * 后端对「新源是已生效关联根的父目录」回 `source_covers_links` 而非硬拒绝; 前端凭
+ * 已加载的关联根推出被覆盖的子关联, 让用户二选一: 取代子关联并挂载父目录, 或不挂载、
+ * 直接打开已有子关联。null = 关闭。
+ */
+export interface LinkSupersedeConfirmState {
+  /** 要挂载的父目录源 (OS 绝对路径); 取代时逐个走同步授权 (supersede)。 */
+  sources: string[]
+  /** 将被取代的已生效子关联 (来自已加载的关联根)。 */
+  covered: { rootId: string; mountPath: string; name: string }[]
 }
 
 /** 移动目标选择弹窗（PRD「移动资料」）。 */
@@ -525,6 +540,7 @@ export interface ResourceState {
   linkedCreateConfirm: LinkedCreateConfirmState | null
   deleteConfirm: DeleteConfirmState | null
   unlinkConfirm: UnlinkConfirmState | null
+  linkSupersedeConfirm: LinkSupersedeConfirmState | null
   moveDialog: MoveDialogState | null
   /** 一次性操作反馈（成功/失败），由原子 Toast 展示。 */
   notice: ResourceNoticeState | null
@@ -548,6 +564,7 @@ export const INITIAL_RESOURCE_STATE: ResourceState = {
   linkedCreateConfirm: null,
   deleteConfirm: null,
   unlinkConfirm: null,
+  linkSupersedeConfirm: null,
   moveDialog: null,
   notice: null,
   loadState: 'idle'

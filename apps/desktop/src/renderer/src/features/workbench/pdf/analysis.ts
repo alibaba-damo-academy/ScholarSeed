@@ -1,11 +1,25 @@
 import { apiFetch } from '../../../api.ts'
 import { postActionStream } from '../../../action.ts'
+import {
+  ASSISTANT_TRANSLATION_TARGETS,
+  type AssistantTranslationTarget
+} from '../../../contracts/assistant.ts'
 import { pdfAiFailure, type PdfAiFailure } from './failure.ts'
 
-export type PdfAction = 'document_translation' | 'interpretation' | 'selection_translation' | 'selection_explanation' | 'figure_explanation'
+export type PdfAction = 'document_translation' | 'interpretation' | 'selection_translation' | 'selection_explanation' | 'figure_explanation' | 'formula_latex'
+export type PdfVisualRegionKind = 'formula' | 'figure' | 'table'
+export interface PdfVisualRegion {
+  region_id: string; kind: PdfVisualRegionKind; reason: string; text_policy: 'retain' | 'exclude'; page: number; quad: number[]
+}
+export interface PdfVisualRegionManifest {
+  schema_version: number; detector_version: string; source_revision: string
+  coordinate_space: string; page_count: number; unavailable_pages: number[]
+  pages: { page: number; unavailable: boolean; regions: PdfVisualRegion[] }[]
+}
 export interface PdfSelection { text: string; page: number; quads: number[][] }
 export interface PdfAiContent { text: string; uncertain?: boolean; evidence?: { page: number; quote: string }[] }
-export type TranslationDirection = 'auto' | 'zh' | 'en'
+export const PDF_TRANSLATION_TARGETS = ASSISTANT_TRANSLATION_TARGETS
+export type TranslationDirection = AssistantTranslationTarget
 export type PdfResponseLanguage = 'zh' | 'en'
 export function pdfResponseLanguage(language: string | undefined): PdfResponseLanguage {
   return language?.toLowerCase().startsWith('en') ? 'en' : 'zh'
@@ -19,12 +33,14 @@ export interface PdfAiResult extends PdfAiContent {
   crop?: string; rect?: number[]; quads?: number[][]; model_key: string; content?: PdfAiContent
   modules?: Record<string, ReadingSummary>
   source_language?: string; target_language?: string; blocks?: TranslationSentence[]
+  latex?: string; region_id?: string; visual_kind?: PdfVisualRegionKind
   pages?: { page: number; blocks: TranslationSentence[] }[]
   response_language?: PdfResponseLanguage
 }
 export interface PdfAiRequest {
-  literature_id: string; path?: string; asset_id?: string; project_id: string; revision: string; model_key: string
+  literature_id: string; attachment_id?: string; path?: string; asset_id?: string; project_id: string; revision: string; model_key: string
   kind: PdfAction; module: string; page: number; text: string; rect?: number[]; quads?: number[][]
+  region_id?: string; visual_kind?: PdfVisualRegionKind
   client_action_id: string; client_attempt_id: string
   instruction?: string
   target_language?: TranslationDirection
@@ -56,6 +72,35 @@ export async function pdfAiApi<T>(path: string, body?: unknown): Promise<T> {
   const payload = await response.json()
   if (!response.ok) throw new PdfAiRequestError(pdfAiFailure(payload.detail) ?? { diagnostic: '' })
   return payload as T
+}
+
+interface PdfVisualRegionSource {
+  literatureId: string; attachmentId: string; path: string; projectId: string; revision: string
+}
+
+function visualRegionPrefix(source: PdfVisualRegionSource): string {
+  if (source.literatureId) {
+    return `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}/regions`
+  }
+  const query = new URLSearchParams({ path: source.path, project: source.projectId })
+  return `/api/workbench/pdf/regions?${query}`
+}
+
+export async function loadPdfVisualRegions(source: PdfVisualRegionSource, startPage: number, endPage: number): Promise<PdfVisualRegionManifest> {
+  const separator = visualRegionPrefix(source).includes('?') ? '&' : '?'
+  const query = new URLSearchParams({ revision: source.revision, start_page: String(startPage), end_page: String(endPage) })
+  const response = await apiFetch(`${visualRegionPrefix(source)}${separator}${query}`)
+  if (!response.ok) throw new Error(`pdf_visual_regions_${response.status}`)
+  return await response.json() as PdfVisualRegionManifest
+}
+
+export async function loadPdfVisualRegionImage(source: PdfVisualRegionSource, region: PdfVisualRegion): Promise<Blob> {
+  const prefix = visualRegionPrefix(source)
+  const base = prefix.includes('?') ? prefix.replace('?', `/${encodeURIComponent(region.region_id)}/image?`) : `${prefix}/${encodeURIComponent(region.region_id)}/image`
+  const separator = base.includes('?') ? '&' : '?'
+  const response = await apiFetch(`${base}${separator}${new URLSearchParams({ revision: source.revision, page: String(region.page) })}`)
+  if (!response.ok) throw new Error(`pdf_visual_region_image_${response.status}`)
+  return await response.blob()
 }
 
 function record(value: unknown): Record<string, unknown> | null {

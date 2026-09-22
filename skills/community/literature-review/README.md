@@ -239,8 +239,26 @@ scholarseed-bridge literature review --json '{"workspace":"my-survey","checkpoin
 ./my-survey/slr workflow publish
 ```
 
-以上是接口索引，不是无条件顺序执行的脚本：确认要基于真实用户回复；已有
-自动授权无需 approve；无图任务跳过制图；有图任务在 prepare 后并发启动。
+以上是接口索引，不是无条件顺序执行的脚本：真实用户确认使用 approve；已有
+自动授权无需 approve；新建完整综述默认采用下述五分钟策略。无图任务跳过制图；有图任务在 prepare 后并发启动。
+
+### 五分钟确认窗口
+
+新建完整综述默认 `outline_review:"timeout_auto"`、`review_timeout_seconds:300`；旧任务的 `required/auto` 不会被更改。用户要求必须等其确认时设置 `required`。大纲和推荐出版设置实际展示后，主代理说明“5 分钟未回复将按以上设置继续”，再启动计时：
+
+```text
+writing review-start --request displayed.json
+writing review-wait --packet-id <当前ID> --wait-seconds 30
+writing review-response --request actual-reply.json
+writing review-timeout --packet-id <当前ID>
+writing review-status --packet-id <当前ID>
+```
+
+这些是追加到绑定 CLI 的子命令，不是独立可执行文件。`displayed.json` 包含实际 `packet_id` 和 `displayed:true`；回复文件包含实际 `packet_id`、`user_response`，可附真实 `message_id`。所有接口支持 `--describe-input`，状态/等待/到期操作也接受同形状的 `--request`。
+
+上述命令是分支流程：有回复时立即记录并停止超时，暂停或修改也一样；无回复且状态变成 `expired` 时才执行 `review-timeout`。它返回用户通知和稳定的 `decision_id/notice_id`，记录为超时默认决定，不伪造用户回复，也不自行启动模型。主代理先发送通知，再准备/生成正文。任务或大纲变化会使旧窗口失效；重复调用不会延长窗口或创建第二个决定。
+
+宿主可通过动态等待工具和持久化定时器在 `deadline_at` 唤醒任务，并在用户输入到达时先调用 `review-response`；同一时刻到达的输入应先入队处理。没有后台调度器时，主代理必须保持活跃并使用最多 30 秒的可中断等待。单独结束 agent 回合不会自动恢复，此仓库不包含桌面端的调度实现。
 首次出版和修改v2后的再次出版都只需 `workflow publish`，它包含检查、编译导出和
 首页及图表页渲染，跨页表格覆盖全部续页。返回的 `inspection_scope` 包含实际 PDF 页码、图表标签与图片路径；定位不完整会明确报告。维护诊断时可以单独调用 `manuscript publish` 或 `run verify_postcheck`，
 但它们是工作流子步骤，不是运行完 `workflow publish` 后还要追加的常规步骤。
@@ -402,7 +420,7 @@ main直接修改v2及其实际依赖文件中的一切论文问题；无需同�
 
 ## 仓库集成与平台验证
 
-本次导入上游 2026.09.22.1，产品版本为 2026.9.22+1。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
+本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
 
 | 行为 | macOS | Windows |
 |---|---|---|

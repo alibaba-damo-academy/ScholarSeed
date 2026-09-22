@@ -1,4 +1,4 @@
-"""Product-facing whitelist for deterministic upstream provider rejections.
+"""Product-facing policies for upstream provider failures.
 
 A deterministic, user-fixable upstream rejection (parameter / model / request /
 credential class) arrives at the serve loopback bridge as a terminal
@@ -11,7 +11,8 @@ data here (plus the desktop copy registry and the adapter classification registr
 never a new branch in core code.
 
 Codes outside this whitelist keep folding into the generic ``MODEL_UPSTREAM_REJECTED``
-upstream and are never released verbatim. Messages released to the product surface are
+upstream and are never released verbatim. Exhausted transient HTTP failures use a fixed
+product message and retry-attempt count. Messages released to the product surface are
 the bridge's already-redacted, URL-masked, length-bounded ``error_message`` — never the
 full upstream envelope, credentials, or request ids.
 """
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from http import HTTPStatus
 from typing import Any, Mapping
 
 from scholarseed_runtime.contract.incident import RuntimeRetryability
@@ -61,10 +63,20 @@ MODEL_CONFIG_SAFE_MESSAGE = "The model is not supported by this endpoint."
 REQUEST_SAFE_MESSAGE = "The model provider rejected the request."
 # 确定性 4xx 认证/凭据类。
 AUTH_SAFE_MESSAGE = "The model provider rejected the credentials."
+TRANSIENT_PROVIDER_FAILURE_CODE = "service_unavailable"
+TRANSIENT_PROVIDER_FAILURE_MESSAGE = "The model provider is temporarily unavailable."
+TRANSIENT_PROVIDER_HTTP_STATUSES = frozenset(
+    (
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        HTTPStatus.BAD_GATEWAY,
+        HTTPStatus.SERVICE_UNAVAILABLE,
+        HTTPStatus.GATEWAY_TIMEOUT,
+    )
+)
 
 # 首批范围（proposal 106 评审已定：含更多 4xx，按 LiteLLM「4xx 即确定性、不重试」分档）。
-# 5xx/429 不在此表——它们是可重试类，由 Codex/网关既有重试与 adapter 分类处理，
-# 不经此终态恢复通道放行。键一律 casefold（匹配时 ``code.casefold()``）。
+# 5xx/429 不在此确定性错误表；耗尽的瞬时 5xx 由上方 HTTP 状态集合单独恢复。
+# 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
     CONTENT_SAFETY_BLOCKED.casefold(): RejectionPolicy(
         retryability=RuntimeRetryability.TERMINAL,
@@ -139,17 +151,41 @@ CODEX_PROVIDER_REJECTIONS: Mapping[tuple[str, str], RejectionPolicy] = {
 
 
 def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
-    """Recover attribution from a finished bridge diagnostic for a whitelisted code.
+    """Recover product semantics from a finished bridge diagnostic.
 
     Returns the terminal payload keys the ledger projection consumes (``error`` /
     ``error_code`` / ``safe_error`` / ``retryability``) plus ``provider_http_status``
     for incident backfill, or ``{}`` when the diagnostic is not a whitelisted terminal
-    provider rejection. The released message is the bridge's already-redacted,
+    provider failure. Exhausted transient HTTP failures use a fixed product-safe
+    message. Deterministic rejection messages use the bridge's already-redacted,
     bounded ``error_message`` for BOUNDED codes, never the raw upstream envelope.
     Lookup is by ``error_code`` first, then by the Codex-normalized
     ``(error_code, error_type)`` pair; a hit may remap to a stable ``product_code``.
     """
 
+    status = fields.get("status_code")
+    attempt = fields.get("attempt")
+    max_attempts = fields.get("max_attempts")
+    if (
+        fields.get("phase") == "finished"
+        and isinstance(status, int)
+        and not isinstance(status, bool)
+        and status in TRANSIENT_PROVIDER_HTTP_STATUSES
+        and isinstance(attempt, int)
+        and not isinstance(attempt, bool)
+        and isinstance(max_attempts, int)
+        and not isinstance(max_attempts, bool)
+        and max_attempts > 1
+        and attempt >= max_attempts
+    ):
+        return {
+            "error": TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+            "error_code": TRANSIENT_PROVIDER_FAILURE_CODE,
+            "safe_error": TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+            "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+            "provider_http_status": int(status),
+            "automatic_retry_attempts": attempt,
+        }
     downstream = fields.get("downstream")
     if (
         fields.get("phase") != "finished"
@@ -182,5 +218,6 @@ __all__ = [
     "PRODUCT_PROVIDER_REJECTIONS",
     "RejectionMessage",
     "RejectionPolicy",
+    "TRANSIENT_PROVIDER_HTTP_STATUSES",
     "terminal_provider_failure",
 ]

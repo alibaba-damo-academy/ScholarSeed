@@ -1,7 +1,38 @@
 import React from 'react'
 
-const FLOATING_MARGIN_PX = 16
+export const FLOATING_EDGE_MARGIN_PX = 0
+export const FLOATING_PANEL_MARGIN_PX = 16
 const DRAG_THRESHOLD_PX = 4
+const RECORDER_DRAG_BLOCKED_SELECTOR = [
+  'button',
+  'input',
+  'textarea',
+  'select',
+  'a',
+  '[contenteditable="true"]',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="switch"]',
+  '[role="slider"]',
+  '[role="listbox"]',
+  '[role="option"]',
+  '[data-floating-drag-ignore]'
+].join(',')
+
+interface ClosestTarget extends EventTarget {
+  closest: (selector: string) => unknown
+}
+
+export function isRecorderDragBlockedTarget(
+  target: EventTarget | null,
+  surface?: EventTarget | null
+): boolean {
+  if (!target || typeof (target as Partial<ClosestTarget>).closest !== 'function') return false
+  const interactiveOwner = (target as ClosestTarget).closest(RECORDER_DRAG_BLOCKED_SELECTOR)
+  return Boolean(interactiveOwner && interactiveOwner !== surface)
+}
 
 export interface FloatingOffset {
   x: number
@@ -24,7 +55,7 @@ export function clampFloatingOffset(
   bounds: FloatingBounds,
   desired: FloatingOffset,
   viewport: ViewportSize,
-  margin = FLOATING_MARGIN_PX
+  margin = FLOATING_PANEL_MARGIN_PX
 ): FloatingOffset {
   const minX = margin - bounds.baseLeft
   const maxX = viewport.width - margin - bounds.baseLeft - bounds.width
@@ -39,6 +70,7 @@ export function clampFloatingOffset(
 export interface FloatingSurfaceBinding {
   consumeSuppressedClick: () => boolean
   handleProps: {
+    onLostPointerCapture: (event: React.PointerEvent<HTMLElement>) => void
     onPointerCancel: (event: React.PointerEvent<HTMLElement>) => void
     onPointerDown: (event: React.PointerEvent<HTMLElement>) => void
     onPointerMove: (event: React.PointerEvent<HTMLElement>) => void
@@ -48,8 +80,12 @@ export interface FloatingSurfaceBinding {
   style: React.CSSProperties
 }
 
-export function useFloatingSurface(layoutKey: string): FloatingSurfaceBinding {
+export function useFloatingSurface(
+  layoutKey: string,
+  margin = FLOATING_PANEL_MARGIN_PX
+): FloatingSurfaceBinding {
   const surfaceRef = React.useRef<HTMLElement | null>(null)
+  const [surfaceNode, setSurfaceNode] = React.useState<HTMLElement | null>(null)
   const dragRef = React.useRef<{
     bounds: FloatingBounds
     origin: FloatingOffset
@@ -62,6 +98,7 @@ export function useFloatingSurface(layoutKey: string): FloatingSurfaceBinding {
 
   const setSurface = React.useCallback((node: HTMLElement | null): void => {
     surfaceRef.current = node
+    setSurfaceNode(node)
   }, [])
 
   const keepVisible = React.useCallback((): void => {
@@ -69,22 +106,28 @@ export function useFloatingSurface(layoutKey: string): FloatingSurfaceBinding {
     if (!surface) return
     const rect = surface.getBoundingClientRect()
     setOffset((current) => {
-      const correctionX = rect.left < FLOATING_MARGIN_PX
-        ? FLOATING_MARGIN_PX - rect.left
-        : rect.right > window.innerWidth - FLOATING_MARGIN_PX
-          ? window.innerWidth - FLOATING_MARGIN_PX - rect.right
+      const correctionX = rect.left < margin
+        ? margin - rect.left
+        : rect.right > window.innerWidth - margin
+          ? window.innerWidth - margin - rect.right
           : 0
-      const correctionY = rect.top < FLOATING_MARGIN_PX
-        ? FLOATING_MARGIN_PX - rect.top
-        : rect.bottom > window.innerHeight - FLOATING_MARGIN_PX
-          ? window.innerHeight - FLOATING_MARGIN_PX - rect.bottom
+      const correctionY = rect.top < margin
+        ? margin - rect.top
+        : rect.bottom > window.innerHeight - margin
+          ? window.innerHeight - margin - rect.bottom
           : 0
       if (!correctionX && !correctionY) return current
       return { x: current.x + correctionX, y: current.y + correctionY }
     })
-  }, [])
+  }, [margin])
 
-  React.useLayoutEffect(() => keepVisible(), [keepVisible, layoutKey])
+  React.useLayoutEffect(() => keepVisible(), [keepVisible, layoutKey, surfaceNode])
+  React.useLayoutEffect(() => {
+    if (!surfaceNode || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(keepVisible)
+    observer.observe(surfaceNode)
+    return () => observer.disconnect()
+  }, [keepVisible, surfaceNode])
   React.useEffect(() => {
     window.addEventListener('resize', keepVisible)
     return () => window.removeEventListener('resize', keepVisible)
@@ -104,11 +147,16 @@ export function useFloatingSurface(layoutKey: string): FloatingSurfaceBinding {
       return suppressed
     },
     handleProps: {
+      onLostPointerCapture: finish,
       onPointerCancel: finish,
       onPointerDown: (event) => {
-        if (event.button !== 0) return
         const surface = surfaceRef.current
-        if (!surface) return
+        if (
+          !surface
+          || event.button !== 0
+          || event.defaultPrevented
+          || isRecorderDragBlockedTarget(event.target, surface)
+        ) return
         const rect = surface.getBoundingClientRect()
         dragRef.current = {
           bounds: {
@@ -134,7 +182,8 @@ export function useFloatingSurface(layoutKey: string): FloatingSurfaceBinding {
         setOffset(clampFloatingOffset(
           drag.bounds,
           { x: drag.origin.x + deltaX, y: drag.origin.y + deltaY },
-          { width: window.innerWidth, height: window.innerHeight }
+          { width: window.innerWidth, height: window.innerHeight },
+          margin
         ))
       },
       onPointerUp: finish

@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from service.content.domain.model import PREPARED_CONFLICT, PREPARED_UNAVAILABLE, ContentError
 from service.content.service.port import MAX_BYTES, ContentService
 from service.content.service.spreadsheet import processor_for
+from service.platform.citations import PDF_INDEX_STATE, CitationDocument, PdfIndexPort
 from service.platform.ranges import parse_byte_range
 from service.platform.resources import ResourceAdmissionPolicy, ResourceManagedCopyPort
 from service.resources.service.history import ResourceVersionError, ResourceVersionService
@@ -42,6 +43,9 @@ from service.workbench.service.images import (
     stage_office_image,
 )
 from service.workbench.service.records import PdfRecordStore
+from service.workbench.service.regions import crop as crop_region
+from service.workbench.service.regions import manifest as region_manifest
+from service.workbench.service.regions import region as resolve_region
 
 #: Workbench 路由前缀。
 WORKBENCH_ROUTE_PREFIX = "/api/workbench"
@@ -70,6 +74,7 @@ CONTENT_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/content"
 ANNOTATIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/assets/{{asset_id}}/pdf/records"
 MANAGED_COPY_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/managed-copy"
 OFFICE_IMAGES_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/office-images"
+PDF_REGIONS_ROUTE = f"{WORKBENCH_ROUTE_PREFIX}/pdf/regions"
 RANGE_NOT_SATISFIABLE_STATUS = 416
 PARTIAL_CONTENT_STATUS = 206
 PRECONDITION_REQUIRED_STATUS = 428
@@ -117,6 +122,13 @@ def _records(request: Request) -> PdfRecordStore:
     service = getattr(request.app.state, "pdf_records", None)
     if service is None:
         raise HTTPException(status_code=503, detail="records_unavailable")
+    return service
+
+
+def _pdf_indexes(request: Request) -> PdfIndexPort:
+    service = getattr(request.app.state, PDF_INDEX_STATE, None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="pdf_index_unavailable")
     return service
 
 
@@ -273,6 +285,54 @@ def register_workbench_routes(app: FastAPI) -> None:
                 raise HTTPException(status_code=422, detail="invalid_spreadsheet") from exc
         headers["Content-Length"] = str(len(payload))
         return Response(content=payload, media_type=media_type, headers=headers)
+
+    def project_pdf_document(
+        content: ContentService, project: str, path: str, revision: str
+    ) -> CitationDocument:
+        snapshot = content.snapshot(project, path)
+        if snapshot.revision != revision:
+            raise HTTPException(status_code=CONFLICT_STATUS, detail="source_revision_conflict")
+        payload, media_type = content.read_bytes(
+            project, path, max_bytes=WORKBENCH_PREVIEW_MAX_BYTES
+        )
+        if media_type != "application/pdf":
+            raise HTTPException(status_code=415, detail="pdf_source_invalid")
+        return CitationDocument(snapshot.project_id, path, path, revision, payload)
+
+    @app.get(PDF_REGIONS_ROUTE)
+    def pdf_regions(
+        request: Request,
+        path: str = Query(...),
+        project: str = Query(...),
+        revision: str = Query(...),
+        start_page: int = Query(..., ge=1),
+        end_page: int = Query(..., ge=1),
+    ) -> dict:
+        try:
+            document = project_pdf_document(_content(request), project, path, revision)
+            return region_manifest(_pdf_indexes(request), document, start_page, end_page)
+        except ContentError as exc:
+            raise _fail(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get(f"{PDF_REGIONS_ROUTE}/{{region_id}}/image")
+    def pdf_region_image(
+        region_id: str,
+        request: Request,
+        path: str = Query(...),
+        project: str = Query(...),
+        revision: str = Query(...),
+        page: int = Query(..., ge=1),
+    ) -> Response:
+        try:
+            document = project_pdf_document(_content(request), project, path, revision)
+            selected = resolve_region(_pdf_indexes(request), document, page, region_id)
+            return Response(crop_region(document.payload, selected), media_type="image/png")
+        except ContentError as exc:
+            raise _fail(exc) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.put(CONTENT_ROUTE)
     async def workbench_commit(  # type: ignore[unused-ignore]

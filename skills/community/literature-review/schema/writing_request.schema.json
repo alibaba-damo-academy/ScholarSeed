@@ -58,7 +58,12 @@
       "type": "string"
     },
     "outline_review": {
-      "type": "string"
+      "type": "string",
+      "enum": ["required", "auto", "timeout_auto"]
+    },
+    "review_timeout_seconds": {
+      "type": "integer",
+      "const": 300
     },
     "section_instructions": {
       "type": "object"

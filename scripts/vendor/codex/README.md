@@ -1,6 +1,6 @@
 # Codex Runtime 制品维护
 
-本目录保存 Desktop 内置的官方 Codex Runtime 平台清单。制品不进入 Git；构建仅按清单中的固定 npm URL 下载并校验，不访问 npm `latest`。
+本目录保存 Desktop 内置的官方 Codex Runtime 平台清单。制品不进入 Git；构建仅按清单中的固定 OSS HTTPS URL 下载并校验，不访问 npm `latest`。
 
 ## 当前平台
 
@@ -87,7 +87,7 @@ tar -tzf "codex-${VERSION}-win32-x64.tgz"
 1. 查询 `@openai/codex@latest` 的稳定版本。
 2. 下载 macOS arm64、macOS x64 和 Windows x64 官方平台包。
 3. 核对 npm metadata 中的版本、平台和 SHA-512 integrity。
-4. 更新 manifest 中的 URL、字节数、SHA-256、integrity 和固定版本。
+4. 将原始平台包上传 OSS 并验证匿名下载，更新 manifest 中的 OSS URL、字节数、SHA-256、integrity 和固定版本。
 5. 删除本地下载文件，确认其不会进入 Git。
 7. 执行 Desktop 打包契约测试和两个平台的真实构建。
 6. 提交 manifest、说明和代码变更，不提交 tgz。

@@ -21,7 +21,7 @@ export const QUEUED_MESSAGE_SAFE_ERRORS = {
 } as const
 const QUEUE_ERROR_MESSAGE_KEYS = {
   [QUEUED_MESSAGE_SAFE_ERRORS.SUBMISSION_NOT_APPLIED]: 'composer.notSubmitted',
-  [QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED]: 'composer.stillUnknown',
+  [QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED]: 'composer.runtimeTurnFailed',
   runtime_resource_wait_timeout: 'composer.resourceWaitTimeout',
   runtime_resource_wait_interrupted: 'composer.resourceWaitInterrupted',
   runtime_resource_queue_full: 'composer.resourceQueueFull',
@@ -33,16 +33,17 @@ const QUEUE_ERROR_FALLBACK_MESSAGE_KEYS = {
   waiting_resources: 'composer.queueFailed',
   submitting: 'composer.queueUnknown',
   failed: 'composer.queueFailed',
-  outcome_unknown: 'composer.stillUnknown'
+  outcome_unknown: 'composer.runtimeTurnFailed'
 } as const satisfies Record<QueuedMessage['state'], string>
 
 export function queuedMessageErrorText(
-  error: string,
+  error: unknown,
   state: QueuedMessage['state'],
   t: TFunction<'components'>
 ): string {
-  const key = Object.prototype.hasOwnProperty.call(QUEUE_ERROR_MESSAGE_KEYS, error)
-    ? QUEUE_ERROR_MESSAGE_KEYS[error as keyof typeof QUEUE_ERROR_MESSAGE_KEYS]
+  const code = typeof error === 'string' ? error : ''
+  const key = Object.prototype.hasOwnProperty.call(QUEUE_ERROR_MESSAGE_KEYS, code)
+    ? QUEUE_ERROR_MESSAGE_KEYS[code as keyof typeof QUEUE_ERROR_MESSAGE_KEYS]
     : QUEUE_ERROR_FALLBACK_MESSAGE_KEYS[state]
   return t(key)
 }

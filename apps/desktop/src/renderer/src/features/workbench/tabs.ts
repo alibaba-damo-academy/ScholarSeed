@@ -186,7 +186,8 @@ export function versionDiffTab(reference: VersionDiffReference): WorkbenchTab {
     kind: 'version_diff',
     title: name,
     titleFallback: { kind: 'versionDiff', name, sequence: reference.historicalSequence },
-    closable: true
+    closable: true,
+    projectId: reference.project
   }
 }
 
@@ -274,7 +275,7 @@ export function tabVisibleInCurrentView(kind: TabKind, mainView: string): boolea
   if (kind === 'overview') return false
   if (mainView === 'projects') return kind === 'projects'
   if (mainView === 'literature') return kind === 'literature' || kind === 'literature_search'
-  if (mainView === 'resource') return kind === 'file' || kind === 'web_search' || kind === 'version_diff'
+  if (mainView === 'resource') return kind === 'file' || kind === 'review' || kind === 'web_search' || kind === 'version_diff'
   return kind !== 'projects' && kind !== 'literature' && kind !== 'literature_search'
 }
 

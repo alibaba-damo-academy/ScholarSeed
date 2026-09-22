@@ -5,6 +5,9 @@ Every generation stage uses the same effective view through load_outline().
 """
 from __future__ import annotations
 
+from confirmation import valid_timeout_approval
+from task_contract import validate_request, read_request, structural_contract, publication_view, CONTRACT_VERSION
+
 import copy
 import hashlib
 import json
@@ -23,7 +26,6 @@ def section_label(section_id: str) -> str:
     return 'sec:s' + section_id.replace('.', '_')
 
 
-from task_contract import validate_request, read_request, structural_contract, publication_view
 
 
 def select_outline(outline: dict, request: dict) -> dict:
@@ -82,18 +84,24 @@ def preparation_identity(workspace: Path) -> str:
              "02_retrieval/selected_paper.json", "02_retrieval/paper_info.json",
              "03_process/source_maps.json", "03_process/paper_cards.json",
              "03_process/cite_keys.json"]
-    from task_contract import CONTRACT_VERSION
     return digest({"contract_version":CONTRACT_VERSION, "plan": digest(approval_snapshot(workspace)), "sources": {
         rel: digest((Path(workspace) / rel).read_text())
         if (Path(workspace) / rel).exists() else None for rel in files}})
 
 
 def require_approval(workspace: Path) -> None:
-    if read_request(workspace)["outline_review"] != "required":
+    mode=read_request(workspace)["outline_review"]
+    if mode == "auto":
         return
     p = Path(workspace) / "04_outline/approval.json"
-    if not p.exists() or not json.loads(p.read_text()).get("user_response") or json.loads(p.read_text()).get("snapshot") != approval_snapshot(workspace):
-        raise ValueError("outline review required: show the current outline to the user, then record their approval with slr writing approve")
+    approval=json.loads(p.read_text()) if p.exists() else {}
+    snapshot=approval_snapshot(workspace)
+    if approval.get('decision_source','user')=='user' and approval.get('user_response') and approval.get('snapshot')==snapshot:
+        return
+    if mode=='timeout_auto':
+        if valid_timeout_approval(workspace,approval,snapshot):
+            return
+    raise ValueError("outline review required: record a real approval or complete the displayed five-minute timeout policy; elapsed time alone does not authorize generation")
 
 
 def explicit_length_budget(workspace: Path, language: str = "english") -> dict:

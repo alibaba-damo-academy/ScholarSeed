@@ -144,7 +144,7 @@ The executable Agent provider currently included by ScholarSeed is Codex. Runtim
 
 ## Requirements
 
-- Git and Git LFS
+- Git
 - Node.js `24.16.0`
 - npm `11.13.0`
 - Python `3.12+`
@@ -155,18 +155,18 @@ Installers are built natively for macOS arm64, macOS x86_64, or Windows x86_64. 
 
 ## Run From Source
 
-Clone the repository with Git rather than downloading a source archive so that Git LFS resources are available:
+Clone the repository with Git so packaging can record the source commit:
 
 ```bash
 git clone <repository-url>
-cd Scholarseed
-git lfs install
-git lfs pull
+cd ScholarSeed
 npm ci
 npm run dev
 ```
 
 `npm run dev` prepares the repository-pinned Python runtime and development environment before starting Electron. You normally do not need to install the workspace packages manually.
+
+Runtime binaries are downloaded from the reviewed HTTPS URLs in the manifests, verified by size and SHA-256, and cached locally. Git LFS and GitHub Release access are not required. The first build needs network access; `SCHOLARSEED_ARTIFACT_CACHE` selects an alternative cache directory.
 
 `npm run dev` enables DevTools and the copy-session-ID button by default on macOS and Windows. Set `SCHOLARSEED_DEVTOOLS=0` to disable them.
 

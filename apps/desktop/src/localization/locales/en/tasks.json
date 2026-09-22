@@ -56,6 +56,8 @@
       "importFailed": "Import failed. Check the source and destination permissions.",
       "copyFailed": "Copy failed. Check the folder permissions.",
       "rootExists": "A linked source with the same name already exists.",
+      "sourceOverlap": "This folder is already covered by a linked parent folder.",
+      "sourceCoversLinks": "Its subfolders are already linked separately. Supersede those child links to mount this parent folder.",
       "diskFull": "There is not enough disk space. Free up space and try again.",
       "storageIoFailed": "Local storage could not be read or written. Check the disk and try again.",
       "interrupted": "The import was interrupted when the app or service stopped.",

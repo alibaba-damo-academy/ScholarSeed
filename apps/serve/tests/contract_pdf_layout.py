@@ -4,15 +4,201 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import asdict
+from io import BytesIO
+
+from PIL import Image
 
 from apps.serve.tests import pdf as pdf_fixture
 from service.assistant.service.citations import evidence_windows
-from service.platform.citations import PDF_CAPTION, CitationPage, PdfFragment
+from service.platform.citations import (
+    PDF_CAPTION,
+    PDF_FIGURE,
+    PDF_FORMULA,
+    PDF_TABLE,
+    CitationDocument,
+    CitationPage,
+    PdfFragment,
+    PdfPageContent,
+)
 from service.workbench.service.extraction import decode_index, extract
+from service.workbench.service.regions import crop, manifest, region
 from service.workbench.service.sentences import SentenceBlock, assemble
 
 
 class PdfLayoutContracts(unittest.TestCase):
+    def test_region_manifest_and_crop_share_the_index_identity(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((170, 100), "L(theta) = E[r] - beta * D_KL(pi || pi_ref)", fontsize=13)
+            payload = pdf.tobytes()
+        index = extract(payload)
+        document = CitationDocument("project", "paper.pdf", "Paper", index.revision, payload)
+
+        class IndexFixture:
+            def page_count(self, _document):
+                return index.page_count
+
+            def pages(self, _document, start_page, end_page):
+                return tuple(
+                    PdfPageContent(
+                        page_number,
+                        tuple(
+                            fragment
+                            for fragment in index.fragments
+                            if any(anchor.page == page_number for anchor in fragment.pages)
+                        ),
+                        regions=tuple(item for item in index.regions if item.page == page_number),
+                    )
+                    for page_number in range(start_page, end_page + 1)
+                )
+
+        indexes = IndexFixture()
+        projected = manifest(indexes, document, 1, 1)
+        selected = index.regions[0]
+        self.assertEqual(projected["pages"][0]["regions"][0]["region_id"], selected.region_id)
+        self.assertEqual(region(indexes, document, 1, selected.region_id), selected)
+        with Image.open(BytesIO(crop(payload, selected))) as image:
+            self.assertEqual(image.format, "PNG")
+            self.assertGreater(min(image.size), 20)
+
+    def test_visual_regions_roundtrip_and_formula_text_remains_searchable(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((170, 100), "L(theta) = E[r] - beta * D_KL(pi || pi_ref)", fontsize=13)
+            page.insert_text((60, 145), "The objective above remains part of the searchable text.")
+            page = pdf.new_page(width=600, height=800)
+            page.draw_rect(pdf_fixture.Rect(70, 210, 330, 360))
+            page.insert_text((70, 390), "Figure 1: Training objective over time.")
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((60, 110), "Table 1: Scores")
+            for y, name, score in (
+                (145, "Alpha", "81.2"),
+                (165, "Beta", "93.4"),
+                (185, "Gamma", "88.0"),
+            ):
+                page.insert_text((60, y), name)
+                page.insert_text((230, y), score)
+            index = extract(pdf.tobytes())
+
+        kinds = {region.kind for region in index.regions}
+        self.assertTrue({PDF_FORMULA, PDF_FIGURE, PDF_TABLE}.issubset(kinds))
+        self.assertEqual(
+            len(index.regions),
+            len({(region.page, region.kind, region.quad) for region in index.regions}),
+        )
+        formula = next(region for region in index.regions if region.kind == PDF_FORMULA)
+        self.assertEqual(formula.text_policy, "retain")
+        self.assertIn("L(theta)", " ".join(fragment.text for fragment in index.fragments))
+        self.assertFalse(any(item.kind == PDF_FORMULA for item in index.omissions))
+        self.assertEqual(index, decode_index(asdict(index)))
+
+    def test_prose_with_hyphens_and_parentheses_is_not_a_formula(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text(
+                (60, 100),
+                "participants in AIME (2024) - DeepSeek-R1-Zero learns.",
+                fontsize=11,
+            )
+            index = extract(pdf.tobytes())
+
+        self.assertFalse(any(region.kind == PDF_FORMULA for region in index.regions))
+
+    def test_sequential_numbered_equations_form_independent_regions(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((135, 100), "J(theta) = E[r] - beta * D(pi || ref)        (1)")
+            page.insert_text((175, 135), "D(pi || ref) = ratio - log(ratio) - 1        (2)")
+            page.insert_text(
+                (80, 165),
+                "where beta is a hyper-parameter and A is the normalized advantage.",
+            )
+            page.insert_text((190, 200), "A_i = (r_i - mean(r)) / std(r)        (3)")
+            index = extract(pdf.tobytes())
+
+        formulas = [region for region in index.regions if region.kind == PDF_FORMULA]
+        self.assertEqual(len(formulas), 3)
+        self.assertTrue(all(formula.quad[3] - formula.quad[1] < 0.05 for formula in formulas))
+        self.assertLess(formulas[0].quad[1], formulas[1].quad[1])
+        self.assertLess(formulas[1].quad[1], formulas[2].quad[1])
+
+    def test_number_only_anchors_do_not_capture_neighboring_equation_lines(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((145, 100), "J(theta) = E[r] - beta * D(pi || ref)")
+            page.insert_text((180, 116), "+ clipped advantage")
+            page.insert_text((535, 108), "(1)")
+            page.insert_text((175, 145), "D(pi || ref) = ratio - log(ratio) - 1")
+            page.insert_text((535, 145), "(2)")
+            page.insert_text((70, 170), "where beta is the regularization coefficient.")
+            index = extract(pdf.tobytes())
+
+        formulas = [region for region in index.regions if region.kind == PDF_FORMULA]
+        self.assertEqual(len(formulas), 2)
+        self.assertLess(formulas[0].quad[3], formulas[1].quad[1])
+        self.assertLess(formulas[1].quad[3], 0.21)
+
+    def test_numbered_formula_anchor_does_not_absorb_adjacent_column(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((50, 120), "The left column explains the model configuration.")
+            page.insert_text((50, 140), "It must remain outside the formula selection region.")
+            page.insert_text((335, 140), "P_i = exp(c_i) / sum(exp(c_j))")
+            page.insert_text((535, 140), "(1)")
+            page.insert_text((50, 180), "More prose continues in the adjacent column.")
+            page.insert_text((350, 180), "L = - sum(t_i log(P_i))")
+            page.insert_text((535, 180), "(2)")
+            index = extract(pdf.tobytes())
+
+        formulas = [region for region in index.regions if region.kind == PDF_FORMULA]
+        self.assertEqual(len(formulas), 2)
+        self.assertTrue(all(formula.quad[0] > 0.5 for formula in formulas))
+        self.assertTrue(all(formula.quad[2] > 0.85 for formula in formulas))
+
+    def test_shared_caption_merges_adjacent_plot_panels(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.draw_rect(pdf_fixture.Rect(60, 120, 275, 300))
+            page.draw_rect(pdf_fixture.Rect(325, 120, 540, 300))
+            page.insert_text((60, 330), "Figure 1: Accuracy and response length during training.")
+            index = extract(pdf.tobytes())
+
+        figures = [region for region in index.regions if region.kind == PDF_FIGURE]
+        self.assertEqual(len(figures), 1)
+        self.assertLess(figures[0].quad[0], 0.11)
+        self.assertGreater(figures[0].quad[2], 0.89)
+
+    def test_caption_clips_page_spanning_graphic_candidate(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.draw_rect(pdf_fixture.Rect(45, 55, 555, 520))
+            page.draw_rect(pdf_fixture.Rect(100, 90, 500, 270))
+            page.insert_text((95, 310), "Figure 3: Demonstration of the training architecture.")
+            page.insert_text((120, 390), "J(theta) = E[r] - beta * D(pi || ref)        (11)")
+            index = extract(pdf.tobytes())
+
+        figure = next(region for region in index.regions if region.kind == PDF_FIGURE)
+        formula = next(region for region in index.regions if region.kind == PDF_FORMULA)
+        self.assertLessEqual(figure.quad[3], 0.39)
+        self.assertGreater(formula.quad[1], figure.quad[3])
+
+    def test_figure_caption_recovers_plot_without_image_or_connected_frame(self):
+        with pdf_fixture.open() as pdf:
+            page = pdf.new_page(width=600, height=800)
+            page.insert_text((60, 80), "The following experiment compares all methods.")
+            page.insert_text((80, 150), "0.56")
+            page.insert_text((80, 235), "0.42")
+            page.insert_text((270, 275), "Steps")
+            page.insert_text((390, 250), "PPO and GRPO")
+            page.insert_text((100, 310), "Figure 4: Performance on the MATH task.")
+            page.insert_text((60, 355), "The comparison improves throughout training.")
+            index = extract(pdf.tobytes())
+
+        figures = [region for region in index.regions if region.kind == PDF_FIGURE]
+        self.assertEqual(len(figures), 1)
+        self.assertLess(figures[0].quad[1], 0.19)
+        self.assertGreater(figures[0].quad[3], 0.34)
+
     def test_caption_filter_preserves_word_anchors_after_index_roundtrip(self):
         with pdf_fixture.open() as pdf:
             page = pdf.new_page(width=600, height=800)

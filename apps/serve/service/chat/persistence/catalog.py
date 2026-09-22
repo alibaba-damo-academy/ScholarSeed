@@ -22,7 +22,7 @@ from scholarseed_runtime.contract import (
     RuntimeCapabilityName,
 )
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
-from service.chat.constants import SessionTitleFallback
+from service.chat.constants import PRODUCT_TURN_OUTCOME_INTERRUPTED, SessionTitleFallback
 from service.chat.persistence.utils import validate_transaction
 from service.paths import SESSION_CATALOG_DB
 
@@ -2585,6 +2585,57 @@ class SessionCatalogStore:
                     SessionStatus.READY.value,
                     correlation_id,
                     turn_status,
+                    timestamp,
+                    session_id,
+                ),
+            )
+            if reopened.rowcount != 1:
+                raise SessionAccessError("session not found")
+        return True
+
+    def reconcile_interrupted_turn_uncertainty(
+        self,
+        session_id: str,
+        correlation_id: str,
+        *,
+        resolution: str,
+        resolved_at: float | None = None,
+    ) -> bool:
+        """Atomically resolve an uncertain turn after a verified product interrupt."""
+
+        timestamp = float(resolved_at if resolved_at is not None else time.time())
+        payload = json.dumps({"resolution": resolution}, separators=(",", ":"))
+        with closing(self._connect()) as connection, connection:
+            transitioned = connection.execute(
+                f"""
+                UPDATE {SESSION_UNCERTAINTY_TABLE}
+                SET state = ?, payload = ?, resolved_at = ?
+                WHERE session_id = ? AND kind = ? AND correlation_id = ?
+                  AND state IN (?, ?)
+                """,
+                (
+                    UncertaintyState.RECONCILED.value,
+                    payload,
+                    timestamp,
+                    session_id,
+                    UncertaintyKind.TURN.value,
+                    correlation_id,
+                    UncertaintyState.EXECUTING.value,
+                    UncertaintyState.UNKNOWN.value,
+                ),
+            )
+            if transitioned.rowcount != 1:
+                return False
+            reopened = connection.execute(
+                f"""
+                UPDATE {SESSION_CATALOG_TABLE}
+                SET status = ?, last_turn_id = ?, last_turn_status = ?, updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    SessionStatus.INTERRUPTED.value,
+                    correlation_id,
+                    PRODUCT_TURN_OUTCOME_INTERRUPTED,
                     timestamp,
                     session_id,
                 ),

@@ -317,7 +317,7 @@ test('HTTP fallback provenance survives every service-error adapter without chan
       assert.deepEqual(result.applicationFailure, { key: 'request.httpFailure', status: 503, statusText: '' })
       assert.equal('ok' in result ? result.ok : undefined, 'status' in result ? undefined : false)
     }
-    assert.equal(events.length, 3)
+    assert.equal(events.length, 1)
     assert.ok(events.every(event => event.detail.message === '503 request failed' && event.detail.code === undefined))
     const locale = await requestTranslations()
     await locale.changeLanguage('en')
@@ -335,6 +335,30 @@ test('HTTP fallback provenance survives every service-error adapter without chan
     await locale.changeLanguage('zh')
     assert.equal(renderFeedback(locale, selected), componentsZh.composer.modeSelected.replace('{{mode}}', componentsZh.composer.autoPermission))
     assert.equal(renderFeedback(locale, permissionModeSelectedFeedback('vendor_raw_mode')), componentsZh.composer.modeSelected.replace('{{mode}}', 'vendor_raw_mode'))
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('handled queue conflicts do not publish raw backend failures', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const events: CustomEvent[] = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    scholarseed: { getApiBase: () => '' }, dispatchEvent: (event: CustomEvent) => { events.push(event); return true }
+  } })
+  try {
+    globalThis.fetch = async () => Response.json(
+      { error: 'turn_outcome_unconfirmed' },
+      { status: 409 }
+    )
+    assert.deepEqual(
+      await sendQueuedMessage('session', 'queued'),
+      { ok: false, error: 'turn_outcome_unconfirmed' }
+    )
+    assert.equal(events.length, 0)
   } finally {
     globalThis.fetch = previousFetch
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)

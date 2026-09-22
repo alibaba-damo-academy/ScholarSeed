@@ -95,6 +95,10 @@
           "verbatim": "一张比较表"
         }
       ]
+    },
+    {
+      "outline_review": "timeout_auto",
+      "review_timeout_seconds": 300
     }
   ],
   "writing.approve": [
@@ -106,6 +110,21 @@
         "citation_style": "numeric"
       }
     }
+  ],
+  "writing.review-start": [
+    {"packet_id":"<current displayed packet_id>","displayed":true}
+  ],
+  "writing.review-status": [
+    {"packet_id":"<current packet_id>"}
+  ],
+  "writing.review-wait": [
+    {"packet_id":"<current packet_id>","wait_seconds":30}
+  ],
+  "writing.review-response": [
+    {"packet_id":"<current packet_id>","user_response":"<actual user reply, including a request to wait or revise>"}
+  ],
+  "writing.review-timeout": [
+    {"packet_id":"<current packet_id>"}
   ],
   "outline.configure": [
     {

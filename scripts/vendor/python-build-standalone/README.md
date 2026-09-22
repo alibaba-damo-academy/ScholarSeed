@@ -5,7 +5,7 @@ packaged ScholarSeed.app so the desktop backend runs off any machine (no dev rep
 `.venv`). That runtime comes from
 [astral-sh/python-build-standalone](https://github.com/astral-sh/python-build-standalone).
 
-The archives are not stored in Git. `manifest.json` pins immutable upstream URLs,
+The archives are not stored in Git. `manifest.json` pins reviewed OSS download URLs,
 byte lengths and SHA-256 values. `scripts/artifacts.cjs` restores missing files
 through a verified user-level cache before development setup or packaging.
 
@@ -59,5 +59,7 @@ shasum -a 256 "$ASSET"
 ```
 
 Update `manifest.json` with the Python version, release and actual SQLite version,
-then verify every affected native target. `fetch-vendor.sh` reads Python/release
-from the manifest. Packaging verifies the actual engine again in the final App.
+then upload the byte-exact archive to OSS and set its public HTTPS URL in the manifest.
+Verify every affected native target. Packaging verifies the actual engine again in
+the final App. `fetch-vendor.sh` is a legacy macOS upstream acquisition helper;
+normal development and packaging use the manifest through `scripts/artifacts.cjs`.

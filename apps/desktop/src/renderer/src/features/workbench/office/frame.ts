@@ -215,7 +215,7 @@ function diagnostic(stage,detail={}){post('diagnostic',{detail:{stage,...detail}
 function progress(message){status.textContent=message}
 function applyPalette(value){palette=value;document.documentElement.style.colorScheme=value.mode;document.documentElement.style.setProperty('--office-background',value.background);document.documentElement.style.setProperty('--office-foreground',value.foreground);port?.postMessage({cmd:'theme',palette})}
 function officeMessage(message){const code=String(message).replace(/^Error: /,'');return Object.prototype.hasOwnProperty.call(config.errors,code)?config.errors[code]:config.text.operationFailed+' '+String(message)}
-function fail(reason,error){const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;if(!runtimeReadyAt)warmup('error',{error:reason});post('unavailable',{reason})}
+function fail(reason,error){const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;if(!runtimeReadyAt)warmup('error',{error:reason,detail:String(message)});post('unavailable',{reason})}
 ScholarSeedOfficeClipboard.install(navigator.clipboard,error=>diagnostic('clipboard-write-failed',{error:String(error)}));
 function resizeViewport(){viewportResizeFrame=0;if(port&&!disposed)port.postMessage({cmd:viewportResizeCommand,bindingId,requestId:++viewportRequestSequence})}
 function scheduleViewportResize(){cancelAnimationFrame(viewportResizeFrame);viewportResizeFrame=requestAnimationFrame(resizeViewport)}
@@ -239,8 +239,8 @@ function scheduleDocumentReady(){
   cancelAnimationFrame(readyFrame);readyFrame=0;
   revealDocument(readyBindingId,readySequence)
 }
-window.addEventListener('error',event=>fail('zeta-runtime-error',event.message||config.text.runtimeError));
-window.addEventListener('unhandledrejection',event=>fail('zeta-runtime-error',String(event.reason||config.text.startFailed)));
+window.addEventListener('error',event=>fail('runtime-execution',event.message||config.text.runtimeError));
+window.addEventListener('unhandledrejection',event=>fail('runtime-execution',String(event.reason||config.text.startFailed)));
 function safeName(value){return (value.split(/[\\/]/).pop()||'document.docx').replace(/[^A-Za-z0-9._-]+/g,'_').slice(0,128)}
 function csvFilterOptions(){
   if(!filename.toLowerCase().endsWith('.csv'))return undefined;
@@ -258,13 +258,13 @@ async function start(){
 }
 async function startRuntimeWithFonts(){
   if(started||disposed)return;
-  let failureReason='zeta-assets-failed';
+  let failureReason='runtime-assets';
   try{
     const defaultStartedAt=performance.now();
     const defaultFonts=await ZetaLocalFonts.readFontAssets(config.defaultFonts);
     const defaultFontBytes=defaultFonts.reduce((sum,font)=>sum+font.bytes.byteLength,0);
     diagnostic('default-font-read',{configuredDefaultFontCount:config.defaultFonts.length,loadedDefaultFontCount:defaultFonts.length,defaultFontBytes,durationMs:performance.now()-defaultStartedAt});
-    failureReason='local-fonts-required';
+    failureReason='font-catalog';
     let systemFonts=[];
     const metadataStartedAt=performance.now();
     let unavailable=0,loadedBytes=defaultFontBytes;
@@ -273,7 +273,7 @@ async function startRuntimeWithFonts(){
     const entries=ZetaLocalFonts.dedupeFontEntries(await globalThis.queryLocalFonts());
     if(entries.length===0)throw new Error(config.text.fontsEmpty);
     diagnostic('font-metadata',{availableFontCount:entries.length,durationMs:performance.now()-metadataStartedAt});
-    const readStartedAt=performance.now();
+    const readStartedAt=performance.now();failureReason='font-read';
     systemFonts=await ZetaLocalFonts.readAllFontEntries(entries,(done,total,bytesRead)=>{loadedBytes=defaultFontBytes+bytesRead;progress(config.text.readingFonts.replace('{{done}}',String(done)).replace('{{total}}',String(total)));warmup('reading',{done,total,loadedBytes})},()=>{unavailable+=1});
     diagnostic('font-read',{selectedFontCount:entries.length,loadedFontCount:systemFonts.length,unavailable,durationMs:performance.now()-readStartedAt});
     const prepared=[...defaultFonts,...systemFonts];
@@ -281,14 +281,14 @@ async function startRuntimeWithFonts(){
     const totalBytes=prepared.reduce((sum,font)=>sum+font.bytes.byteLength,0);
     diagnostic('font-register',{defaultFontCount:defaultFonts.length,systemFontCount:systemFonts.length,loadedFontCount:prepared.length,totalBytes});
     progress(config.text.loadingFonts.replace('{{fontTotal}}',String(prepared.length)).replace('{{size}}',(totalBytes/1048576).toFixed(1)));
-  }catch(error){starting=false;retry.hidden=false;diagnostic('font-failed',{error:String(error)});fail(failureReason,failureReason==='zeta-assets-failed'?config.text.assetsFailed:String(error));return}
+  }catch(error){starting=false;retry.hidden=false;diagnostic('font-failed',{error:String(error),failure:failureReason});fail(failureReason,failureReason==='runtime-assets'?config.text.assetsFailed:String(error));return}
   started=true;starting=false;
   warmup('runtime');
-  await ScholarSeedOfficeLocale.prepare(Module,config.assetsBaseUrl,config.locale);
+  try{await ScholarSeedOfficeLocale.prepare(Module,config.assetsBaseUrl,config.locale)}catch(error){fail('runtime-assets',String(error));return}
   progress(config.text.loading);
   const script=document.createElement('script');script.src=config.assetsBaseUrl+'soffice.js';script.crossOrigin='anonymous';
-  script.onerror=()=>fail('zeta-assets-failed',config.text.assetsFailed);
-  script.onload=()=>{progress(config.text.initializing);Module.uno_main.then(value=>{port=value;port.onmessage=onThread}).catch(error=>fail('zeta-init-failed',String(error)))};
+  script.onerror=()=>fail('runtime-assets',config.text.assetsFailed);
+  script.onload=()=>{progress(config.text.initializing);Module.uno_main.then(value=>{port=value;port.onmessage=onThread}).catch(error=>fail('runtime-initialization',String(error)))};
   document.body.appendChild(script);
 }
 function onThread(event){
@@ -347,7 +347,7 @@ window.addEventListener('message',event=>{
   else if(message.type==='theme')applyPalette(message.palette);
   else if(message.type==='font-permission-result'){
     if(message.granted)void startRuntimeWithFonts();
-    else{starting=false;retry.hidden=false;fail('local-fonts-required',config.text.permission)}
+    else{starting=false;retry.hidden=false;fail('font-permission',config.text.permission)}
   }
   else if(message.type==='retry-warmup')void start();
   else if(message.type==='save')port?.postMessage({cmd:'save'});

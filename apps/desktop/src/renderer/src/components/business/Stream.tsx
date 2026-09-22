@@ -64,7 +64,7 @@ import { SentAttachments } from '../../features/assistant/Attachments'
 import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { ArtifactCard } from '../../features/assistant/Artifacts'
 import {
-  AnnotationBadgeNote,
+  AnnotationSummary,
   annotationDisplay
 } from '../../features/assistant/Notes'
 import { SessionReference } from '../../features/assistant/SessionReference'
@@ -1004,6 +1004,7 @@ function Item({
       return (
         <AgentMsg
           citationEnabled={interactions.citationEnabled}
+          copyEnabled={turnOutcome !== 'running'}
           item={item}
           trailingContent={trailingContent}
           selectionEnabled={turnOutcome !== 'running'}
@@ -1604,7 +1605,7 @@ function ActivityRun({
           <Badge
             size="sm"
             tone="neutral"
-            className="!inline-flex !size-6 shrink-0 !justify-center !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-bg-white-default)] !p-0 font-mono tabular-nums"
+            className="!inline-flex !size-6 shrink-0 !justify-center !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-bg-white-default)] !p-0"
           >
             {toolCount}
           </Badge>
@@ -2231,7 +2232,7 @@ function ToolStep({
           )}
           {duration && (
             <span
-              className="flex-none border-l border-[var(--border-soft)] pl-[6px] font-mono tabular-nums"
+              className="flex-none border-l border-[var(--border-soft)] pl-[6px]"
               data-testid="tool-run-step-duration"
             >
               {duration}
@@ -3840,17 +3841,11 @@ function UserBubble({
       (reference) =>
         reference.type === 'assistant_context' && reference.kind === 'note'
     ) ?? []
-  const annotations = annotationRefs.map((reference) => {
+  const annotations = annotationRefs.flatMap((reference) => {
     const annotation = state.aiPanel.annotations.find(
       (candidate) => candidate.annotation_id === reference.sourceId
     )
-    return annotation
-      ? annotationDisplay(annotation)
-      : {
-          id: reference.sourceId ?? reference.id,
-          previewText: reference.title,
-          comment: ''
-        }
+    return annotation ? [annotationDisplay(annotation)] : []
   })
   const contextRefs =
     item.refs?.filter(
@@ -4071,43 +4066,21 @@ function UserBubble({
           <div className="whitespace-pre-wrap font-serif text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
             {item.text}
           </div>
-          {annotations.length > 0 ? (
-            <div
-              className="mt-[var(--vds-space-1)] flex flex-wrap items-center gap-[var(--vds-space-2)]"
-              data-testid="user-message-annotations"
-            >
-              {annotations.map((annotation, index) => {
-                const raw = state.aiPanel.annotations.find(
-                  (candidate) => candidate.annotation_id === annotation.id
-                )
-                // 与内联标识同一编排: 单条回答内注释创建顺序(从 1 开始);
-                // 注释已删除仅剩引用时回退局部顺序
-                const position = raw
-                  ? state.aiPanel.annotations.filter(
-                    (candidate) => candidate.source_item_id === raw.source_item_id
-                  ).findIndex((candidate) => candidate.annotation_id === annotation.id)
-                  : -1
-                const number = position >= 0 ? position + 1 : index + 1
-                const noteText = annotation.comment || annotation.previewText
-                return (
-                  <AnnotationBadgeNote
-                    annotation={annotation}
-                    ariaLabel={assistantText('remaining.annotationLabel', {
-                      number,
-                      comment: noteText
-                    })}
-                    key={annotation.id}
-                    noteText={noteText}
-                    number={number}
-                    onRemove={(annotationId) => act.deleteAnswerAnnotation(annotationId)}
-                    onSave={(annotationId, nextComment) => (
-                      act.updateAnswerAnnotation(annotationId, nextComment)
-                    )}
-                  />
-                )
-              })}
-            </div>
-          ) : null}
+          <AnnotationSummary
+            annotations={annotations}
+            className="mt-[var(--vds-space-1)]"
+            location={state.aiPanel.answerAnnotationFocus}
+            numberForAnnotation={(annotationId, index) => {
+              const raw = state.aiPanel.annotations.find(item => item.annotation_id === annotationId)
+              if (!raw) return index + 1
+              return state.aiPanel.annotations.filter(item => item.source_item_id === raw.source_item_id)
+                .findIndex(item => item.annotation_id === annotationId) + 1
+            }}
+            onEdit={(annotationId, comment) => act.updateAnswerAnnotation(annotationId, comment)}
+            onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
+            onRemove={(annotationId) => void act.deleteAnswerAnnotation(annotationId)}
+            testId="user-message-annotations"
+          />
           {item.refs?.some(
             (reference) => (reference.type === 'file' || reference.type === 'directory') && reference.path
           ) && (
@@ -4331,12 +4304,14 @@ async function writeDesktopClipboard(text: string): Promise<void> {
 
 function AgentMsg({
   citationEnabled,
+  copyEnabled,
   item,
   trailingContent,
   selectionEnabled,
   timing
 }: {
   citationEnabled: boolean
+  copyEnabled: boolean
   item: Extract<ConvItem, { kind: 'agent' }>
   trailingContent?: React.ReactNode
   selectionEnabled: boolean
@@ -4366,7 +4341,7 @@ function AgentMsg({
           </div>
         )}
         {trailingContent}
-        {item.text && (
+        {item.text && copyEnabled && (
           <div className={MESSAGE_ACTIONS_CLASS}>
             <CopyButton
               type="button"
@@ -4386,7 +4361,7 @@ function AgentMsg({
               >
                 <span
                   aria-label={conversation('turn.duration', { duration })}
-                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)] tabular-nums"
+                  className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
                   data-testid="turn-duration"
                   tabIndex={0}
                 >
@@ -4600,6 +4575,9 @@ function ErrorCard({
     item.runtimeAction === 'continue_turn' &&
     item.actionState === 'outcome_unknown'
   const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
+  const retryExhausted = item.runtimeAction === 'continue_turn' &&
+    item.failure?.kind === 'unavailable' &&
+    Boolean(item.failure.automaticRetryAttempts)
   if (turnUnknown) {
     return (
       <div
@@ -4627,6 +4605,38 @@ function ErrorCard({
                   item.actionErrorMessage,
                   conversation
                 )
+              : renderFeedback(i18n, item.actionError)}
+          </span>
+        ) : null}
+      </div>
+    )
+  }
+  if (retryExhausted) {
+    return (
+      <div
+        className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+        data-testid="turn-retry-exhausted-notice"
+        role="status"
+      >
+        <IconFont type="fill-status-tips" className="shrink-0" />
+        <span>{failureText.message}</span>
+        <Button
+          data-testid="turn-continue"
+          disabled={continuing || continueUnknown}
+          loading={continuing}
+          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+          onClick={() => void onContinue(item)}
+          size="sm"
+          variant="outline"
+        >
+          {continueUnknown
+            ? t('stream.continuePending')
+            : t('stream.continueInterrupted')}
+        </Button>
+        {item.actionError ? (
+          <span className="text-[var(--vds-error-text-primary)]" data-testid="turn-continue-error">
+            {item.actionErrorMessage
+              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
               : renderFeedback(i18n, item.actionError)}
           </span>
         ) : null}

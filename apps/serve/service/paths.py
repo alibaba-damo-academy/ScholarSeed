@@ -57,7 +57,6 @@ LITERATURE_SEARCH_DIR: Path = SERVICE_DIR / "aisearch"
 LITERATURE_SEARCH_TASK_PREFIX = "task-"
 LITERATURE_SEARCH_QUERY_FILENAME = "query.txt"
 LITERATURE_SEARCH_STATE_FILENAME = "search.json"
-LITERATURE_SEARCH_EVENTS_FILENAME = "events.jsonl"
 SESSION_CATALOG_DB: Path = SERVICE_DIR / "sessions.sqlite3"
 # proposal 47: content 域的项目身份、关联授权根、事件游标与审计。
 # Project identities have a separate lifecycle from session execution records.
@@ -187,7 +186,6 @@ __all__ = [
     "LITERATURE_SEARCH_TASK_PREFIX",
     "LITERATURE_SEARCH_QUERY_FILENAME",
     "LITERATURE_SEARCH_STATE_FILENAME",
-    "LITERATURE_SEARCH_EVENTS_FILENAME",
     "SESSION_CATALOG_DB",
     "CONTENT_DB",
     "RESOURCE_IMPORTS_DB",
