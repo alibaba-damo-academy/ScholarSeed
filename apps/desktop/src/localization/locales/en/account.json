@@ -1,0 +1,191 @@
+{
+  "identity": {
+    "defaultName": "ScholarSeed user"
+  },
+  "accountLogin": {
+    "title": "Sign in",
+    "closeLogin": "Close sign-in",
+    "close": "Close",
+    "retry": "Retry",
+    "loading": "Loading sign-in options",
+    "waiting": "The local service has not returned its authentication configuration yet. Wait a moment and retry.",
+    "unsupported": "The service uses {{mode}} authentication, which has no desktop sign-in screen. Close this dialog to continue.",
+    "disabled": "Sign-in verification is disabled. You can use the app directly.",
+    "noEntry": "In-app sign-in is unavailable for this service",
+    "notRequired": "Sign-in is not required"
+  },
+  "accountExtra": {
+    "permissionRead": "Could not read system permission status. Try again.",
+    "permissionUnsupported": "System settings cannot be opened directly for this permission.",
+    "permissionOpen": "Could not open system settings. Check Privacy & Security manually.",
+    "never": "Never used",
+    "unnamed": "Unnamed key",
+    "managedName": "ScholarSeed skill credential",
+    "managed": "{{prefix}}··· · Managed by ScholarSeed and shared across devices. Rotation immediately invalidates the old key; devices obtain the new key when starting their next conversation. · Last used {{lastUsed}}",
+    "keyDates": "{{prefix}}··· · Created {{created}} · Last used {{lastUsed}}"
+  },
+  "permissionDetails": {
+    "projectScoped": "Access is limited to your selected project folders. Full disk access is not required.",
+    "systemSettings": "Check permission status in macOS System Settings.",
+    "notificationsUnavailable": "Desktop notifications are unavailable on this system.",
+    "notImplemented": "This feature is not available yet."
+  },
+  "actions": {
+    "close": "Close",
+    "rotate": "Rotate",
+    "revoke": "Revoke",
+    "retry": "Retry",
+    "markAllRead": "Mark all as read"
+  },
+  "models": {
+    "loadFailed": "Could not load model services. Try again.",
+    "deleteFailed": "Could not delete this endpoint",
+    "enabledCount": "{{enabled}} / {{total}} enabled",
+    "empty": "No connections yet. Add one and select its models to show them alongside built-in models in the selector.",
+    "chatgptConnected": " · ChatGPT connected",
+    "chatgptLoginRequired": " · ChatGPT sign-in required",
+    "noKey": " · No API key",
+    "enableNamed": "Enable {{name}}",
+    "add": "Add connection",
+    "chatgptSubscription": "ChatGPT (subscription sign-in)",
+    "customProvider": "Custom (self-hosted or unlisted provider)",
+    "wireHint": "Select a protocol supported by the service. Codex native tools, such as web search, require Responses; endpoints that only support Chat Completions cannot run these tools. After changing the protocol, start a new conversation or restart the app before continuing the existing conversation.",
+    "wireChatCompletions": "OpenAI compatible · /chat/completions",
+    "wireResponses": "OpenAI Responses · /responses",
+    "reasoningNamed": "{{name}} · Reasoning effort",
+    "reasoningLevelNamed": "Reasoning effort level for {{name}}",
+    "delete": "Delete",
+    "providerModel": "{{provider}} · {{model}}",
+    "disabledReasons": {
+      "gatewayCredentialRequired": "Sign in to use built-in models",
+      "subscriptionConnectionRequired": "Connect ChatGPT in Model services"
+    },
+    "capabilitiesTitle": "Model capabilities",
+    "capabilitiesDescription": "Manage reasoning levels, context windows, and input modalities for each model on the right. Provider defaults are suggestions; saved model declarations take priority in conversations.",
+    "contextWindowHint": "Leave empty to use the provider default",
+    "contextWindowPlaceholder": "e.g. 1000000",
+    "maxOutput": "Maximum output",
+    "maxOutputHint": "Leave empty if unspecified",
+    "maxOutputPlaceholder": "e.g. 131072",
+    "saveEfforts": "Save levels",
+    "cancelEfforts": "Cancel",
+    "editEfforts": "Edit reasoning levels",
+    "effortsUnconfirmed": "Unconfirmed",
+    "tokenPlanPersonal": "Alibaba Cloud Model Studio Token Plan (Personal)",
+    "tokenPlanTeam": "Alibaba Cloud Model Studio Token Plan (Team)"
+  },
+  "sharing": {
+    "private": "Private mode",
+    "improve": "Help improve the app"
+  },
+  "settings": {
+    "title": "Settings"
+  },
+  "providerPresets": {
+    "dashscope": {
+      "label": "Alibaba Cloud Model Studio",
+      "credentialHint": "Create an API key in the Model Studio console"
+    },
+    "openai": {
+      "label": "OpenAI",
+      "note": "This endpoint also supports the Responses protocol. You can switch below.",
+      "credentialHint": "Create a key on the API keys page of the OpenAI platform"
+    },
+    "google": {
+      "label": "Google Gemini",
+      "note": "This is the OpenAI-compatible Gemini endpoint. The native Gemini protocol is not supported yet.",
+      "credentialHint": "Use an API key from Google AI Studio"
+    },
+    "deepseek": {
+      "label": "DeepSeek",
+      "credentialHint": "Create an API key on the DeepSeek platform"
+    },
+    "moonshot": {
+      "label": "Moonshot (Kimi)",
+      "credentialHint": "Create an API key on the Moonshot platform"
+    },
+    "zhipu": {
+      "label": "Zhipu GLM",
+      "credentialHint": "Create an API key on the Zhipu platform"
+    },
+    "openrouter": {
+      "label": "OpenRouter",
+      "note": "This service aggregates multiple model providers. Use search to filter the long list of available models.",
+      "credentialHint": "Create an API key in the OpenRouter console"
+    },
+    "ollama": {
+      "label": "Local Ollama / vLLM",
+      "note": "Requests stay on this machine. Adjust the port for other local services such as vLLM.",
+      "credentialHint": "Local services usually do not validate credentials. Any value, such as ollama, is acceptable."
+    }
+  },
+  "update": {
+    "installFailed": "Update installation failed. Try again."
+  },
+  "loginFailure": {
+    "account_base_unavailable": "The account service address is unavailable. Try again later.",
+    "open_browser_failed": "Could not open the system browser. Try again.",
+    "bad_callback": "The sign-in callback is invalid. Start sign-in again.",
+    "state_mismatch": "This sign-in could not be matched to the current app. Start sign-in again.",
+    "handoff_invalid": "The sign-in credential is invalid or expired. Sign in again.",
+    "adopt_failed": "Could not complete sign-in on this device. Try again.",
+    "exchange_error": "Could not connect to the account service to complete sign-in. Check your network and try again.",
+    "verify_failed": "Could not confirm the local sign-in status. Try again.",
+    "native_unavailable": "Desktop sign-in handoff is unavailable in browser mode. Use the desktop app.",
+    "login_failed": "Sign-in failed. Try again.",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "failure": {
+    "invalid_phone": "Enter a valid phone number",
+    "invalid_purpose": "This verification code purpose is not supported",
+    "rate_cooldown": "Too many requests. Try again later.",
+    "rate_daily_phone": "This phone number has reached its daily verification code limit",
+    "rate_daily_ip": "This network has reached its daily verification code limit",
+    "sms_not_configured": "SMS is not configured. Contact your administrator.",
+    "sms_send_failed": "Could not send the SMS. Try again later.",
+    "not_registered": "This phone number is not registered",
+    "account_disabled": "This account has been disabled",
+    "invalid_code": "The verification code is incorrect",
+    "code_expired": "The verification code has expired",
+    "code_exhausted": "Too many incorrect attempts. Request a new verification code.",
+    "invalid_password": "The phone number or password is incorrect",
+    "invalid_nickname": "Your nickname must contain 1–64 characters",
+    "password_too_short": "Your password must contain at least {{count}} characters",
+    "phone_taken": "This phone number is already registered",
+    "invite_required": "An invitation code is required",
+    "invite_invalid": "The invitation code is invalid or has been used up",
+    "unauthorized": "Your sign-in has expired. Sign in again.",
+    "invalid_refresh": "Your sign-in has expired. Sign in again.",
+    "forbidden": "You do not have permission",
+    "not_found": "The resource does not exist",
+    "invalid_api_key": "The API key is invalid or has been revoked",
+    "invalid_api_key_name": "The API key name is too long",
+    "api_key_limit": "The active API key limit has been reached. Revoke a key first.",
+    "api_key_managed": "ScholarSeed manages this key across all devices. It can only be rotated, not revoked. After rotation, each device receives the new key when its next conversation starts.",
+    "network": "Could not connect to the account service",
+    "no_base_url": "The account service URL is not configured",
+    "invalid_response": "The account service returned an unrecognized response. Try again later.",
+    "local_logout_failed": "Could not clear local sign-in credentials. Try again.",
+    "logout_revocation_failed": "Could not clear local execution credentials. Try signing out again.",
+    "http_failure": "Request failed ({{status}})",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "modelSettings": {
+    "title": "Model management",
+    "description": "Manage model visibility, reasoning effort, and context settings.",
+    "saved": "Saved",
+    "save": "Save settings",
+    "name": "Model name",
+    "reasoning": "Reasoning effort",
+    "visibility": "Visibility",
+    "contextWindow": "Context window",
+    "fixedReasoning": "Always on",
+    "unconfirmed": "Unconfirmed",
+    "builtin": "Built-in model",
+    "showNamed": "Show {{name}}",
+    "contextWindowNamed": "Context window for {{name}}"
+  },
+  "verification": {
+    "cooldown": "{{seconds}}s"
+  }
+}

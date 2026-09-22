@@ -1,0 +1,610 @@
+/**
+ * 设计系统意图索引。
+ *
+ * 为什么它在源码里而不是在文档里: `README.md` 已经有一份字母序清单, 但 `features/` 对
+ * `components/ui` 的 import 数长期为 0 —— 按名字排的清单没法把「做一个可多选的筛选栏」
+ * 映射到组件, 于是手写 `<button>` 永远比查文档便宜。这里按**意图**建索引, 并由
+ * `../ui.reuse.test.ts` 断言它覆盖 `index.ts` 的每一个值导出: 加组件不加意图即门禁红,
+ * 索引不可能落后于代码。
+ *
+ * 消费者:
+ * - `../ui.reuse.test.ts`: 覆盖率 + 与 `ui.reuse.policy.json` 的一致性门禁;
+ * - `.agents/skills/ui-component-reuse/scripts/find.mjs`: 意图检索。
+ *
+ * 维护约定: 新增/删除组件时改这里, 不要改这里的镜像文档。字段语义见 `UiComponentEntry`。
+ */
+
+/** 被本索引描述到的原生标签。`ui.reuse.policy.json` 的禁用集必须是它的子集。 */
+export const NATIVE_TAGS = [
+  'a',
+  'button',
+  'dialog',
+  'div',
+  'form',
+  'hr',
+  'img',
+  'input',
+  'label',
+  'ol',
+  'progress',
+  'select',
+  'span',
+  'table',
+  'textarea',
+  'ul'
+] as const
+
+export type NativeTag = (typeof NATIVE_TAGS)[number]
+
+export interface UiComponentEntry {
+  /** 该族在 `index.ts` 暴露的值导出(不含 type-only)。门禁按此校验覆盖率。 */
+  readonly exports: readonly string[]
+  /** 检索关键词, 中英混排。find 脚本对 intents/use/名称做匹配。 */
+  readonly intents: readonly string[]
+  /** 何时用它。 */
+  readonly use: string
+  /** 它替代哪些原生标签写法。空数组 = 不替代原生控件(纯组合/布局/上下文)。 */
+  readonly replaces: readonly NativeTag[]
+  /** 反模式: 别拿它当什么用、别怎么用。 */
+  readonly avoid: string
+}
+
+/**
+ * 非组件导出。它们不是可复用的 UI 单元, 但仍从 `index.ts` 暴露,
+ * 门禁把它们从覆盖率要求中排除。
+ */
+export const NON_COMPONENT_EXPORTS = ['cx', 'FOCUS_SCOPE_EXTENSION_ATTRIBUTE', 'getPaginationItems'] as const
+
+export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
+  Page: {
+    exports: ['Page', 'PageHeader', 'PageBody', 'PageSection'],
+    intents: ['页面骨架', '页面布局', '分组表单', '阅读宽度', '标题操作栏', 'page', 'layout'],
+    use: '业务无关的标题/说明/操作/分区组合；Page 默认页面内距和分区间距，width=reading 限制阅读宽度；宿主已有内距时 padding=none；PageBody 默认随宿主滚动',
+    replaces: ['div'],
+    avoid: '不是工作台路由或业务模板；不自动加载或保存；scroll=content 需有受约束的父容器，不与已有滚动容器重复嵌套；卡片表面组合 Card'
+  },
+  Accordion: {
+    exports: ['Accordion', 'AccordionContent', 'AccordionItem', 'AccordionTrigger'],
+    intents: ['折叠面板', '手风琴', '多段展开', 'FAQ', 'accordion', 'expand', 'collapse list'],
+    use: '一组可展开区块, 支持单开(single)与多开(multiple), 需要标题行 + 内容体的场景',
+    replaces: ['button', 'div'],
+    avoid: '只有一段内容时用 Collapsible; 想做侧栏导航树不要用它, 用 NavigationMenu 或自绘树 + Collapsible'
+  },
+  Alert: {
+    exports: ['Alert', 'AlertDescription', 'AlertTitle'],
+    intents: ['提示条', '警告', '横幅', '错误提示', 'alert', 'banner', 'inline message'],
+    use: '页面内常驻的状态说明(info/success/warning/danger), 不打断操作',
+    replaces: ['div'],
+    avoid: '一次性的操作反馈用 Toast; 需要用户确认才能继续的用 AlertDialog'
+  },
+  AlertDialog: {
+    exports: [
+      'AlertDialog',
+      'AlertDialogAction',
+      'AlertDialogCancel',
+      'AlertDialogContent',
+      'AlertDialogDescription',
+      'AlertDialogFooter',
+      'AlertDialogHeader',
+      'AlertDialogOverlay',
+      'AlertDialogPortal',
+      'AlertDialogTitle',
+      'AlertDialogTrigger'
+    ],
+    intents: ['二次确认', '危险操作确认', '删除确认', 'confirm', 'alert dialog', '不可撤销'],
+    use: '破坏性或不可撤销操作前的强制确认, 只有确认/取消两条出路；嵌套在 Dialog 内时，AlertDialogContent 可消费 design owner 的 overlay/content 层级 class',
+    replaces: ['button', 'dialog', 'div'],
+    avoid: '承载表单或多步流程用 Dialog; 不要用它做普通信息展示'
+  },
+  AspectRatio: {
+    exports: ['AspectRatio'],
+    intents: ['宽高比', '等比容器', '视频占位', 'aspect ratio', '封面图'],
+    use: '把子元素锁定在固定宽高比内(图片、预览图、视频)',
+    replaces: ['div'],
+    avoid: '不要用来做通用布局间距'
+  },
+  Avatar: {
+    exports: ['Avatar', 'AvatarFallback', 'AvatarImage'],
+    intents: ['头像', '用户图标', '首字母占位', 'avatar', 'profile picture'],
+    use: '用户/实体头像, 图片失败时用 AvatarFallback 显示首字母',
+    replaces: ['div', 'img', 'span'],
+    avoid: '纯图标不要用它, 用图标元素或 IconButton'
+  },
+  Badge: {
+    exports: ['Badge', 'BadgeDot', 'badgeVariants'],
+    intents: ['标签', '徽标', '状态', '计数', 'badge', 'tag', 'chip', 'pill', '角标'],
+    use: '短状态/分类/计数标记, 有 tone 与 size 变体; BadgeDot 用于页签未保存红点与图标角标',
+    replaces: ['div', 'span'],
+    avoid: '可关闭的标签用 Tag; 可点击筛选 chip 用 Toggle 或 Button'
+  },
+  Breadcrumb: {
+    exports: [
+      'Breadcrumb',
+      'BreadcrumbEllipsis',
+      'BreadcrumbItem',
+      'BreadcrumbLink',
+      'BreadcrumbList',
+      'BreadcrumbPage',
+      'BreadcrumbSeparator'
+    ],
+    intents: ['面包屑', '路径导航', '层级位置', 'breadcrumb', '当前路径'],
+    use: '显示当前位置的层级路径, 支持中间省略(BreadcrumbEllipsis)',
+    replaces: ['a', 'ol', 'span'],
+    avoid: '平级切换用 Tabs, 不要用面包屑'
+  },
+  Button: {
+    exports: ['Button', 'buttonVariants'],
+    intents: ['按钮', '提交', '操作', '主按钮', '次按钮', '文字按钮', 'button', 'action', 'cta'],
+    use: '**所有**可点击的文字/图文操作。variant 覆盖 primary/secondary/ghost/danger/dropzone 等；md/sm/xs 对应设计 M 32px/S 28px/XS 24px，文字与图标随档位统一；size=standard 对应设计表单36px，content 按内容自然高度用于缩略图和多行操作',
+    replaces: ['a', 'button'],
+    avoid: '只有图标没有文字用 IconButton; 需要开关语义用 Toggle/Switch; 不要为了拿到某种样式而自写 `<button className>`'
+  },
+  Calendar: {
+    exports: ['Calendar', 'CalendarDayButton'],
+    intents: ['日历', '选日期', '月视图', 'calendar', 'date picker', '日期'],
+    use: '月视图日期选择/展示',
+    replaces: ['button', 'table'],
+    avoid: '只需要一个日期文本框时优先 Input(type=date)'
+  },
+  Card: {
+    exports: ['Card', 'CardContent', 'CardDescription', 'CardFooter', 'CardHeader', 'CardTitle'],
+    intents: ['卡片', '内容块', '分区容器', 'card', 'panel', 'section', '列表项容器'],
+    use: '带边框/内边距的内容分区, header/content/footer 三段结构, 有 variant 与 padding 档',
+    replaces: ['div'],
+    avoid: '不要用它做整页布局骨架(用 shell/ 下的布局组件)'
+  },
+  Carousel: {
+    exports: ['Carousel', 'CarouselContent', 'CarouselIndicators', 'CarouselItem', 'CarouselNext', 'CarouselPrevious'],
+    intents: ['轮播', '走马灯', '横向翻页', '进度轮播', 'carousel', 'slider gallery'],
+    use: '横向分页浏览一组内容; `autoPlay` 可按 `autoPlayIntervalMs` 自动切换, `CarouselIndicators` 渲染可点击进度条',
+    replaces: ['button', 'div'],
+    avoid: '仅需横向滚动不需要翻页控制时用 ScrollArea'
+  },
+  Chart: {
+    exports: ['Chart', 'ChartContainer', 'ChartLegend', 'ChartLegendContent', 'ChartTooltip', 'ChartTooltipContent'],
+    intents: ['图表', '柱状图', '数据可视化', 'chart', 'bar', 'metrics'],
+    use: '轻量自绘图表(内部是 div 布局, 不依赖图表库)。`ChartContainer` 是 `Chart` 的别名',
+    replaces: ['div'],
+    avoid: '`ChartTooltip`/`ChartLegend` 及其 Content 目前是透传壳(仅渲染 children), 不要以为它们自带浮层或图例计算; 复杂统计图需要先在设计系统内立项, 不要在 feature 里引图表库'
+  },
+  Checkbox: {
+    exports: ['Checkbox'],
+    intents: ['复选框', '勾选', '多选', 'checkbox', '选中状态'],
+    use: '布尔勾选与多选列表项；树或分组选择可用 checked="mixed" 表达部分选中',
+    replaces: ['input', 'label'],
+    avoid: '互斥单选用 Radio; 立即生效的开关用 Switch'
+  },
+  Collapsible: {
+    exports: ['Collapsible', 'CollapsibleContent', 'CollapsibleTrigger'],
+    intents: ['展开收起', '折叠', '显示更多', 'collapsible', 'disclosure', 'show more'],
+    use: '单个区块的展开/收起；animated 可选高度过渡并尊重减少动态效果设置',
+    replaces: ['button', 'div'],
+    avoid: '多个互斥区块用 Accordion'
+  },
+  Command: {
+    exports: [
+      'Command',
+      'CommandDialog',
+      'CommandEmpty',
+      'CommandGroup',
+      'CommandInput',
+      'CommandItem',
+      'CommandList',
+      'CommandSeparator',
+      'CommandShortcut'
+    ],
+    intents: ['命令面板', '搜索选择', '模糊筛选', '快捷入口', 'command palette', 'combobox', 'quick open'],
+    use: '带搜索框的候选列表: 命令面板、全局搜索、可搜索选择器。`CommandDialog` 是它的浮层版',
+    replaces: ['div', 'input'],
+    avoid: '固定短选项用 Select; 不要自己拼「input + 手写候选 div」'
+  },
+  ContextMenu: {
+    exports: [
+      'ContextMenu',
+      'ContextMenuCheckboxItem',
+      'ContextMenuContent',
+      'ContextMenuGroup',
+      'ContextMenuItem',
+      'ContextMenuLabel',
+      'ContextMenuPortal',
+      'ContextMenuRadioGroup',
+      'ContextMenuRadioItem',
+      'ContextMenuSeparator',
+      'ContextMenuShortcut',
+      'ContextMenuSub',
+      'ContextMenuSubContent',
+      'ContextMenuSubTrigger',
+      'ContextMenuTrigger'
+    ],
+    intents: ['右键菜单', '上下文菜单', '长按菜单', 'context menu', 'right click'],
+    use: '右键唤起的操作菜单, 支持子菜单/勾选项/单选组/快捷键提示',
+    replaces: ['button', 'div', 'ul'],
+    avoid: '由按钮点击唤起的菜单用 DropdownMenu'
+  },
+  CopyButton: {
+    exports: ['CopyButton'],
+    intents: ['复制', '拷贝到剪贴板', 'copy', 'clipboard', '复制成功反馈'],
+    use: '一键复制文本并给出已复制反馈；iconOnly 配合 icon 复用方形 IconButton；默认使用 `navigator.clipboard`，桌面失焦场景通过 `writeText` 注入主进程剪贴板能力',
+    replaces: ['button'],
+    avoid: '不要自己写 button + clipboard + 定时器重置这一套'
+  },
+  Dialog: {
+    exports: [
+      'Dialog',
+      'DialogClose',
+      'DialogContent',
+      'DialogDescription',
+      'DialogFooter',
+      'DialogHeader',
+      'DialogOverlay',
+      'DialogPortal',
+      'DialogTitle',
+      'DialogTrigger'
+    ],
+    intents: ['弹窗', '模态框', '对话框', '表单弹层', 'dialog', 'modal', 'popup'],
+    use: '模态弹层: 表单、详情、导入向导等',
+    replaces: ['dialog', 'div'],
+    avoid: '危险操作确认用 AlertDialog; 侧边滑出用 Sheet/Drawer; 轻量悬浮内容用 Popover'
+  },
+  Divider: {
+    exports: ['Divider', 'Separator'],
+    intents: ['分割线', '分隔', '横线', 'divider', 'separator', 'hr'],
+    use: '内容分隔线, 支持横竖向。`Separator` 是 `Divider` 的别名(shadcn 兼容名)',
+    replaces: ['div', 'hr'],
+    avoid: '不要用它制造纯间距, 间距用样式 token'
+  },
+  Drawer: {
+    exports: [
+      'Drawer',
+      'DrawerClose',
+      'DrawerContent',
+      'DrawerDescription',
+      'DrawerFooter',
+      'DrawerHeader',
+      'DrawerOverlay',
+      'DrawerPortal',
+      'DrawerTitle',
+      'DrawerTrigger'
+    ],
+    intents: ['抽屉', '底部弹出', '侧滑面板', 'drawer', 'bottom sheet'],
+    use: '从边缘滑出的面板, 偏移动/触摸手感',
+    replaces: ['dialog', 'div'],
+    avoid: '桌面端侧边面板优先 Sheet; 居中模态用 Dialog'
+  },
+  DropdownMenu: {
+    exports: [
+      'DropdownMenu',
+      'DropdownMenuCheckboxItem',
+      'DropdownMenuContent',
+      'DropdownMenuGroup',
+      'DropdownMenuItem',
+      'DropdownMenuLabel',
+      'DropdownMenuPortal',
+      'DropdownMenuRadioGroup',
+      'DropdownMenuRadioItem',
+      'DropdownMenuSeparator',
+      'DropdownMenuShortcut',
+      'DropdownMenuSub',
+      'DropdownMenuSubContent',
+      'DropdownMenuSubTrigger',
+      'DropdownMenuTrigger'
+    ],
+    intents: ['下拉菜单', '更多操作', '三点菜单', '模型切换', 'dropdown', 'menu', 'more actions'],
+    use: '按钮唤起的操作菜单, 支持子菜单/勾选项/单选组',
+    replaces: ['button', 'div', 'ul'],
+    avoid: '表单取值用 Select(菜单不是表单控件); 右键唤起用 ContextMenu'
+  },
+  EmptyState: {
+    exports: ['EmptyState'],
+    intents: ['空状态', '暂无数据', '无结果', 'empty', 'placeholder', '零结果'],
+    use: '列表/面板无内容时的占位: 标题、说明、可选操作',
+    replaces: ['div'],
+    avoid: '加载中用 Spinner/Skeleton/LoadingOverlay; 错误用 Alert'
+  },
+  EllipsisText: {
+    exports: ['EllipsisText'],
+    intents: ['省略文本', '超长文本', '截断文本', 'ellipsis text', 'tooltip text'],
+    use: '单行超长文本截断，并且只在真实溢出时通过 Tooltip 展示完整内容',
+    replaces: ['span'],
+    avoid: '多行正文展开阅读不要用; 固定提示不依赖溢出的场景直接用 Tooltip'
+  },
+  FloatingToolbar: {
+    exports: ['FloatingToolbar'],
+    intents: ['浮动工具栏', '划词操作条', '上下文操作', 'floating toolbar', 'contextual actions'],
+    use: '悬浮在正文或画布上方的一组上下文操作；提供不透明 raised surface、边框、圆角、阴影和 toolbar 语义',
+    replaces: ['div'],
+    avoid: '点击后弹出的内容面板用 Popover；业务定位、选区状态和请求逻辑留在消费 Feature'
+  },
+  Form: {
+    exports: [
+      'Field',
+      'Form',
+      'FormControl',
+      'FormDescription',
+      'FormField',
+      'FormItem',
+      'FormLabel',
+      'FormMessage',
+      'useFormField'
+    ],
+    intents: ['表单', '字段', '标签与错误', '校验提示', 'form', 'field', 'validation message'],
+    use: '表单结构与字段布局: label、描述、错误信息的统一排布。`Field` 是 `FormField` 的别名',
+    replaces: ['form', 'label'],
+    avoid: '它只提供**结构与展示**, 不含校验引擎与表单状态 —— 校验逻辑仍在 feature 侧, 不要以为它会自动校验'
+  },
+  HoverCard: {
+    exports: ['HoverCard', 'HoverCardContent', 'HoverCardTrigger'],
+    intents: ['悬浮卡片', '预览卡', 'hover 详情', 'hover card', 'preview on hover'],
+    use: '悬停展示的富内容预览',
+    replaces: ['div'],
+    avoid: '纯文字说明用 Tooltip; 需要点击交互用 Popover'
+  },
+  IconButton: {
+    exports: ['IconButton'],
+    intents: ['图标按钮', '纯图标操作', '关闭按钮', 'icon button', 'square button'],
+    use: '只有图标的操作按钮(关闭、更多、刷新), 自带方形命中区与无障碍标签位；md/sm/xs 对应32/28/24px与16/14/12px图标',
+    replaces: ['button'],
+    avoid: '有文字时用 Button; 不要用它承载开关状态(用 Toggle)'
+  },
+  Input: {
+    exports: ['Input', 'PasswordInput'],
+    intents: ['输入框', '文本框', '搜索框', '密码框', '单行输入', 'input', 'password field', 'text field', 'search box'],
+    use: '**所有**单行输入, 含 text/search/number/date 等 type；密码输入优先用 PasswordInput，内置显隐切换；size=standard 对应设计表单36px',
+    replaces: ['input'],
+    avoid: '多行用 Textarea; 验证码分格用 InputOTP; 带候选列表用 Command'
+  },
+  SearchBox: {
+    exports: ['SearchBox'],
+    intents: ['搜索框', '带搜索图标的输入框', 'search input', 'search box'],
+    use: '单行搜索输入，内置 Lucide 搜索图标；用于过滤或检索文本。',
+    replaces: ['input'],
+    avoid: '普通文本输入使用 Input；带候选列表使用 Command'
+  },
+  InputOTP: {
+    exports: ['InputOTP', 'InputOTPGroup', 'InputOTPSeparator', 'InputOTPSlot'],
+    intents: ['验证码', '一次性密码', '分格输入', 'otp', 'verification code', '短信码'],
+    use: '固定位数的分格验证码输入',
+    replaces: ['input'],
+    avoid: '普通输入用 Input'
+  },
+  Label: {
+    exports: ['Label'],
+    intents: ['标签文字', '字段名', '表单标题', 'label', 'field name'],
+    use: '表单控件的关联标签',
+    replaces: ['label'],
+    avoid: '状态标记用 Badge; 在 Form 结构里优先 FormLabel'
+  },
+  LoadingOverlay: {
+    exports: ['LoadingOverlay'],
+    intents: ['加载遮罩', '整块 loading', '阻塞加载', 'loading overlay', 'busy'],
+    use: '覆盖一块区域的加载遮罩, 期间禁止交互',
+    replaces: ['div'],
+    avoid: '行内小范围加载用 Spinner; 骨架占位用 Skeleton'
+  },
+  Menubar: {
+    exports: [
+      'Menubar',
+      'MenubarCheckboxItem',
+      'MenubarContent',
+      'MenubarGroup',
+      'MenubarItem',
+      'MenubarLabel',
+      'MenubarMenu',
+      'MenubarPortal',
+      'MenubarRadioGroup',
+      'MenubarRadioItem',
+      'MenubarSeparator',
+      'MenubarShortcut',
+      'MenubarSub',
+      'MenubarSubContent',
+      'MenubarSubTrigger',
+      'MenubarTrigger'
+    ],
+    intents: ['菜单栏', '顶部菜单', '应用菜单', 'menubar', 'app menu'],
+    use: '横向排列的多组下拉菜单(应用级菜单栏)',
+    replaces: ['button', 'div', 'ul'],
+    avoid: '单个菜单用 DropdownMenu; 页面级导航用 NavigationMenu'
+  },
+  NavigationMenu: {
+    exports: [
+      'NavigationMenu',
+      'NavigationMenuContent',
+      'NavigationMenuIndicator',
+      'NavigationMenuItem',
+      'NavigationMenuLink',
+      'NavigationMenuList',
+      'NavigationMenuTrigger',
+      'NavigationMenuViewport',
+      'navigationMenuTriggerStyle'
+    ],
+    intents: ['导航菜单', '主导航', '栏目切换', 'navigation', 'nav menu'],
+    use: '页面级导航, 支持带内容面板的导航项',
+    replaces: ['a', 'button', 'ul'],
+    avoid: '同一页面内的视图切换用 Tabs; 操作菜单用 DropdownMenu'
+  },
+  NavigationTabs: {
+    exports: ['NavigationTabs', 'NavigationTabClose'],
+    intents: ['页签导航', '文件页签', '可关闭页签', '导航条', 'tab bar', 'document tabs'],
+    use: '带固定总览页签的横向页签导航, 支持可关闭页签、未保存红点(`dirty`)、动态宽度、省略文本与横向滚动',
+    replaces: ['button', 'div'],
+    avoid: '普通内容分组切换用 Tabs; 页面级下拉导航用 NavigationMenu'
+  },
+  Pagination: {
+    exports: ['Pagination'],
+    intents: ['分页', '翻页', '页码', 'pagination', 'page nav'],
+    use: '页码导航(页码计算见 `getPaginationItems`)',
+    replaces: ['button', 'ul'],
+    avoid: '无限滚动场景不要放分页; 不要自己算省略号, 用 `getPaginationItems`'
+  },
+  Popover: {
+    exports: ['Popover', 'PopoverAnchor', 'PopoverContent', 'PopoverTrigger'],
+    intents: ['浮层', '气泡面板', '轻量弹层', '筛选浮层', 'popover', 'floating panel'],
+    use: '点击唤起的非模态浮层, 可放小表单与筛选项',
+    replaces: ['div'],
+    avoid: '需要模态与遮罩用 Dialog; 纯文字提示用 Tooltip; 菜单项列表用 DropdownMenu'
+  },
+  ProgressBar: {
+    exports: ['Progress', 'ProgressBar'],
+    intents: ['进度条', '圆环进度', '百分比', '上传进度', 'progress', 'percentage'],
+    use: '确定性进度展示。`ProgressBar` 带 color, `Progress` 是去掉 color 的兼容名',
+    replaces: ['div', 'progress'],
+    avoid: '不确定时长用 Spinner; 不要用它做纯装饰长条'
+  },
+  Radio: {
+    exports: ['Radio', 'RadioGroup', 'RadioGroupItem'],
+    intents: ['单选', '互斥选项', '单选组', 'radio', 'radio group'],
+    use: '一组互斥选项全部可见时的单选',
+    replaces: ['input', 'label'],
+    avoid: '选项多且需要收起用 Select; 段落式切换用 SegmentedControl/ToggleGroup'
+  },
+  Resizable: {
+    exports: ['ResizableHandle', 'ResizablePanel', 'ResizablePanelGroup'],
+    intents: ['可拖拽分栏', '分割面板', '调整宽度', 'resizable', 'split pane'],
+    use: '可拖拽调整比例的多栏布局',
+    replaces: ['div'],
+    avoid: '固定比例布局不要引入它'
+  },
+  ScrollArea: {
+    exports: ['ScrollArea', 'ScrollBar'],
+    intents: ['滚动容器', '自定义滚动条', '长列表滚动', 'scroll area', 'scrollbar'],
+    use: '带统一滚动条样式的滚动容器',
+    replaces: ['div'],
+    avoid: '整页滚动不需要它; 它不做虚拟列表'
+  },
+  Select: {
+    exports: [
+      'Select',
+      'SelectContent',
+      'SelectGroup',
+      'SelectItem',
+      'SelectLabel',
+      'SelectScrollDownButton',
+      'SelectScrollUpButton',
+      'SelectSeparator',
+      'SelectTrigger',
+      'SelectValue'
+    ],
+    intents: ['下拉选择', '选择器', '枚举取值', 'select', 'dropdown select', '选项'],
+    use: '表单内的单值选择；option/optgroup 子项使用原生 select，SelectTrigger/SelectContent/SelectItem 组合使用自有列表浮层；size=standard 对应设计表单36px，两种组合均支持',
+    replaces: ['select'],
+    avoid: '需要搜索/大量候选用 Command; 操作菜单用 DropdownMenu; 不要在 feature 里直接写 `<select>`；两种组合的事件契约须分别读取 SelectProps 与实现'
+  },
+  Sheet: {
+    exports: [
+      'Sheet',
+      'SheetClose',
+      'SheetContent',
+      'SheetDescription',
+      'SheetFooter',
+      'SheetHeader',
+      'SheetOverlay',
+      'SheetPortal',
+      'SheetTitle',
+      'SheetTrigger'
+    ],
+    intents: ['侧边面板', '侧滑弹层', '详情抽屉', 'sheet', 'side panel'],
+    use: '从某一侧滑出的模态面板(side 可配), 桌面端首选',
+    replaces: ['dialog', 'div'],
+    avoid: '居中模态用 Dialog; 移动端手势抽屉用 Drawer'
+  },
+  Slider: {
+    exports: ['Slider'],
+    intents: ['滑块', '拖动取值', '区间调节', 'slider', 'range'],
+    use: '连续/步进数值的拖动取值',
+    replaces: ['input'],
+    avoid: '精确输入用 Input(type=number)'
+  },
+  Spinner: {
+    exports: ['Skeleton', 'Spinner'],
+    intents: ['加载中', '转圈', '骨架屏', '占位', 'spinner', 'loading', 'skeleton'],
+    use: '`Spinner` 行内不确定加载，可用 imageSrc 指定动画图片，未指定时保留默认转圈; `Skeleton` 内容骨架占位(同一模块导出)',
+    replaces: ['div', 'span'],
+    avoid: '需要遮住整块并禁交互用 LoadingOverlay; 有确定百分比用 ProgressBar'
+  },
+  Switch: {
+    exports: ['Switch'],
+    intents: ['开关', '切换', '立即生效', 'switch', 'toggle setting'],
+    use: '设置项的即时生效开关',
+    replaces: ['input'],
+    avoid: '需要提交后才生效的布尔项用 Checkbox; 工具栏按压态用 Toggle'
+  },
+  classes: {
+    exports: [
+      'getPaginationItems',
+      'semanticTagColor',
+      'semanticTagColorFor',
+      'semanticTagVariables',
+      'SEMANTIC_TAG_COLORS',
+      'tagVariants'
+    ],
+    intents: ['语义标签色', '标签配色', '分页算法', '稳定颜色映射', 'semantic tag color', 'tag variants'],
+    use: '为设计系统提供无 DOM 的共享展示算法：标签变体、稳定语义色与分页项计算',
+    replaces: [],
+    avoid: '不要在 feature 中复制颜色映射或分页算法；普通状态展示直接使用 Tag/Badge，分页 UI 使用 Pagination'
+  },
+  Tag: {
+    exports: ['Tag', 'TagClose'],
+    intents: ['标签', '可关闭标签', '关闭标签', '彩色标签', 'tag', 'closable tag', 'chip', '标签筛选'],
+    use: '轻量标签/chip, 默认按设计稿提供 24px 高度、浅绿底、绿色描边; 支持 small 尺寸、tone/variant 类型色, 可通过 onClose 展示关闭按钮; 需要保留每项自身配色与就地删除的筛选 chip 用 selected 表达选中态, role/aria-pressed 由调用方声明',
+    replaces: ['button', 'span'],
+    avoid: '只展示状态/计数且不需要关闭时用 Badge; 不需要每项配色与就地删除的互斥/多选筛选, 用 ToggleGroup 或 Toggle'
+  },
+  Table: {
+    exports: [
+      'Table',
+      'TableBody',
+      'TableCaption',
+      'TableCell',
+      'TableFooter',
+      'TableHead',
+      'TableHeader',
+      'TableRow'
+    ],
+    intents: ['表格', '数据列表', '行列展示', 'table', 'grid', 'data table'],
+    use: '二维数据展示的完整结构件',
+    replaces: ['table'],
+    avoid: '它不含排序/分页/虚拟滚动 —— 分页配 Pagination, 但不要在 feature 里重写一套 `<table>`'
+  },
+  Tabs: {
+    exports: ['Tabs', 'TabsContent', 'TabsList', 'TabsTrigger'],
+    intents: ['标签页', '页签切换', '分页视图', 'tabs', 'tab bar', '视图切换'],
+    use: '同一区域内多视图切换',
+    replaces: ['button', 'div'],
+    avoid: '少量互斥筛选用 SegmentedControl/ToggleGroup; 跨页面导航用 NavigationMenu'
+  },
+  Textarea: {
+    exports: ['Textarea'],
+    intents: ['多行输入', '文本域', '备注', '长文本', 'textarea', 'multiline'],
+    use: '多行文本输入',
+    replaces: ['textarea'],
+    avoid: '单行用 Input; 富文本/编辑器不在设计系统范围内'
+  },
+  Toast: {
+    exports: ['Toast', 'SonnerToaster', 'Toaster', 'ToastProvider', 'useToast'],
+    intents: ['轻提示', '消息通知', '操作反馈', 'toast', 'notification', 'snackbar'],
+    use: '一次性操作反馈。`ToastProvider` 挂载上下文, `useToast()` 触发, `Toaster` 是容器(`SonnerToaster` 为其别名)',
+    replaces: ['div', 'ol'],
+    avoid: '常驻状态说明用 Alert; 不要在 feature 里另建一套通知队列'
+  },
+  Toggle: {
+    exports: ['Toggle', 'toggleVariants'],
+    intents: ['按压态按钮', '开关按钮', '工具栏按钮', 'toggle', 'pressed button'],
+    use: '带按压/激活态的单个按钮(加粗、显示侧栏等)',
+    replaces: ['button'],
+    avoid: '设置项用 Switch; 一组互斥项用 ToggleGroup'
+  },
+  ToggleGroup: {
+    exports: ['SegmentedControl', 'ToggleGroup', 'ToggleGroupItem'],
+    intents: ['分段控件', '互斥切换组', '多选按钮组', '视图模式', 'segmented control', 'toggle group', 'filter chips'],
+    use: '一组按钮式选项, single/multiple 两种模式。`SegmentedControl` 是同模块导出的分段控件',
+    replaces: ['button'],
+    avoid: '内容区切换用 Tabs; 候选很多时用 Select/Command'
+  },
+  Tooltip: {
+    exports: ['Tooltip', 'TooltipContent', 'TooltipProvider', 'TooltipTrigger'],
+    intents: ['文字提示', '悬浮说明', '图标含义', 'tooltip', 'hint', 'title 提示'],
+    use: '悬停/聚焦时的简短文字说明',
+    replaces: ['div', 'span'],
+    avoid: '富内容用 HoverCard; 需要点击交互用 Popover; 不要用 `title` 属性代替它'
+  }
+}

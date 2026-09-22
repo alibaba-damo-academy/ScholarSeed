@@ -1,0 +1,12 @@
+{
+  "dialogs": {
+    "importResource": "Select files or folders",
+    "importFile": "Select files",
+    "importDirectory": "Select folders",
+    "workspace": "Select or create a research workspace",
+    "codex": "Select the Codex executable",
+    "saveCopy": "Save a copy",
+    "insertImage": "Insert image",
+    "images": "Images"
+  }
+}

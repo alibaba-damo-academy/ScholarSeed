@@ -1,0 +1,234 @@
+{
+  "profile": "fast",
+  "summary": "Local PDFs and supplementary discovery form one evidence corpus. Parallel chapter tasks continue fixed openings as native text; an independent figure author completes images and captions. Scripts assemble full v1 and apply one source delta to editable v2. workflow publish checks current source, compiles/exports it and renders the first page plus actual figure/table pages including longtable continuations; unresolved page mappings are reported explicitly.",
+  "stages": [
+    {
+      "id": "retrieval_adapt",
+      "title": "Screen the agentic search output into the corpus",
+      "description": "Import screening is deterministic: validate metadata, deduplicate and apply numeric/venue constraints. The search subagent owns semantic excluded-topic requirements; no keyword exclusion recheck or additional LLM adjudication runs.",
+      "steps": [
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/retrieval/adapt_search_output.py",
+          "${WORKSPACE}"
+        ]
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 300,
+      "reads": [
+        "02_retrieval/metadata.json",
+        "01_input/writing_request.json",
+        "02_retrieval/local_papers.json (optional)"
+      ],
+      "writes": [
+        "02_retrieval/selected_paper.json",
+        "02_retrieval/retrieval_report.json"
+      ],
+      "status": {
+        "kind": "json_file",
+        "path": "02_retrieval/pipeline_status.json"
+      }
+    },
+    {
+      "id": "fulltext",
+      "title": "Acquire the full text of every selected paper",
+      "description": "Parse supplied local PDF snapshots first; download other sources from PaperHub and recover trusted abstracts for no-text records. Report fulltext, abstract_only and no_text distinctly.",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/processing/fetch_fulltext.py",
+        "${WORKSPACE}",
+        "--concurrency",
+        "8",
+        "--sources",
+        "paperhub"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 2400,
+      "reads": [
+        "02_retrieval/selected_paper.json"
+      ],
+      "writes": [
+        "02_retrieval/paper_info.json",
+        "02_retrieval/fulltext_report.json"
+      ],
+      "status": {
+        "kind": "trailing_json"
+      }
+    },
+    {
+      "id": "processing",
+      "title": "Paper card extraction, bibliography, corpus index",
+      "description": "Extract current valid cards, freeze citation identities, build indexes and audit metadata. Aggregate all child statuses; selected-paper/card set readiness gates downstream writing. Reuse unchanged cards and archive changed evidence before re-extraction.",
+      "steps": [
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/paper_card_tools.py",
+          "run",
+          "${WORKSPACE}",
+          "--reclassify-type",
+          "--concurrency",
+          "20"
+        ],
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/build_bib.py",
+          "${WORKSPACE}"
+        ],
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/build_cards_index.py",
+          "${WORKSPACE}"
+        ],
+        [
+          "scholarseed-skill-python",
+          "${SLR_HOME}/scripts/processing/audit_citation_metadata.py",
+          "${WORKSPACE}"
+        ]
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 3600,
+      "reads": [
+        "02_retrieval/"
+      ],
+      "writes": [
+        "03_process/paper_cards.json",
+        "03_process/references.bib",
+        "03_process/cite_keys.json",
+        "03_process/cards_index.jsonl",
+        "03_process/corpus_summary.json",
+        "03_process/citation_metadata_audit.json",
+        "03_process/citation_metadata_audit.md"
+      ],
+      "status": {
+        "kind": "trailing_json"
+      },
+      "progress_file": "03_process/processing_progress.json"
+    },
+    {
+      "id": "generation_prep",
+      "legacy": true,
+      "title": "Legacy section preparation",
+      "description": "Legacy section preparation only. New work uses evidence build, outline generate, manuscript prepare and manuscript generate.",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/legacy_stage.py",
+        "generation_prep"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 600,
+      "reads": [
+        "04_outline/outline.json",
+        "03_process/paper_cards.json"
+      ],
+      "writes": [
+        "05_generation/_internal/drafting_worklist.json",
+        "05_generation/_internal/tables_worklist.json",
+        "05_generation/_internal/figures_worklist.json",
+        "05_generation/_internal/cite_keys.json",
+        "05_generation/_internal/query_meta.json"
+      ],
+      "status": {
+        "kind": "trailing_json"
+      }
+    },
+    {
+      "id": "generation_merge",
+      "legacy": true,
+      "title": "Legacy section merge",
+      "description": "Validate and merge legacy section artifacts only. Current tasks use manuscript generate to assemble full v1 and refine it into editable v2, then workflow publish.",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/legacy_stage.py",
+        "generation_merge"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 900,
+      "reads": [
+        "05_generation/section_drafts/",
+        "05_generation/_internal/drafting_worklist.json"
+      ],
+      "writes": [
+        "05_generation/full_draft_v1.tex"
+      ],
+      "status": {
+        "kind": "trailing_json"
+      }
+    },
+    {
+      "id": "generation_publish",
+      "title": "Compile the editable native v2",
+      "description": "Compile current source and dependencies; content diagnostics are advisory. Never regenerate or reassemble v2.",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/manuscript_publication.py",
+        "publish",
+        "--workspace",
+        "${WORKSPACE}"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 1800,
+      "reads": [
+        "05_generation/full_draft_v2.tex"
+      ],
+      "writes": [
+        "05_generation/generation_report.json",
+        "06_output/survey.pdf"
+      ],
+      "status": {
+        "kind": "stdout_json"
+      }
+    },
+    {
+      "id": "verify_audit",
+      "title": "Local pre-flight audit (no network, no LLM)",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/manuscript_publication.py",
+        "audit",
+        "--workspace",
+        "${WORKSPACE}"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 600,
+      "optional": true,
+      "writes": [
+        "07_verifier/fast_audit/output/report.json"
+      ],
+      "status": {
+        "kind": "stdout_json"
+      },
+      "description": "Report current-source diagnostics and compiler result; postcheck renders the first page and actual figure/table pages including longtable continuations. No generation-state gates."
+    },
+    {
+      "id": "verify_postcheck",
+      "title": "Post-delivery check against the finished artefact",
+      "description": "Report current-source diagnostics and compiler result; postcheck renders the first page and actual figure/table pages including longtable continuations. No generation-state gates.",
+      "command": [
+        "scholarseed-skill-python",
+        "${SLR_HOME}/scripts/manuscript_publication.py",
+        "postcheck",
+        "--workspace",
+        "${WORKSPACE}"
+      ],
+      "cwd": "workspace",
+      "timeout_sec": 900,
+      "optional": true,
+      "reads": [
+        "06_output/survey.pdf",
+        "06_output/survey.tex",
+        "04_outline/output_spec.json",
+        "01_input/writing_request.json",
+        "03_process/cite_keys.json",
+        "03_process/references.bib",
+        "05_generation/citations.bib"
+      ],
+      "writes": [
+        "07_verifier/postcheck/report.json",
+        "07_verifier/postcheck/summary.md"
+      ],
+      "status": {
+        "kind": "stdout_json"
+      }
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "registry": "skillhub-pre",
+  "namespace": "scholarseed",
+  "download_hosts": ["deep-rd.oss-cn-hangzhou.aliyuncs.com"],
+  "network": {
+    "timeout_seconds": 60,
+    "get_attempts": 3,
+    "retry_seconds": 1,
+    "max_redirects": 3,
+    "page_size": 50,
+    "max_pages": 100,
+    "scan_timeout_seconds": 300,
+    "scan_poll_seconds": 5,
+    "snapshot_attempts": 3
+  },
+  "scanners": ["skill-scanner"],
+  "dependencies": {
+    "agentic-search": {"skills": ["web-search"]},
+    "fast-search": {"skills": ["web-search"]},
+    "project-literature": {
+      "executables": ["scholarseed-bridge"]
+    },
+    "web-search": {
+      "imports": ["playwright"]
+    },
+    "research-idea-partner": {"skills": ["agentic-search"], "executables": ["scholarseed-bridge"]},
+    "precise-literature-search": {
+      "wheels": ["vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl"],
+      "imports": ["paper_dl"],
+      "modules": ["paper_dl"]
+    },
+    "literature-review": {
+      "skills": ["agentic-search"],
+      "python": ["matplotlib==3.10.8", "pysbd==0.3.4"],
+      "imports": ["openai", "httpx", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock"],
+      "bundled_executables": ["xelatex", "pdflatex", "bibtex", "kpsewhich"]
+    }
+  }
+}

@@ -1,0 +1,67 @@
+:root {
+  --vds-z-base: 0;
+  --vds-z-content: 1;
+  /* 局部 stacking context 内的装饰与命中层。它们不用于跨 portal 的浮层排序。 */
+  --vds-z-local-raised: 1;
+  --vds-z-local-control: 2;
+  --vds-z-local-decoration: 3;
+  --vds-z-local-top: 4;
+  /* 常驻工作区面板的 stacking context；仅用于同一 surface 的兄弟面板。 */
+  --vds-z-surface-panel: 3;
+  /* 会话内滚动控制与确认层，位于普通内容和全局浮层之间。 */
+  --vds-z-scroll-control: 8;
+  --vds-z-session-confirm: 90;
+  --vds-z-elevated: 10;
+  /* 活动栏：要盖住同层 chrome（模块面板/标签栏，均为 elevated），因为它的账户菜单
+     向右溢出栏宽；但必须留在浮层带之下 —— 浮层带从 60 起（composer 弹层、skills
+     遮罩），全局搜索遮罩 80、设置遮罩 95。越过 60 就会把这些浮层压在活动栏下面。 */
+  --vds-z-rail: 20;
+  /* 分隔条：要盖住工作区面板内的 sticky 头部（如会话 header 的 45），否则负 margin
+     叠进面板的那段命中区会被头部层抢走指针事件；仍须留在浮层带 60 之下。 */
+  --vds-z-sticky-header: 45;
+  --vds-z-resize-handle: 46;
+  /* Full-page surfaces replace the conversation body but remain below sheets. */
+  --vds-z-workspace-files: 35;
+  --vds-z-background-task: 55;
+  --vds-z-inline-flyout: 60;
+  /* 抽屉(Sheet/Drawer)必须盖住工作区拖拽条: AI 面板分隔条被抬到 inline-flyout
+     层(60), 因此 sheet 族整体上移到 60 之上; 仍留在 dialog 族(70/71)之下,
+     保证从抽屉内打开的弹窗/确认框继续覆盖抽屉。 */
+  --vds-z-sheet-overlay: 61;
+  --vds-z-sheet: 62;
+  --vds-z-sheet-flyout: 63;
+  --vds-z-dialog-overlay: 70;
+  --vds-z-dialog: 71;
+  /* A destructive confirmation opened from an existing Dialog must remain inside
+     that modal family while painting above the parent content. */
+  --vds-z-dialog-nested-overlay: 72;
+  --vds-z-dialog-nested: 73;
+  /* A surface-local readiness gate blocks its own workspace while leaving the
+     global search and settings surfaces available above it. */
+  --vds-z-surface-gate: 78;
+  --vds-z-select-content: calc(var(--vds-z-modal) + 1);
+  --vds-z-navigation-menu: 10;
+  --vds-z-navigation-menu-content: 50;
+  --vds-z-navbar: 100;
+  --vds-z-sidebar: 200;
+  --vds-z-header: 300;
+  --vds-z-dropdown: 1000;
+  --vds-z-popover: 1100;
+  --vds-z-tooltip: 1200;
+  --vds-z-context-menu: 1300;
+  --vds-z-overlay: 5000;
+  --vds-z-modal: 6000;
+  --vds-z-modal-nested-overlay: calc(var(--vds-z-modal) + 1);
+  --vds-z-modal-nested: calc(var(--vds-z-modal-nested-overlay) + 1);
+  --vds-z-notification: 8000;
+  /* Loading blocks ordinary product interaction. Feedback recording is a diagnostic
+     surface and must remain reachable above every product-owned global layer. */
+  --vds-z-loading: 9000;
+  --vds-z-feedback-recorder: calc(var(--vds-z-loading) + 1);
+  --vds-z-feedback-recorder-overlay: calc(var(--vds-z-feedback-recorder) + 1);
+  --vds-z-feedback-recorder-dialog: calc(var(--vds-z-feedback-recorder-overlay) + 1);
+  --vds-z-feedback-recorder-nested-overlay: calc(var(--vds-z-feedback-recorder-dialog) + 1);
+  --vds-z-feedback-recorder-nested-dialog: calc(var(--vds-z-feedback-recorder-nested-overlay) + 1);
+  /* Toast 是全局反馈，必须盖住 modal（如设置弹窗 6000）；低于 loading。 */
+  --vds-z-toast: var(--vds-z-notification);
+}

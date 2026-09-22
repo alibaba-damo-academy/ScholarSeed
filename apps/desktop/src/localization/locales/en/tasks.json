@@ -1,0 +1,67 @@
+{
+  "feedback": {
+    "completed": "{{name}} completed",
+    "cancelled": "{{name}} cancelled",
+    "incomplete": "{{name}} did not fully complete"
+  },
+  "center": {
+    "title": "Task center",
+    "description": "Tasks continue in the background when you switch pages.",
+    "empty": "No background tasks"
+  },
+  "status": {
+    "queued": "Queued",
+    "running": "Running",
+    "settling": "Finalizing",
+    "completed": "Completed",
+    "partial": "Partially completed",
+    "failed": "Failed",
+    "cancelled": "Cancelled"
+  },
+  "progress": {
+    "failed": "Execution failed",
+    "linking": "Creating links",
+    "refreshing": "Refreshing the resource tree",
+    "preparing": "Preparing",
+    "copying": "Copying",
+    "scanning_one": "Scanning ({{count}} item found)",
+    "scanning_other": "Scanning ({{count}} items found)",
+    "linkingCount_one": "Creating links ({{count}} item)",
+    "linkingCount_other": "Creating links ({{count}} items)",
+    "discoveringVersions_one": "Counting versioned files ({{count}} item found)",
+    "discoveringVersions_other": "Counting versioned files ({{count}} items found)",
+    "versioning": "Initializing versions {{completed}}/{{total}}",
+    "copyingPercent": "Copying {{percentage}}%"
+  },
+  "title": {
+    "copy": "Copy resources to project",
+    "link": "Link local resources",
+    "sources_one": "{{name}} ({{count}} item)",
+    "sources_other": "{{name}} ({{count}} items)",
+    "withSource": "{{operation}} · {{source}}"
+  },
+  "failure": "{{name}}: {{reason}}",
+  "resourceImport": {
+    "progressItems": "{{completed}}/{{total}} items",
+    "summary": {
+      "copy": "Method: copy to project; imported {{succeeded}}, not imported {{failed}}",
+      "link": "Method: link local resources; linked {{succeeded}}, not linked {{failed}}"
+    },
+    "announcement": "{{title}} completed. {{detail}}",
+    "errors": {
+      "sourceNotFound": "The selected local file or folder no longer exists.",
+      "parentNotWritable": "The destination is not writable. Fix its permissions or choose another folder.",
+      "targetNotFound": "The destination folder does not exist.",
+      "nameExists": "An item with the same name already exists here.",
+      "importFailed": "Import failed. Check the source and destination permissions.",
+      "copyFailed": "Copy failed. Check the folder permissions.",
+      "rootExists": "A linked source with the same name already exists.",
+      "diskFull": "There is not enough disk space. Free up space and try again.",
+      "storageIoFailed": "Local storage could not be read or written. Check the disk and try again.",
+      "interrupted": "The import was interrupted when the app or service stopped.",
+      "partial": "Some sources could not be imported.",
+      "cancelled": "Cancelled.",
+      "unknown": "Import failed: {{error}}"
+    }
+  }
+}

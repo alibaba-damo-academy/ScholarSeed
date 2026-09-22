@@ -1,0 +1,1564 @@
+{
+  "schema_version": 1,
+  "provider": "alibaba",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "qwen": {
+      "limits": {
+        "context": 256000,
+        "max_input": null,
+        "max_output": null,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": null,
+      "long_context": null,
+      "provenance": {
+        "limits": "product-declared",
+        "modalities": "product-declared",
+        "reasoning": "unverified"
+      },
+      "source": {
+        "url": "",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "网关策略 id 而非厂商模型 id，无厂商可溯页面；沿用产品既有声明值并标未核实，待网关实测回写。对应模型族见 qwen3.7-max。"
+      ]
+    },
+    "qwen3.7-max": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": 262144,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-7-max",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-05-21",
+      "last_updated": "2026-05-21",
+      "notes": [
+        "同页 5 个快照模态不一致：主版本/0520/0517 纯文本，0608 才支持 image/video；-preview 与 -0517 仅支持思考模式。",
+        "2026-09-21 核对：models.dev 列 max_output 65536，与百炼 131072 不一致；冲突未决。"
+      ]
+    },
+    "qwen3.7-plus": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": 262144,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-7-plus",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-06-02",
+      "last_updated": "2026-06-04",
+      "notes": [
+        "参数形态取自百炼 deep-thinking 页，模型页本身未列参数名。",
+        "2026-09-21 核对：models.dev 列 max_output 65536，与百炼 131072 不一致；冲突未决。"
+      ]
+    },
+    "qwen3.6-plus": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 65536,
+        "max_reasoning": 81920,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-6-plus",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-04-02",
+      "last_updated": "2026-04-02",
+      "notes": [
+        "厂商页内部不自洽：max_output 65536 < max_reasoning 81920；不得按思维链长度反推可用输入。"
+      ]
+    },
+    "qwen3.8-max": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": 262144,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "xhigh"
+            ],
+            "default": "low",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          },
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "gateway-probed"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-max",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-08-03",
+      "last_updated": "2026-08-03",
+      "notes": [
+        "厂商直连的百炼形态是 enable_thinking + thinking_budget；我方网关另有档位形态，见 connections 段的 gateway-probed 覆盖。",
+        "thinking_budget 区间冲突未决：deep-thinking 页写「默认=最大思维链长度」，控制台写「1~32768，默认 4000」，故 min/max 留 null。",
+        "快照 qwen3.8-max-0902（别名 qwen3.8-max-2026-09-02）数值与主版本相同。",
+        "原 scholarseed-gateway 连接覆盖已扁平化进本基线：reasoning_effort 档位 [low,medium,xhigh] 为我方网关实测(gateway-probed, proposal 70)，与厂商 enable_thinking/thinking_budget(vendor-doc) 并存。",
+        "2026-09-21 核对：models.dev 输入含 pdf，百炼能力表未列；冲突未决。models.dev 列 budget_tokens 0~262144，与 deep-thinking 页、控制台构成第三种口径，区间仍留 null。",
+        "默认思考档位确定为 low（产品口径：去除「跟随模型默认」档，模型定义给出确定默认档，未声明时取最低档）。"
+      ]
+    },
+    "qwen3.8-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": 262144,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "xhigh"
+            ],
+            "default": "low",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          },
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "gateway-probed"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-flash",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-08-26",
+      "last_updated": "2026-08-26",
+      "notes": [
+        "qwen3.8-flash 能力声明与百炼 qwen3.8 系列一致；支持开关与思考预算。",
+        "原 scholarseed-gateway 连接覆盖已扁平化进本基线：reasoning_effort 档位 [low,medium,xhigh] 为我方网关实测(gateway-probed, proposal 70)，与厂商 enable_thinking/thinking_budget(vendor-doc) 并存。",
+        "2026-09-21 核对：models.dev 列 budget_tokens max 262144；厂商未公布区间，仍留 null。",
+        "默认思考档位确定为 low（产品口径：去除「跟随模型默认」档，模型定义给出确定默认档，未声明时取最低档）。"
+      ]
+    },
+    "qwen-max": {
+      "limits": {
+        "context": 32768,
+        "max_input": 30720,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-max",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-04-03",
+      "last_updated": "2025-01-25",
+      "notes": [
+        "厂商页内部不自洽：max_input(30720)+max_output(8192)=38912 > context(32768)，原样登记不折中。",
+        "deep-thinking 支持列表未列 qwen-max，按不支持思考登记。"
+      ]
+    },
+    "qwen-plus": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 997952,
+        "max_output": 32768,
+        "max_reasoning": 81920,
+        "max_input_thinking": 995904
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-01-25",
+      "last_updated": "2025-09-11",
+      "notes": [
+        "滚动主版口径（等同快照 qwen-plus-2025-12-01）；旧快照 2025-07-14/2025-04-28 为 131072/98304/16384。",
+        "混合思考默认不开启（deep-thinking 页）。thinking_budget 区间文档自相矛盾，min/max 留 null。"
+      ]
+    },
+    "qwen-turbo": {
+      "limits": {
+        "context": 131072,
+        "max_input": 98304,
+        "max_output": 16384,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-turbo",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-11-01",
+      "last_updated": "2025-04-28",
+      "notes": [
+        "混合思考默认不开启（deep-thinking 页）；max_reasoning 页面未单列，留 null。",
+        "2026-09-21 核对：models.dev 列 context 1000000，与百炼页 131072 不一致；冲突未决。"
+      ]
+    },
+    "qwen-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 997952,
+        "max_output": 32768,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-07-28",
+      "last_updated": "2025-07-28",
+      "notes": [
+        "混合思考默认不开启（deep-thinking 页）；max_reasoning 未公布，留 null。"
+      ]
+    },
+    "qwen-long": {
+      "limits": {
+        "context": 10000000,
+        "max_input": 10000000,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-long",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-01-25",
+      "last_updated": "2025-01-25",
+      "notes": [
+        "超长文档模型（10M 上下文）。正文称可解析图片文件，但能力表输入模态仅 Text，按能力表登记。deep-thinking 未列。",
+        "日期取自 models.dev(alibaba-cn 条目, 2026-09-21)。"
+      ]
+    },
+    "qwen3-max": {
+      "limits": {
+        "context": 262144,
+        "max_input": 258048,
+        "max_output": 65536,
+        "max_reasoning": 81920,
+        "max_input_thinking": 258048
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/model-qwen3-max",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-09-23",
+      "last_updated": "2025-09-23",
+      "notes": [
+        "页面 URL 带 model- 前缀（/qwen3-max 为 404）。混合思考默认不开启；2025-09-23 快照 max_output 为 32768。",
+        "2026-09-21 核对：models.dev 标 reasoning=false，百炼 deep-thinking 页列混合思考(默认不开启)；按厂商口径登记为支持。"
+      ]
+    },
+    "qwen3.7-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": 262144,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-7-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-15",
+      "last_updated": "2026-07-15",
+      "notes": [
+        "URL 点号写作连字符。deep-thinking 页 Qwen3.7 章节标默认开启思考。",
+        "日期取自 models.dev(alibaba-cn 条目, 2026-09-21)。models.dev 列 max_output 65536，与百炼 131072 不一致；冲突未决。"
+      ]
+    },
+    "qwen3.6-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 65536,
+        "max_reasoning": 131072,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-6-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-04-27",
+      "last_updated": "2026-04-27",
+      "notes": [
+        "deep-thinking 页 Qwen3.6 章节标默认开启思考。"
+      ]
+    },
+    "qwen3.6-max-preview": {
+      "limits": {
+        "context": 262144,
+        "max_input": 245760,
+        "max_output": 65536,
+        "max_reasoning": 131072,
+        "max_input_thinking": 229376
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-6-max",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-04-20",
+      "last_updated": "2026-04-20",
+      "notes": [
+        "id 口径不一：标题 qwen3.6-max-preview，URL/keywords 含 qwen3.6-max（/qwen3-6-max-preview 为 404）。",
+        "能力表未列思考项，但上下文表单列思考态限额，按支持思考登记。"
+      ]
+    },
+    "qwen3.5-plus": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 65536,
+        "max_reasoning": 81920,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-02-16",
+      "last_updated": "2026-02-16",
+      "notes": [
+        "deep-thinking 页 Qwen3.5 章节标默认开启思考。"
+      ]
+    },
+    "qwen3.5-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 991808,
+        "max_output": 65536,
+        "max_reasoning": 81920,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-02-23",
+      "last_updated": "2026-09-11",
+      "notes": [
+        "deep-thinking 页 Qwen3.5 章节标默认开启思考；等同快照 qwen3.5-flash-2026-02-23。",
+        "日期取自 models.dev(alibaba-cn 条目, 2026-09-21)，与等同快照 qwen3.5-flash-2026-02-23 的备注一致。"
+      ]
+    },
+    "qwen3-coder-plus": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 997952,
+        "max_output": 65536,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-coder-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-07-23",
+      "last_updated": "2025-07-23",
+      "notes": [
+        "代码模型；模型页与 deep-thinking 页均未列思考模式，按不支持登记。2025-07-22 快照 max_input 为 1000000。",
+        "2026-09-21 核对：models.dev 列 context 1048576，与百炼 1000000 不一致；冲突未决。"
+      ]
+    },
+    "qwen3-coder-flash": {
+      "limits": {
+        "context": 1000000,
+        "max_input": 997952,
+        "max_output": 65536,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-coder-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-07-28",
+      "last_updated": "2025-07-28",
+      "notes": [
+        "代码模型；页面未列思考模式，按不支持登记。"
+      ]
+    },
+    "qwen3-coder-next": {
+      "limits": {
+        "context": 262144,
+        "max_input": 204800,
+        "max_output": 65536,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-coder-next",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-02-03",
+      "last_updated": "2026-02-03",
+      "notes": [
+        "页内不自洽：max_input(204800)+max_output(65536) > context(262144)；简介称支持多轮工具交互但能力表 Function Calling 不支持。",
+        "日期取自 models.dev(alibaba-coding-plan-cn 条目, 2026-09-21)；规范 provider 未收录该 id。"
+      ]
+    },
+    "qwen-vl-max": {
+      "limits": {
+        "context": 131072,
+        "max_input": 129024,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-vl-max",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-04-08",
+      "last_updated": "2025-08-13",
+      "notes": [
+        "视觉理解模型，等同快照 qwen-vl-max-2025-08-13。deep-thinking 支持列表未列，按不支持思考登记。",
+        "2026-09-21 核对：models.dev 输入仅列 text+image(无 video)，与百炼能力表不一致；按厂商口径登记。"
+      ]
+    },
+    "qwen-vl-plus": {
+      "limits": {
+        "context": 131072,
+        "max_input": 129024,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-vl-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-01-25",
+      "last_updated": "2025-08-15",
+      "notes": [
+        "视觉理解模型，等同快照 qwen-vl-plus-2025-08-15。",
+        "2026-09-21 核对：models.dev 输入仅列 text+image(无 video)，与百炼能力表不一致；按厂商口径登记。"
+      ]
+    },
+    "qwen3-vl-plus": {
+      "limits": {
+        "context": 262144,
+        "max_input": 260096,
+        "max_output": 32768,
+        "max_reasoning": 81920,
+        "max_input_thinking": 258048
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-vl-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-09-23",
+      "last_updated": "2025-09-23",
+      "notes": [
+        "模型页仅设思考态限额、未列参数名；形态取自视觉理解页（enable_thinking 默认 false + thinking_budget）。等同快照 qwen3-vl-plus-2025-12-19。",
+        "2026-09-21 核对：models.dev 输入仅列 text+image(无 video)，与百炼能力表不一致；按厂商口径登记。"
+      ]
+    },
+    "qwen3-vl-flash": {
+      "limits": {
+        "context": 262144,
+        "max_input": 260096,
+        "max_output": 32768,
+        "max_reasoning": 81920,
+        "max_input_thinking": 258048
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "toggle",
+            "wire": {
+              "chat_completions": "enable_thinking",
+              "responses": "enable_thinking"
+            }
+          },
+          {
+            "kind": "budget",
+            "min": null,
+            "max": null,
+            "wire": {
+              "chat_completions": "thinking_budget",
+              "responses": "thinking_budget"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-vl-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "max_input 同页两值（主版 260096 / 2026-01-22 快照 258048），取主版并登记冲突；形态取自视觉理解页。"
+      ]
+    },
+    "qwen-vl-ocr": {
+      "limits": {
+        "context": null,
+        "max_input": null,
+        "max_output": 4096,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-vl-ocr",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2024-10-28",
+      "last_updated": "2025-04-13",
+      "notes": [
+        "context/max_input 未公布；max_output 默认 4096（可申请调高至 8192）。支持 PDF 文档解析。",
+        "2026-09-21 核对：models.dev 列 context 34096 且输入未列 pdf；厂商未公布该值、页面称支持 PDF 解析，仍按厂商口径登记。"
+      ]
+    },
+    "qvq-max": {
+      "limits": {
+        "context": 131072,
+        "max_input": 106496,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qvq-max",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-03-25",
+      "last_updated": "2025-03-25",
+      "notes": [
+        "视觉推理模型，仅思维链输出、未公布开关/预算形态，按固定开启登记（supported:true + options:[]）。等同快照 qvq-max-2025-03-25。",
+        "2026-09-21 核对：models.dev 输入仅列 text+image(无 video)，与百炼能力表不一致；按厂商口径登记。"
+      ]
+    },
+    "qvq-plus": {
+      "limits": {
+        "context": 131072,
+        "max_input": 106496,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qvq-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "视觉推理模型，思维链输出、无参数说明，按固定开启登记。"
+      ]
+    },
+    "qwen-omni-turbo": {
+      "limits": {
+        "context": 32768,
+        "max_input": 30720,
+        "max_output": 2048,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text",
+          "audio"
+        ]
+      },
+      "reasoning": {
+        "supported": false,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen-omni-turbo",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-01-19",
+      "last_updated": "2025-03-26",
+      "notes": [
+        "全模态（文本+图像+视频+音频输入，文本+音频输出）；deep-thinking 支持列表未列，按不支持思考登记。"
+      ]
+    },
+    "qwen3-omni-flash": {
+      "limits": {
+        "context": 65536,
+        "max_input": 49152,
+        "max_output": 16384,
+        "max_reasoning": 32768,
+        "max_input_thinking": 16384
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text",
+          "audio"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-omni-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-09-15",
+      "last_updated": "2025-09-15",
+      "notes": [
+        "deep-thinking 页归入 Omni 混合思考、默认开启、用 reasoning_effort 调节，但档位枚举值未公布，故只登记 supported 不声明形态。",
+        "思考态最大输入(16384)显著小于非思考态(49152)，为页面原文。"
+      ]
+    },
+    "qwen3.8-omni-flash": {
+      "limits": {
+        "context": 1048576,
+        "max_input": 991808,
+        "max_output": 131072,
+        "max_reasoning": null,
+        "max_input_thinking": 983616
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": null
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-8-omni-flash",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "页面写 1M Token=1048576。深度思考默认开启、用 reasoning_effort 调节但档位未公布，故不声明形态。输出模态仅 Text（无音频输出）。"
+      ]
+    },
+    "qwen3.5-omni-plus": {
+      "limits": {
+        "context": 262144,
+        "max_input": 196608,
+        "max_output": 65536,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text",
+          "audio"
+        ]
+      },
+      "reasoning": null,
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "unverified"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-omni-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "能力表无思考项，思考能力未确认。跨页冲突：视觉理解列表页写 context 64k，与详情页 262144 矛盾，按详情页登记。"
+      ]
+    },
+    "qwen3.5-omni-plus-realtime": {
+      "limits": {
+        "context": 262144,
+        "max_input": 196608,
+        "max_output": 65536,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "video",
+          "audio"
+        ],
+        "output": [
+          "text",
+          "audio"
+        ]
+      },
+      "reasoning": null,
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "unverified"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-5-omni-plus-realtime",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": [
+        "实时流式形态；思考能力未确认。"
+      ]
+    },
+    "qwq-plus": {
+      "limits": {
+        "context": 131072,
+        "max_input": 98304,
+        "max_output": 8192,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwq-plus",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-03-05",
+      "last_updated": "2025-03-05",
+      "notes": [
+        "deep-thinking 页：仅思考模式、无需 enable_thinking、始终思考无法关闭，按固定开启登记。"
+      ]
+    }
+  }
+}

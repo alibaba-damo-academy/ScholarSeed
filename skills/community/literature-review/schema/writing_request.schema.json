@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Authoritative writing request",
+  "description": "Runtime semantic and source-span validation is in lib/task_contract.py. No legacy file import.",
+  "type": "object",
+  "required": [
+    "intent"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "intent": {
+      "type": "string"
+    },
+    "language": {
+      "type": "string"
+    },
+    "retrieval": {
+      "type": "object"
+    },
+    "publication": {
+      "type": "object"
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "value",
+          "verbatim"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "value": {},
+          "verbatim": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "output_scope": {
+      "type": "string"
+    },
+    "selected_section_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "user_instructions": {
+      "type": "string"
+    },
+    "outline_review": {
+      "type": "string"
+    },
+    "section_instructions": {
+      "type": "object"
+    },
+    "length_target": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "length_min": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "length_max": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "length_unit": {
+      "type": "string"
+    },
+    "user_requests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "effective_requirements": {
+      "type": "string"
+    },
+    "stage_instructions": {
+      "type": "string"
+    },
+    "auto_authorization": {
+      "type": "string"
+    },
+    "writing_strategy": {
+      "type": "string",
+      "enum": [
+        "whole",
+        "chapter_delta"
+      ]
+    },
+    "chapter_concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "local_pdfs": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "authors": {
+                "type": "array"
+              },
+              "year": {
+                "type": "integer"
+              },
+              "doi": {
+                "type": "string"
+              },
+              "abstract": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  }
+}

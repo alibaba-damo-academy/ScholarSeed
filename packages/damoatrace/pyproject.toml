@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "damoatrace"
+version = "0.1.0"
+description = "Independent evidence inspection CLI and local UI"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb",
+    "filelock>=3.16",
+]
+
+[project.optional-dependencies]
+dev = ["black>=24", "build>=1", "isort>=5", "twine>=5"]
+
+[project.scripts]
+damoatrace = "damoatrace.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["damoatrace*"]
+exclude = ["damoatrace.tests*"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"damoatrace" = ["py.typed"]
+"damoatrace.server" = ["*.html"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["damoatrace"]

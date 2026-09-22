@@ -1,0 +1,253 @@
+{
+  "name": "scholarseed-desktop",
+  "version": "0.2.0",
+  "description": "书深 — 科研智能体桌面应用",
+  "main": "out/main/index.js",
+  "author": "ScholarSeed",
+  "license": "Apache-2.0",
+  "packageManager": "npm@11.13.0",
+  "engines": {
+    "node": "24.16.0",
+    "npm": "11.13.0"
+  },
+  "scripts": {
+    "preinstall": "node ../../scripts/toolchain.cjs check",
+    "pretest": "node ../../scripts/toolchain.cjs check && node --test ../../scripts/artifacts.test.cjs runtime/codex.test.cjs runtime/browser.test.cjs runtime/python.test.cjs runtime/texlive.test.cjs runtime/components.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
+    "postinstall": "install-electron",
+    "predev": "node scripts/office-assets.cjs && npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
+    "dev": "electron-vite dev",
+    "dev:web": "vite --config vite.web.config.ts",
+    "prebuild": "npm run prepare:python && node ../../scripts/toolchain.cjs check",
+    "build": "node scripts/office-assets.cjs && electron-vite build",
+    "build:web": "vite build --config vite.web.config.ts",
+    "preview:web": "vite preview --config vite.web.config.ts",
+    "test": "node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
+    "test:coverage": "c8 --reporter=text --reporter=html --reporter=cobertura --all --include='src/**' node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
+    "test:literature-search": "node --experimental-transform-types --test src/renderer/src/features/literature/search.test.ts",
+    "prepreview": "npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
+    "preview": "electron-vite preview",
+    "shoot": "electron-vite build && electron .",
+    "bundle:backend": "npm run prepare:python && node scripts/build.cjs --stage backend --type dev",
+    "package:dir": "npm run prepare:python && node scripts/build.cjs --stage dir --type dev",
+    "package:installer": "npm run package",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test:e2e": "playwright test",
+    "test:e2e:mr": "npm run build && playwright test --project=smoke",
+    "test:e2e:live": "npm run build && playwright test --project=live",
+    "test:e2e:update": "npm run build && playwright test --project=update",
+    "i18n:check": "node scripts/localization.mjs",
+    "i18n:dom:gaps": "node scripts/localization/gaps.mjs",
+    "i18n:generate": "node scripts/localization.mjs --generate",
+    "i18n:test": "node --test scripts/localization/*.test.mjs",
+    "preshoot": "node ../../scripts/toolchain.cjs check",
+    "predev:web": "node ../../scripts/toolchain.cjs frontend",
+    "prebuild:web": "node ../../scripts/toolchain.cjs frontend",
+    "prepreview:web": "node ../../scripts/toolchain.cjs frontend",
+    "prepare:python": "node ../../scripts/python.cjs prepare-dev",
+    "build:check": "npm run package:check",
+    "package": "npm run prepare:python && node scripts/package.cjs package",
+    "build:release": "npm run package:distribution",
+    "package:check": "npm run prepare:python && node scripts/package.cjs check",
+    "release": "npm run package:distribution",
+    "package:distribution": "npm run prepare:python && node scripts/package.cjs release",
+    "package:dist": "npm run package:distribution"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@codemirror/view": "6.43.10",
+    "@electron/asar": "3.4.1",
+    "semver": "6.3.1",
+    "@milkdown/crepe": "^7.22.1",
+    "@milkdown/kit": "^7.22.1",
+    "decode-named-character-reference": "1.3.0",
+    "fflate": "0.8.3",
+    "katex": "0.18.1",
+    "lucide-react": "^1.41.0",
+    "monaco-editor": "0.56.0",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.3.289",
+    "react-markdown": "10.1.0",
+    "rehype-katex": "7.0.1",
+    "rehype-sanitize": "6.0.0",
+    "remark-breaks": "4.0.0",
+    "remark-cjk-friendly": "2.3.1",
+    "remark-gfm": "4.0.1",
+    "remark-math": "6.0.0",
+    "zetajs": "1.2.0",
+    "@fontsource/ibm-plex-mono": "^5.0.18",
+    "@fontsource/newsreader": "^5.0.18",
+    "@fontsource/noto-serif-sc": "^5.3.0",
+    "@playwright/cli": "0.1.20",
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/hast": "3.0.5",
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "c8": "^10.0.0",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.7",
+    "electron-vite": "4.0.1",
+    "postcss": "^8.5.6",
+    "prettier": "3.9.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "7.3.6",
+    "i18next": "26.4.2",
+    "react-i18next": "17.0.13"
+  },
+  "overrides": {
+    "dompurify": "3.4.15",
+    "ejs": "6.0.1"
+  },
+  "build": {
+    "appId": "com.scholarseed.desktop",
+    "productName": "ScholarSeed",
+    "directories": {
+      "output": "release",
+      "buildResources": "resources"
+    },
+    "afterSign": "scripts/notarize.cjs",
+    "afterPack": "scripts/sign.cjs",
+    "afterAllArtifactBuild": "scripts/verify.cjs",
+    "files": [
+      "out/**/*",
+      "!out/renderer/**/*",
+      "LICENSE",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/notices",
+        "to": "notices"
+      },
+      {
+        "from": "out/renderer",
+        "to": "renderer"
+      },
+      {
+        "from": "resources/backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/defaults",
+        "to": "defaults"
+      },
+      {
+        "from": "resources/product.json",
+        "to": "product.json"
+      },
+      {
+        "from": "resources/mac/zh_CN.lproj",
+        "to": "zh_CN.lproj",
+        "filter": [
+          "InfoPlist.strings"
+        ]
+      },
+      {
+        "from": "resources/mac/en.lproj",
+        "to": "en.lproj",
+        "filter": [
+          "InfoPlist.strings"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "resources/icon.icns",
+      "extendInfo": {
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleDisplayName": "ScholarSeed",
+        "CFBundleSpokenName": "书深",
+        "LSHasLocalizedDisplayName": true,
+        "MDItemKeywords": [
+          "书深",
+          "ScholarSeed"
+        ]
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.plist",
+      "signIgnore": [
+        "/Contents/Resources/backend/bin/codex$",
+        "/Contents/Resources/backend/browser/node$",
+        "/Contents/Resources/backend/codex-runtime(?:/|$)"
+      ]
+    },
+    "win": {
+      "icon": "resources/windows.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "书深",
+      "deleteAppDataOnUninstall": false
+    },
+    "dmg": {
+      "title": "ScholarSeed",
+      "contents": [
+        {
+          "x": 138,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 392,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "asar": true,
+    "protocols": {
+      "name": "ScholarSeed",
+      "schemes": [
+        "scholarseed"
+      ]
+    }
+  },
+  "allowScripts": {
+    "electron@44.3.0": true,
+    "esbuild@0.21.5": true
+  }
+}

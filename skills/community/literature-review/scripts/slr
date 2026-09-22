@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLR_LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v scholarseed-skill-python >/dev/null 2>&1; then
+  echo "[slr] scholarseed-skill-python is unavailable" >&2
+  echo "[slr] launch this skill from ScholarSeed Desktop or scholarseed-serve" >&2
+  exit 1
+fi
+export PYTHONUTF8=1 PYTHONIOENCODING=utf-8
+exec scholarseed-skill-python "$SLR_LAUNCHER_DIR/bootstrap.py" "$@"

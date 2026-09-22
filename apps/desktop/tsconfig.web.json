@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "target": "ES2020",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "noEmit": true,
+    "lib": [
+      "ES2020",
+      "ES2022.Intl",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src/renderer/**/*",
+    "src/feedback.ts",
+    "src/picker.ts",
+    "src/images.ts",
+    "src/subscriptions.ts",
+    "src/preferences.ts",
+    "src/onboarding.ts",
+    "src/permissions.ts",
+    "src/notifications.ts",
+    "src/skills.ts",
+    "src/updates.ts",
+    "src/locale.ts",
+    "src/localization/**/*",
+    "src/persistence.ts",
+    "src/prompts.ts",
+    "src/test-helpers/**/*"
+  ]
+}

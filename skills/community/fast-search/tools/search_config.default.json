@@ -1,0 +1,9 @@
+{
+  "_comment": "Portable defaults shipped with the skill. Set SCHOLARSEED_API_KEY in the environment. Override URL/proxy with FAST_SEARCH_CONFIG, ~/.config/fast-search/search_config.json, or tools/search_config.json.",
+  "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub",
+  "paperhub_proxy_mode": "auto",
+  "extra_no_proxy": ["scholarseed.damo.alibaba.com"],
+  "cache_dir": "",
+  "cache_mode": "off",
+  "cache_replay_timing": "instant"
+}

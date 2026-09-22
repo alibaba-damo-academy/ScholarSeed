@@ -1,0 +1,190 @@
+{
+  "turn": {
+    "duration": "本轮用时 {{duration}}"
+  },
+  "header": {
+    "recent": "最近",
+    "home": "返回首页",
+    "monitor": "显示任务监控",
+    "session": "会话 {{id}}"
+  },
+  "resume": {
+    "title": "正在恢复对话",
+    "codex": "连接 Codex 会话并加载历史记录…",
+    "agent": "连接 Agent 会话并加载历史记录…",
+    "reconnect": "正在重新连接会话…",
+    "retry": "连接未完成，正在重试（{{attempt}}/{{maximum}}）…",
+    "reconnected": "会话已重新连接",
+    "stopped": "会话恢复已停止。请检查登录、版本或会话状态后重新连接。",
+    "retrying": "会话暂时无法恢复，正在重试（{{attempt}}/{{maximum}}）"
+  },
+  "preflight": {
+    "title": "Codex Runtime 尚未就绪",
+    "message": "书深无法启动 Codex 会话。",
+    "settings": "打开设置",
+    "actions": {
+      "install": "请安装 Codex CLI（npm install -g @openai/codex），然后重新检测。",
+      "login": "请在终端运行 codex login 完成登录，然后重新检测。",
+      "upgrade": "当前 Codex CLI 版本不受支持，请升级后重新检测。",
+      "configure": "请选择本机 Codex 可执行文件。",
+      "retry": "请检查 Codex CLI 后重新检测。"
+    }
+  },
+  "runtime": {
+    "retrying": "Agent 连接中断，正在恢复",
+    "retryingCount": "Agent 连接中断，正在恢复（{{attempt}}/{{maximum}}）",
+    "providerRetrying": "模型服务正在重试",
+    "recovered": "Agent 连接已恢复",
+    "recoveryFailed": "Agent 恢复失败。请检查运行时登录、版本与网络后重试。",
+    "failed": "Agent 运行时事件需要处理。请检查当前操作与运行时状态。",
+    "detected": "检测到 Agent 运行时事件",
+    "transportRetrying": "正在重新连接本地书深服务…",
+    "transportRecovered": "本地书深服务连接已恢复",
+    "detail": "：{{detail}}",
+    "reason": {
+      "codex_process_exit": "Agent 运行时已退出",
+      "runtime_transport_lost": "Agent 运行时本地传输已断开",
+      "runtime_rpc_timeout": "Agent 运行时请求确认超时",
+      "codex_process_unavailable": "Agent 运行时暂时不可用",
+      "thread_resume_failed": "当前会话恢复失败",
+      "codex_turn_retrying": "模型服务正在重试",
+      "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
+      "codex_thread_not_loaded": "Agent 会话已脱离当前进程",
+      "codex_thread_closed": "Agent 会话连接已关闭",
+      "credit_balance_exhausted": "积分余额已用尽，本次生成已停止"
+    },
+    "closed": "✓ 已终止整个会话，历史已保留；此会话不能继续发送。",
+    "legacyNotice": "Agent 运行时提示：{{detail}}",
+    "nonterminal": "Agent 运行时报告了一个非终态事件。"
+  },
+  "models": {
+    "deferred": "模型与思考深度将在下一轮生效。",
+    "effortReset": "新模型不支持之前的思考深度，已恢复该模型的默认档位。",
+    "nextTurn": "模型与思考深度将在下一轮生效。"
+  },
+  "reasoning": {
+    "noneShort": "不思考",
+    "minimalShort": "极低",
+    "lowShort": "低",
+    "mediumShort": "中",
+    "highShort": "高",
+    "xhighShort": "超高",
+    "maxShort": "最高",
+    "ultraShort": "极高",
+    "none": "不思考 (none)",
+    "minimal": "极低 (minimal)",
+    "low": "低 (low)",
+    "medium": "中 (medium)",
+    "high": "高 (high)",
+    "xhigh": "超高 (xhigh)",
+    "max": "最高 (max)",
+    "ultra": "极高 (ultra)",
+    "default": "模型默认",
+    "label": "思考深度",
+    "selected": "思考 · {{effort}}",
+    "fixed": "思考 · 固定开启",
+    "unavailable": "已不可用 ({{value}})"
+  },
+  "retry": {
+    "attachmentsGone": "原附件已经不可用，请重新选择文件。",
+    "contextNotReady": "会话上下文尚未就绪，请稍后重试。",
+    "continueUnknown": "继续请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
+    "regenerateUnknown": "重新生成请求的提交结果尚未确认，请在待处理消息中检查发送结果。",
+    "continueUnconfirmed": "Service 未确认继续操作。"
+  },
+  "reply": {
+    "skipped": "已跳过",
+    "answerLabel": "对“{{question}}”的回答：{{answer}}"
+  },
+  "card": {
+    "foldAction": "折叠",
+    "keepAction": "保留",
+    "abandonAction": "放弃"
+  },
+  "failure": {
+    "contentPolicy": {
+      "message": "本次内容未通过安全审核，请修改后重试。"
+    },
+    "title": "回答生成失败",
+    "frame": "模型服务返回了无法识别的错误。",
+    "runtime": "请求未能到达 Codex Runtime。",
+    "quota": {
+      "message": "模型分配额度已用完。",
+      "action": "内置模型按积分计费，积分用完后将无法继续对话；请前往“剩余积分”查看余额并获取更多积分，或切换模型。"
+    },
+    "credits": {
+      "message": "积分余额已用尽，本次生成已停止。",
+      "action": "请前往“剩余积分”或积分页查看余额并获取更多积分后再试；本轮问题和上下文已保留。"
+    },
+    "rateLimit": {
+      "message": "模型请求过于频繁，请稍后再试。",
+      "action": "本轮问题和上下文已保留。"
+    },
+    "auth": {
+      "message": "模型服务认证失败。",
+      "action": "请检查登录或模型凭证。"
+    },
+    "unavailable": {
+      "message": "模型服务暂时不可用。",
+      "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
+    },
+    "request": {
+      "message": "当前请求未被模型服务接受。",
+      "action": "请检查模型、权限与输入。"
+    },
+    "modelConfig": {
+      "message": "该模型不被当前端点支持。",
+      "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
+    },
+    "unknown": {
+      "action": "生成过程中发生异常，已保留本轮问题和上下文。"
+    }
+  },
+  "delivery": {
+    "current": "本次交付",
+    "untitled": "未命名产物",
+    "legacy": "交付：{{title}}"
+  },
+  "request": {
+    "historyUnavailable": "历史记录未能加载",
+    "timeout": "请求超时",
+    "unavailable": "请求未能到达后端。",
+    "invalidRecovery": "会话恢复快照无效，已停止恢复以避免重复提交。",
+    "failed": "请求失败",
+    "authentication": "请先登录",
+    "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
+    "httpFailure": "请求失败（{{status}}）：{{detail}}",
+    "diagnostic": "{{message}}\n{{detail}}"
+  },
+  "toolActions": {
+    "command": "终端命令",
+    "read": "读取文件",
+    "edit": "编辑文件",
+    "image": "查看图片",
+    "skill": "使用技能 {{name}}"
+  },
+  "context": {
+    "compacting": "正在整理上下文…",
+    "compacted": "上下文已压缩，正在继续执行"
+  },
+  "artifactFailure": {
+    "missing": "文件不存在，未能展示产物。",
+    "changed": "文件内容已变化，未能发布此版本。",
+    "conflict": "产物声明与已有记录冲突，未重复发布。",
+    "invalid": "产物声明未通过校验，未能展示该文件。"
+  },
+  "hil": {
+    "handled": "已处理",
+    "invalidRequest": "收到缺少 request_id 的请求，已安全拒绝。"
+  },
+  "turnUnknown": {
+    "title": "上次任务已中断",
+    "action": "是否继续对话？",
+    "reason": {
+      "timeout": "等待任务结果超时，部分操作可能已完成。",
+      "transportLost": "任务执行期间连接中断，部分操作可能已完成。",
+      "processExit": "应用在任务结束前中断，部分操作可能已完成。",
+      "unconfirmed": "应用在任务结束前中断，部分操作可能已完成。"
+    }
+  }
+}

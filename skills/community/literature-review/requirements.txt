@@ -1,0 +1,30 @@
+# Runtime dependencies for the systematic-literature-review skill.
+#   pip install -r requirements.txt
+# Run `scholarseed-skill-python scripts/preflight.py` afterwards to confirm the environment.
+
+# LLM client. Every scripted LLM call runs on qwen-3.8-max through one
+# OpenAI-protocol gateway, so the openai SDK is the only client the pipeline
+# needs. (Codex subagents use the host model and do not use this gateway.)
+openai>=1.40
+httpx>=0.27
+
+# PDF text extraction, the last step of fetch_fulltext.py's acquisition
+# cascade. Without it a PDF can be downloaded and not read, and those papers
+# reach card extraction abstract-only -- which reads as poor coverage rather
+# than as a missing package.
+pypdfium2>=4.30,<5.12
+pdfplumber>=0.11,<0.12
+pypdf>=6.15.0,<7
+pysbd>=0.3.4
+filelock>=3.16
+
+# data_chart figures. Missing required charts are technical failures.
+matplotlib>=3.7
+
+# Required deterministic finishing: vertical crop, background-aware bottom-right
+# product watermark and PNG encoding. Failure blocks successful image integration.
+Pillow>=10.0
+
+# `requests` and `tqdm` were removed along with the boolean-search retrieval
+# stack. Nothing in the tree imports either; do not reinstate them without a
+# caller. scripts/preflight.py no longer checks for them.

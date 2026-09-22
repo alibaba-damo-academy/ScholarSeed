@@ -1,0 +1,14 @@
+{
+  "_comment": "Bundled defaults for the persistent Veryfast worker. Copy this file outside the repository for deployment-specific overrides; never store API keys here.",
+  "model": "gpt-5.6-luna",
+  "model_provider": "",
+  "effort": "low",
+  "service_tier": "priority",
+  "timeout_seconds": 900,
+  "enable_apps": false,
+  "cache_mode": "off",
+  "cache_dir": "",
+  "cache_replay_timing": "instant",
+  "paperhub_proxy_mode": "direct",
+  "progress_language": "auto"
+}

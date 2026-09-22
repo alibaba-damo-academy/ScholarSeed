@@ -1,0 +1,7 @@
+interface:
+  display_name: "Literature Review"
+  short_description: "Build and verify a complete research survey"
+  default_prompt: "Use $literature-review to produce a systematic literature review for my research topic."
+
+policy:
+  allow_implicit_invocation: true

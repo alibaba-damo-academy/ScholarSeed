@@ -1,0 +1,140 @@
+{
+  "nav": "键盘快捷键",
+  "title": "键盘快捷键",
+  "description": "集中查看和修改书深当前的全局与文件编辑器快捷键。后续新增命令与冲突处理都以此目录为准。",
+  "searchLabel": "搜索快捷键",
+  "searchPlaceholder": "搜索命令、分类或按键",
+  "emptyTitle": "未找到快捷键",
+  "emptyDescription": "换一个命令名称、分类或按键试试。",
+  "edit": "修改",
+  "unassigned": "未分配",
+  "editor": {
+    "title": "修改“{{command}}”",
+    "fallbackTitle": "修改快捷键",
+    "description": "聚焦下方区域并按下新的快捷键组合。支持 {{primary}}、Option/Alt 组合与安全的导航按键。",
+    "recordPrompt": "按下新的快捷键",
+    "invalid": "请使用非系统保留的组合键或导航按键；普通文字键需包含 {{primary}} 或 Option/Alt。",
+    "conflict": "与同一作用域的“{{command}}”冲突，请更换组合键。",
+    "restoreDefault": "恢复默认",
+    "clear": "清空快捷键",
+    "cancel": "取消",
+    "save": "保存"
+  },
+  "groups": {
+    "markdown": "Markdown 编辑器",
+    "code": "代码编辑器",
+    "pdf": "PDF 阅读器"
+  },
+  "commands": {
+    "markdownSave": {
+      "title": "保存 Markdown",
+      "description": "保存当前 Markdown 文件。"
+    },
+    "markdownUndo": {
+      "title": "撤销 Markdown 编辑",
+      "description": "撤销 Markdown 可视编辑器中的上一次修改。"
+    },
+    "markdownRedo": {
+      "title": "重做 Markdown 编辑",
+      "description": "重做 Markdown 可视编辑器中被撤销的修改。"
+    },
+    "markdownFind": {
+      "title": "在 Markdown 中查找",
+      "description": "打开 Markdown 可视编辑器的文内查找。"
+    },
+    "markdownSelectAll": {
+      "title": "全选 Markdown 内容",
+      "description": "选中 Markdown 可视编辑器中的全部内容。"
+    },
+    "markdownBold": {
+      "title": "切换粗体",
+      "description": "切换所选文字的粗体格式。"
+    },
+    "markdownItalic": {
+      "title": "切换斜体",
+      "description": "切换所选文字的斜体格式。"
+    },
+    "markdownStrikethrough": {
+      "title": "切换删除线",
+      "description": "切换所选文字的删除线格式。"
+    },
+    "markdownInlineCode": {
+      "title": "切换行内代码",
+      "description": "切换所选文字的行内代码格式。"
+    },
+    "markdownLink": {
+      "title": "插入链接",
+      "description": "为所选文字添加或编辑链接。"
+    },
+    "markdownParagraph": {
+      "title": "设为正文",
+      "description": "将当前段落设置为正文。"
+    },
+    "markdownHeading1": {
+      "title": "设为一级标题",
+      "description": "将当前段落设置为一级标题。"
+    },
+    "markdownHeading2": {
+      "title": "设为二级标题",
+      "description": "将当前段落设置为二级标题。"
+    },
+    "markdownHeading3": {
+      "title": "设为三级标题",
+      "description": "将当前段落设置为三级标题。"
+    },
+    "markdownHeading4": {
+      "title": "设为四级标题",
+      "description": "将当前段落设置为四级标题。"
+    },
+    "markdownHeading5": {
+      "title": "设为五级标题",
+      "description": "将当前段落设置为五级标题。"
+    },
+    "markdownHeading6": {
+      "title": "设为六级标题",
+      "description": "将当前段落设置为六级标题。"
+    },
+    "codeSave": {
+      "title": "保存代码文件",
+      "description": "保存当前代码或 Markdown 源码文件。"
+    },
+    "codeSaveAll": { "title": "全部保存", "description": "依次保存当前项目中所有可保存的脏文件。" },
+    "codeUndo": {
+      "title": "撤销代码编辑",
+      "description": "撤销当前代码编辑器中的上一次修改。"
+    },
+    "codeRedo": {
+      "title": "重做代码编辑",
+      "description": "重做当前代码编辑器中被撤销的修改。"
+    },
+    "codeFind": { "title": "在代码中查找", "description": "打开代码编辑器的文内查找。" },
+    "codeReplace": { "title": "在代码中替换", "description": "打开代码编辑器的查找与替换。" },
+    "codeGoToLine": { "title": "跳转到行", "description": "输入行号并跳转到代码文件中的对应位置。" },
+    "codeLineComment": { "title": "切换行注释", "description": "切换当前行或所选行的行注释。" },
+    "codeIndent": { "title": "缩进", "description": "缩进当前行或所选内容。" },
+    "codeOutdent": { "title": "反缩进", "description": "减少当前行或所选内容的缩进。" },
+    "pdfFind": {
+      "title": "在 PDF 中查找",
+      "description": "打开当前 PDF 的文内搜索。"
+    },
+    "pdfFindNext": { "title": "下一处匹配", "description": "跳转到 PDF 搜索结果的下一处匹配。" },
+    "pdfFindPrevious": { "title": "上一处匹配", "description": "跳转到 PDF 搜索结果的上一处匹配。" },
+    "pdfPreviousPage": { "title": "上一页", "description": "跳转到 PDF 的上一页。" },
+    "pdfNextPage": { "title": "下一页", "description": "跳转到 PDF 的下一页。" },
+    "pdfFirstPage": { "title": "首页", "description": "跳转到 PDF 的第一页。" },
+    "pdfLastPage": { "title": "末页", "description": "跳转到 PDF 的最后一页。" },
+    "pdfGoToPage": { "title": "跳转页码", "description": "输入页码并跳转到 PDF 的对应页面。" },
+    "pdfZoomIn": { "title": "放大 PDF", "description": "提高 PDF 的显示比例。" },
+    "pdfZoomOut": { "title": "缩小 PDF", "description": "降低 PDF 的显示比例。" },
+    "pdfActualSize": { "title": "实际大小", "description": "将 PDF 显示比例恢复为 100%。" },
+    "pdfScrollUp": { "title": "向上滚动", "description": "在 PDF 页面中向上滚动。" },
+    "pdfScrollDown": { "title": "向下滚动", "description": "在 PDF 页面中向下滚动。" },
+    "pdfScrollLeft": { "title": "向左滚动", "description": "在 PDF 页面中向左滚动。" },
+    "pdfScrollRight": { "title": "向右滚动", "description": "在 PDF 页面中向右滚动。" },
+    "pdfScrollPageDown": { "title": "向下翻屏", "description": "按可视区域高度向下滚动 PDF。" },
+    "pdfScrollPageUp": { "title": "向上翻屏", "description": "按可视区域高度向上滚动 PDF。" },
+    "pdfHighlight": { "title": "高亮所选文本", "description": "使用当前颜色高亮 PDF 中所选文本；默认未分配。" },
+    "pdfComment": { "title": "批注所选文本", "description": "打开 PDF 所选文本的批注输入；默认未分配。" },
+    "pdfCopyText": { "title": "复制所选文本", "description": "复制 PDF 中当前选择的文本；默认未分配。" }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "scenarioId": "health-check",
+  "version": "2026-09-20",
+  "model": "qwen3.8-max",
+  "provisional": true,
+  "metrics": {
+    "taskCompleted": true,
+    "turnCount": { "min": 1, "max": 1 },
+    "toolCalls": [],
+    "responseContains": ["HEALTH_OK"],
+    "responseNotContains": ["无法完成", "I cannot"]
+  },
+  "traceDigest": {
+    "totalTokens": { "min": 10, "max": 2000 },
+    "toolSpans": 0,
+    "errorSpans": 0
+  }
+}

@@ -1,0 +1,33 @@
+# Codex runtime adapter —— distribution `scholarseed-codex`。
+#
+# 独立可构建的 adapter 包。只依赖 scholarseed-runtime 公开契约，
+# 不依赖产品后端或桌面端；通用 Gateway 不反向依赖任何厂商实现。
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scholarseed-codex"
+version = "0.2.0"
+description = "ScholarSeed runtime adapter for the Codex app-server harness"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["scholarseed-runtime==0.2.0", "httpx>=0.28,<1"]
+
+[project.entry-points."scholarseed_runtime.providers"]
+codex = "scholarseed_codex.provider:provider"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scholarseed_codex*"]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-data]
+# PEP 561 标记: 这个包是一方代码, 类型标注即公开契约。缺了它, editable 安装后
+# 消费者 (含本仓 mypy) 会把包内所有名字当 Any, 反而放过真实的类型错误。
+scholarseed_codex = ["py.typed"]

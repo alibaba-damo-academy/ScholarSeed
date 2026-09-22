@@ -1,0 +1,28 @@
+/* Page composition defaults. Reading width is inferred; see docs/design/vibe-coding.md. */
+:root {
+  --vds-carousel-indicator-gap: 5px;
+  --vds-workbench-header-height: 48px;
+  --vds-workbench-content-toolbar-height: 52px;
+  --vds-navigation-tab-radius: var(--vds-radius-4);
+  --vds-navigation-tab-outline-width: 1px;
+  --vds-navigation-tab-foot-size: calc(var(--vds-navigation-tab-radius) + var(--vds-navigation-tab-outline-width));
+  /* Onboarding v30: content-sized cards capped at 600px. */
+  --vds-onboarding-card-width: min(600px, calc(100vw - var(--vds-space-8)));
+  --vds-onboarding-card-height: calc(100dvh - var(--vds-space-8));
+  --vds-layout-page-padding: var(--vds-space-6);
+  --vds-layout-section-gap: var(--vds-space-4);
+  --vds-layout-control-gap: var(--vds-space-2);
+  --vds-layout-compact-control-width: 140px;
+  --vds-layout-pdf-rail-width: calc(var(--vds-control-height-md) + var(--vds-space-1) * 2 + var(--vds-border-width-1));
+  --vds-layout-pdf-panel-width: 390px;
+  --vds-layout-session-output-max-height: 120px;
+  --vds-layout-search-row-max-height: 180px;
+  --vds-literature-author-tooltip-max-height: 240px;
+  --vds-literature-search-query-max-width: 350px;
+  /* Keeps optional metadata from displacing the primary status in compact rows. */
+  --vds-layout-inline-metadata-max-width: min(180px, 28vw);
+  --vds-layout-reading-width: 720px;
+  --vds-conversation-content-width: 760px;
+  --vds-conversation-inline-gutter: calc(var(--vds-space-4) - var(--vds-conversation-scrollbar-width));
+  --vds-conversation-scrollbar-width: 9px;
+}

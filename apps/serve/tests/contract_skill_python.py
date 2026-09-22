@@ -1,0 +1,169 @@
+"""Deterministic contracts for the product-owned Skill Python entry point."""
+
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from service.chat.runtime import composition
+from service.cli import serve, skill_python
+from service.platform import executables
+from service.platform.bridge import BRIDGE_SESSION_ENV
+
+
+class SkillPythonContracts(unittest.TestCase):
+    def test_cli_reexecutes_the_active_interpreter_with_exact_arguments(self) -> None:
+        arguments = ["script.py", "--query", "含空格中文引号", '{"query":"quoted value"}']
+        with patch.object(skill_python.os, "execv") as execute:
+            self.assertEqual(skill_python.main(arguments), 0)
+        execute.assert_called_once_with(
+            skill_python.sys.executable,
+            [skill_python.sys.executable, *arguments],
+        )
+
+    def test_cli_rejects_an_empty_invocation(self) -> None:
+        with patch.object(skill_python.os, "execv") as execute:
+            self.assertEqual(skill_python.main([]), 2)
+        execute.assert_not_called()
+
+    def test_managed_skill_checks_live_admission_before_exec(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "SKILL.md").write_text("skill", encoding="utf-8")
+            script = root / "run.py"
+            script.write_text("print('run')", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {BRIDGE_SESSION_ENV: "session"}, clear=True),
+                patch.object(skill_python, "execute", return_value={"ok": True}) as admit,
+                patch.object(skill_python.os, "execv") as execute,
+            ):
+                self.assertEqual(skill_python.main([str(script)]), 0)
+                admit.assert_called_once()
+                self.assertIn(str(script.resolve()), admit.call_args.args[2])
+                execute.assert_called_once()
+
+    def test_revoked_or_unreachable_admission_never_executes_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "SKILL.md").write_text("skill", encoding="utf-8")
+            script = root / "run.py"
+            script.write_text("print('run')", encoding="utf-8")
+            for error in (ValueError("login_required"), OSError("bridge unavailable")):
+                with (
+                    self.subTest(error=str(error)),
+                    patch.dict(os.environ, {BRIDGE_SESSION_ENV: "session"}, clear=True),
+                    patch.object(skill_python, "execute", side_effect=error),
+                    patch.object(skill_python.os, "execv") as execute,
+                ):
+                    self.assertEqual(skill_python.main([str(script)]), 1)
+                    execute.assert_not_called()
+
+    def test_standalone_serve_prepends_the_active_scripts_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory)
+            launcher = scripts / executables.SKILL_PYTHON_COMMAND
+            launcher.write_text("launcher", encoding="utf-8")
+            environment = {"PATH": os.pathsep.join(("/host/bin", str(scripts), "/usr/bin"))}
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(serve, "resolve_command", return_value=launcher),
+                patch.object(serve, "command_directories", return_value=(scripts,)),
+                patch.object(serve, "probe_command", return_value=True),
+            ):
+                serve._ensure_skill_python_path()
+                self.assertEqual(
+                    os.environ["PATH"].split(os.pathsep),
+                    [str(scripts), "/host/bin", "/usr/bin"],
+                )
+
+    def test_resolution_delegates_suffixes_to_native_command_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory)
+            for suffix in ("", ".exe", ".cmd", ".bat", ".com"):
+                launcher = scripts / f"{executables.SKILL_PYTHON_COMMAND}{suffix}"
+                with (
+                    self.subTest(suffix=suffix),
+                    patch.object(executables.shutil, "which", return_value=str(launcher)) as which,
+                ):
+                    self.assertEqual(
+                        executables.resolve_command(executables.SKILL_PYTHON_COMMAND, scripts),
+                        launcher,
+                    )
+                    which.assert_called_once_with(str(scripts / executables.SKILL_PYTHON_COMMAND))
+
+    def test_product_directory_precedes_path_and_scripts_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            product, installed = root / "product bin", root / "Scripts"
+            environment = {
+                executables.BRIDGE_DIR_ENV: str(product),
+                "PATH": os.pathsep.join((str(installed), str(product))),
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(executables, "scripts_directory", return_value=installed),
+            ):
+                self.assertEqual(executables.command_directories(), (product, installed))
+
+    def test_working_product_skill_launcher_wins_over_installed_trampoline(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            product, installed = root / "product bin", root / "Scripts"
+            launcher = product / "scholarseed-skill-python.cmd"
+            with (
+                patch.dict(os.environ, {"PATH": str(installed)}, clear=True),
+                patch.object(serve, "command_directories", return_value=(product, installed)),
+                patch.object(serve, "resolve_command", return_value=launcher) as resolve,
+                patch.object(serve, "probe_command", return_value=True) as probe,
+            ):
+                serve._ensure_skill_python_path()
+                self.assertEqual(os.environ["PATH"].split(os.pathsep), [str(product), str(installed)])
+                resolve.assert_called_once_with(executables.SKILL_PYTHON_COMMAND, product)
+                probe.assert_called_once_with(launcher, executables.SKILL_PYTHON_PROBE_ARGUMENTS)
+
+    def test_failed_skill_probe_does_not_reorder_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory)
+            original = os.pathsep.join((str(scripts / "product"), str(scripts)))
+            with (
+                patch.dict(os.environ, {"PATH": original}, clear=True),
+                patch.object(serve, "command_directories", return_value=(scripts,)),
+                patch.object(serve, "resolve_command", return_value=scripts / "launcher.exe"),
+                patch.object(serve, "probe_command", return_value=False),
+            ):
+                serve._ensure_skill_python_path()
+                self.assertEqual(os.environ["PATH"], original)
+
+    def test_bridge_falls_back_after_failed_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            product, installed = root / "product bin", root / "Scripts"
+            candidates = (product / "scholarseed-bridge.cmd", installed / "scholarseed-bridge.exe")
+            with (
+                patch.object(composition, "command_directories", return_value=(product, installed)),
+                patch.object(composition, "resolve_command", side_effect=candidates),
+                patch.object(composition.LiveSessionService, "_probe_bridge", side_effect=(False, True)),
+            ):
+                self.assertEqual(
+                    composition.LiveSessionService._resolve_bridge_executable(), candidates[1]
+                )
+
+    def test_bridge_product_launcher_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            product = Path(directory)
+            candidate = product / "scholarseed-bridge.cmd"
+            with (
+                patch.object(composition, "command_directories", return_value=(product,)),
+                patch.object(composition, "resolve_command", return_value=candidate),
+                patch.object(composition.LiveSessionService, "_probe_bridge", return_value=True),
+            ):
+                self.assertEqual(
+                    composition.LiveSessionService._resolve_bridge_executable(), candidate
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

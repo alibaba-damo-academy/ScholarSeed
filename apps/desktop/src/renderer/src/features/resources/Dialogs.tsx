@@ -1,0 +1,294 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import { Trans, useTranslation } from 'react-i18next'
+
+import {
+  Alert,
+  AlertDescription,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  Button,
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '../../components/ui'
+import { useApp } from '../../store'
+import { hasDirtyProjectPath, useDocumentWorkspace } from '../workbench/workspace'
+import { validateResourceMove } from './lifecycle'
+import { ResourceNode } from './state'
+
+/** 绝对路径没有单词边界，必须允许在任意字符处折行，否则会顶穿弹窗宽度。 */
+const PATH_TEXT_CLASS_NAME = '[overflow-wrap:anywhere]'
+
+/** 关联目录内新建会修改外部源目录，执行前必须取得用户明确确认。 */
+export function LinkedCreateConfirm(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const pending = state.resource.linkedCreateConfirm
+  if (!pending) return null
+
+  return (
+    <AlertDialog
+      open
+      onOpenChange={(open) => {
+        if (!open) act.cancelLinkedResourceCreate()
+      }}
+    >
+      <AlertDialogContent
+        aria-label={t('linkedCreate.label')}
+        data-testid="resource-linked-create-confirm"
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('linkedCreate.title')}</AlertDialogTitle>
+          <AlertDialogDescription>
+            <Trans ns="resources" i18nKey="linkedCreate.description" values={{ name: pending.directoryName }} components={{ name: <strong /> }} />
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <Alert tone="warning">
+          <AlertDescription truncate={false}>
+            {pending.mode === 'create_folder' ? t('linkedCreate.folderWarning') : t('linkedCreate.documentWarning')}
+          </AlertDescription>
+        </Alert>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            data-testid="resource-linked-create-cancel"
+            onClick={act.cancelLinkedResourceCreate}
+          >
+            {uiText('cancel')}
+          </AlertDialogCancel>
+          <AlertDialogAction
+            data-testid="resource-linked-create-continue"
+            onClick={act.confirmLinkedResourceCreate}
+          >
+            {t('linkedCreate.continue')}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/**
+ * 删除确认（PRD「删除」：删除前明确提示该操作会同步影响本地文件）。
+ *
+ * 文案明确说明走系统废纸篓 —— 用户需要知道这不是永久删除，可以恢复。
+ */
+export function DeleteConfirm(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const documents = useDocumentWorkspace()
+  const target = state.resource.deleteConfirm
+  if (!target) return null
+  const hasUnsavedChanges = hasDirtyProjectPath(
+    Object.values(documents.sessions),
+    state.homeSelectedProjectId,
+    target.path
+  )
+
+  return (
+    <AlertDialog open onOpenChange={(open) => {
+      if (!open) act.cancelResourceDelete()
+    }}>
+      <AlertDialogContent data-testid="resource-delete-confirm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {target.kind === 'dir' ? t('delete.folderTitle') : t('delete.fileTitle')}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {target.kind === 'dir' ? <Trans ns="resources" i18nKey="delete.folderDescription" values={{ name: target.name }} components={{ name: <strong /> }} /> : <Trans ns="resources" i18nKey="delete.fileDescription" values={{ name: target.name }} components={{ name: <strong /> }} />}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <Alert tone="warning">
+          <AlertDescription truncate={false}>
+            {hasUnsavedChanges ? t('delete.unsavedWarning') : t('delete.warning')}
+          </AlertDescription>
+        </Alert>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            data-testid="resource-delete-cancel"
+            onClick={act.cancelResourceDelete}
+          >
+            {uiText('cancel')}
+          </AlertDialogCancel>
+          <Button
+            variant="danger"
+            data-testid="resource-delete-go"
+            onClick={() => void act.deleteResourceNode()}
+          >
+            {t('delete.action')}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/** 取消关联只撤销挂载与授权，绝不删除或移动外部源文件。 */
+export function UnlinkConfirm(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const target = state.resource.unlinkConfirm
+  if (!target) return null
+
+  return (
+    <AlertDialog open onOpenChange={(open) => {
+      if (!open) act.cancelResourceUnlink()
+    }}>
+      <AlertDialogContent data-testid="resource-unlink-confirm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{t('unlink.title', { name: target.name })}</AlertDialogTitle>
+          <AlertDialogDescription>
+            <Trans
+              ns="resources"
+              i18nKey="unlink.description"
+              values={{ path: target.mountPath }}
+              components={{ path: <span className={PATH_TEXT_CLASS_NAME} /> }}
+            />
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <Alert tone="warning">
+          <AlertDescription truncate={false}>
+            <Trans
+              ns="resources"
+              i18nKey="unlink.warning"
+              values={{ path: target.sourcePath }}
+              components={{ path: <span className={PATH_TEXT_CLASS_NAME} /> }}
+            />
+          </AlertDescription>
+        </Alert>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={act.cancelResourceUnlink}>{uiText('cancel')}</AlertDialogCancel>
+          <Button
+            variant="danger"
+            data-testid="resource-unlink-go"
+            onClick={() => void act.unlinkResourceRoot()}
+          >
+            {t('menu.unlink')}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
+/** 把资料树摊平成可选的目录列表，供移动目标选择。 */
+function flattenDirs(nodes: ResourceNode[], depth = 0): { path: string; label: string }[] {
+  const rows: { path: string; label: string }[] = []
+  for (const node of nodes) {
+    if (node.kind !== 'dir') continue
+    rows.push({ path: node.path, label: `${'　'.repeat(depth)}${node.name}` })
+    if (node.children?.length) rows.push(...flattenDirs(node.children, depth + 1))
+  }
+  return rows
+}
+
+/**
+ * 移动资料（PRD「移动资料」）。
+ *
+ * 拖拽是树内主入口；目标选择器保留为键盘操作与深层目录的等价入口。
+ */
+export function MoveDialog(): React.JSX.Element | null {
+  const { t } = useTranslation('resources')
+  const { t: uiText } = useTranslation('ui')
+  const { state, act } = useApp()
+  const dialog = state.resource.moveDialog
+  const [target, setTarget] = useState('')
+
+  useEffect(() => setTarget(''), [dialog?.path])
+
+  const options = useMemo(() => {
+    if (!dialog) return []
+    return flattenDirs(state.resource.tree).filter((row) => (
+      validateResourceMove(state.resource.tree, dialog.path, row.path).ok
+    ))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialog?.path, state.resource.tree])
+
+  useEffect(() => {
+    if (!dialog) return
+    const rootAllowed = validateResourceMove(state.resource.tree, dialog.path, '').ok
+    if (!rootAllowed && !options.some((option) => option.path === target)) {
+      setTarget(options[0]?.path ?? '')
+    }
+  }, [dialog, options, state.resource.tree, target])
+
+  if (!dialog) return null
+
+  const rootAllowed = validateResourceMove(state.resource.tree, dialog.path, '').ok
+
+  return (
+    <Dialog open onOpenChange={(open) => {
+      if (!open) act.closeResourceMoveDialog()
+    }}>
+      <DialogContent data-testid="resource-move-dialog">
+        <DialogHeader>
+          <DialogTitle>{t('move.title', { name: dialog.name })}</DialogTitle>
+          <DialogDescription>{t('move.description')}</DialogDescription>
+        </DialogHeader>
+        <Select
+          id="vds-move-target"
+          label={t('move.target')}
+          data-testid="resource-move-target"
+          value={target}
+          onValueChange={setTarget}
+        >
+          <SelectTrigger className="w-full" data-testid="resource-move-target-trigger">
+            <SelectValue placeholder={t('move.empty')}>
+              {target === '' && rootAllowed
+                ? t('move.root')
+                : options.find((row) => row.path === target)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {rootAllowed || options.length ? (
+              <>
+                {rootAllowed ? <SelectItem value="">{t('move.root')}</SelectItem> : null}
+                {options.map((row) => (
+                  <SelectItem key={row.path} value={row.path}>
+                    {row.label}
+                  </SelectItem>
+                ))}
+              </>
+            ) : (
+              <EmptyState
+                data-testid="resource-move-target-empty"
+                title={t('move.empty')}
+              />
+            )}
+          </SelectContent>
+        </Select>
+        <Alert tone="warning">
+          <AlertDescription truncate={false}>{t('move.warning')}</AlertDescription>
+        </Alert>
+        <DialogFooter>
+          <DialogClose onClick={act.closeResourceMoveDialog}>{uiText('cancel')}</DialogClose>
+          <Button
+            data-testid="resource-move-go"
+            disabled={!validateResourceMove(state.resource.tree, dialog.path, target).ok}
+            onClick={() => void act.moveResourceNode(dialog.path, target)}
+          >
+            {t('move.action')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}

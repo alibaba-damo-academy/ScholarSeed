@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "search-request.schema.json",
+  "title": "One immutable search round request",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "round",
+    "intent",
+    "user_feedback",
+    "previous_round",
+    "exclude_previous_ids",
+    "max_results",
+    "search_profile"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "intent": {
+      "$ref": "intent.schema.json"
+    },
+    "user_feedback": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "feedback_source": {
+      "enum": [
+        "user",
+        "host_agent",
+        null
+      ]
+    },
+    "previous_round": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exclude_previous_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "max_results": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Execution budget, not an inferred user research constraint; document defaults when intent.max_results is null."
+    },
+    "search_profile": {
+      "enum": [
+        "fast_mock",
+        "full",
+        "balance"
+      ]
+    },
+    "time_budget_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional mode-specific search budget; balance defaults to 3600 seconds including its protected selection reserve."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "search_profile": {
+            "const": "fast_mock"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "max_results": {
+            "maximum": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "search_profile": {
+            "const": "balance"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "max_results": {
+            "maximum": 20
+          }
+        }
+      }
+    }
+  ]
+}

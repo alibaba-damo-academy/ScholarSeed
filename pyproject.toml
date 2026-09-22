@@ -1,0 +1,205 @@
+# ScholarSeed 开源 monorepo 根 —— 只负责编排 (uv workspace)。
+#
+# 本文件不再是一个可安装的发行包: 产品后端已下沉到 apps/serve (distribution
+# `scholarseed`), runtime contracts/Gateway 与 adapter 各自是 packages/ 下的独立发行包。根
+# pyproject 只声明 workspace 成员、发行依赖组、共享的开发工具与全仓静态检查配置, 使
+# 「一个公开仓库, 多个独立包和发布物」在构建期就成立, 而不是靠约定。
+
+[project]
+name = "scholarseed-workspace"
+version = "0.2.0"
+description = "ScholarSeed open-source monorepo workspace root (orchestration only)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+# Desktop runtime closure, including the reviewed bundled-skill requirements.
+# The registry remains the skill policy; the release contract checks this input.
+desktop = [
+    "pip>=25",
+    "jieba==0.42.1",
+    "matplotlib==3.10.8",
+    "pysbd==0.3.4",
+    "paper-fulltext-dl",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24",
+    "build>=1",
+    "dmgbuild==1.6.7; sys_platform == 'darwin'",
+    "isort>=5",
+    "jsonschema>=4",
+    "lxml-stubs>=0.5,<1",
+    "mypy>=1.15,<2",
+    "pyright[nodejs]==1.1.414",
+    "ruff==0.16.8",
+    "pytest>=9.1,<10",
+    "pytest-asyncio>=1.4,<2",
+    "reportlab>=4.4,<6",
+    "types-PyYAML>=6.0.12",
+    "types-openpyxl>=3.1",
+    "types-xlrd>=2.0",
+]  # 格式化、静态检查与测试运行器 (npm run fmt / npm run lint / npm run python:typecheck / pytest)
+# pytest 只存在于 dev extra: DMG 的 Python 依赖由 scripts/dependencies.py 用
+# `uv export --extra serve --group desktop --no-default-groups` 导出, 不含 dev extra。
+
+# ── uv workspace: 成员各自持有 pyproject / 依赖 / 测试 / 发布边界 ──
+[tool.uv.workspace]
+members = [
+    "apps/serve",
+    "packages/runtime",
+    "packages/damoatrace",
+    "packages/adapters/codex",
+]
+
+[tool.uv.sources]
+scholarseed-runtime = { workspace = true }
+damoatrace = { workspace = true }
+scholarseed-codex = { workspace = true }
+paper-fulltext-dl = { path = "skills/community/precise-literature-search/vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl" }
+
+[tool.uv]
+required-version = ">=0.12.11"
+# The root is a virtual orchestration project, never an installed distribution.
+package = false
+
+# 索引显式声明: uv 不读 ~/.pip/pip.conf, 不声明则谁跑 `uv lock` 都会把 uv.lock 里
+# 的 URL 改写成默认 PyPI, 产生纯噪音的 lock 抖动。
+# Desktop 打包从同一 lock 导出带哈希的运行时依赖。
+#
+# 必须用新式 [[tool.uv.index]], 不能用已弃用的 [tool.uv] index-url: 后者优先级低于
+# 任何新式 index 声明, 连 ~/.config/uv/uv.toml 的用户级配置都能把它压过去。uv 把索引
+# URL 逐字写进 uv.lock 的 source.registry, 同一个镜像只差一个尾斜杠就被判成两个索引,
+# 于是 `uv sync --locked` 报 lock 过期、`uv lock` 产出上百行纯噪音 diff。
+# URL 写法必须与 uv.lock 里的 source.registry 一致(不带尾斜杠)。
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+# editable_mode=compat 按包声明, 而不是在命令行上传 —— 静态分析 (pyright pin 了
+# .venv) 与 importlib.metadata 依赖它把源码树直接摊到 .pth 上; 写成命令行 flag 时,
+# 任何一步顺带重装这些包 (例如解析 scholarseed 的依赖) 都会把 compat 形态冲掉。
+[tool.uv.config-settings-package]
+scholarseed-runtime = { editable_mode = "compat" }
+damoatrace = { editable_mode = "compat" }
+scholarseed-codex = { editable_mode = "compat" }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.pyright]
+# 类型检查基线 (Pylance / pyright 共用此配置)。pin 解释器到项目 venv → 第三方包/本仓库
+# import 都能正确解析 (否则不同机器的 Pylance 解释器不一致会报 import / 类型幻影)。
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+analyzeUnannotatedFunctions = true
+include = ["apps/serve/service", "packages/runtime/scholarseed_runtime", "packages/adapters", "scripts"]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv",
+    "**/dist",
+    "**/build",
+    "tmp",
+    "apps/desktop",
+    "packages/damoatrace",
+    "apps/serve/service/capabilities/skills",
+]
+# Tool 子类 execute(inputs: <具体 Pydantic 模型>) 对基类 execute(inputs: BaseModel) 做参数收窄,
+# 是工具系统的**有意设计** (每个工具声明自己的输入模型); LSP 逆变告警在此模式下是噪音, 关掉。
+reportIncompatibleMethodOverride = false
+
+[tool.mypy]
+# Runtime 与产品消费者一起检查，独立发行不等于跳过公共 ABI 的类型检查。
+files = ["apps/serve/service", "packages/runtime/scholarseed_runtime", "packages/damoatrace/damoatrace", "packages/adapters", "scripts"]
+python_version = "3.12"
+explicit_package_bases = true
+# 每个受检包的**包根**都要列出, 否则 mypy 拿仓库根当基准, 同一份 adapter 源码会既是
+# `packages.adapters.codex.scholarseed_codex.appserver` 又是 `scholarseed_codex.appserver`
+# (两个 adapter 带 py.typed 后可从已安装包解析), 报 "found twice under different
+# module names" 并中断整个检查。
+mypy_path = ["apps/serve", "packages/runtime", "packages/damoatrace", "packages/adapters/codex"]
+plugins = ["pydantic.mypy"]
+exclude = '''(?x)(
+    ^apps/desktop/
+  | ^packages/damoatrace/damoatrace/tests/
+  | ^skills/
+  # 技能 pack 是 `prebundle --build` 的生成物 (源码事实源在 skills/community/)。
+  # 它的契约由 prebundle 的逐字节复核保障, 不参与产品层类型门; 且包内有同名
+  # 模块 (多个 module 各带一个 adapter.py), mypy 会报 Duplicate module 并中断整个
+  # 检查。black/isort 早已排除它, 这里补齐。
+  | ^apps/serve/service/capabilities/skills/
+  | (^|/)node_modules/
+  | (^|/)__pycache__/
+  | (^|/)\.venv/
+  | ^tmp/
+  | (^|/)(dist|build)/
+)'''
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*"]
+follow_untyped_imports = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+preview = true
+force-exclude = true
+extend-exclude = [
+    "apps/desktop",
+    "packages/damoatrace",
+    "skills",
+    "apps/serve/service/capabilities/skills",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv",
+    "tmp",
+    "**/dist",
+    "**/build",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "PL", "B006", "B018", "B023", "D419"]
+ignore = [
+    "E501", "F541", "F841",
+    "PLR0904", "PLR0911", "PLR0912", "PLR0913", "PLR0914", "PLR0915",
+    "PLR0916", "PLR0917", "PLR1702", "PLR1714", "PLR1716",
+    "PLW0603", "PLW1510", "PLW1514",
+    "PLC1901", "PLC2701", "PLR2004", "PLR6104", "PLR6201", "PLR6301", "PLW0717",
+]
+
+
+# ── 代码格式化: black + isort (统一风格; line-length 对齐既有代码密度) ──
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+extend-exclude = '''
+/(
+  | apps/desktop/node_modules
+  | skills
+  | apps/serve/service/capabilities/skills
+  | \.venv
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = [
+    "scholarseed_runtime",
+    "damoatrace",
+    "scholarseed_codex",
+    "service",
+]
+skip_glob = [
+    "skills/*",
+    "apps/serve/service/capabilities/skills/*",
+    "apps/desktop/node_modules/*",
+    ".venv/*",
+]

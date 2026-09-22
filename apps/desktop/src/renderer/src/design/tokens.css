@@ -1,0 +1,869 @@
+/**
+ * Design System Tokens
+ * Token naming: --vds-{category}-{name}
+ * Source: MasterGo 设计文件 193719579368871（基础色彩 / 语言色彩 / 字体 / 边角 / 间距 / 图标大小 / 阴影 / 线条）
+ * 仅 :root 为设计稿真实值；:root[data-theme="dark"] 为按品牌色推导的暗色映射（设计稿未提供暗色）。
+ */
+
+@layer base {
+  :root {
+    /* Paper highlighter: PDF pages keep a white canvas in both themes. */
+    --vds-pdf-citation-highlight: #ffeb3b;
+    /* Device skills: demo0827 styles/app.css .pref-* palette (MVP0.2 prototype). */
+    --vds-skills-page: #f4f1e9;
+    --vds-skills-panel: #f0ede4;
+    --vds-skills-card: #fffdf8;
+    --vds-skills-ink: #25241e;
+    --vds-skills-muted: #7c7767;
+    --vds-skills-line: #ded8c9;
+    --vds-skills-divider: #e9e4d6;
+    --vds-skills-brand: #1b3a29;
+    --vds-skills-tint: #e4ede5;
+    --vds-skills-on-brand: #f2efe6;
+    --vds-skills-gold: #b4842b;
+    --vds-skills-gold-tint: #f4e8cb;
+    --vds-skills-danger: #ac4e47;
+    /* Brand (主题色) — 绿色品牌色阶 */
+    --vds-brand-1: #e9eeeb;
+    --vds-brand-2: #c5ddd0;
+    --vds-brand-3: #9dc4b2;
+    --vds-brand-4: #74a994;
+    --vds-brand-5: #498e76;
+    --vds-brand-6: #2c5545;
+    --vds-brand-7: #234438;
+    --vds-brand-8: #1a3328;
+    --vds-brand-9: #12241c;
+    --vds-brand-10: #0a1610;
+
+    /* Text scale (文字色) */
+    --vds-text-1: #e8e8e8;
+    --vds-text-2: #d3d3d3;
+    --vds-text-3: #c2c2c2;
+    --vds-text-4: #b5b5b5;
+    --vds-text-5: #a2a2a2;
+    --vds-text-6: #929292;
+    --vds-text-7: #6d6d6d;
+    --vds-text-8: #4c4c4c;
+    --vds-text-9: #272727;
+    --vds-text-10: #0c0c0c;
+
+    /* Line scale (线条&图标色) */
+    --vds-line-1: #e8e8e8;
+    --vds-line-2: #dfdfdf;
+    --vds-line-3: #cbcbcb;
+    --vds-line-4: #b9b9b9;
+    --vds-line-5: #a2a2a2;
+    --vds-line-6: #929292;
+    --vds-line-7: #6d6d6d;
+    --vds-line-8: #4c4c4c;
+    --vds-line-9: #272727;
+    --vds-line-10: #0c0c0c;
+
+    /* Fill scale (填充色) — 暖米色调 */
+    --vds-fill-1: #faf9f7;
+    --vds-fill-2: #faf8f4;
+    --vds-fill-3: #f6f3ee;
+    --vds-fill-4: #f4f1eb;
+    --vds-fill-5: #f0ede5;
+    --vds-fill-6: #eae6dd;
+    --vds-fill-7: #e4dfd7;
+    --vds-fill-8: #dfdbd3;
+    --vds-fill-9: #dbd6ce;
+    --vds-fill-10: #d6d2c8;
+
+    /* Success (成功色) */
+    --vds-success-1: #f4fdf3;
+    --vds-success-2: #e3f5de;
+    --vds-success-3: #bef0bd;
+    --vds-success-4: #66c071;
+    --vds-success-5: #45a454;
+    --vds-success-6: #33813f;
+    --vds-success-7: #1d642c;
+    --vds-success-8: #064d1b;
+    --vds-success-9: #014116;
+    --vds-success-10: #002d0c;
+
+    /* Error (错误色) */
+    --vds-error-1: #fff5f4;
+    --vds-error-2: #ffebeb;
+    --vds-error-3: #ffd9d9;
+    --vds-error-4: #fe9187;
+    --vds-error-5: #ed6f67;
+    --vds-error-6: #d65350;
+    --vds-error-7: #b02d2f;
+    --vds-error-8: #8c2723;
+    --vds-error-9: #6d1a16;
+    --vds-error-10: #4f1111;
+
+    /* Warning (警示色) */
+    --vds-warning-1: #fff9f5;
+    --vds-warning-2: #fcf1e3;
+    --vds-warning-3: #f4d8bf;
+    --vds-warning-4: #f29555;
+    --vds-warning-5: #e17725;
+    --vds-warning-6: #d46300;
+    --vds-warning-7: #b95600;
+    --vds-warning-8: #8c4100;
+    --vds-warning-9: #5b2700;
+    --vds-warning-10: #421b00;
+
+    /* Notice / Info (提示色) */
+    --vds-notice-1: #f8f9ff;
+    --vds-notice-2: #eaf1ff;
+    --vds-notice-3: #d2e4ff;
+    --vds-notice-4: #6caff8;
+    --vds-notice-5: #4b96e0;
+    --vds-notice-6: #367abd;
+    --vds-notice-7: #2365a7;
+    --vds-notice-8: #004e85;
+    --vds-notice-9: #013a65;
+    --vds-notice-10: #002747;
+
+    /* Help (帮助色) */
+    --vds-help-1: #f5fbfc;
+    --vds-help-2: #dff3f4;
+    --vds-help-3: #bfeaee;
+    --vds-help-4: #55b8c2;
+    --vds-help-5: #34a1a9;
+    --vds-help-6: #027e87;
+    --vds-help-7: #00616a;
+    --vds-help-8: #104b52;
+    --vds-help-9: #01383e;
+    --vds-help-10: #002b2e;
+
+    /* Gradient (渐变色) */
+    --vds-gradient-1: linear-gradient(
+      298deg,
+      rgba(150, 67, 239, 0.1) 0%,
+      rgba(104, 85, 252, 0.1) 29%,
+      rgba(59, 118, 252, 0.1) 69%,
+      rgba(24, 152, 244, 0.1) 100%
+    );
+    --vds-gradient-2: linear-gradient(
+      298deg,
+      rgba(150, 67, 239, 0.2) 0%,
+      rgba(104, 85, 252, 0.2) 29%,
+      rgba(59, 118, 252, 0.2) 69%,
+      rgba(24, 152, 244, 0.2) 100%
+    );
+    --vds-gradient-3: linear-gradient(
+      298deg,
+      rgba(150, 67, 239, 0.3) 0%,
+      rgba(104, 85, 252, 0.3) 29%,
+      rgba(59, 118, 252, 0.3) 69%,
+      rgba(24, 152, 244, 0.3) 100%
+    );
+    --vds-gradient-4: linear-gradient(
+      298deg,
+      rgba(150, 67, 239, 0.6) 0%,
+      rgba(104, 85, 252, 0.6) 29%,
+      rgba(59, 118, 252, 0.6) 69%,
+      rgba(24, 152, 244, 0.6) 100%
+    );
+    --vds-gradient-5: linear-gradient(
+      298deg,
+      rgba(150, 67, 239, 0.8) 0%,
+      rgba(104, 85, 252, 0.8) 29%,
+      rgba(59, 118, 252, 0.8) 69%,
+      rgba(24, 152, 244, 0.8) 100%
+    );
+    --vds-gradient-6: linear-gradient(
+      298deg,
+      #9643ef 0%,
+      #6855fc 29%,
+      #3b76fc 69%,
+      #1898f4 100%
+    );
+    --vds-gradient-7: linear-gradient(
+      298deg,
+      #8d39e8 0%,
+      #5a46f6 29%,
+      #414eff 69%,
+      #0888e4 100%
+    );
+    --vds-gradient-8: linear-gradient(
+      302deg,
+      #782bcb 0%,
+      #4534d0 25%,
+      #2e39d4 57%,
+      #0374c4 98%
+    );
+    --vds-gradient-9: linear-gradient(
+      113deg,
+      #c2c2c2 3%,
+      #0c0c0c 52%,
+      #c2c2c2 100%
+    );
+    --vds-gradient-10: linear-gradient(110deg, #614dfd 2%, #06080d 36%);
+
+    /* Semantic - Text (文本色) */
+    --vds-text-primary: #272727;
+    --vds-text-secondary: #4c4c4c;
+    --vds-text-tertiary: #6d6d6d;
+    --vds-text-placeholder: #929292;
+    --vds-text-disabled: #b5b5b5;
+    --vds-text-highlight: #c98b2e;
+
+    /* Semantic - Accent (金色强调) */
+    --vds-accent-bg-default: #c98b2e;
+    --vds-accent-light-bg-default: rgba(201, 139, 46, 0.1);
+    --vds-accent-light-border: rgba(201, 139, 46, 0.32);
+    --vds-accent-text-primary: #c98b2e;
+
+    /* Semantic - Fill / Background (填充色) */
+    --vds-bg-white-default: #ffffff;
+    --vds-bg-white-hover: #faf8f4;
+    --vds-bg-white-active: #f4f1eb;
+    --vds-bg-white-disable: #faf8f4;
+    --vds-bg-gray-default: #faf8f4;
+    --vds-bg-gray-light-default: #faf9f7;
+    --vds-bg-gray-hover: #f4f1eb;
+    --vds-bg-gray-active: #eae6dd;
+    --vds-bg-component: #f6f3ee;
+    --vds-bg-page: #f4f1eb;
+
+    /* Semantic - Line & Border (线条&图标色) */
+    --vds-divider-default: #e8e8e8;
+    --vds-border-default: #dfdfdf;
+    --vds-border-brand: #9dc4b2;
+    --vds-icon-outline-muted: #a2a2a2;
+    --vds-icon-fill-default: #929292;
+    --vds-icon-outline-default: #6d6d6d;
+
+    /* Semantic - Brand (主题色) */
+    --vds-text-on-brand: var(--vds-static-white);
+    --vds-text-on-brand-hover: var(--vds-static-white);
+    --vds-text-on-brand-active: var(--vds-static-white);
+    --vds-brand-bg-default: #2c5545;
+    --vds-brand-bg-hover: #234438;
+    --vds-brand-bg-active: #1a3328;
+    --vds-brand-bg-disabled: #9dc4b2;
+    --vds-brand-light-bg-default: #e9eeeb;
+    --vds-brand-light-bg-hover: #c5ddd0;
+    --vds-brand-light-bg-active: #9dc4b2;
+    --vds-brand-light-border: #a6beb3;
+    --vds-brand-text-primary: #234438;
+    --vds-brand-text-placeholder: #74a994;
+
+    /* Semantic - Success (成功色) */
+    --vds-success-bg-default: #33813f;
+    --vds-success-bg-hover: #1d642c;
+    --vds-success-bg-active: #064d1b;
+    --vds-success-bg-disabled: #bef0bd;
+    --vds-success-light-bg-default: #f4fdf3;
+    --vds-success-light-bg-hover: #e3f5de;
+    --vds-success-light-bg-active: #bef0bd;
+    --vds-success-light-border: #bef0bd;
+    --vds-success-text-primary: #1d642c;
+    --vds-success-text-placeholder: #66c071;
+
+    /* Semantic - Error (错误色) */
+    --vds-error-bg-default: #d65350;
+    --vds-error-bg-hover: #b02d2f;
+    --vds-error-bg-active: #8c2723;
+    --vds-error-bg-disabled: #ffd9d9;
+    --vds-error-light-bg-default: #fff5f4;
+    --vds-error-light-bg-hover: #ffebeb;
+    --vds-error-light-bg-active: #ffd9d9;
+    --vds-error-light-border: #ffd9d9;
+    --vds-error-text-primary: #b02d2f;
+    --vds-error-text-placeholder: #fe9187;
+
+    /* Semantic - Warning (警示色) */
+    --vds-warning-bg-default: #d46300;
+    --vds-warning-bg-hover: #b95600;
+    --vds-warning-bg-active: #8c4100;
+    --vds-warning-bg-disabled: #ffe4c8;
+    --vds-warning-light-bg-default: #fff9f5;
+    --vds-warning-light-bg-hover: #fcf1e3;
+    --vds-warning-light-bg-active: #ffe4c8;
+    --vds-warning-light-border: #f4d8bf;
+    --vds-warning-text-primary: #b95600;
+    --vds-warning-text-placeholder: #f29555;
+
+    /* Semantic - Notice (提示色) */
+    --vds-notice-bg-default: #367abd;
+    --vds-notice-bg-hover: #2365a7;
+    --vds-notice-bg-active: #004e85;
+    --vds-notice-bg-disabled: #d2e4ff;
+    --vds-notice-light-bg-default: #f8f9ff;
+    --vds-notice-light-bg-hover: #eaf1ff;
+    --vds-notice-light-bg-active: #d2e4ff;
+    --vds-notice-light-border: #d2e4ff;
+    --vds-notice-text-primary: #2365a7;
+    --vds-notice-text-placeholder: #6caff8;
+
+    /* Semantic - Help (帮助色) */
+    --vds-help-bg-default: #027e87;
+    --vds-help-bg-hover: #00616a;
+    --vds-help-bg-active: #104b52;
+    --vds-help-bg-disabled: #b8edf1;
+    --vds-help-light-bg-default: #f5fbfc;
+    --vds-help-light-bg-hover: #dff3f4;
+    --vds-help-light-bg-active: #b8edf1;
+    --vds-help-light-border: #b8edf1;
+    --vds-help-text-primary: #00616a;
+    --vds-help-text-placeholder: #55b8c2;
+
+    /* Semantic - Link (链接色) */
+    --vds-link: #367abd;
+    --vds-link-hover: #2365a7;
+    --vds-link-active: #004e85;
+    --vds-link-disabled: #9abcde;
+
+    /* Semantic - Gradient (渐变色) */
+    --vds-gradient-bg-default: linear-gradient(
+      315deg,
+      #9643ef 0%,
+      #6855fc 29%,
+      #3b76fc 69%,
+      #1898f4 100%
+    );
+    --vds-gradient-bg-hover: linear-gradient(
+      315deg,
+      #8d39e8 0%,
+      #5a46f6 29%,
+      #414eff 69%,
+      #0888e4 100%
+    );
+    --vds-gradient-bg-press: linear-gradient(
+      320deg,
+      #782bcb -2%,
+      #4534d0 23%,
+      #2e39d4 57%,
+      #0374c4 101%
+    );
+    --vds-gradient-bg-disable: linear-gradient(
+      315deg,
+      rgba(150, 67, 239, 0.3) 0%,
+      rgba(104, 85, 252, 0.3) 29%,
+      rgba(59, 118, 252, 0.3) 69%,
+      rgba(24, 152, 244, 0.3) 100%
+    );
+    --vds-gradient-border: linear-gradient(
+      315deg,
+      #9643ef 0%,
+      #6855fc 29%,
+      #3b76fc 69%,
+      #1898f4 100%
+    );
+    --vds-gradient-light-bg: linear-gradient(
+      315deg,
+      rgba(150, 67, 239, 0.1) 0%,
+      rgba(104, 85, 252, 0.1) 29%,
+      rgba(59, 118, 252, 0.1) 69%,
+      rgba(24, 152, 244, 0.1) 100%
+    );
+    --vds-gradient-text-highlight-1: linear-gradient(
+      320deg,
+      #782bcb -2%,
+      #4534d0 23%,
+      #2e39d4 57%,
+      #0374c4 101%
+    );
+    --vds-gradient-text-highlight-2: linear-gradient(
+      169deg,
+      #614dfd -26%,
+      #06080d 47%
+    );
+    --vds-gradient-text-loading: linear-gradient(
+      129deg,
+      #c2c2c2 8%,
+      #0c0c0c 54%,
+      #c2c2c2 100%
+    );
+
+    /* Constants (常量色) */
+    --vds-static-white: #ffffff;
+    --vds-static-black: #000000;
+    --vds-static-transparent: rgba(255, 255, 255, 0);
+
+    /* Overlay (其它色) — 暖棕色调 */
+    --vds-other-balloon: rgba(51, 51, 51, 0.9);
+    --vds-other-mask: rgba(0, 0, 0, 0.5);
+    --vds-other-white-overlay-1: rgba(255, 255, 255, 0.5);
+    --vds-other-overlay-1: rgba(103, 73, 15, 0.04);
+    --vds-other-overlay-2: rgba(103, 73, 15, 0.08);
+    --vds-other-overlay-3: rgba(103, 73, 15, 0.14);
+    --vds-bg-mask: rgba(0, 0, 0, 0.5);
+    --vds-bg-white-hover-transparent: rgba(103, 73, 15, 0.04);
+    --vds-bg-white-active-transparent: rgba(103, 73, 15, 0.08);
+    --vds-bg-gray-default-transparent: rgba(103, 73, 15, 0.04);
+    --vds-bg-gray-hover-transparent: rgba(103, 73, 15, 0.08);
+    --vds-bg-gray-active-transparent: rgba(103, 73, 15, 0.14);
+
+    /* Semantic - Brand gold (品牌绿→金渐变面：版本更新入口与更新卡) */
+    --vds-brand-gold-gradient: linear-gradient(
+      115deg,
+      #1e5a3a 0%,
+      #357a4f 46%,
+      #c2932c 100%
+    );
+    --vds-brand-gold-gradient-alert: linear-gradient(
+      115deg,
+      #7a5a28 0%,
+      #b4532e 100%
+    );
+    --vds-brand-gold-glow: radial-gradient(
+      circle,
+      rgba(255, 235, 180, 0.35),
+      rgba(255, 235, 180, 0) 65%
+    );
+    --vds-brand-gold-highlight: #e4b64e;
+    --vds-brand-gold-on-gradient: #fdf3d6;
+    --vds-brand-gold-gradient-overlay: rgba(255, 255, 255, 0.18);
+    --vds-brand-gold-gradient-track: rgba(255, 255, 255, 0.9);
+    /* 版本更新浮窗「更新内容 / 更新失败」态顶部的装饰光晕（设计稿 190:23576 / 190:23291
+       的蒙版组矩形）。稿子里还叠了一张被遮罩裁切的位图（资源 2@3x，MasterGo OSS 上的
+       4096×2459 / 895KB PNG），体积与内容都未经审阅，暂不入库；这里只落地可精确取到的
+       渐变层，暗色主题沿用同一支（与 brand-gold-* 的既有做法一致）。 */
+    --vds-update-notes-sheen: linear-gradient(
+      160deg,
+      rgba(216, 216, 216, 0) 33%,
+      #d7ffff28 81%
+    );
+
+    /* Semantic - Warm alert (暖色说明块：更新失败原因) */
+    --vds-alert-warm-bg: #fbf1e6;
+    --vds-alert-warm-border: #f0dcc6;
+    --vds-alert-warm-text: #8a5a3a;
+
+    /* Shadows (阴影/elevation) */
+    --vds-shadow-1-center: 1px 1px 4px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-1-up: 0px -1px 4px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-1-down: 0px 1px 4px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-1-left: -1px 0px 4px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-1-right: 1px 0px 4px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-2-center: 2px 4px 12px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-2-up: 0px -4px 12px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-2-down: 0px 4px 12px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-2-left: -4px 0px 12px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-2-right: 4px 0px 12px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-3-center: 5px 10px 18px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-3-up: 0px -10px 18px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-3-down: 0px 10px 18px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-3-left: -10px 0px 18px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.1);
+    --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.04);
+    --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.06);
+    --vds-shadow-pop-brand:
+      0px 12px 32px 0px rgba(30, 60, 40, 0.16),
+      0px 2px 8px 0px rgba(30, 60, 40, 0.08);
+
+    /* Focus rings (focus) */
+    --vds-focus-default: 0px 0px 0px 3px rgba(0, 0, 0, 0.06);
+    --vds-focus-ring: 0px 0px 0px 3px rgba(115, 98, 232, 0.2);
+    --vds-focus-brand: 0px 0px 0px 3px rgba(44, 85, 69, 0.2);
+    --vds-focus-error: 0px 0px 0px 3px rgba(214, 83, 80, 0.2);
+
+    /* Border radius — radius-N = (2 * N) px */
+    --vds-radius-1: 2px;
+    --vds-radius-2: 4px;
+    --vds-radius-3: 6px;
+    --vds-radius-4: 8px;
+    --vds-radius-5: 10px;
+    --vds-radius-pill: 9999px;
+    --vds-radius-6: 12px;
+    --vds-radius-8: 16px;
+    --vds-radius-10: 20px;
+    --vds-radius-12: 24px;
+    --vds-radius-circle: 50%;
+
+    /* Spacing — space-N = (4 * N) px */
+    --vds-space-0: 0px;
+    --vds-space-1: 4px;
+    --vds-space-2: 8px;
+    --vds-space-3: 12px;
+    --vds-space-4: 16px;
+    --vds-space-5: 20px;
+    --vds-space-6: 24px;
+    /* Extension of the existing 4px spacing grid. */
+    --vds-space-7: 28px;
+    --vds-space-8: 32px;
+    --vds-space-9: 36px;
+    --vds-space-10: 40px;
+
+    /* Icon sizes — iconsize-N = (2 * N) px */
+    --vds-icon-6: 12px;
+    --vds-icon-7: 14px;
+    --vds-icon-8: 16px;
+    --vds-icon-9: 18px;
+    --vds-icon-10: 20px;
+
+    /* Font families */
+    --vds-font-main:
+      'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      'Helvetica Neue', Arial, 'Hiragino Sans GB', 'Microsoft YaHei',
+      'Noto Sans CJK SC', sans-serif;
+    --vds-font-code:
+      'Roboto Mono', 'Fira Code', 'SFMono-Regular', Menlo, Monaco, Consolas,
+      'Liberation Mono', 'Courier New', monospace;
+    --vds-font-serif:
+      'Noto Serif SC', 'Source Han Serif CN', 'Noto Serif CJK SC', 'Songti SC',
+      STSong, 'SimSun', serif;
+
+    /* Font sizes (size / line-height) */
+    --vds-font-display-lv4: 28px;
+    --vds-lh-display-lv4: 42px;
+    --vds-font-display-lv3: 26px;
+    --vds-lh-display-lv3: 40px;
+    --vds-font-display-lv2: 24px;
+    --vds-lh-display-lv2: 36px;
+    --vds-font-display-lv1: 22px;
+    --vds-lh-display-lv1: 34px;
+    --vds-font-headline: 20px;
+    --vds-lh-headline: 30px;
+    --vds-font-title: 18px;
+    --vds-lh-title: 28px;
+    --vds-font-subhead: 16px;
+    --vds-lh-subhead: 24px;
+    --vds-font-body-lv2: 14px;
+    --vds-lh-body-lv2: 22px;
+    --vds-font-body-lv1: 12px;
+    --vds-lh-body-lv1: 18px;
+    --vds-font-caption: 10px;
+    --vds-lh-caption: 16px;
+
+    /* Font weights */
+    --vds-fw-light: 300;
+    --vds-fw-regular: 400;
+    --vds-fw-medium: 500;
+    --vds-fw-semibold: 600;
+
+    /* Border widths */
+    --vds-border-width-1: 1px;
+    --vds-border-width-2: 2px;
+    --vds-border-width-3: 3px;
+  }
+
+  :root[data-theme='dark'] {
+    --vds-skills-page: #1e1c17;
+    --vds-skills-panel: #24221c;
+    --vds-skills-card: #2c2923;
+    --vds-skills-ink: #f2efe6;
+    --vds-skills-muted: #9a9486;
+    --vds-skills-line: #3a372f;
+    --vds-skills-divider: #322f28;
+    --vds-skills-brand: #8fb69a;
+    --vds-skills-tint: #2a382e;
+    --vds-skills-on-brand: #1e1c17;
+    --vds-skills-gold: #d4a84a;
+    --vds-skills-gold-tint: #3a3018;
+    --vds-skills-danger: #d07a72;
+    /* Semantic - Text */
+    --vds-text-primary: #e8e8e8;
+    --vds-text-secondary: #c2c2c2;
+    --vds-text-tertiary: #929292;
+    --vds-text-placeholder: #6d6d6d;
+    --vds-text-disabled: #4c4c4c;
+    --vds-text-highlight: #e0a94a;
+
+    /* Semantic - Accent */
+    --vds-accent-bg-default: #e0a94a;
+    --vds-accent-light-bg-default: rgba(224, 169, 74, 0.14);
+    --vds-accent-light-border: rgba(224, 169, 74, 0.34);
+    --vds-accent-text-primary: #f0c56a;
+
+    /* Semantic - Fill / Background */
+    --vds-bg-white-default: #1f1f1f;
+    --vds-bg-white-hover: #2a2a2a;
+    --vds-bg-white-active: #222222;
+    --vds-bg-white-disable: #2a2a2a;
+    --vds-bg-gray-default: #282828;
+    --vds-bg-gray-light-default: #242424;
+    --vds-bg-gray-hover: #333333;
+    --vds-bg-gray-active: #3d3d3d;
+    --vds-bg-component: #252525;
+    --vds-bg-page: #1f1f1f;
+
+    /* Semantic - Line & Border */
+    --vds-divider-default: #383838;
+    --vds-border-default: #404040;
+    --vds-border-brand: #2c5545;
+    --vds-icon-outline-muted: #6d6d6d;
+    --vds-icon-fill-default: #929292;
+    --vds-icon-outline-default: #b5b5b5;
+
+    /* Semantic - Brand (绿色，暗色推导) */
+    /* Derived foreground pairs preserve the existing dark brand backgrounds. */
+    --vds-text-on-brand: var(--vds-brand-10);
+    --vds-text-on-brand-hover: var(--vds-brand-10);
+    --vds-text-on-brand-active: var(--vds-static-white);
+    --vds-brand-bg-default: #498e76;
+    --vds-brand-bg-hover: #74a994;
+    --vds-brand-bg-active: #2c5545;
+    --vds-brand-bg-disabled: #1a3328;
+    --vds-brand-light-bg-default: #12241c;
+    --vds-brand-light-bg-hover: #1a3328;
+    --vds-brand-light-bg-active: #234438;
+    --vds-brand-light-border: #a6beb3;
+    --vds-brand-text-primary: #9dc4b2;
+    --vds-brand-text-placeholder: #74a994;
+
+    /* Semantic - Success */
+    --vds-success-bg-default: #45a454;
+    --vds-success-bg-hover: #33813f;
+    --vds-success-bg-active: #1d642c;
+    --vds-success-bg-disabled: #1a3d1d;
+    --vds-success-light-bg-default: #0d2e12;
+    --vds-success-light-bg-hover: #1a3d1d;
+    --vds-success-light-bg-active: #2a5c2a;
+    --vds-success-light-border: #2a5c2a;
+    --vds-success-text-primary: #66c071;
+    --vds-success-text-placeholder: #45a454;
+
+    /* Semantic - Error */
+    --vds-error-bg-default: #d65350;
+    --vds-error-bg-hover: #b02d2f;
+    --vds-error-bg-active: #8c2723;
+    --vds-error-bg-disabled: #4d1515;
+    --vds-error-light-bg-default: #3d1010;
+    --vds-error-light-bg-hover: #4d1515;
+    --vds-error-light-bg-active: #7a2525;
+    --vds-error-light-border: #7a2525;
+    --vds-error-text-primary: #e87070;
+    --vds-error-text-placeholder: #fe9187;
+
+    /* Semantic - Warning */
+    --vds-warning-bg-default: #e17725;
+    --vds-warning-bg-hover: #d46300;
+    --vds-warning-bg-active: #b95600;
+    --vds-warning-bg-disabled: #3d2200;
+    --vds-warning-light-bg-default: #3d2200;
+    --vds-warning-light-bg-hover: #5b3300;
+    --vds-warning-light-bg-active: #7a4400;
+    --vds-warning-light-border: #7a4400;
+    --vds-warning-text-primary: #f5a851;
+    --vds-warning-text-placeholder: #f29555;
+
+    /* Semantic - Notice */
+    --vds-notice-bg-default: #367abd;
+    --vds-notice-bg-hover: #2365a7;
+    --vds-notice-bg-active: #004e85;
+    --vds-notice-bg-disabled: #0d1a3d;
+    --vds-notice-light-bg-default: #0d1a3d;
+    --vds-notice-light-bg-hover: #13294f;
+    --vds-notice-light-bg-active: #1d3a6e;
+    --vds-notice-light-border: #1d3a6e;
+    --vds-notice-text-primary: #6caff8;
+    --vds-notice-text-placeholder: #6caff8;
+
+    /* Semantic - Help */
+    --vds-help-bg-default: #34a1a9;
+    --vds-help-bg-hover: #027e87;
+    --vds-help-bg-active: #00616a;
+    --vds-help-bg-disabled: #002b2e;
+    --vds-help-light-bg-default: #002b2e;
+    --vds-help-light-bg-hover: #01383e;
+    --vds-help-light-bg-active: #104b52;
+    --vds-help-light-border: #104b52;
+    --vds-help-text-primary: #55b8c2;
+    --vds-help-text-placeholder: #34a1a9;
+
+    /* Semantic - Link */
+    --vds-link: #6caff8;
+    --vds-link-hover: #4b96e0;
+    --vds-link-active: #367abd;
+    --vds-link-disabled: #2a4a6e;
+
+    /* Overlay */
+    --vds-other-balloon: rgba(20, 20, 20, 0.95);
+    --vds-other-mask: rgba(0, 0, 0, 0.7);
+    --vds-other-overlay-1: rgba(255, 255, 255, 0.04);
+    --vds-other-overlay-2: rgba(255, 255, 255, 0.08);
+    --vds-other-overlay-3: rgba(255, 255, 255, 0.14);
+    --vds-bg-mask: rgba(0, 0, 0, 0.7);
+    --vds-bg-white-hover-transparent: rgba(255, 255, 255, 0.04);
+    --vds-bg-white-active-transparent: rgba(255, 255, 255, 0.08);
+    --vds-bg-gray-default-transparent: rgba(255, 255, 255, 0.04);
+    --vds-bg-gray-hover-transparent: rgba(255, 255, 255, 0.08);
+    --vds-bg-gray-active-transparent: rgba(255, 255, 255, 0.12);
+
+    /* Shadows */
+    --vds-shadow-1-center: 1px 1px 4px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-1-up: 0px -1px 4px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-1-down: 0px 1px 4px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-1-left: -1px 0px 4px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-1-right: 1px 0px 4px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-2-center: 2px 4px 12px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-2-up: 0px -4px 12px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-2-down: 0px 4px 12px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-2-left: -4px 0px 12px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-2-right: 4px 0px 12px 0px rgba(0, 0, 0, 0.4);
+    --vds-shadow-3-center: 5px 10px 18px 0px rgba(0, 0, 0, 0.5);
+    --vds-shadow-3-up: 0px -10px 18px 0px rgba(0, 0, 0, 0.5);
+    --vds-shadow-3-down: 0px 10px 18px 0px rgba(0, 0, 0, 0.5);
+    --vds-shadow-3-left: -10px 0px 18px 0px rgba(0, 0, 0, 0.5);
+    --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.5);
+    --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.15);
+    --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.25);
+    --vds-shadow-pop-brand:
+      0px 12px 32px 0px rgba(0, 0, 0, 0.45), 0px 2px 8px 0px rgba(0, 0, 0, 0.3);
+
+    /* Semantic - Warm alert */
+    --vds-alert-warm-bg: #3a2a1c;
+    --vds-alert-warm-border: #55402c;
+    --vds-alert-warm-text: #e0b78a;
+  }
+
+  /* Browser dark mode fallback: apply dark ds-tokens when JS hasn't hydrated yet */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme]):not(.light) {
+      --vds-skills-page: #1e1c17;
+      --vds-skills-panel: #24221c;
+      --vds-skills-card: #2c2923;
+      --vds-skills-ink: #f2efe6;
+      --vds-skills-muted: #9a9486;
+      --vds-skills-line: #3a372f;
+      --vds-skills-divider: #322f28;
+      --vds-skills-brand: #8fb69a;
+      --vds-skills-tint: #2a382e;
+      --vds-skills-on-brand: #1e1c17;
+      --vds-skills-gold: #d4a84a;
+      --vds-skills-gold-tint: #3a3018;
+      --vds-skills-danger: #d07a72;
+      --vds-text-primary: #e8e8e8;
+      --vds-text-secondary: #c2c2c2;
+      --vds-text-tertiary: #929292;
+      --vds-text-placeholder: #6d6d6d;
+      --vds-text-disabled: #4c4c4c;
+      --vds-text-highlight: #e0a94a;
+
+      --vds-accent-bg-default: #e0a94a;
+      --vds-accent-light-bg-default: rgba(224, 169, 74, 0.14);
+      --vds-accent-light-border: rgba(224, 169, 74, 0.34);
+      --vds-accent-text-primary: #f0c56a;
+
+      --vds-bg-white-default: #1f1f1f;
+      --vds-bg-white-hover: #2a2a2a;
+      --vds-bg-white-active: #222222;
+      --vds-bg-white-disable: #2a2a2a;
+      --vds-bg-gray-default: #282828;
+      --vds-bg-gray-light-default: #242424;
+      --vds-bg-gray-hover: #333333;
+      --vds-bg-gray-active: #3d3d3d;
+      --vds-bg-component: #252525;
+      --vds-bg-page: #1f1f1f;
+
+      --vds-divider-default: #383838;
+      --vds-border-default: #404040;
+      --vds-border-brand: #2c5545;
+      --vds-icon-outline-muted: #6d6d6d;
+      --vds-icon-fill-default: #929292;
+      --vds-icon-outline-default: #b5b5b5;
+
+      /* Derived foreground pairs preserve the existing dark brand backgrounds. */
+      --vds-text-on-brand: var(--vds-brand-10);
+      --vds-text-on-brand-hover: var(--vds-brand-10);
+      --vds-text-on-brand-active: var(--vds-static-white);
+      --vds-brand-bg-default: #498e76;
+      --vds-brand-bg-hover: #74a994;
+      --vds-brand-bg-active: #2c5545;
+      --vds-brand-bg-disabled: #1a3328;
+      --vds-brand-light-bg-default: #12241c;
+      --vds-brand-light-bg-hover: #1a3328;
+      --vds-brand-light-bg-active: #234438;
+      --vds-brand-light-border: #2c5545;
+      --vds-brand-text-primary: #9dc4b2;
+      --vds-brand-text-placeholder: #74a994;
+
+      --vds-success-bg-default: #45a454;
+      --vds-success-bg-hover: #33813f;
+      --vds-success-bg-active: #1d642c;
+      --vds-success-bg-disabled: #1a3d1d;
+      --vds-success-light-bg-default: #0d2e12;
+      --vds-success-light-bg-hover: #1a3d1d;
+      --vds-success-light-bg-active: #2a5c2a;
+      --vds-success-light-border: #2a5c2a;
+      --vds-success-text-primary: #66c071;
+      --vds-success-text-placeholder: #45a454;
+
+      --vds-error-bg-default: #d65350;
+      --vds-error-bg-hover: #b02d2f;
+      --vds-error-bg-active: #8c2723;
+      --vds-error-bg-disabled: #4d1515;
+      --vds-error-light-bg-default: #3d1010;
+      --vds-error-light-bg-hover: #4d1515;
+      --vds-error-light-bg-active: #7a2525;
+      --vds-error-light-border: #7a2525;
+      --vds-error-text-primary: #e87070;
+      --vds-error-text-placeholder: #fe9187;
+
+      --vds-warning-bg-default: #e17725;
+      --vds-warning-bg-hover: #d46300;
+      --vds-warning-bg-active: #b95600;
+      --vds-warning-bg-disabled: #3d2200;
+      --vds-warning-light-bg-default: #3d2200;
+      --vds-warning-light-bg-hover: #5b3300;
+      --vds-warning-light-bg-active: #7a4400;
+      --vds-warning-light-border: #7a4400;
+      --vds-warning-text-primary: #f5a851;
+      --vds-warning-text-placeholder: #f29555;
+
+      --vds-notice-bg-default: #367abd;
+      --vds-notice-bg-hover: #2365a7;
+      --vds-notice-bg-active: #004e85;
+      --vds-notice-bg-disabled: #0d1a3d;
+      --vds-notice-light-bg-default: #0d1a3d;
+      --vds-notice-light-bg-hover: #13294f;
+      --vds-notice-light-bg-active: #1d3a6e;
+      --vds-notice-light-border: #1d3a6e;
+      --vds-notice-text-primary: #6caff8;
+      --vds-notice-text-placeholder: #6caff8;
+
+      --vds-help-bg-default: #34a1a9;
+      --vds-help-bg-hover: #027e87;
+      --vds-help-bg-active: #00616a;
+      --vds-help-bg-disabled: #002b2e;
+      --vds-help-light-bg-default: #002b2e;
+      --vds-help-light-bg-hover: #01383e;
+      --vds-help-light-bg-active: #104b52;
+      --vds-help-light-border: #104b52;
+      --vds-help-text-primary: #55b8c2;
+      --vds-help-text-placeholder: #34a1a9;
+
+      --vds-link: #6caff8;
+      --vds-link-hover: #4b96e0;
+      --vds-link-active: #367abd;
+      --vds-link-disabled: #2a4a6e;
+
+      --vds-other-balloon: rgba(20, 20, 20, 0.95);
+      --vds-other-mask: rgba(0, 0, 0, 0.7);
+      --vds-other-overlay-1: rgba(255, 255, 255, 0.04);
+      --vds-other-overlay-2: rgba(255, 255, 255, 0.08);
+      --vds-other-overlay-3: rgba(255, 255, 255, 0.14);
+      --vds-bg-mask: rgba(0, 0, 0, 0.7);
+      --vds-bg-white-hover-transparent: rgba(255, 255, 255, 0.04);
+      --vds-bg-white-active-transparent: rgba(255, 255, 255, 0.08);
+      --vds-bg-gray-default-transparent: rgba(255, 255, 255, 0.04);
+      --vds-bg-gray-hover-transparent: rgba(255, 255, 255, 0.08);
+      --vds-bg-gray-active-transparent: rgba(255, 255, 255, 0.12);
+
+      --vds-shadow-1-center: 1px 1px 4px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-1-up: 0px -1px 4px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-1-down: 0px 1px 4px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-1-left: -1px 0px 4px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-1-right: 1px 0px 4px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-2-center: 2px 4px 12px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-2-up: 0px -4px 12px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-2-down: 0px 4px 12px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-2-left: -4px 0px 12px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-2-right: 4px 0px 12px 0px rgba(0, 0, 0, 0.4);
+      --vds-shadow-3-center: 5px 10px 18px 0px rgba(0, 0, 0, 0.5);
+      --vds-shadow-3-up: 0px -10px 18px 0px rgba(0, 0, 0, 0.5);
+      --vds-shadow-3-down: 0px 10px 18px 0px rgba(0, 0, 0, 0.5);
+      --vds-shadow-3-left: -10px 0px 18px 0px rgba(0, 0, 0, 0.5);
+      --vds-shadow-3-right: 10px 0px 18px 0px rgba(0, 0, 0, 0.5);
+      --vds-shadow-aidialog-1: 0px 3px 10px -5px rgba(0, 0, 0, 0.15);
+      --vds-shadow-aidialog-2: 2px 12px 30px 0px rgba(0, 0, 0, 0.25);
+      --vds-shadow-pop-brand:
+        0px 12px 32px 0px rgba(0, 0, 0, 0.45),
+        0px 2px 8px 0px rgba(0, 0, 0, 0.3);
+
+      /* Semantic - Warm alert */
+      --vds-alert-warm-bg: #3a2a1c;
+      --vds-alert-warm-border: #55402c;
+      --vds-alert-warm-text: #e0b78a;
+    }
+  }
+} /* @layer base */

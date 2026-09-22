@@ -1,0 +1,508 @@
+{
+  "schema_version": 1,
+  "provider": "openai",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "gpt-5.5": {
+      "limits": {
+        "context": 1050000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "medium",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.5",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-04-23",
+      "last_updated": "2026-04-23",
+      "notes": [
+        "官方两处口径不一致：模型卡片列 none..xhigh 默认 medium，reasoning 指南另列 minimal 与 max。max_input 官方只给 Long Context 计价阈值 >272K。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input：models.dev 给 922000，LiteLLM 给 1050000，冲突未决留 null。"
+      ]
+    },
+    "gpt-6-astra": {
+      "limits": {
+        "context": 1050000,
+        "max_input": 922000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-04",
+      "last_updated": "2026-09-04",
+      "notes": [
+        "API 卡片档位 low..max，不含 none：传 none 返回 HTTP 400。默认档官方未公布，留 null。",
+        "max_reasoning 官方未公布（卡片只给 context window 与 max output tokens）。Chat Completions 不支持 function calling。",
+        "ChatGPT/Codex 侧另有 ultra 档，API 文档全文无 ultra，按 API 口径登记。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input 厂商未公布，models.dev 与 LiteLLM 一致给 922000(registry)，据此填充。"
+      ]
+    },
+    "gpt-5.6-sol": {
+      "limits": {
+        "context": 1050000,
+        "max_input": 922000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-09",
+      "last_updated": "2026-07-09",
+      "notes": [
+        "别名 gpt-5.6 路由到此（不单独建条目）。另有与 effort 正交的 reasoning.mode（standard/pro）。max_reasoning 未公布。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input 厂商未公布，models.dev 与 LiteLLM 一致给 922000(registry)，据此填充。"
+      ]
+    },
+    "gpt-5.6-terra": {
+      "limits": {
+        "context": 1050000,
+        "max_input": 922000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-09",
+      "last_updated": "2026-07-09",
+      "notes": [
+        "对应早期 GPT-5 家族的 mini 档。max_reasoning 未公布。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input 厂商未公布，models.dev 与 LiteLLM 一致给 922000(registry)，据此填充。"
+      ]
+    },
+    "gpt-5.6-luna": {
+      "limits": {
+        "context": 1050000,
+        "max_input": 922000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "medium",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-09",
+      "last_updated": "2026-07-09",
+      "notes": [
+        "对应早期 GPT-5 家族的 nano 档。max_reasoning 未公布。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input 厂商未公布，models.dev 与 LiteLLM 一致给 922000(registry)，据此填充。"
+      ]
+    },
+    "gpt-5.4": {
+      "limits": {
+        "context": 1050000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "none",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.4",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-03-05",
+      "last_updated": "2026-03-05",
+      "notes": [
+        "默认档 none（与 5.5/5.6 不同）。档位不含 max。max_reasoning 未公布。本体未列入弃用表。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry)；厂商卡片原仅列 text+image。max_input：models.dev 给 922000，LiteLLM 给 1050000，冲突未决留 null。"
+      ]
+    },
+    "gpt-5.4-mini": {
+      "limits": {
+        "context": 400000,
+        "max_input": 272000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "none",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-03-17",
+      "last_updated": "2026-03-17",
+      "notes": [
+        "context 400000（非 1050000，勿套用 gpt-5.4）。默认档 none。max_reasoning 未公布。",
+        "max_input 厂商未公布，models.dev 与 LiteLLM 一致给 272000(registry)，据此填充。OpenRouter 另列 file 输入，models.dev 未列 pdf；模态冲突未决，保持 text+image。"
+      ]
+    },
+    "gpt-5.2": {
+      "limits": {
+        "context": 400000,
+        "max_input": 272000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": "none",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://developers.openai.com/api/docs/models/gpt-5.2",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2025-12-11",
+      "last_updated": "2025-12-11",
+      "notes": [
+        "前代旗舰，卡片建议改用 gpt-6-astra；本体未列入弃用表（仅 gpt-5.2-chat-latest 快照关停）。context 400000，默认档 none。",
+        "max_input 厂商未公布，models.dev 与 LiteLLM 一致给 272000(registry)，据此填充。OpenRouter 另列 file 输入，models.dev 未列 pdf；模态冲突未决，保持 text+image。"
+      ]
+    },
+    "gpt-5.5-pro": {
+      "limits": {
+        "context": 1050000,
+        "max_input": 922000,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "medium",
+              "high",
+              "xhigh"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/openai/gpt-5.5-pro",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-04-23",
+      "last_updated": "2026-04-23",
+      "notes": [
+        "knowledge cutoff 2025-12-01；>272k 上下文有高价 tier。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    }
+  }
+}

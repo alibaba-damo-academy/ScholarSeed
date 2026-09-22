@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+SLR_SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SLR_SETUP_ROOT="$(dirname "$SLR_SETUP_DIR")"
+SLR_SETUP_PYTHON="scholarseed-skill-python"
+"$SLR_SETUP_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3, 12), "Python 3.12.x is required"'
+"$SLR_SETUP_PYTHON" -m pip check
+"$SLR_SETUP_PYTHON" -c 'import openai, httpx, pypdfium2, pdfplumber, pypdf, matplotlib, PIL, pysbd'
+SLR_INSTALL_ROOT="$SLR_SETUP_ROOT" "$SLR_SETUP_PYTHON" - <<'PY'
+import os, sys
+from pathlib import Path
+root=Path(os.environ['SLR_INSTALL_ROOT'])
+sys.path[:0]=[str(root/'lib'),str(root/'scripts')]
+import slr_paths
+slr_paths.bootstrap(str(root/'scripts/slr.py'))
+import manuscript, scripted_generation, manuscript_publication, workflow
+PY
+if [ ! -f "$SLR_SETUP_ROOT/config/model_config.fast.json" ]; then
+  cp "$SLR_SETUP_ROOT/config/model_config.fast.example.json" "$SLR_SETUP_ROOT/config/model_config.fast.json"
+fi
+"$SLR_SETUP_ROOT/scripts/slr" doctor --no-network

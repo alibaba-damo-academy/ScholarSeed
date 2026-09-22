@@ -1,0 +1,349 @@
+{
+  "232258036": {
+    "paperId": "232258036",
+    "title": "A practical guide to multi-objective reinforcement learning and planning",
+    "abstract": "Real-world sequential decision-making tasks are generally complex, requiring trade-offs between multiple, often conflicting, objectives. Despite this, the majority of research in reinforcement learning and decision-theoretic planning either assumes only a single objective, or that multiple objectives can be adequately handled via a simple linear combination. Such approaches may oversimplify the underlying problem and hence produce suboptimal results. This paper serves as a guide to the application of multi-objective methods to difficult problems, and is aimed at researchers who are already familiar with single-objective reinforcement learning and planning methods who wish to adopt a multi-objective perspective on their research, as well as practitioners who encounter multi-objective decision problems in practice. It identifies the factors that may influence the nature of the desired solution, and illustrates by example how these influence the design of multi-objective decision-making systems for complex problems.",
+    "year": 2021,
+    "paper_type": "survey",
+    "relevance_level": "L2",
+    "info_type": "card",
+    "has_parse_dict": true,
+    "reading_depth": "partial",
+    "card": {
+      "background": "Multi-objective reinforcement learning (MORL) and decision-theoretic planning for complex real-world decision-making tasks requiring trade-offs between conflicting objectives.",
+      "problem": "Most research assumes a single objective or linear combination, oversimplifying problems and producing suboptimal results; practitioners lack guidance on applying multi-objective methods to difficult problems.",
+      "summary": {
+        "scope": "Covers multi-objective Markov decision processes (MOMDPs), planning algorithms, reinforcement learning algorithms, evaluation metrics, and motivating application domains like water management and wind farm control.",
+        "taxonomy": "Utility-based approach categorizing problems by utility function type (linear vs. monotonically increasing), policy type (deterministic vs. stochastic), and optimization criterion (Scalarised Expected Returns vs. Expected Scalarised Returns).",
+        "key_themes": [
+          "Utility-based approach: Deriving optimal solution sets from user utility knowledge rather than assuming the Pareto front is always the goal.",
+          "Optimization criteria distinction: Differentiating between Scalarised Expected Returns (SER) for average performance and Expected Scalarised Returns (ESR) for single-execution utility.",
+          "Solution set concepts: Defining undominated sets, coverage sets, Pareto fronts, and convex hulls based on utility function properties.",
+          "Evaluation metrics: Contrasting axiomatic metrics (e.g., hypervolume) with utility-based metrics (e.g., Expected Utility Metric) for assessing algorithm performance."
+        ],
+        "total_papers_reviewed": "Not available from provided content"
+      },
+      "analysis": {
+        "trends": "Shift towards utility-based approaches over axiomatic ones; increasing use of deep reinforcement learning for high-dimensional states; growing interest in interactive preference elicitation and human-aligned AI.",
+        "comparisons": "Comparison of single-policy vs. multi-policy algorithms; outer loop vs. inner loop multi-policy methods; SER vs. ESR optimization criteria; and dedicated multi-objective algorithms (e.g., MONES) vs. scalarized single-objective subroutines.",
+        "open_problems": [
+          "Lack of multi-objective datasets and benchmarks with complex state/action spaces and partial observability.",
+          "Handling many-objective problems (four or more objectives) where existing algorithms scale poorly.",
+          "Developing negotiation strategies and equilibria concepts for multi-objective multi-agent decision making.",
+          "Dynamically identifying and adding objectives during learning without discarding prior knowledge."
+        ]
+      },
+      "discussion": {
+        "conclusions": "Explicitly multi-objective approaches are essential for deploying AI in decision problems to handle trade-offs, changing preferences, and explainability; the utility-based approach provides a systematic framework for designing MORL systems.",
+        "future_directions": [
+          "Development of complex benchmarks and open data sharing for MORL evaluation.",
+          "Algorithmic development for many-objective problems and multi-objective multi-agent systems.",
+          "Methods for dynamically integrating new objectives into existing agents with minimal regret."
+        ],
+        "recommendations": "Adopt the utility-based workflow (collect utility info, decide policy types, derive solution concept, select algorithm, design selection method); use utility-based evaluation metrics like Expected Utility Metric instead of hypervolume; perform thorough policy evaluation before deployment to mitigate value estimation errors."
+      },
+      "survey_outline": {
+        "sections": [
+          {
+            "title": "Introduction",
+            "description": "Motivates multi-objective approaches by highlighting limitations of scalar reward engineering and outlining the paper's structure.",
+            "subsections": []
+          },
+          {
+            "title": "Motivating examples of modelling complex problems with multi-objective approaches",
+            "description": "Presents real-world examples including journey planning, water management, military purchasing, and wind farm control.",
+            "subsections": [
+              "Planning a journey",
+              "Water management",
+              "Military purchasing",
+              "Wind farm control",
+              "Other topics"
+            ]
+          },
+          {
+            "title": "Problem setting",
+            "description": "Formalizes Multi-Objective Markov Decision Processes (MOMDPs), policies, value functions, and solution sets (Pareto Front, Convex Hull, Coverage Sets).",
+            "subsections": [
+              "Policies and value functions",
+              "Solution sets"
+            ]
+          },
+          {
+            "title": "The utility-based approach",
+            "description": "Outlines a systematic workflow for designing MORL systems driven by user utility rather than axiomatic assumptions.",
+            "subsections": []
+          },
+          {
+            "title": "Factors influencing the design of multi-objective systems",
+            "description": "Identifies key design factors including scenarios requiring MO approaches, problem taxonomy, and SER vs. ESR criteria.",
+            "subsections": [
+              "Scenarios requiring a multi-objective approach",
+              "Problem taxonomy",
+              "Scalarised expected returns and expected scalarised returns"
+            ]
+          },
+          {
+            "title": "The relationship with other problems",
+            "description": "Discusses connections to POMDPs, multi-agent systems, multi-task RL, and human-aligned agents.",
+            "subsections": [
+              "Partially observable MDPs",
+              "Multi-objective as multi-agent problems",
+              "Multi- and auxiliary task RL",
+              "Human-aligned agents"
+            ]
+          },
+          {
+            "title": "Survey of multi-objective reinforcement learning and planning algorithms",
+            "description": "Reviews planning algorithms, bandit methods, single/multi-policy RL, interactive approaches, deep RL scaling, and multi-agent algorithms.",
+            "subsections": [
+              "Multi-objective planning algorithms",
+              "Multi-objective reinforcement learning algorithms"
+            ]
+          },
+          {
+            "title": "Evaluating the performance of multi-objective decision making algorithms",
+            "description": "Covers axiomatic metrics (hypervolume, sparsity, epsilon), utility-based metrics (EUM, MUL), value approximation cautions, and benchmarks.",
+            "subsections": [
+              "Axiomatic-based evaluation metrics",
+              "Utility-based evaluation metrics",
+              "A word of caution regarding value vector approximation",
+              "Benchmark problems for multi-objective decision making"
+            ]
+          },
+          {
+            "title": "An illustrated example",
+            "description": "Demonstrates applying Multi-Objective Natural Evolution Strategies (MONES) to a water management problem and compares it with single-objective baselines.",
+            "subsections": [
+              "Setting",
+              "Multi-objective natural evolution strategies",
+              "Using single-objective subroutines",
+              "Comparing evaluation metrics"
+            ]
+          },
+          {
+            "title": "Conclusion, challenges and open questions",
+            "description": "Summarizes the field's state and identifies open challenges in data/benchmarks, many-objective problems, multi-agent systems, and dynamic objectives.",
+            "subsections": [
+              "Lack of multi-objective datasets and benchmarks",
+              "Many-objective problems",
+              "Multi-agent problems",
+              "Dynamically identifying and adding objectives",
+              "Closing remarks"
+            ]
+          }
+        ]
+      }
+    },
+    "common_fields": {
+      "tldr": "A practical guide to multi-objective reinforcement learning and planning that advocates for a utility-based approach to handling conflicting objectives in complex decision-making problems.",
+      "research_question": "How can researchers and practitioners systematically apply multi-objective methods to complex decision problems involving conflicting objectives?",
+      "core_contribution": "Provides a comprehensive practical guide and utility-based framework for applying multi-objective reinforcement learning and planning to complex real-world decision problems.",
+      "limitations": "The field lacks sufficient complex benchmarks and datasets, and many existing algorithms scale poorly to many-objective or multi-agent settings.",
+      "innovation_points": [
+        "Extension of the problem taxonomy to include interactive decision support, dynamic utility function, and review-and-adjust scenarios.",
+        "Advocacy for utility-based evaluation metrics (Expected Utility Metric, Maximal Utility Loss) over traditional axiometric metrics like hypervolume."
+      ],
+      "future_work": "Addressing the lack of multi-objective benchmarks, developing algorithms for many-objective and multi-agent problems, and enabling dynamic identification of objectives.",
+      "claims": [
+        "Scalar reward engineering is problematic because it is semi-blind, prevents informed trade-offs, damages explainability, cannot handle all preference types, and fails to adapt to changing preferences.",
+        "The utility-based approach is superior to the axiomatic approach because it exploits domain knowledge to constrain solution sets and improve learning efficiency.",
+        "For non-linear utility functions, optimizing under Scalarised Expected Returns (SER) versus Expected Scalarised Returns (ESR) leads to significantly different policies.",
+        "Hypervolume is often difficult to interpret and does not map to real-world user utility, making utility-based metrics preferable for evaluation."
+      ]
+    }
+  },
+  "14478191": {
+    "paperId": "14478191",
+    "title": "A Survey of Multi-Objective Sequential Decision-Making",
+    "abstract": "Sequential decision-making problems with multiple objectives arise naturally in practice and pose unique challenges for research in decision-theoretic planning and learning, which has largely focused on single-objective settings. This article surveys algorithms designed for sequential decision-making problems with multiple objectives. Though there is a growing body of literature on this subject, little of it makes explicit under what circumstances special methods are needed to solve multi-objective problems. Therefore, we identify three distinct scenarios in which converting such a problem to a single-objective one is impossible, infeasible, or undesirable. Furthermore, we propose a taxonomy that classifies multi-objective methods according to the applicable scenario, the nature of the scalarization function (which projects multi-objective values to scalar ones), and the type of policies considered. We show how these factors determine the nature of an optimal solution, which can be a single policy, a convex hull, or a Pareto front. Using this taxonomy, we survey the literature on multi-objective methods for planning and learning. Finally, we discuss key applications of such methods and outline opportunities for future work.",
+    "year": 2013,
+    "paper_type": "survey",
+    "relevance_level": "L2",
+    "info_type": "card",
+    "has_parse_dict": true,
+    "reading_depth": "partial",
+    "card": {
+      "background": "Sequential decision-making problems with multiple objectives, modeled as Multi-Objective Markov Decision Processes (MOMDPs), arising in planning and learning contexts where single-objective formulations are insufficient.",
+      "problem": "Existing literature rarely makes explicit under what circumstances special multi-objective methods are needed versus when problems can be trivially reduced to single-objective settings, and lacks a unified taxonomy connecting problem assumptions to solution concepts.",
+      "summary": {
+        "scope": "Algorithms for multi-objective sequential decision-making, covering both planning (given a model) and learning (reinforcement learning) methods for MOMDPs.",
+        "taxonomy": "A utility-based taxonomy classifying MOMDPs by three factors: the applicable scenario (single vs. multiple policies), the nature of the scalarization function (linear vs. monotonically increasing), and the type of policies permitted (deterministic vs. stochastic).",
+        "key_themes": [
+          "Motivating Scenarios: Identification of unknown weights, decision support, and known weights scenarios where converting to single-objective is impossible, infeasible, or undesirable.",
+          "Solution Concepts: Derivation of optimal solution sets (Convex Coverage Set vs. Pareto Coverage Set) based on scalarization linearity and policy restrictions rather than assuming Pareto optimality axiomatically.",
+          "Non-additive Returns: Analysis of how nonlinear scalarization functions break the additivity property required by standard Bellman equation-based methods, necessitating specialized algorithms."
+        ],
+        "total_papers_reviewed": "Not available from provided content"
+      },
+      "analysis": {
+        "trends": "Most multi-objective reinforcement learning research focuses on model-free methods and single-policy settings with linear scalarization, while model-based approaches and learning with monotonically increasing scalarizations remain understudied.",
+        "comparisons": "Contrasts the utility-based approach (deriving solution sets from scalarization assumptions) against the axiomatic approach (assuming Pareto front is always optimal); compares Convex Hull solutions for linear scalarization versus Pareto Fronts for nonlinear cases; distinguishes between Scalarized Expected Return (SER) and Expected Scalarized Return (ESR) formulations.",
+        "open_problems": [
+          "Lack of model-based multi-objective reinforcement learning methods despite their potential to reduce sample costs in multiple-policy settings.",
+          "Absence of value-function-based methods for learning multiple policies under monotonically increasing (nonlinear) scalarization functions.",
+          "Poor scalability of existing methods to many-objective problems (four or more objectives) due to exponential growth of undominated solutions.",
+          "Neglect of the Expected Scalarized Return (ESR) formulation in literature despite its appropriateness for single-execution scenarios like medical treatment."
+        ]
+      },
+      "discussion": {
+        "conclusions": "Specialized multi-objective methods are necessary in specific scenarios defined by weight availability and scalarization properties; a utility-based taxonomy justifies solution concepts better than axiomatic assumptions; computing the full Pareto front is often unnecessary when a Convex Coverage Set suffices.",
+        "future_directions": [
+          "Development of model-based multi-objective reinforcement learning algorithms.",
+          "Value-function methods for learning multiple policies with monotonically increasing scalarization functions.",
+          "Algorithms specifically designed for many-objective sequential decision-making.",
+          "Research into MOMDPs optimizing the Expectation of Scalarized Return (ESR) rather than Scalarized Expected Return (SER)."
+        ],
+        "recommendations": "Researchers should explicitly state which motivating scenario applies to their work and select solution concepts (e.g., CCS vs. PCS) based on the utility-based taxonomy rather than defaulting to Pareto optimality; practitioners should consider ESR formulation for one-shot decision tasks."
+      },
+      "survey_outline": {
+        "sections": [
+          {
+            "title": "Background",
+            "description": "Formalizes single-objective MDPs and Multi-Objective MDPs (MOMDPs), defining vector-valued rewards and value functions.",
+            "subsections": []
+          },
+          {
+            "title": "Motivating Scenarios",
+            "description": "Identifies three scenarios (unknown weights, decision support, known weights) where multi-objective methods are necessary.",
+            "subsections": []
+          },
+          {
+            "title": "Problem Taxonomy",
+            "description": "Presents a utility-based taxonomy categorizing MOMDPs by policy count, scalarization type, and policy determinism.",
+            "subsections": [
+              "Single versus Multiple Policies",
+              "Linear versus Monotonically Increasing Scalarization Functions",
+              "Deterministic versus Stochastic Policies"
+            ]
+          },
+          {
+            "title": "Planning in MOMDPs",
+            "description": "Surveys planning algorithms organized by the taxonomy, covering single-policy and multiple-policy methods for linear and nonlinear scalarizations.",
+            "subsections": [
+              "Single-Policy Planning",
+              "Multiple-Policy Planning with Linear Scalarization Functions",
+              "Multiple-Policy Planning with Monotonically Increasing Scalarization Functions"
+            ]
+          },
+          {
+            "title": "Learning in MOMDPs",
+            "description": "Surveys multi-objective reinforcement learning (MORL) methods, distinguishing model-based vs. model-free and single vs. multiple policy approaches.",
+            "subsections": [
+              "Single-Policy Learning Methods",
+              "Multiple-Policy Learning with Linear Scalarization Functions",
+              "Multiple-Policy Learning with Monotonically Increasing Scalarization Functions"
+            ]
+          },
+          {
+            "title": "MOMDP Applications",
+            "description": "Reviews applications in environmental management, robotics, traffic control, healthcare, and broader domains like risk-aware planning.",
+            "subsections": [
+              "Specific Applications",
+              "Applications within Broader Planning and Learning Tasks"
+            ]
+          },
+          {
+            "title": "Future Work",
+            "description": "Outlines research gaps including model-based MORL, nonlinear learning, many-objective problems, and ESR formulation.",
+            "subsections": []
+          }
+        ]
+      }
+    },
+    "common_fields": {
+      "tldr": "This survey proposes a utility-based taxonomy for multi-objective sequential decision-making, identifying scenarios requiring specialized methods and classifying algorithms by scalarization type and policy constraints to determine appropriate solution concepts.",
+      "research_question": "Under what circumstances are specialized multi-objective methods necessary for sequential decision-making, and how can these problems be systematically categorized to determine the correct solution concept?",
+      "core_contribution": "Proposing a utility-based taxonomy that classifies multi-objective sequential decision-making problems by scenario, scalarization function, and policy type to derive appropriate solution concepts rather than assuming Pareto optimality.",
+      "limitations": "The survey primarily formalizes infinite horizon discounted reward MDPs for brevity, excluding detailed formalization of finite horizon and average reward settings despite their relevance.",
+      "innovation_points": [
+        "Identification of three distinct motivating scenarios (unknown weights, decision support, known weights) where single-objective reduction is impossible, infeasible, or undesirable.",
+        "Adoption of a utility-based approach that derives solution sets from scalarization assumptions instead of axiomatically assuming the Pareto front.",
+        "Observation that Pareto optimality is only strictly necessary for multiple deterministic policies with monotonically increasing scalarization, whereas Convex Coverage Sets suffice in other cases."
+      ],
+      "future_work": "Developing model-based multi-objective reinforcement learning methods and algorithms for the Expectation of Scalarized Return (ESR) formulation.",
+      "claims": [
+        "Converting multi-objective problems to single-objective ones is impossible, infeasible, or undesirable in three distinct scenarios: unknown weights, decision support, and known weights with nonlinear scalarization.",
+        "For linear scalarization functions, a Convex Coverage Set (CCS) of deterministic stationary policies is sufficient even when stochastic policies are allowed.",
+        "Standard temporal-difference methods relying on the Bellman equation are incompatible with nonlinear scalarization functions because the resulting scalarized returns are non-additive.",
+        "Most multi-objective reinforcement learning research uses model-free approaches, leaving model-based methods significantly understudied.",
+        "The Scalarized Expected Return (SER) formulation is standard but inappropriate for single-execution tasks, where Expectation of Scalarized Return (ESR) should be used."
+      ]
+    }
+  },
+  "265947343": {
+    "paperId": "265947343",
+    "title": "Multi-Objective Reinforcement Learning based on Decomposition: A taxonomy and framework",
+    "abstract": "Multi-objective reinforcement learning (MORL) extends traditional RL by seeking policies making different compromises among conflicting objectives. The recent surge of interest in MORL has led to diverse studies and solving methods, often drawing from existing knowledge in multi-objective optimization based on decomposition (MOO/D). Yet, a clear categorization based on both RL and MOO/D is lacking in the existing literature. Consequently, MORL researchers face difficulties when trying to classify contributions within a broader context due to the absence of a standardized taxonomy. To tackle such an issue, this paper introduces multi-objective reinforcement learning based on decomposition (MORL/D), a novel methodology bridging the literature of RL and MOO. A comprehensive taxonomy for MORL/D is presented, providing a structured foundation for categorizing existing and potential MORL works. The introduced taxonomy is then used to scrutinize MORL research, enhancing clarity and conciseness through well-defined categorization. Moreover, a flexible framework derived from the taxonomy is introduced. This framework accommodates diverse instantiations using tools from both RL and MOO/D. Its versatility is demonstrated by implementing it in different configurations and assessing it on contrasting benchmark problems. Results indicate MORL/D instantiations achieve comparable performance to current state-of-the-art approaches on the studied problems. By presenting the taxonomy and framework, this paper offers a comprehensive perspective and a unified vocabulary for MORL. This not only facilitates the identification of algorithmic contributions but also lays the groundwork for novel research avenues in MORL.",
+    "year": 2023,
+    "paper_type": "survey",
+    "relevance_level": "L3",
+    "info_type": "origin_latex",
+    "has_parse_dict": true,
+    "reading_depth": "metadata_only",
+    "card": {
+      "background": "Multi-objective reinforcement learning (MORL), which extends traditional RL by seeking policies that make different compromises among conflicting objectives, drawing from multi-objective optimization based on decomposition (MOO/D).",
+      "problem": "A clear categorization based on both RL and MOO/D is lacking in the existing literature, causing MORL researchers to face difficulties when trying to classify contributions within a broader context due to the absence of a standardized taxonomy.",
+      "summary": {
+        "scope": "Existing and potential MORL works, bridging the literature of reinforcement learning and multi-objective optimization based on decomposition.",
+        "taxonomy": "A comprehensive taxonomy for multi-objective reinforcement learning based on decomposition (MORL/D) that provides a structured foundation for categorizing existing and potential MORL works using tools from both RL and MOO/D.",
+        "key_themes": [
+          "Bridging RL and MOO/D: Introducing MORL/D as a novel methodology that connects reinforcement learning with multi-objective optimization based on decomposition.",
+          "Taxonomy development: Creating a standardized taxonomy to categorize and scrutinize MORL research for enhanced clarity and conciseness.",
+          "Flexible framework: Deriving a versatile framework from the taxonomy that accommodates diverse instantiations using tools from both fields."
+        ],
+        "total_papers_reviewed": "Not available from provided content"
+      },
+      "analysis": {
+        "trends": "There has been a recent surge of interest in MORL, leading to diverse studies and solving methods often drawing from existing knowledge in MOO/D.",
+        "comparisons": "MORL/D instantiations achieve comparable performance to current state-of-the-art approaches on the studied benchmark problems.",
+        "open_problems": [
+          "Identifying and exploring novel research avenues in MORL enabled by the new taxonomy and framework."
+        ]
+      },
+      "discussion": {
+        "conclusions": "Presenting the taxonomy and framework offers a comprehensive perspective and a unified vocabulary for MORL, facilitating the identification of algorithmic contributions.",
+        "future_directions": [
+          "Exploring novel research avenues in MORL laid out by the proposed taxonomy and framework."
+        ],
+        "recommendations": "Use the introduced taxonomy and flexible framework to classify MORL contributions and implement diverse configurations using tools from both RL and MOO/D."
+      },
+      "survey_outline": {
+        "sections": [
+          {
+            "title": "Introduction to MORL/D",
+            "description": "Introduces multi-objective reinforcement learning based on decomposition (MORL/D) as a novel methodology bridging RL and MOO literature.",
+            "subsections": []
+          },
+          {
+            "title": "Comprehensive Taxonomy for MORL/D",
+            "description": "Presents a structured taxonomy for categorizing existing and potential MORL works and uses it to scrutinize MORL research.",
+            "subsections": []
+          },
+          {
+            "title": "Flexible Framework and Evaluation",
+            "description": "Introduces a flexible framework derived from the taxonomy, demonstrates its versatility through different configurations, and assesses it on contrasting benchmark problems.",
+            "subsections": []
+          }
+        ]
+      },
+      "other_info": "Reading depth is 'metadata_only' — card extracted from abstract only."
+    },
+    "common_fields": {
+      "tldr": "This paper introduces MORL/D, a novel methodology bridging RL and MOO, along with a comprehensive taxonomy and flexible framework to standardize and advance multi-objective reinforcement learning research.",
+      "research_question": "How can multi-objective reinforcement learning research be systematically categorized and unified by bridging reinforcement learning and multi-objective optimization based on decomposition?",
+      "core_contribution": "The introduction of multi-objective reinforcement learning based on decomposition (MORL/D), accompanied by a comprehensive taxonomy and a flexible framework to categorize and implement MORL methods.",
+      "limitations": "No relevant information found",
+      "innovation_points": [
+        "Introducing MORL/D as a novel methodology bridging the literature of RL and MOO.",
+        "Presenting a comprehensive taxonomy providing a structured foundation for categorizing MORL works.",
+        "Deriving a flexible framework from the taxonomy that accommodates diverse instantiations using tools from both RL and MOO/D."
+      ],
+      "future_work": "Laying the groundwork for novel research avenues in MORL facilitated by the proposed taxonomy and unified vocabulary.",
+      "claims": [
+        "A clear categorization based on both RL and MOO/D is lacking in the existing MORL literature.",
+        "MORL/D instantiations achieve comparable performance to current state-of-the-art approaches on the studied benchmark problems.",
+        "The presented taxonomy and framework offer a comprehensive perspective and a unified vocabulary for MORL."
+      ]
+    }
+  }
+}

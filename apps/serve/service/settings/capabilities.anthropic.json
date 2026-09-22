@@ -1,0 +1,340 @@
+{
+  "schema_version": 1,
+  "provider": "anthropic",
+  "_comment": [
+    "模型能力声明（按提供商拆分，单条形状与解析见 service/settings/capabilities.py、proposal 78）。",
+    "取不到的值一律写 null/留空，禁止由模型名推断（I1/I2）。provenance: vendor-doc | gateway-probed",
+    "  | gateway-config | product-declared | registry(models.dev/opencode) | user-declared | unverified。",
+    "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
+  ],
+  "models": {
+    "claude-opus-4-8": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://platform.claude.com/docs/en/release-notes/overview",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-05-28",
+      "last_updated": "2026-05-28",
+      "notes": [
+        "厂商写 1M/128k 缩写口径；`thinking.type: enabled` 对 4.7+ 被拒，只接受 adaptive。"
+      ]
+    },
+    "claude-opus-4-7": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": "high",
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "registry",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://platform.claude.com/docs/en/models/opus-4-7/overview",
+        "retrieved": "2026-09-13"
+      },
+      "release_date": "2026-04-14",
+      "last_updated": "2026-04-16",
+      "notes": [
+        "max_input 官方页不列，只能由 GET /v1/models 的 max_input_tokens 取得；厂商页已把该模型移入 Legacy。",
+        "2026-09-21 models.dev 核对：输入模态增列 pdf(registry，与 opus-4-8 一致)；厂商页原仅列 text+image。"
+      ]
+    },
+    "claude-fable-5": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/anthropic/claude-fable-5",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-06-07",
+      "last_updated": "2026-06-09",
+      "notes": [
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    },
+    "claude-sonnet-5": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/anthropic/claude-sonnet-5",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-06-29",
+      "last_updated": "2026-06-30",
+      "notes": [
+        "knowledge cutoff 2026-01-31。models.dev 另列 toggle 形态，wire 未核实故只声明 effort。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    },
+    "claude-opus-5": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/anthropic/claude-opus-5",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-07-24",
+      "last_updated": "2026-07-24",
+      "notes": [
+        "knowledge cutoff 2026-05。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    },
+    "claude-fable-5-1": {
+      "limits": {
+        "context": 1000000,
+        "max_input": null,
+        "max_output": 128000,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": [
+          "text",
+          "image",
+          "pdf"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": [
+          {
+            "kind": "effort",
+            "values": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "default": null,
+            "wire": {
+              "chat_completions": "reasoning_effort",
+              "responses": "reasoning.effort"
+            }
+          }
+        ]
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "registry",
+        "modalities": "registry",
+        "reasoning": "registry"
+      },
+      "source": {
+        "url": "https://models.dev/anthropic/claude-fable-5-1",
+        "retrieved": "2026-09-21"
+      },
+      "release_date": "2026-09-01",
+      "last_updated": "2026-09-01",
+      "notes": [
+        "knowledge cutoff 2026-06。",
+        "来源 models.dev(opencode 注册表)；wire 名按本仓家族约定填充，未经厂商一手页逐条核实。"
+      ]
+    }
+  }
+}

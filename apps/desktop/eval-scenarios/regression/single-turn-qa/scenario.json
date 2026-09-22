@@ -1,0 +1,24 @@
+{
+  "id": "single-turn-qa",
+  "project": {
+    "name": "Single Turn QA",
+    "files": [
+      {
+        "path": "main.py",
+        "content": "\"\"\"Fibonacci demo module for single-turn QA evaluation.\"\"\"\n\n\ndef fibonacci(n: int) -> list[int]:\n    \"\"\"Return the first n Fibonacci numbers.\"\"\"\n    result: list[int] = []\n    a, b = 0, 1\n    for _ in range(n):\n        result.append(a)\n        a, b = b, a + b\n    return result\n\n\nif __name__ == \"__main__\":\n    print(fibonacci(10))\n"
+      }
+    ]
+  },
+  "config": {
+    "model_name": "qwen3.8-max",
+    "language": "zh"
+  },
+  "auth": "none",
+  "drive": "cmd.jsonl",
+  "expected": {
+    "toolCallsIncludes": ["read_file"],
+    "minTurns": 1,
+    "maxTurns": 3,
+    "responseContains": ["main.py"]
+  }
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Scoped Literature"
+  short_description: "Read scoped papers, annotations, and reading notes"
+  default_prompt: "Use $project-literature to list this session's scoped papers, retrieve explicitly requested annotations or reading notes, and read relevant PDF pages for cited facts."
+
+policy:
+  allow_implicit_invocation: true
