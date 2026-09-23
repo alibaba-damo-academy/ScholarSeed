@@ -1,0 +1,65 @@
+name: Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: npm run package (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 13-compatible package
+            runner: macos-14
+          - name: Windows 10-compatible package
+            runner: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/desktop/package-lock.json
+
+      - name: Setup npm
+        run: npm install -g npm@11.13.0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.11"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build package
+        run: npm run package
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: scholarseed-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            apps/desktop/release/**
+          if-no-files-found: error
+          retention-days: 14
