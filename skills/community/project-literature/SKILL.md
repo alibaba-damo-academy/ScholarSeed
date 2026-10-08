@@ -1,7 +1,7 @@
 ---
 name: project-literature
-description: "Use in ScholarSeed when a request may depend on academic papers, annotations, or reading notes stored in the current session scope: the current project's literature for a project session, or the user's global literature catalogue for a global session. List, read, and retrieve user feedback only through scholarseed-bridge literature; cite the smallest returned PDF fragment that supports each claim. Do not use for public-web literature discovery or PDFs merely sent or explicitly selected in the current turn."
-description_zh: "在书深中，当请求可能依赖当前会话作用域中已存的学术论文、批注或阅读笔记时使用：项目会话对应当前项目的文献，全局会话对应用户的全局文献库。仅通过 scholarseed-bridge literature 列出、阅读并获取用户反馈；引用时使用能支持结论的最小 PDF 原文片段。不要用于公网文献发现，也不要用于当前一轮里刚发送或临时选中的 PDF。"
+description: "Use in ScholarSeed when a request may depend on academic papers, annotations, or reading notes stored in the current session scope: the current project's literature for a project session, or the user's global literature catalogue for a global session. List, read, and retrieve user feedback only through scholarseed_bridge literature; cite the smallest returned PDF fragment that supports each claim. Do not use for public-web literature discovery or PDFs merely sent or explicitly selected in the current turn."
+description_zh: "在书深中，当请求可能依赖当前会话作用域中已存的学术论文、批注或阅读笔记时使用：项目会话对应当前项目的文献，全局会话对应用户的全局文献库。仅通过 scholarseed_bridge literature 列出、阅读并获取用户反馈；引用时使用能支持结论的最小 PDF 原文片段。不要用于公网文献发现，也不要用于当前一轮里刚发送或临时选中的 PDF。"
 ---
 
 # Scoped Literature
@@ -14,9 +14,7 @@ The backend supplies the scope. Never request, infer, or pass a project ID or PD
 
 1. List the current Session's papers and their PDF page counts:
 
-   ```bash
-   scholarseed-bridge literature list --json '{}'
-   ```
+   Call `scholarseed_bridge` with `{"capability":"literature","operation":"list","request":{}}`.
 
    Use `offset` and `limit` with the returned `next_offset` only when more catalogue entries are
    relevant. Select candidates from title, authors and year. List metadata is discovery material,
@@ -25,10 +23,7 @@ The backend supplies the scope. Never request, infer, or pass a project ID or PD
 2. Build a small structure map before pursuing details. Start with the pages most likely to contain
    the abstract, table of contents or opening section, usually physical PDF pages 1–3:
 
-   ```bash
-   scholarseed-bridge literature read --json \
-     '{"ref_id":"literature:<id>","start_page":1,"end_page":3}'
-   ```
+   Call `scholarseed_bridge` with `{"capability":"literature","operation":"read","request":{"ref_id":"literature:<id>","start_page":1,"end_page":3}}`.
 
    Page numbers are 1-based physical PDF pages, not printed page labels. Use `total_pages` from
    `list`; do not request beyond it. A paper may have no table of contents.
@@ -64,10 +59,7 @@ The backend supplies the scope. Never request, infer, or pass a project ID or PD
 6. When the user explicitly asks to use a paper's highlights, underlines, strikethroughs,
    comments, PDF notes, reading notes, or all annotations, read them separately:
 
-   ```bash
-   scholarseed-bridge literature annotations --json \
-     '{"ref_id":"literature:<id>","limit":10}'
-   ```
+   Call `scholarseed_bridge` with `{"capability":"literature","operation":"annotations","request":{"ref_id":"literature:<id>","limit":10}}`.
 
    Follow `next_offset` until it is null when the user asks for all records. Keep the first
    response's `revision`; if a later response reports a different revision, restart from offset 0
@@ -99,7 +91,7 @@ The backend supplies the scope. Never request, infer, or pass a project ID or PD
   guessing another project's contents. A global item whose PDF is not managed by the global
   literature library may be listed as unavailable; do not bypass that boundary through a path.
 - For PDFs sent or explicitly selected in the current turn, use
-  `scholarseed-bridge pdf list/read/search` instead. If such a selected PDF belongs to the project
-  resource library and the user asks for its annotations, use `scholarseed-bridge pdf annotations`
+  `scholarseed_bridge pdf list/read/search` instead. If such a selected PDF belongs to the project
+  resource library and the user asks for its annotations, use `scholarseed_bridge pdf annotations`
   with the `ref_id` returned by `pdf list`; a temporary attachment with no canonical record owner
   may return `annotations_unavailable`.

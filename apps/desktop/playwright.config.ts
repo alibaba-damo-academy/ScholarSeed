@@ -18,23 +18,23 @@ export default defineConfig({
   projects: [
     {
       name: 'smoke',
-      testMatch: /(electron-compat|startup|selection|auth|settings|close)\.spec\.ts/,
-      timeout: SMOKE_TIMEOUT_MS
+      testMatch: /(electron-compat|startup|selection|auth|settings|close|csp|navigation)\.spec\.ts/,
+      timeout: SMOKE_TIMEOUT_MS,
     },
     {
       name: 'live',
       testMatch: /(live|assistant)\.spec\.ts/,
-      timeout: LIVE_TIMEOUT_MS
+      timeout: LIVE_TIMEOUT_MS,
     },
     {
       name: 'workbench',
       testMatch: /(workbench|office)\.spec\.ts/,
-      timeout: LIVE_TIMEOUT_MS
+      timeout: LIVE_TIMEOUT_MS,
     },
     {
       name: 'update',
       testMatch: /update\.spec\.ts/,
-      timeout: UPDATE_TIMEOUT_MS
-    }
-  ]
+      timeout: UPDATE_TIMEOUT_MS,
+    },
+  ],
 })

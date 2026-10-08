@@ -13,12 +13,9 @@ import {
   listProjects,
   loadMigrationPlan,
   loadTrashHistory,
-  loadWorkspaceRoot,
   renameProject,
   runMigration,
-  saveWorkspaceRoot,
-  type MigrationPlan,
-  type WorkspaceRootState
+  type MigrationPlan
 } from './api'
 import { createFormatters } from '../../../../localization/format'
 
@@ -44,11 +41,9 @@ const ERROR_KEYS = {
   source_inside_project: 'errors.source_inside_project',
   source_contains_project: 'errors.source_contains_project',
   name_required: 'errors.name_required',
-  no_workspace_root: 'errors.no_workspace_root',
   project_directory_exists: 'errors.project_directory_exists',
   project_create_failed: 'errors.project_create_failed',
   unknown_project: 'errors.unknown_project',
-  workspace_root_not_found: 'errors.workspace_root_not_found',
   source_not_found: 'errors.source_not_found',
   already_managed: 'errors.already_managed',
   root_unavailable: 'errors.root_unavailable',
@@ -68,7 +63,7 @@ function readableSize(bytes: number): string {
 type Notice =
   | { kind: 'error'; code: string }
   | { kind: 'created'; name: string }
-  | { kind: 'renamed' | 'savedRestart' | 'saved' | 'linked' | 'planFailed' | 'managed' | 'migrated' }
+  | { kind: 'renamed' | 'linked' | 'planFailed' | 'managed' | 'migrated' }
   | { kind: 'partial'; moved: number; failed: number; paths: string }
 
 function errorNotice(code?: string): Notice | null {
@@ -81,11 +76,9 @@ export function ProjectPanel(): React.JSX.Element {
   const format = createFormatters(i18n.resolvedLanguage === 'en' ? 'en' : 'zh')
   const [projects, setProjects] = React.useState<ProjectRef[]>([])
   const [current, setCurrent] = React.useState('')
-  const [workspace, setWorkspace] = React.useState<WorkspaceRootState | null>(null)
   const [draftName, setDraftName] = React.useState('')
   const [renaming, setRenaming] = React.useState<string | null>(null)
   const [renameDraft, setRenameDraft] = React.useState('')
-  const [rootDraft, setRootDraft] = React.useState('')
   const [links, setLinks] = React.useState<ExternalRootRef[]>([])
   const [plan, setPlan] = React.useState<MigrationPlan | null>(null)
   const [skipped, setSkipped] = React.useState<string[]>([])
@@ -106,8 +99,6 @@ export function ProjectPanel(): React.JSX.Element {
       case 'created': return t('notices.created', { name: notice.name })
       case 'partial': return t('notices.partial', { moved: notice.moved, failed: notice.failed, paths: notice.paths })
       case 'renamed': return t('notices.renamed')
-      case 'savedRestart': return t('notices.savedRestart')
-      case 'saved': return t('notices.saved')
       case 'linked': return t('notices.linked')
       case 'planFailed': return t('notices.planFailed')
       case 'managed': return t('notices.managed')
@@ -120,11 +111,6 @@ export function ProjectPanel(): React.JSX.Element {
     if (listing) {
       setProjects(listing.projects)
       setCurrent(listing.current)
-    }
-    const root = await loadWorkspaceRoot()
-    if (root) {
-      setWorkspace(root)
-      setRootDraft(root.configured || root.root)
     }
     const current = listing?.current ?? ''
     if (current) {
@@ -168,20 +154,6 @@ export function ProjectPanel(): React.JSX.Element {
     }
     setNotice({ kind: 'renamed' })
     await reload()
-  }
-
-  const submitRoot = async (): Promise<void> => {
-    const result = await saveWorkspaceRoot(rootDraft.trim())
-    if (!result.ok) {
-      setNotice(errorNotice(result.error))
-      return
-    }
-    setWorkspace(result.state ?? workspace)
-    setNotice(
-      result.state?.restartRequired
-        ? { kind: 'savedRestart' }
-        : { kind: 'saved' }
-    )
   }
 
   const submitLink = async (): Promise<void> => {
@@ -426,31 +398,6 @@ export function ProjectPanel(): React.JSX.Element {
               onCheckedChange={setInterruptOnRevoke}
             />
         ) : null}
-      </div>
-
-      <div className="project-root">
-        <label className="project-root-label" htmlFor="project-workspace-root">
-          {t('panel.root')}
-        </label>
-        <Input
-          id="project-workspace-root"
-          className="vds-input"
-          value={rootDraft}
-          placeholder={workspace?.root ?? ''}
-          data-testid="project-root-input"
-          onChange={(event) => setRootDraft(event.target.value)}
-        />
-        <Button
-          className="vds-button"
-          data-testid="project-root-submit"
-          onClick={() => void submitRoot()}
-        >
-          {t('panel.save')}
-        </Button>
-        <p className="project-root-hint">
-          {t('panel.effectiveRoot', { path: workspace?.root ?? '—' })}
-          {workspace?.configured ? '' : t('panel.fromStartup')}
-        </p>
       </div>
 
       {trashed.length ? (

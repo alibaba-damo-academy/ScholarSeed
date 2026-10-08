@@ -1696,6 +1696,7 @@ function ToastExampleControls(): JSX.Element {
   }
   const showErrorToast = (): void => {
     toast({
+      dedupeKey: 'example-error',
       description: <ToastExampleMessage kind="description" />,
       title: <ToastExampleMessage kind="error" />,
       tone: 'error'
@@ -2077,6 +2078,48 @@ export function ComponentsPage(): JSX.Element {
                 />
               )
             )}
+            <Alert
+              action={<Button size="sm" variant="outline">确认不自动重发</Button>}
+              description="应用在任务结束前中断，部分操作可能已完成。确认后不会自动重发旧任务。"
+              layout="stacked"
+              title="上次任务已中断"
+              tone="warning"
+            />
+            <Alert
+              action={<div className="flex gap-[var(--vds-space-2)]"><Button size="sm" variant="primary">恢复</Button><Button size="sm" variant="secondary">忽略</Button></div>}
+              description="检测到未完成的会话状态，可恢复到上次保存的进度。"
+              layout="stacked"
+              title="发现可恢复内容"
+              tone="info"
+            />
+            <Alert
+              action={<div className="flex gap-[var(--vds-space-2)]"><Button size="sm" variant="primary">保留我的版本</Button><Button size="sm" variant="secondary">重新加载</Button></div>}
+              description="当前文档已在其他窗口更新，继续保存可能覆盖最新内容。"
+              layout="stacked"
+              title="文档存在冲突"
+              tone="warning"
+            />
+            <Alert
+              action={<div className="flex gap-[var(--vds-space-2)]"><Button size="sm" variant="primary">通过</Button><Button size="sm" variant="secondary">驳回</Button></div>}
+              description="快照已生成，请审核内容后决定是否应用到当前项目。"
+              layout="stacked"
+              title="快照等待审核"
+              tone="info"
+            />
+            <Alert
+              action={<div className="flex gap-[var(--vds-space-2)]"><Button size="sm" variant="danger">覆盖</Button><Button size="sm" variant="secondary">跳过</Button></div>}
+              description="导入内容与现有文献重复，请选择覆盖或跳过冲突项。"
+              layout="stacked"
+              title="导入内容冲突"
+              tone="error"
+            />
+            <Alert
+              action={<Button disabled loading size="sm" variant="secondary">重试中</Button>}
+              description="请求未成功，正在重新连接服务。"
+              layout="stacked"
+              title="正在重试"
+              tone="warning"
+            />
           </div>
         </section>
 
@@ -2255,6 +2298,7 @@ export function ComponentsPage(): JSX.Element {
             icon="∅"
             title={t('empty.title')}
           />
+          <EmptyState variant="compact" icon={<Copy />} title={t('empty.title')} />
           <div className="flex min-w-0 flex-wrap items-center gap-[var(--vds-space-2)]">
             <CopyButton value="DeepRD">{t('copy.name')}</CopyButton>
             <CopyButton iconOnly icon={<Copy size={14} />} size="xs" className="![--vds-icon-button-glyph:var(--vds-icon-7)]" variant="ghost" value="DeepRD" />
@@ -3642,7 +3686,7 @@ export function ComponentsPage(): JSX.Element {
                 {t('elements.disabledOption')}
               </label>
             </div>
-            <Checkbox checked="mixed" label="部分子项已选" />
+            <Checkbox align="first-line" checked="mixed" label="部分子项已选" />
           </div>
         </section>
 
@@ -3651,7 +3695,7 @@ export function ComponentsPage(): JSX.Element {
           <div className="grid gap-[var(--vds-space-3)]">
             <Radio checked={false} label={t('elements.compact')} onCheckedChange={() => undefined} />
             <Radio checked label={t('elements.comfortable')} onCheckedChange={() => undefined} />
-            <Radio checked label={t('elements.longRadio')} onCheckedChange={() => undefined} />
+            <Radio align="first-line" checked label={t('elements.longRadio')} onCheckedChange={() => undefined} />
             <Radio checked={false} disabled label={t('elements.unselectedDisabled')} onCheckedChange={() => undefined} />
             <Radio checked disabled label={t('elements.selectedDisabled')} onCheckedChange={() => undefined} />
             <RadioGroup aria-label={t('elements.mode')} defaultValue="manual" name="example-mode" orientation="horizontal">

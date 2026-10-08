@@ -25,3 +25,6 @@ a separate `[A#]` abstract-level alert only when its substantive abstract is
 exceptionally relevant. These alerts use attributed wording, explicitly state
 that the full text was not read, appear in a dedicated section immediately before
 the final references, and never enter the numbered full-text bibliography.
+Separate abstract-alert entries with blank lines. Separate numbered bibliography
+entries with blank lines or make every entry a Markdown list item, so both
+sections remain readable in the document editor.

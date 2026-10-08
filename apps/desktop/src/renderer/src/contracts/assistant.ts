@@ -5,8 +5,8 @@
  *
  * 硬约定：`AssistantContextRef.source_id` **永远是稳定 ID 而非绝对路径**
  * （架构文档 §2.3）。FILE/DIR → 项目内相对路径；RESOURCE/LITERATURE →
- * 条目 id；SESSION → 会话 id。`preview_text` 仅供页面展示，模型材料由服务端
- * 在 Turn 准入时根据稳定 ID 和版本重新解析。
+ * 条目 id；SESSION → 会话 id。`preview_text` 仅供页面展示。所有选区携带
+ * 用户显式加入对话时冻结的 `snapshot_text`；所有选区发送时直接使用完整快照。
  */
 
 import type { SelectionLocator } from './workbench'
@@ -65,10 +65,12 @@ export interface AssistantSelectionAnchor {
   document_id?: string | null
   /** 唯一坐标联合由 Workbench 定义；Assistant 不按文件类型解释它。 */
   locator: SelectionLocator
-  /** 被选择原文的哈希，用于发现来源内容变化。 */
+  /** 加入时选中文字的指纹；发送不与源文件比较。 */
   selected_text_hash: string
   /** 仅供页面展示的安全预览，不直接作为模型事实源。 */
   preview_text: string
+  /** 用户显式加入对话时冻结的完整选区正文，发送直接使用。 */
+  snapshot_text?: string
 }
 
 export type ContextLabelFallback = 'untitled_session' | 'new_session' | null
@@ -120,6 +122,7 @@ export interface AssistantContextCandidate {
   origin: Extract<ContextOrigin, 'explicit' | 'current_document'>
   anchor?: AssistantSelectionAnchor | null
   hint?: string
+  child_count?: number
   unavailable_reason?: string
   /** Picker-only creation timestamp used by the newest-first quick filter. */
   created_at?: number
@@ -144,23 +147,7 @@ export type AssistantInvocationStatus =
 
 export const ASSISTANT_TRANSLATION_TARGETS = [
   'zh-CN',
-  'zh-TW',
-  'en',
-  'ja',
-  'ko',
-  'fr',
-  'de',
-  'es',
-  'pt',
-  'it',
-  'ru',
-  'ar',
-  'hi',
-  'th',
-  'vi',
-  'id',
-  'tr',
-  'nl'
+  'en'
 ] as const
 export type AssistantTranslationTarget = typeof ASSISTANT_TRANSLATION_TARGETS[number]
 
@@ -296,6 +283,7 @@ export interface AssistantContextSelection {
   project_policy: ProjectContextPolicy
   search_scope: SearchScope
   refs: AssistantContextRef[]
+  claimed_ref_ids?: string[]
   updated_at: number
   capabilities: AssistantCapability[]
 }

@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 from packaging.specifiers import SpecifierSet
@@ -20,14 +21,33 @@ import scholarseed_codex.environment as codex_environment
 import scholarseed_codex.executable as codex_host
 import scholarseed_codex.isolation as codex_isolation
 import scholarseed_codex.pool as pool_module
-from scholarseed_codex.activity import subagent_lifecycle_payload
+from scholarseed_codex.activity import (
+    CODEX_NATIVE_ACTIVITY_TEXT_LIMIT,
+    NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
+    NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD,
+    subagent_item_summary,
+    subagent_lifecycle_payload,
+    subagent_status_payload,
+    tool_item_payload,
+    tool_item_result,
+)
 from scholarseed_codex.capacity import CapacityPolicy, HostRole
-from scholarseed_codex.catalog import bind_native_model, standard_model
+from scholarseed_codex.catalog import bind_native_models, model_catalog_argument, standard_model
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.events import translate_event
-from scholarseed_codex.failure import PROVIDER_AUTH_MESSAGE, provider_failure
+from scholarseed_codex.failure import (
+    CONTENT_SAFETY_BLOCKED,
+    PROVIDER_AUTH_MESSAGE,
+    PROVIDER_UNAVAILABLE_MESSAGE,
+    provider_failure,
+)
+from scholarseed_codex.input import start_parameters
 from scholarseed_codex.pool import CodexHostPool
-from scholarseed_codex.process import CodexProcessHost
+from scholarseed_codex.process import (
+    THREAD_CONFIGURATION_MISMATCH,
+    CodexProcessHost,
+    _confirmed_thread_model,
+)
 from scholarseed_codex.profile import CODEX_ALLOW_DEVELOPMENT_VERSION_ENV, CODEX_MAX_TESTED_VERSION
 from scholarseed_codex.protocol.control import CodexControlRequest
 from scholarseed_codex.protocol.mcp import McpControlCapabilities, McpSnapshot, McpToolCallResult
@@ -47,13 +67,15 @@ from scholarseed_codex.provider import (
     provider,
 )
 from scholarseed_codex.router import AgentRoute, ThreadRouter
-from scholarseed_codex.session import CodexRuntimeSession
+from scholarseed_codex.session import CodexRuntimeSession, _same_process_configuration
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
 from scholarseed_codex.thread import CodexThreadSession
 from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_runtime.contract import (
     ActorKind,
+    CallbackAudience,
     CallbackKind,
+    CapabilitySet,
     CapabilityState,
     CommandState,
     DeliveryClass,
@@ -61,7 +83,9 @@ from scholarseed_runtime.contract import (
     InventoryRequest,
     LaunchSecret,
     LaunchSecretIntent,
+    LaunchSecretScope,
     ModelCapabilities,
+    ModelCatalogEntry,
     ModelConnectionMode,
     ModelCredential,
     ModelIntent,
@@ -82,9 +106,15 @@ from scholarseed_runtime.contract import (
     RuntimeInspectionRequest,
     RuntimePermissionMode,
     RuntimeSecret,
+    RuntimeServiceTool,
     TurnRequest,
 )
 from scholarseed_runtime.contract.command import SkillConfiguration
+from scholarseed_runtime.contract.content import (
+    PUBLIC_REASONING_SUMMARY,
+    REASONING_SOURCE,
+    REASONING_SUMMARY_INDEX,
+)
 from scholarseed_runtime.contract.evidence import (
     RuntimeProcessEvent,
     RuntimeProcessEventKind,
@@ -99,7 +129,7 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRecoveryStrategy,
     RuntimeRetryability,
 )
-from scholarseed_runtime.contract.input import CollaborationMode
+from scholarseed_runtime.contract.input import CollaborationMode, InputItem, InputKind, TurnInput
 from scholarseed_runtime.contract.inventory import (
     ModelInventory,
     SkillAvailability,
@@ -242,6 +272,29 @@ def test_callback_translation() -> None:
     if isinstance(translated, RuntimeCallbackRequest):
         check("approval callback stays typed", translated.kind is CallbackKind.COMMAND_APPROVAL)
         check("callback keeps public correlator", translated.request_id == "public-request")
+        check("approval stays user-facing", translated.audience is CallbackAudience.USER)
+    clarification = translate_event(
+        replace(source, payload={**source.payload, "method": "item/tool/requestUserInput"}),
+        product_session_id="product-session",
+        process_generation=2,
+    )
+    check(
+        "clarification becomes a user callback rather than runtime extension",
+        isinstance(clarification, RuntimeCallbackRequest)
+        and clarification.kind is CallbackKind.USER_INPUT
+        and clarification.audience is CallbackAudience.USER,
+    )
+    dynamic = translate_event(
+        replace(source, kind=CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED),
+        product_session_id="product-session",
+        process_generation=2,
+    )
+    check(
+        "dynamic tools keep their independent service callback",
+        isinstance(dynamic, RuntimeCallbackRequest)
+        and dynamic.kind is CallbackKind.DYNAMIC_TOOL
+        and dynamic.audience is CallbackAudience.SERVICE,
+    )
 
 
 def test_subagent_translation() -> None:
@@ -759,6 +812,7 @@ def test_vendor_neutral_model_projection() -> None:
     )
     check("context metadata maps inside the adapter", config.get("model_context_window") == 128000)
     check("reasoning effort maps inside the adapter", config.get("model_reasoning_effort") == "low")
+    check("custom model summary capability is not forced", "model_reasoning_summary" not in config)
     check("service tier maps inside the adapter", config.get("service_tier") == "fast")
     check(
         "session capability config survives model-provider projection",
@@ -839,6 +893,173 @@ def test_remote_retry_budget_projection() -> None:
     )
 
 
+def _no_proxy_entries(value: object) -> set[str]:
+    return {part.strip() for part in str(value or "").split(",") if part.strip()}
+
+
+def test_internal_channel_proxy_bypass_projection() -> None:
+    print("== internal channel proxy bypass projection ==")
+
+    def project(transport: ModelTransport, inherited: dict[str, str]) -> dict[str, str]:
+        async def scenario() -> dict[str, str]:
+            intent = ModelIntent(
+                model_ref="research-model",
+                revision="model:research-model",
+                capabilities=ModelCapabilities(tool_protocol=ModelToolProtocol.JSON_SCHEMA),
+                transport=transport,
+            )
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                patch.dict(
+                    codex_environment.os.environ,
+                    {"SCHOLARSEED_CODEX_HOME": directory, **inherited},
+                ),
+            ):
+                session = CodexRuntimeSession(
+                    OpenSessionRequest(
+                        product_session_id="product-session",
+                        cwd=ROOT,
+                        model=intent,
+                    )
+                )
+                await session._apply_model_connection()
+                return dict(session._native.request.process_environment)
+
+        return asyncio.run(scenario())
+
+    remote = dict(
+        mode=ModelConnectionMode.REMOTE,
+        endpoint="https://models.example.test/v1/",
+        wire_protocol=ModelWireProtocol.RESPONSES,
+    )
+    declared = ModelTransport(**remote, proxy_bypass_hosts=("127.0.0.1",))
+    undeclared = ModelTransport(**remote)
+
+    # Windows 的环境变量名不区分大小写，NO_PROXY 与 no_proxy 是同一个变量，
+    # 所以会话级场景只能给两个拼写同一个值；拼写之间的差异语义由下面的纯函数覆盖。
+    inherited_list = "corp.internal, 10.0.0.0/8"
+    merged = project(declared, {"NO_PROXY": inherited_list, "no_proxy": inherited_list})
+    check(
+        "internal channel host reaches the uppercase key codex-rs reads",
+        "127.0.0.1" in _no_proxy_entries(merged.get("NO_PROXY")),
+        str(merged),
+    )
+    check(
+        "lowercase alias carries the same list (hyper-util is first-wins, not merged)",
+        merged.get("no_proxy") == merged.get("NO_PROXY") and merged.get("no_proxy") != "",
+        str(merged),
+    )
+    check(
+        "user entries survive the merge",
+        {"corp.internal", "10.0.0.0/8"} <= _no_proxy_entries(merged.get("NO_PROXY")),
+        str(merged),
+    )
+
+    bare = project(declared, {"NO_PROXY": "", "no_proxy": ""})
+    check(
+        "with no inherited list the host is projected alone",
+        _no_proxy_entries(bare.get("NO_PROXY")) == {"127.0.0.1"}
+        and bare.get("no_proxy") == bare.get("NO_PROXY"),
+        str(bare),
+    )
+
+    untouched = project(undeclared, {"NO_PROXY": "corp.internal", "no_proxy": ""})
+    check(
+        "an undeclared transport never touches the user's proxy semantics",
+        "NO_PROXY" not in untouched and "no_proxy" not in untouched,
+        str(untouched),
+    )
+
+    check(
+        "an inherited lowercase-only list is not dropped",
+        {"192.168.0.0/16", "127.0.0.1"}
+        <= _no_proxy_entries(
+            codex_environment.proxy_bypass_environment(
+                {"no_proxy": "192.168.0.0/16"}, ("127.0.0.1",)
+            )["NO_PROXY"]
+        ),
+    )
+    check(
+        "merge is idempotent when the host is already listed",
+        codex_environment.proxy_bypass_environment(
+            {"NO_PROXY": "127.0.0.1,corp.internal"}, ("127.0.0.1",)
+        )["NO_PROXY"]
+        == "127.0.0.1,corp.internal",
+    )
+    check(
+        "both spellings are unioned so no user entry is lost",
+        _no_proxy_entries(
+            codex_environment.proxy_bypass_environment(
+                {"NO_PROXY": "a.example", "no_proxy": "b.example"}, ("127.0.0.1",)
+            )["NO_PROXY"]
+        )
+        == {"a.example", "b.example", "127.0.0.1"},
+    )
+    check(
+        "no declared host means no projection at all",
+        codex_environment.proxy_bypass_environment({"NO_PROXY": "a.example"}, ()) == {},
+    )
+    with patch.object(codex_environment, "ENVIRONMENT_NAME_CASE_INSENSITIVE", True):
+        folded = codex_environment.proxy_bypass_environment(
+            {"No_Proxy": "corp.internal"}, ("127.0.0.1",)
+        )
+    check(
+        "case-insensitive platforms overwrite every inherited spelling",
+        "No_Proxy" in folded
+        and all(
+            {"corp.internal", "127.0.0.1"} <= _no_proxy_entries(value) for value in folded.values()
+        ),
+        str(folded),
+    )
+    with patch.object(codex_environment, "ENVIRONMENT_NAME_CASE_INSENSITIVE", False):
+        canonical = codex_environment.proxy_bypass_environment(
+            {"No_Proxy": "corp.internal", "no_proxy": "10.0.0.0/8"}, ("127.0.0.1",)
+        )
+    check(
+        "case-sensitive platforms read only the two canonical spellings",
+        "No_Proxy" not in canonical
+        and _no_proxy_entries(canonical["NO_PROXY"]) == {"10.0.0.0/8", "127.0.0.1"}
+        and canonical["NO_PROXY"] == canonical["no_proxy"],
+        str(canonical),
+    )
+
+    async def child_environment() -> dict[str, str]:
+        inherited = {"HTTPS_PROXY": "http://127.0.0.1:7890", "NO_PROXY": "corp.internal"}
+        host = CodexProcessHost(
+            executable="codex",
+            process_environment=codex_environment.proxy_bypass_environment(
+                inherited, ("127.0.0.1",)
+            ),
+        )
+        spawn = AsyncMock(side_effect=OSError("contract spawn stopped"))
+        with (
+            patch.dict("os.environ", inherited),
+            patch("scholarseed_codex.process.asyncio.create_subprocess_exec", spawn),
+        ):
+            try:
+                await host._start_process()
+            except Exception:
+                pass
+        return dict(spawn.call_args.kwargs["env"])
+
+    child = asyncio.run(child_environment())
+    check(
+        "the real child env exempts the internal channel",
+        "127.0.0.1" in _no_proxy_entries(child.get("NO_PROXY")),
+        str(child.get("NO_PROXY")),
+    )
+    check(
+        "the user's own bypass entry still reaches the child",
+        "corp.internal" in _no_proxy_entries(child.get("NO_PROXY")),
+        str(child.get("NO_PROXY")),
+    )
+    check(
+        "the outbound proxy is preserved so tool traffic keeps working",
+        child.get("HTTPS_PROXY") == "http://127.0.0.1:7890",
+        str(child.get("HTTPS_PROXY")),
+    )
+
+
 def test_approval_catalog_binding() -> None:
     native = {
         "models": [
@@ -852,8 +1073,10 @@ def test_approval_catalog_binding() -> None:
             }
         ]
     }
-    bound = bind_native_model(native, "vendor/native-dated")
-    selected = bound["models"][-1]
+    bound = bind_native_models(
+        native, ("vendor/native-dated", "vendor/native-new"), "vendor/native-dated"
+    )
+    selected = bound["models"][-2]
     check(
         "native reviewer keeps the exact dated id",
         selected["auto_review_model_override"] == "vendor/native-dated",
@@ -868,13 +1091,19 @@ def test_approval_catalog_binding() -> None:
         "native source catalog is not mutated",
         len(native["models"]) == 1 and "auto_review_model_override" not in native["models"][0],
     )
-    defaults = bind_native_model(native, "")
+    defaults = bind_native_models(native, (), "")
     check(
         "implicit native defaults retain Codex selection with self-bound reviewers",
         defaults["models"][0]["auto_review_model_override"] == "native",
     )
+    multi_model = {"models": [{"slug": "model-a"}, {"slug": "model-b"}]}
+    check(
+        "exact native models share one process catalog",
+        bind_native_models(multi_model, ("model-a", "model-b"), "model-a")
+        == bind_native_models(multi_model, ("model-a", "model-b"), "model-b"),
+    )
     try:
-        bind_native_model(native, "missing-model")
+        bind_native_models(native, ("missing-model",), "missing-model")
     except ValueError:
         check("unknown native model fails instead of guessing capabilities", True)
     else:
@@ -887,7 +1116,15 @@ def test_approval_catalog_binding() -> None:
             reasoning_efforts=("low", "high"),
         ),
     )
-    standard = standard_model(intent, "product instructions")
+    entry = ModelCatalogEntry(intent.model_ref, intent.capabilities, intent.context_window)
+    standard = standard_model(entry, "product instructions")
+    review_entry = ModelCatalogEntry("review-model", intent.capabilities)
+    reviewed = standard_model(entry, "product instructions", review_entry.model_ref)
+    check(
+        "review model is independent from selected model",
+        reviewed["auto_review_model_override"] == review_entry.model_ref
+        and reviewed["slug"] == intent.model_ref,
+    )
     check(
         "same-name remote model does not inherit native tools",
         standard["tool_mode"] == "direct"
@@ -899,6 +1136,83 @@ def test_approval_catalog_binding() -> None:
         standard["input_modalities"] == ["text"]
         and [row["effort"] for row in standard["supported_reasoning_levels"]] == ["low", "high"],
     )
+
+    async def shared_catalog(home: Path) -> tuple[str, str]:
+        entries = (
+            entry,
+            ModelCatalogEntry("other", intent.capabilities),
+        )
+        request = CodexSessionOpenRequest(
+            request_id="catalog-share",
+            runtime_id="codex",
+            cwd=home,
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+            base_instructions="product instructions",
+        )
+        first = await model_catalog_argument(replace(intent, catalog_models=entries), request)
+        second = await model_catalog_argument(
+            replace(intent, model_ref="other", reasoning_effort="high", catalog_models=entries),
+            request,
+        )
+        return first.value, second.value
+
+    async def review_catalog(home: Path) -> dict[str, Any]:
+        request = CodexSessionOpenRequest(
+            request_id="catalog-review",
+            runtime_id="codex",
+            cwd=home,
+            process_environment={codex_environment.CODEX_HOME_ENV: str(home)},
+            base_instructions="product instructions",
+        )
+        argument = await model_catalog_argument(
+            replace(
+                intent,
+                catalog_models=(entry, review_entry),
+                approval_model_ref=review_entry.model_ref,
+            ),
+            request,
+        )
+        path = Path(json.loads(argument.value.split("=", 1)[1]))
+        return json.loads(path.read_text())
+
+    with tempfile.TemporaryDirectory() as directory:
+        reviewed_catalog = asyncio.run(review_catalog(Path(directory)))
+        check(
+            "selected model uses separate reviewer in published catalog",
+            next(row for row in reviewed_catalog["models"] if row["slug"] == "native")[
+                "auto_review_model_override"
+            ]
+            == "review-model",
+        )
+        try:
+            asyncio.run(
+                model_catalog_argument(
+                    replace(intent, catalog_models=(entry,), approval_model_ref="missing"),
+                    CodexSessionOpenRequest(
+                        request_id="catalog-review-missing",
+                        runtime_id="codex",
+                        cwd=Path(directory),
+                        process_environment={codex_environment.CODEX_HOME_ENV: directory},
+                    ),
+                )
+            )
+        except ValueError:
+            check("missing reviewer fails before launch", True)
+        else:
+            check("missing reviewer fails before launch", False)
+
+    with tempfile.TemporaryDirectory() as directory:
+        first_argument, second_argument = asyncio.run(shared_catalog(Path(directory)))
+        check(
+            "same connection catalog is stable across selected models and reasoning levels",
+            first_argument == second_argument,
+        )
+        catalog_path = Path(json.loads(first_argument.split("=", 1)[1]))
+        check(
+            "shared launch catalog contains both model definitions",
+            {row["slug"] for row in json.loads(catalog_path.read_text())["models"]}
+            == {"native", "other"},
+        )
     with tempfile.TemporaryDirectory() as directory:
         home = Path(directory)
         payload = json.dumps(standard).encode()
@@ -907,7 +1221,7 @@ def test_approval_catalog_binding() -> None:
         changed = codex_environment.store_model_catalog(
             home,
             json.dumps(
-                standard_model(replace(intent, model_ref="other"), "product instructions")
+                standard_model(replace(entry, model_ref="other"), "product instructions")
             ).encode(),
         )
         check(
@@ -1059,19 +1373,28 @@ def test_opaque_launch_secret_projection() -> None:
                 raise ValueError("unexpected secret reference")
             return RuntimeSecret("skill-secret-value")
 
-    async def scenario() -> tuple[dict[str, str], str, str, list[str]]:
+    async def scenario() -> tuple[dict[str, str], dict[str, str], str, str, list[str]]:
         request = OpenSessionRequest(
             product_session_id="launch-secret-session",
             cwd=ROOT,
             launch_secrets=LaunchSecretIntent(
-                bindings=(LaunchSecret("SCHOLARSEED_API_KEY", "opaque-skill-ref"),),
+                bindings=(
+                    LaunchSecret("SCHOLARSEED_API_KEY", "opaque-skill-ref"),
+                    LaunchSecret(
+                        "SCHOLARSEED_BRIDGE_TOKEN",
+                        "opaque-skill-ref",
+                        LaunchSecretScope.TOOL,
+                    ),
+                ),
                 revision="launch-secrets:test",
                 remove_environment=("PARENT_SECRET",),
             ),
             secret_port=Secrets(),
         )
-        environment = await _resolve_launch_secrets(request)
-        session = CodexRuntimeSession(request, launch_environment=environment)
+        environment, tool_environment = await _resolve_launch_secrets(request)
+        session = CodexRuntimeSession(
+            request, launch_environment=environment, tool_environment=tool_environment
+        )
         check(
             "generic environment removals reach native request",
             session._native.request.remove_environment == ("PARENT_SECRET",),
@@ -1097,15 +1420,21 @@ def test_opaque_launch_secret_projection() -> None:
                 failures.append(str(error))
         return (
             dict(session._native.request.process_environment),
+            dict(session._tool_environment),
             repr(request),
             repr(session._request),
             failures,
         )
 
-    environment, request_repr, retained_repr, failures = asyncio.run(scenario())
+    environment, tool_environment, request_repr, retained_repr, failures = asyncio.run(scenario())
     check(
-        "adapter injects resolved product secret into the official Harness environment",
+        "adapter injects process-scoped product secret into the official Codex environment",
         environment.get("SCHOLARSEED_API_KEY") == "skill-secret-value",
+    )
+    check(
+        "thread tool secret never enters the shared App Server environment",
+        "SCHOLARSEED_BRIDGE_TOKEN" not in environment
+        and tool_environment.get("SCHOLARSEED_BRIDGE_TOKEN") == "skill-secret-value",
     )
     check(
         "Gateway request and retained session state never expose secret material",
@@ -1233,7 +1562,10 @@ def test_managed_codex_isolation() -> None:
         }
         environment, arguments = codex_isolation.managed_codex_launch(
             runtime_home,
-            {"MODEL_KEY": "model-fixture"},
+            {
+                "MODEL_KEY": "model-fixture",
+                codex_isolation.CODEX_REMOTE_CONTROL_DISABLED_ENV: "0",
+            },
             (
                 CodexRuntimeLaunchArgument(option="--strict-config"),
                 CodexRuntimeLaunchArgument(option="-c", value="project_doc_max_bytes=999"),
@@ -1252,6 +1584,11 @@ def test_managed_codex_isolation() -> None:
             and environment["MODEL_KEY"] == "model-fixture"
             and discovery_home.is_dir(),
             str(environment),
+        )
+        check(
+            "managed App Server disables unused ChatGPT Remote Control",
+            environment[codex_isolation.CODEX_REMOTE_CONTROL_DISABLED_ENV]
+            == codex_isolation.CODEX_REMOTE_CONTROL_DISABLED_VALUE,
         )
         check(
             "managed flags override ambient project instructions and extensions",
@@ -1490,8 +1827,10 @@ def test_session_skill_configuration() -> None:
             )
         )
         with patch("scholarseed_codex.session.source_model_provider", return_value=("", {})):
-            await session._configure_model_connection()
-        return dict(session._native.request.thread_config)
+            configured = await session._configure_model_connection(
+                session._request.model, session._native.request, session._request.credential_port
+            )
+        return dict(configured.thread_config)
 
     config = asyncio.run(configure())
     check(
@@ -1533,11 +1872,6 @@ def test_session_skill_configuration() -> None:
         != session_skill_inventory(
             inventory, (SkillConfiguration(restricted_path, True),)
         ).revision,
-    )
-    check(
-        "session configuration separates native pool identities",
-        pool_module._environment_digest({}, (), (), session_skill_config(configurations))
-        != pool_module._environment_digest({}, (), (), {}),
     )
 
 
@@ -1587,6 +1921,26 @@ def test_permission_intent_projection() -> None:
         "network permission remains typed until native projection",
         networked._native.request.network_access is True,
     )
+    scoped = CodexRuntimeSession(
+        OpenSessionRequest(
+            product_session_id="permission-domains",
+            cwd=ROOT,
+            permission=PermissionIntent(
+                mode=RuntimePermissionMode.SAFE_AUTO,
+                revision="permission:domains",
+                network_domains=("scholarseed.damo.alibaba.com",),
+            ),
+        )
+    )
+    check(
+        "scoped domains create a native profile without local sockets",
+        scoped._native.request.permissions_profile == "local-services"
+        and scoped._native.request.network_access is False
+        and any(
+            '"scholarseed.damo.alibaba.com" = "allow"' in argument.value
+            for argument in scoped._native.request.launch_arguments
+        ),
+    )
 
 
 def test_permission_reconfiguration() -> None:
@@ -1613,6 +1967,24 @@ def test_permission_reconfiguration() -> None:
                 ),
                 required=True,
             )
+        )
+        read_denial_change = await session.reconfigure(
+            RuntimeConfigurationIntent(
+                revision="permission:ask:denials",
+                permission=PermissionIntent(
+                    mode=RuntimePermissionMode.ASK,
+                    deny_read_roots=(ROOT / "private",),
+                ),
+                required=True,
+            )
+        )
+        check(
+            "adapter requests restart when hard read denials change",
+            read_denial_change.state is CommandState.RESTART_REQUIRED,
+        )
+        check(
+            "rejected reconfiguration preserves active denials",
+            session._permission.deny_read_roots == (),
         )
         auto_review = await session.reconfigure(
             RuntimeConfigurationIntent(
@@ -1642,16 +2014,16 @@ def test_permission_reconfiguration() -> None:
         compatible_roots.state is CommandState.APPLIED,
     )
     check(
-        "adapter requests restart when the approval reviewer changes",
-        auto_review.state is CommandState.RESTART_REQUIRED,
+        "adapter prepares reviewer changes without allocating a process",
+        auto_review.state is CommandState.APPLIED,
     )
     check(
-        "adapter requests restart when the sandbox policy changes",
-        full_access.state is CommandState.RESTART_REQUIRED,
+        "adapter prepares sandbox changes without allocating a process",
+        full_access.state is CommandState.APPLIED,
     )
     check(
         "adapter applies changed writable roots to subsequent native turns",
-        writable_roots == (ROOT,),
+        writable_roots == (),
     )
 
 
@@ -1929,6 +2301,148 @@ def test_content_completion_and_sequence() -> None:
     check(
         "event identity includes the attachment namespace used across native resume",
         all(":attachment-a:" in event.event_id for event in (delta, completed, terminal)),
+    )
+
+
+def test_public_reasoning_streaming() -> None:
+    async def scenario(streamed: bool = True) -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+
+        async def observe(event: CodexSessionEvent) -> None:
+            events.append(event)
+
+        session = CodexRuntimeSession(
+            OpenSessionRequest(
+                product_session_id="summary-session",
+                cwd=ROOT,
+                model=ModelIntent(reasoning_effort="high"),
+            )
+        )
+        request = await session._configure_model_connection(
+            session._request.model, session._native.request, session._request.credential_port
+        )
+        params = start_parameters(
+            "thread", TurnInput((InputItem(InputKind.TEXT, text="hello"),)), request, (), "model"
+        )
+        check(
+            "native summary is independent of effort",
+            params.get("summary") == "auto"
+            and request.thread_config.get("model_reasoning_effort") == "high",
+        )
+        bridged_session = CodexRuntimeSession(
+            OpenSessionRequest(
+                product_session_id="bridged-summary-session",
+                cwd=ROOT,
+                model=ModelIntent(
+                    reasoning_effort="low",
+                    transport=ModelTransport(
+                        mode=ModelConnectionMode.REMOTE,
+                        endpoint="http://127.0.0.1:12345/v1",
+                    ),
+                    capabilities=ModelCapabilities(tool_protocol=ModelToolProtocol.PROVIDER_NATIVE),
+                ),
+            )
+        )
+        bridged_request = await bridged_session._configure_model_connection(
+            bridged_session._request.model,
+            bridged_session._native.request,
+            bridged_session._request.credential_port,
+        )
+        bridged_params = start_parameters(
+            "bridge-thread",
+            TurnInput((InputItem(InputKind.TEXT, text="hello"),)),
+            bridged_request,
+            (),
+            "model",
+        )
+        check(
+            "remote native protocol requests summary without changing effort",
+            bridged_params.get("summary") == "auto"
+            and bridged_request.thread_config.get("model_reasoning_effort") == "low",
+        )
+        thread = SimpleNamespace(
+            thread_id="thread",
+            request=request,
+            listener=observe,
+            model="model",
+            writable_roots=(),
+            attached_generation=1,
+        )
+        runtime = CodexTurnRuntime(
+            thread,
+            request=AsyncMock(),
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=CodexEmitter(),
+            router=SimpleNamespace(bind_turn=Mock(), bind_item=Mock()),
+            watcher=SimpleNamespace(),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        identity = {"turnId": "turn", "itemId": "reasoning"}
+        for part_index in ((0, 1) if streamed else ()):
+            await runtime.notification(
+                "item/reasoning/summaryPartAdded",
+                {**identity, "summaryIndex": part_index},
+                generation=1,
+            )
+            await runtime.notification(
+                "item/reasoning/summaryTextDelta",
+                {**identity, "summaryIndex": part_index, "delta": f"part-{part_index}"},
+                generation=1,
+            )
+        await runtime.notification(
+            "item/reasoning/textDelta",
+            {**identity, "delta": "private raw reasoning"},
+            generation=1,
+        )
+        await runtime.notification(
+            "item/completed",
+            {
+                **identity,
+                "item": {
+                    "id": "reasoning",
+                    "type": "reasoning",
+                    "summary": ["part-0", "part-1"],
+                    "content": ["private raw reasoning"],
+                },
+            },
+            generation=1,
+        )
+        runtime._settled_turns.add("turn")
+        await runtime.notification(
+            "item/reasoning/summaryTextDelta",
+            {**identity, "delta": "late"},
+            generation=1,
+        )
+        return events
+
+    events = asyncio.run(scenario())
+    completed_only = asyncio.run(scenario(streamed=False))
+    check(
+        "completed reasoning without deltas emits public summary parts",
+        [event.payload.get("text") for event in completed_only[:-1]] == ["part-0", "part-1"]
+        and [event.payload.get(REASONING_SUMMARY_INDEX) for event in completed_only[:-1]] == [0, 1]
+        and all("private raw reasoning" not in str(event.payload) for event in completed_only),
+    )
+    check(
+        "only public summary deltas and completion are emitted",
+        len(events) == 5
+        and all(event.payload.get(REASONING_SOURCE) == PUBLIC_REASONING_SUMMARY for event in events)
+        and all("private raw reasoning" not in str(event.payload) for event in events),
+    )
+    check(
+        "summary parts retain identity",
+        [event.payload.get(REASONING_SUMMARY_INDEX) for event in events[:-1]] == [0, 0, 1, 1],
+    )
+    completed = translate_event(
+        events[-1], product_session_id="summary-session", process_generation=1
+    )
+    check(
+        "summary completion carries no duplicate text",
+        completed.kind is RuntimeEventKind.CONTENT_COMPLETED
+        and completed.payload.get("role") == "reasoning"
+        and "text" not in completed.payload,
     )
 
 
@@ -2254,11 +2768,231 @@ def test_child_thread_terminal_truth_and_authentication_classification() -> None
         and child_events[0].payload.get("status") == "failed",
     )
 
+    async def child_progress() -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+        host = CodexProcessHost(executable="codex")
+        state = SimpleNamespace(thread_id="parent-thread", listener=events.append)
+        route = AgentRoute(owner_thread_id="parent-thread", owner_turn_id="parent-turn")
+        await host._handle_agent_notification(
+            state,
+            route,
+            "child-thread",
+            "item/started",
+            {"threadId": "child-thread", "item": {"type": "webSearch"}},
+        )
+        await host._handle_agent_notification(
+            state,
+            route,
+            "child-thread",
+            "item/reasoning/textDelta",
+            {"threadId": "child-thread", "delta": "private reasoning"},
+        )
+        await host._handle_agent_notification(
+            state,
+            route,
+            "child-thread",
+            "item/completed",
+            {"threadId": "child-thread", "item": {"type": "webSearch"}},
+        )
+        return events
+
+    progress_events = asyncio.run(child_progress())
+    check(
+        "child item activity produces redacted typed status on its owning turn",
+        len(progress_events) == 2
+        and all(event.turn_id == "parent-turn" for event in progress_events)
+        and all(event.item_id == "child-thread" for event in progress_events)
+        and all("private reasoning" not in str(event.payload) for event in progress_events)
+        and all(
+            translate_event(
+                event,
+                product_session_id="product-session",
+                process_generation=1,
+            ).kind
+            is RuntimeEventKind.SUBAGENT_STATUS_CHANGED
+            for event in progress_events
+        ),
+    )
+
+    async def child_public_summary(streamed: bool = True) -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+        host = CodexProcessHost(executable="codex")
+        state = SimpleNamespace(thread_id="parent-thread", listener=events.append)
+        route = AgentRoute(owner_thread_id="parent-thread", owner_turn_id="parent-turn")
+        if streamed:
+            await host._handle_agent_notification(
+                state,
+                route,
+                "child-thread",
+                "item/reasoning/summaryTextDelta",
+                {"threadId": "child-thread", "itemId": "reason-1", "delta": "Checking evidence"},
+            )
+        await host._handle_agent_notification(
+            state,
+            route,
+            "child-thread",
+            "item/reasoning/textDelta",
+            {"threadId": "child-thread", "itemId": "reason-1", "delta": "private raw reasoning"},
+        )
+        await host._handle_agent_notification(
+            state,
+            route,
+            "child-thread",
+            "item/completed",
+            {
+                "threadId": "child-thread",
+                "item": {
+                    "id": "reason-1",
+                    "type": "reasoning",
+                    "summary": ["Checking evidence"],
+                    "content": ["private raw reasoning"],
+                },
+            },
+        )
+        return events
+
+    summary_events = asyncio.run(child_public_summary())
+    completed_summary_events = asyncio.run(child_public_summary(streamed=False))
+    check(
+        "child completion retains public summary without streaming",
+        completed_summary_events[-1].payload.get("details", {}).get("public_summary")
+        == "Checking evidence"
+        and all(
+            "private raw reasoning" not in str(event.payload) for event in completed_summary_events
+        ),
+    )
+
+    async def child_command() -> list[CodexSessionEvent]:
+        events: list[CodexSessionEvent] = []
+        host = CodexProcessHost(executable="codex")
+        state = SimpleNamespace(thread_id="parent-thread", listener=events.append)
+        route = AgentRoute(owner_thread_id="parent-thread", owner_turn_id="parent-turn")
+        item = {"id": "command-1", "type": "commandExecution", "command": "pwd"}
+        for method, extra in (
+            ("item/started", {}),
+            (
+                "item/completed",
+                {"aggregatedOutput": "/workspace", "exitCode": 0, "status": "completed"},
+            ),
+        ):
+            await host._handle_agent_notification(
+                state, route, "child-thread", method, {"item": {**item, **extra}}
+            )
+        return events
+
+    command_events = asyncio.run(child_command())
+    for native_item in (
+        {"type": "commandExecution", "command": "false", "exitCode": 1, "status": "completed"},
+        {
+            "type": "mcpToolCall",
+            "server": "search",
+            "tool": "query",
+            "arguments": {"q": "test"},
+            "error": {"message": "failed"},
+            "status": "completed",
+        },
+        {
+            "type": "dynamicToolCall",
+            "tool": "echo",
+            "arguments": {"text": "hello"},
+            "contentItems": [{"text": "hello"}],
+            "status": "completed",
+        },
+        {
+            "type": "fileChange",
+            "changes": [{"path": "a.txt", "kind": "add"}],
+            "status": "completed",
+        },
+    ):
+        child_payload = subagent_status_payload(
+            agent_thread_id="child",
+            agent_path="child",
+            activity="tool",
+            phase="completed",
+            item=native_item,
+        )
+        check(
+            f"child {native_item['type']} shares parent tool projection",
+            child_payload["details"]["tool"]
+            == {**tool_item_payload(native_item), **tool_item_result(native_item)},
+        )
+    check(
+        "child nonzero command exit is a failure even with completed native status",
+        tool_item_result({"type": "commandExecution", "status": "completed", "exitCode": 1})["ok"]
+        is False,
+    )
+    child_tools = [event.payload.get("details", {}).get("tool", {}) for event in command_events]
+    check(
+        "child command uses the same structured tool input and output as the parent",
+        child_tools[0] == {"name": "bash", "input": {"command": "pwd", "cwd": None, "actions": []}}
+        and child_tools[1]
+        == {
+            **child_tools[0],
+            "output": "/workspace",
+            "ok": True,
+            "status": "completed",
+            "exit_code": 0,
+        },
+    )
+    bounded_command = subagent_item_summary(
+        {
+            "type": "commandExecution",
+            "command": "pwd",
+            "aggregatedOutput": "x" * (CODEX_NATIVE_ACTIVITY_TEXT_LIMIT + 1),
+            "exitCode": 1,
+        }
+    )
+    check(
+        "child output is bounded while retaining failure exit code",
+        bounded_command == f"pwd\n\n{'x' * CODEX_NATIVE_ACTIVITY_TEXT_LIMIT}\n\nexit_code=1",
+    )
+    check(
+        "missing public summary never falls back to private reasoning",
+        subagent_item_summary({"type": "reasoning", "content": ["private raw reasoning"]}) == "",
+    )
+    command_summaries = [
+        event.payload.get("details", {}).get("public_summary", "") for event in command_events
+    ]
+    check(
+        "child command boundaries retain command and completed output",
+        len(command_summaries) == 2
+        and "pwd" in command_summaries[0]
+        and "pwd" in command_summaries[1]
+        and "/workspace" in command_summaries[1]
+        and "exit_code=0" in command_summaries[1],
+    )
+    check(
+        "child progress retains a public summary snapshot without raw reasoning",
+        len(summary_events) == 2
+        and all("private raw reasoning" not in str(event.payload) for event in summary_events)
+        and all(
+            event.payload.get("details", {}).get("public_summary") == "Checking evidence"
+            for event in summary_events
+        )
+        and all(
+            event.payload.get("details", {}).get("activity_item_id") == "reason-1"
+            for event in summary_events
+        ),
+    )
+    progress_router = ThreadRouter()
+    check(
+        "stream progress is bounded while item boundaries remain immediate",
+        progress_router.observe_agent_activity("child", now=0, interval=15, boundary=False)
+        and not progress_router.observe_agent_activity("child", now=1, interval=15, boundary=False)
+        and progress_router.observe_agent_activity("child", now=1, interval=15, boundary=True)
+        and progress_router.observe_agent_activity("child", now=16, interval=15, boundary=False),
+    )
+    progress_router.update_agent_status("child", "failed")
+    check(
+        "terminal child cannot publish a later running update",
+        not progress_router.observe_agent_activity("child", now=30, interval=15, boundary=True),
+    )
+
 
 def test_unsupported_dynamic_tool_fails_fast() -> None:
     print("== unsupported dynamic tool boundary ==")
 
-    async def scenario() -> tuple[list[tuple[str, object]], RuntimeEvent]:
+    async def scenario() -> tuple[list[tuple[str, object]], int]:
         responses: list[tuple[str, object]] = []
 
         async def resolve_tool(request_id: str, response: object) -> bool:
@@ -2268,7 +3002,7 @@ def test_unsupported_dynamic_tool_fails_fast() -> None:
         session = CodexRuntimeSession(
             OpenSessionRequest(product_session_id="product-session", cwd=ROOT)
         )
-        session._request = SimpleNamespace(product_session_id="product-session")
+        session._request = SimpleNamespace(product_session_id="product-session", service_tools=())
         session._events = asyncio.Queue()
         session._sequence = 0
         session._event_namespace = "attachment-a"
@@ -2291,21 +3025,148 @@ def test_unsupported_dynamic_tool_fails_fast() -> None:
                 payload={"request_id": "tool-request", "tool": "exec"},
             )
         )
-        return responses, await session._events.get()
+        return responses, session._events.qsize()
 
-    responses, event = asyncio.run(scenario())
+    responses, queued = asyncio.run(scenario())
     check(
         "undeclared dynamic tool receives an immediate negative response",
         len(responses) == 1
         and responses[0][0] == "tool-request"
         and getattr(responses[0][1], "success", True) is False,
     )
-    check(
-        "unsupported vendor capability remains observable as an extension",
-        event.kind is RuntimeEventKind.RUNTIME_EXTENSION
-        and isinstance(event.payload, dict)
-        and event.payload.get("extension_kind") == "dynamic_tool_requested",
+    check("undeclared dynamic tool never reaches Serve", queued == 0)
+
+
+def test_resumed_dynamic_tool_declaration_is_preserved() -> None:
+    bridge_tool = RuntimeServiceTool(
+        name="scholarseed_bridge",
+        description="Product bridge",
+        input_schema={"type": "object"},
     )
+    binding = RuntimeBinding(
+        product_session_id="product-session",
+        runtime_id="codex",
+        adapter_version="fixture",
+        runtime_version="fixture",
+        protocol_version="fixture",
+        protocol_schema_hash="fixture",
+        opaque_session_ref="native-session",
+        capabilities=CapabilitySet(),
+    )
+    request = ResumeSessionRequest(
+        binding=binding,
+        cwd=ROOT,
+        service_tools=(bridge_tool,),
+    )
+    restored = provider()._open_request(request)
+    assert restored.service_tools == (bridge_tool,)
+
+
+def test_thread_model_configuration_is_confirmed() -> None:
+    print("== native thread model confirmation ==")
+    request = CodexSessionOpenRequest(
+        request_id="model-confirmation",
+        runtime_id="codex",
+        cwd=ROOT,
+        model="selected-model",
+        model_provider="scholarseed",
+    )
+    response = {"model": "selected-model", "modelProvider": "scholarseed"}
+    check(
+        "matching model and provider are accepted",
+        _confirmed_thread_model(response, request) == "selected-model",
+    )
+    for mismatched in (
+        {"model": "previous-model", "modelProvider": "scholarseed"},
+        {"model": "selected-model", "modelProvider": "previous-provider"},
+        {"model": "selected-model"},
+        {"modelProvider": "scholarseed"},
+    ):
+        try:
+            _confirmed_thread_model(mismatched, request)
+        except AppServerError as error:
+            check(
+                "unconfirmed model configuration is rejected",
+                error.safe_error == THREAD_CONFIGURATION_MISMATCH,
+            )
+        else:
+            check("unconfirmed model configuration is rejected", False)
+
+    shared = CodexSessionOpenRequest(
+        request_id="same-process",
+        runtime_id="codex",
+        cwd=ROOT,
+        model="model-a",
+        model_provider="scholarseed",
+        process_environment={"CODEX_HOME": "/isolated"},
+        launch_arguments=(CodexRuntimeLaunchArgument(option="-c", value="catalog"),),
+        execution_scope="product-session",
+    )
+    check(
+        "thread-scoped model and provider URL can change within one host",
+        _same_process_configuration(
+            shared,
+            replace(
+                shared,
+                model="model-b",
+                thread_config={"model_providers": {"scholarseed": {"base_url": "new"}}},
+            ),
+        ),
+    )
+    check(
+        "different process catalog cannot reuse the writer host",
+        not _same_process_configuration(
+            shared,
+            replace(
+                shared,
+                launch_arguments=(CodexRuntimeLaunchArgument(option="-c", value="other"),),
+            ),
+        ),
+    )
+    check(
+        "permission changes cannot be silently reverted by model switching",
+        not _same_process_configuration(
+            shared,
+            replace(shared, sandbox="workspace-write"),
+        ),
+    )
+
+
+def test_same_process_reopen_restores_previous_configuration_on_failure() -> None:
+    print("== same-process thread reopen ==")
+
+    async def scenario() -> tuple[bool, bool, bool]:
+        host = SimpleNamespace(process_generation=3, suspend_thread=AsyncMock())
+        lease = SimpleNamespace(host=host)
+        original = CodexSessionOpenRequest(
+            request_id="same-process-reopen",
+            runtime_id="codex",
+            cwd=ROOT,
+            model="model-a",
+        )
+        thread = CodexThreadSession(original, lease=lease)
+        thread._opened = True
+        thread.session_id = "durable-thread"
+        thread._attach = AsyncMock(side_effect=[AppServerError("resume rejected"), None])
+        candidate = replace(original, resume_session_id="durable-thread", model="model-b")
+        try:
+            await thread.reopen(candidate)
+        except AppServerError:
+            pass
+        else:
+            return False, False, False
+        return (
+            host.suspend_thread.await_args.args == ("durable-thread", 3),
+            thread._attach.await_count == 2,
+            thread.request.resume_session_id == "durable-thread"
+            and thread.request.model == original.model
+            and thread.lease is lease,
+        )
+
+    suspended, restored, original_retained = asyncio.run(scenario())
+    check("old native attachment is unsubscribed once", suspended)
+    check("rejected candidate triggers old configuration restoration", restored)
+    check("restored thread retains its original host lease", original_retained)
 
 
 def test_started_native_turn_owns_terminal_outcome() -> None:
@@ -2333,6 +3194,55 @@ def test_started_native_turn_owns_terminal_outcome() -> None:
     check(
         "turn/started prevents a synthetic failed terminal",
         queued == 0 and active_command == "command-1",
+    )
+
+
+def test_unknown_native_turn_owns_terminal_outcome() -> None:
+    print("== unknown turn terminal ownership ==")
+
+    async def scenario() -> tuple[list[RuntimeEventKind], str]:
+        session = CodexRuntimeSession(
+            OpenSessionRequest(product_session_id="product-session", cwd=ROOT)
+        )
+        session._events = asyncio.Queue()
+        session._active_command_id = "command-1"
+        session._binding = RuntimeBinding(
+            product_session_id="product-session",
+            runtime_id="codex",
+            adapter_version="fixture",
+            runtime_version="fixture",
+            protocol_version="fixture",
+            protocol_schema_hash="fixture",
+            opaque_session_ref="native-session",
+            capabilities=CapabilitySet(),
+        )
+        session._native = SimpleNamespace(
+            host=SimpleNamespace(readiness=SimpleNamespace(process_generation=2))
+        )
+
+        async def failed_submission_task() -> None:
+            raise RuntimeError("turn/start outcome is unknown")
+
+        with patch.object(session, "_observe_evidence", new=AsyncMock()):
+            await session._on_native_event(
+                CodexSessionEvent(
+                    runtime_id="codex",
+                    session_id="native-session",
+                    kind=CodexSessionEventKind.TURN_UNKNOWN,
+                    turn_id="command-1",
+                    payload={"safe_error": "codex_turn_outcome_unknown"},
+                )
+            )
+            task = asyncio.create_task(failed_submission_task())
+            await asyncio.sleep(0)
+            await session._finish_turn_task(task, "command-1")
+        kinds = [event.kind for event in list(session._events._queue)]
+        return kinds, session._active_command_id
+
+    kinds, active_command = asyncio.run(scenario())
+    check(
+        "turn/unknown prevents a synthetic failed terminal",
+        kinds == [RuntimeEventKind.TURN_UNKNOWN] and active_command == "command-1",
     )
 
 
@@ -2472,21 +3382,97 @@ def test_upstream_inspection_launch() -> None:
     )
 
 
+def test_skill_inventory_refresh_reasserts_roots() -> None:
+    print("== refreshed skill inventory reasserts product roots ==")
+    roots = (ROOT / "bundled-skills", ROOT / "user-skills")
+    controls = []
+
+    class Skills:
+        def __init__(self, events: list[str]) -> None:
+            self.events = events
+
+        async def list_skills(
+            self,
+            *,
+            cwd: Path,
+            force_reload: bool,
+        ) -> SkillInventory:
+            self.events.append("list")
+            return SkillInventory(
+                cwd=cwd,
+                revision="refreshed" if force_reload else "cached",
+            )
+
+    class Control:
+        def __init__(self, _request, *, host_pool):
+            self.host_pool = host_pool
+            self.events: list[str] = []
+            self.host = SimpleNamespace(
+                reassert_skill_roots=AsyncMock(
+                    side_effect=lambda _roots: self.events.append("roots")
+                )
+            )
+            self.skill_control = Skills(self.events)
+            controls.append(self)
+
+        async def open(self):
+            return None
+
+        async def aclose(self):
+            return None
+
+    async def scenario() -> None:
+        with (
+            patch("scholarseed_codex.provider.CodexRuntimeControl", Control),
+            patch("scholarseed_codex.provider.prepare_codex_runtime_home", return_value=ROOT),
+            patch(
+                "scholarseed_codex.provider.configured_codex_executable",
+                return_value="/official/codex",
+            ),
+        ):
+            runtime = provider()
+            await runtime.inspect(
+                RuntimeInspectionRequest(
+                    cwd=ROOT,
+                    inventory=InventoryRequest((InventoryKind.SKILLS,), refresh=False),
+                    roots=roots,
+                )
+            )
+            await runtime.inspect(
+                RuntimeInspectionRequest(
+                    cwd=ROOT,
+                    inventory=InventoryRequest((InventoryKind.SKILLS,), refresh=True),
+                    roots=roots,
+                )
+            )
+
+    asyncio.run(scenario())
+    check(
+        "cached inventory preserves the existing root registration",
+        controls[0].host.reassert_skill_roots.await_count == 0,
+    )
+    check(
+        "forced inventory refresh reasserts the complete product root set",
+        controls[1].host.reassert_skill_roots.await_args.args == (roots,),
+    )
+    check(
+        "forced inventory refresh reasserts roots before listing skills",
+        controls[1].events == ["roots", "list"],
+    )
+
+
 def test_durable_thread_unsubscribes() -> None:
     check(
         "provider configuration participates in process isolation",
-        pool_module._environment_digest(
-            {}, (), (), {"model_providers": {"remote": {"base_url": "https://one.example"}}}
-        )
-        != pool_module._environment_digest(
-            {}, (), (), {"model_providers": {"remote": {"base_url": "https://two.example"}}}
-        ),
+        pool_module._environment_digest({"MODEL_PROVIDER": "one"}, (), ())
+        != pool_module._environment_digest({"MODEL_PROVIDER": "two"}, (), ()),
     )
 
     async def run() -> None:
         state = SimpleNamespace(
             request=SimpleNamespace(ephemeral=False),
             turn=SimpleNamespace(close=AsyncMock()),
+            permission_confirmation=None,
         )
         host = SimpleNamespace(
             _threads={"durable": state},
@@ -2508,6 +3494,124 @@ def test_durable_thread_unsubscribes() -> None:
     asyncio.run(run())
 
 
+def test_codex_flattened_stream_disconnect_recovers_transient_semantics() -> None:
+    """Codex 压平流内 5xx 后 adapter 仍要恢复「暂时不可用」，而不是「rejected the request」。
+
+    bug 87190842：Codex 把上游 response.failed(server_error, ``<500> …``) 压平成
+    ``stream disconnected before completion: <500> …`` 散文；前缀锚定的 ``<NNN>`` 提取被包装
+    挡住后 code 塌成 codex_provider_failed，用户把瞬时 500 读成确定性拒绝。
+    """
+    flattened = provider_failure(
+        {
+            "message": "stream disconnected before completion: <500> InternalError.Algo: "
+            "An error occurred in model serving, error message is: [Unexpected error: UNKNOWN]",
+            "codex_error_info": "other",
+        }
+    )
+    check(
+        "flattened in-stream 5xx recovers server_error semantics",
+        flattened.code == "server_error"
+        and flattened.diagnostic_code == "server_error"
+        and flattened.http_status == 500
+        and flattened.message == PROVIDER_UNAVAILABLE_MESSAGE
+        and flattened.retryability is RuntimeRetryability.USER_RETRYABLE,
+    )
+    bare = provider_failure({"message": "<503> InternalError.Algo: x"})
+    check(
+        "bare 5xx prefix without structured code still classifies as transient",
+        bare.code == "server_error" and bare.http_status == 503,
+    )
+    bridge_reset = provider_failure(
+        {
+            "message": 'unexpected status 502 Bad Gateway: {"error":{"code":'
+            '"service_unavailable","message":"The model provider is temporarily unavailable."}}'
+        }
+    )
+    check(
+        "structured bridge transport failure remains user-retryable and unavailable",
+        bridge_reset.code == "service_unavailable"
+        and bridge_reset.message == PROVIDER_UNAVAILABLE_MESSAGE
+        and bridge_reset.retryability is RuntimeRetryability.USER_RETRYABLE,
+    )
+    overloaded = provider_failure({"error": {"code": "server_is_overloaded"}})
+    check(
+        "structured overload remains temporarily unavailable",
+        overloaded.code == "server_is_overloaded"
+        and overloaded.message == PROVIDER_UNAVAILABLE_MESSAGE
+        and overloaded.retryability is RuntimeRetryability.USER_RETRYABLE,
+    )
+    safety = provider_failure(
+        {"code": "server_error", "message": "<400> InternalError.Algo.DataInspectionFailed: x"}
+    )
+    check(
+        "content safety signature stays terminal despite 4xx prefix",
+        safety.code == CONTENT_SAFETY_BLOCKED
+        and safety.retryability is RuntimeRetryability.TERMINAL,
+    )
+
+
+def test_gate_interrupt_reclaims_only_active_command_terminal() -> None:
+    print("== gate interrupt terminal cleanup ==")
+
+    async def scenario() -> list[tuple[str, dict[str, Any]]]:
+        calls: list[tuple[str, dict[str, Any]]] = []
+        inventory_reads = 0
+        completion: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+
+        async def request(
+            method: str, params: dict[str, Any], *, generation: int
+        ) -> dict[str, Any]:
+            nonlocal inventory_reads
+            if generation != 1:
+                raise AssertionError("unexpected Codex process generation")
+            calls.append((method, params))
+            if method == "turn/interrupt":
+                if not completion.done():
+                    completion.set_result({"status": "interrupted"})
+                return {}
+            if method == NATIVE_BACKGROUND_TERMINALS_LIST_METHOD:
+                inventory_reads += 1
+                rows = [{"itemId": "unrelated-item", "processId": "unrelated-process"}]
+                if inventory_reads == 1:
+                    rows.append({"itemId": "active-item", "processId": "active-process"})
+                return {"data": rows, "nextCursor": None}
+            if method == NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD:
+                return {"terminated": True}
+            raise AssertionError(f"unexpected Codex method: {method}")
+
+        thread = SimpleNamespace(thread_id="native-thread", attached_generation=1)
+        runtime = CodexTurnRuntime(
+            thread,
+            request=request,
+            ensure_attached=AsyncMock(return_value=1),
+            stale_requests=AsyncMock(),
+            emitter=CodexEmitter(),
+            router=SimpleNamespace(),
+            watcher=SimpleNamespace(),
+            diagnostic=Mock(),
+            protocol_error=Mock(),
+        )
+        runtime.active_turn_id = "active-turn"
+        runtime.active_command_items["active-turn"] = {"active-item"}
+        runtime.turn_done = completion
+        await runtime.interrupt(cleanup_background_processes=True)
+        await runtime.interrupt()
+        return calls
+
+    calls = asyncio.run(scenario())
+    terminated = [
+        params for method, params in calls if method == NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD
+    ]
+    check(
+        "gate terminates only the interrupted command",
+        terminated == [{"threadId": "native-thread", "processId": "active-process"}],
+    )
+    check(
+        "ordinary interrupt does not inspect background terminals",
+        [method for method, _ in calls].count(NATIVE_BACKGROUND_TERMINALS_LIST_METHOD) == 3,
+    )
+
+
 def main() -> int:
     test_catalog_process_cleanup()
     test_approval_catalog_binding()
@@ -2526,6 +3630,7 @@ def main() -> int:
     test_remote_authentication_independence()
     test_vendor_neutral_model_projection()
     test_remote_retry_budget_projection()
+    test_internal_channel_proxy_bypass_projection()
     test_session_scoped_web_search_projection()
     test_opaque_launch_secret_projection()
     test_environment_removal()
@@ -2540,12 +3645,20 @@ def main() -> int:
     test_mcp_control_projection()
     test_content_completion_and_sequence()
     test_nullable_phase_message_streaming()
+    test_public_reasoning_streaming()
+    test_gate_interrupt_reclaims_only_active_command_terminal()
     test_capability_resolution_is_synthesised_once_per_pair()
     test_subagent_lifecycle_survives_out_of_order_observation()
     test_unsupported_dynamic_tool_fails_fast()
+    test_resumed_dynamic_tool_declaration_is_preserved()
+    test_thread_model_configuration_is_confirmed()
+    test_same_process_reopen_restores_previous_configuration_on_failure()
     test_started_native_turn_owns_terminal_outcome()
+    test_unknown_native_turn_owns_terminal_outcome()
     test_evidence_cursor()
     test_upstream_inspection_launch()
+    test_skill_inventory_refresh_reasserts_roots()
+    test_codex_flattened_stream_disconnect_recovers_transient_semantics()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0
 

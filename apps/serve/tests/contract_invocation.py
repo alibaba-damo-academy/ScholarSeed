@@ -17,6 +17,7 @@ from scholarseed_runtime.contract import (
     CallbackAudience,
     CallbackKind,
     DeliveryClass,
+    PermissionIntent,
     RuntimeCallbackRequest,
     RuntimeCapabilityName,
     RuntimeEvent,
@@ -26,11 +27,16 @@ from scholarseed_runtime.contract import (
 from scholarseed_runtime.gateway.driver import RuntimeTurnOutcome, RuntimeTurnResult
 from service.chat.api.artifacts import register_artifact_routes
 from service.chat.runtime.composition import OneShotRuntimeResult
+from service.chat.runtime.projection import (
+    ARTIFACT_PUBLISH_ACCESS_DENIED,
+    ARTIFACT_PUBLISH_IO_FAILED,
+)
 from service.invocation.api.routes import register_invocation_routes
 from service.invocation.api.schema import InvocationStartRequest
 from service.invocation.service.artifacts import ARTIFACT_MAX_BYTES
 from service.invocation.service.events import InvocationEventProjector
-from service.invocation.service.runtime import InvocationService, OneShotExecution
+from service.invocation.service.model import InvocationCommand, InvocationSkill
+from service.invocation.service.runtime import InvocationError, InvocationService, OneShotExecution
 from service.invocation.service.skills import (
     InvocationSkillError,
     InvocationSkillResolver,
@@ -267,6 +273,47 @@ def frames(response_text: str) -> list[dict[str, Any]]:
 
 
 class InvocationContract(unittest.TestCase):
+    def test_parent_permission_is_inherited_without_network_or_approval_expansion(self) -> None:
+        async def scenario() -> None:
+            permission = PermissionIntent(
+                mode=RuntimePermissionMode.ASK,
+                network_domains=("example.com",),
+                local_sockets=(self.root / "bridge.sock",),
+                deny_read_roots=(self.root / "private",),
+            )
+            prepared = await self.service.prepare(
+                InvocationCommand(
+                    prompt="search", skill=InvocationSkill("builtin:web-search", "official")
+                ),
+                owner_id=OWNER_ID,
+                user_id=USER_ID,
+                permission=permission,
+            )
+            events = [event async for event in self.service.stream(prepared)]
+            self.assertTrue(events)
+            call = self.runtime.calls[-1]
+            self.assertEqual(call["permission"], permission)
+            self.assertEqual(call["permission_mode"], RuntimePermissionMode.ASK)
+            self.assertFalse(call["network_access"])
+
+        asyncio.run(scenario())
+
+    def test_full_access_profile_cannot_expand_parent_permission(self) -> None:
+        async def scenario() -> None:
+            self.skills.permission_mode = RuntimePermissionMode.BYPASS
+            with self.assertRaisesRegex(InvocationError, "invocation_permission_exceeds_parent"):
+                await self.service.prepare(
+                    InvocationCommand(
+                        prompt="search", skill=InvocationSkill("builtin:web-search", "browser")
+                    ),
+                    owner_id=OWNER_ID,
+                    user_id=USER_ID,
+                    permission=PermissionIntent(mode=RuntimePermissionMode.ASK),
+                )
+            self.assertEqual(self.runtime.calls, [])
+
+        asyncio.run(scenario())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         root = Path(self.temporary.name)
@@ -844,13 +891,35 @@ class ScopedPublisher:
     bridge_token: str = "token-1"
     publication_turn_id: str = "turn-1"
     published: dict[str, Any] | None = None
+    failure_code: str = ""
 
     async def publish_artifact(self, path: str, role: str, *, turn_id: str) -> dict[str, Any]:
+        if self.failure_code:
+            raise ArtifactPublishFailure(self.failure_code)
         self.published = {"path": path, "role": role, "turn_id": turn_id}
         return self.published
 
 
 class InvocationBridgeContract(unittest.TestCase):
+    def test_artifact_snapshot_failure_has_actionable_message(self) -> None:
+        publisher = ScopedPublisher(failure_code="artifact_snapshot_busy")
+        app = FastAPI()
+        register_artifact_routes(
+            app, lambda scope_id: publisher if scope_id == publisher.id else None
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/internal/bridge/artifact/publish",
+                headers={
+                    BRIDGE_SESSION_HEADER: publisher.id,
+                    BRIDGE_TOKEN_HEADER: publisher.bridge_token,
+                },
+                json={"path": "report.md", "role": "final"},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "artifact_snapshot_busy")
+        self.assertIn("retry publication", response.json()["message"])
+
     def test_artifact_route_accepts_an_authenticated_non_chat_scope(self) -> None:
         publisher = ScopedPublisher()
         app = FastAPI()
@@ -878,6 +947,35 @@ class InvocationBridgeContract(unittest.TestCase):
             publisher.published,
             {"path": "report.md", "role": "final", "turn_id": "turn-1"},
         )
+
+    def test_artifact_route_maps_file_access_failures(self) -> None:
+        publisher = ScopedPublisher(failure_code=ARTIFACT_PUBLISH_ACCESS_DENIED)
+        app = FastAPI()
+        register_artifact_routes(
+            app,
+            lambda scope_id: publisher if scope_id == publisher.id else None,
+        )
+        client = TestClient(app)
+        headers = {
+            BRIDGE_SESSION_HEADER: publisher.id,
+            BRIDGE_TOKEN_HEADER: publisher.bridge_token,
+        }
+        denied = client.post(
+            "/api/internal/bridge/artifact/publish",
+            headers=headers,
+            json={"path": "report.md", "role": "final"},
+        )
+        publisher.failure_code = ARTIFACT_PUBLISH_IO_FAILED
+        unavailable = client.post(
+            "/api/internal/bridge/artifact/publish",
+            headers=headers,
+            json={"path": "report.md", "role": "final"},
+        )
+        client.close()
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["error"], ARTIFACT_PUBLISH_ACCESS_DENIED)
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertEqual(unavailable.json()["error"], ARTIFACT_PUBLISH_IO_FAILED)
 
 
 if __name__ == "__main__":

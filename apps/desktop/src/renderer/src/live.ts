@@ -3,8 +3,11 @@ import { feedback } from './contracts/feedback'
 import { useTranslation } from 'react-i18next'
 import { useCallback, useEffect, useRef } from 'react'
 
-import {
+import type {
   AspEnvelope,
+  ServeSession
+} from './api'
+import {
   BACKEND_FAILURE_EVENT,
   BACKEND_ADMISSION_FAILURE,
   type BackendFailureDetail,
@@ -12,26 +15,29 @@ import {
   requestFailureFeedback,
   getHistoryWithTodos,
   getModels,
-  listSessions,
+  loadSessionCatalog,
   listQueuedMessages,
   listProjects,
   openSession,
-  ServeSession,
   type SessionResumeFailure,
   type SessionTurnStatus,
   type TurnActivitySnapshot,
   streamEvents
 } from './api'
-import { pruneMissingCatalogThreads, retainCatalogThread } from './catalog'
+import {
+  projectCatalogFailure,
+  pruneMissingCatalogThreads,
+  retainCatalogThread,
+  sessionCatalogRetryDelay,
+  sessionCatalogNeedsRefresh
+} from './catalog'
 import { markCreditsExhausted } from './account'
 import { DirectiveStreamHarness } from './directive'
 import { describeTurnFailure, sameTurnFailureMessage } from './failures'
 import { turnAdmissionFeedback } from './input'
-import { projectHilCard, hilEventResolution, hilResolution } from './hil'
-import {
-  artifactBelongsToResources,
+import { projectHilCard, hilEventResolution, settlePendingHil, hilResolvedRunState } from './hil'
+import type {
   Cognitive,
-  RELEASED_PLAN_SOURCE,
   ConvItem,
   ModelRun,
   SessionArtifact,
@@ -39,11 +45,18 @@ import {
   SessionStatus,
   Thread
 } from './model'
+import {
+  artifactBelongsToResources,
+  RELEASED_PLAN_SOURCE
+} from './model'
 import { queuedMessageFromPayload, upsertQueuedMessage } from './queue'
 import { mergeQueuedOutbox, releaseQueuedOutbox } from './outbox'
 import { useApp } from './store'
+import { projectPlanSnapshots } from './todo'
 import {
   insertTurnRuntimeItem,
+  resolveHilItem,
+  settleInterruptedTools,
   projectArtifactSnapshot,
   projectAnswerSources,
   projectArtifactFailure,
@@ -57,6 +70,7 @@ import {
   projectSkillActivityEvent,
   projectSubagentActivity,
   projectStreamDelta,
+  projectReasoningEvent,
   projectWebSearchEvent,
   streamItemIdentity,
   upsertUserMessageEvent,
@@ -65,6 +79,7 @@ import {
 import { findSessionNode, serveSessionNode, sessionTone, upsertSessionNode } from './tree'
 import {
   applyRuntimeIncident,
+  catalogRunStateIsCurrent,
   projectSessionRecovery,
   projectSessionState,
   reportOperationState,
@@ -84,6 +99,8 @@ const SESSION_CATALOG_APPEARANCE_GRACE_SECONDS = 5
 const SESSION_RESUME_INITIAL_DELAY_MS = 1_000
 const SESSION_RESUME_MAX_DELAY_MS = 30_000
 const SESSION_RESUME_MAX_ATTEMPTS = 5
+const SESSION_CATALOG_RECOVERY_NOTICE = feedback('shell', 'workspaceLoading.retrying')
+const SESSION_CATALOG_UNAVAILABLE_NOTICE = feedback('shell', 'workspaceLoading.unavailable')
 const SESSION_HISTORY_UNAVAILABLE = '历史记录未能加载'
 const PRODUCT_EVENT_SECONDS_TO_MILLISECONDS = 1000
 const directiveStream = new DirectiveStreamHarness()
@@ -96,7 +113,7 @@ type TurnFailure = Extract<ConvItem, { kind: 'error' }>
 const LEGACY_RUNTIME_NOTICE_PREFIX = 'Agent 运行时提示：'
 // Canonical control text; runtimeNotice carries language-independent display provenance.
 const LEGACY_RUNTIME_NOTICE_EMPTY = 'Agent 运行时报告了一个非终态事件。'
-const TURN_INTERRUPTED_MESSAGE = '已停止'
+const TURN_INTERRUPTED_MESSAGE = '用户主动停止了该任务'
 const TURN_INTERRUPTED_MESSAGES: Record<string, string> = {
   process_exit: '本轮因 Agent 运行时退出而中断，书深未自动重放；可以继续下一轮。'
 }
@@ -221,7 +238,7 @@ function failThread(
 function reportLegacyRuntimeNotice(thread: Thread, message: string, turnId: string | undefined): ThreadUpdate {
   const notice: ConvItem = {
     kind: 'status',
-    text: `${LEGACY_RUNTIME_NOTICE_PREFIX}${message || LEGACY_RUNTIME_NOTICE_EMPTY}`,
+    text: `${LEGACY_RUNTIME_NOTICE_PREFIX}${LEGACY_RUNTIME_NOTICE_EMPTY}`,
     runtimeNotice: { diagnostic: message || undefined },
     tone: 'inference',
     turnId
@@ -313,20 +330,6 @@ function upsertArtifact(items: SessionArtifact[], artifact: SessionArtifact): Se
   return next
 }
 
-function settlePendingHil(
-  conversation: ConvItem[],
-  turnId: string | undefined,
-  state: 'cancelled' | 'stale'
-): ConvItem[] {
-  return conversation.map((item) => (
-    item.kind === 'hil'
-      && item.turnId === turnId
-      && (item.hilState === 'pending' || item.hilState === 'submitting')
-      ? { ...item, ...hilResolution({ kind: state }), hilState: state }
-      : item
-  ))
-}
-
 function onEvent(
   threadId: string,
   event: AspEnvelope,
@@ -373,6 +376,12 @@ function onEvent(
       refreshMeta.current()
       return
     case 'user_message':
+      if (event.data.binding === 'cancelled') {
+        patchThread(threadId, (thread) => ({
+          conversation: upsertUserMessageEvent(thread.conversation, event)
+        }))
+        return
+      }
       patchThread(threadId, (thread) => ({
         conversation: upsertUserMessageEvent(thread.conversation, event),
         turnTimings: bindTurnTiming(
@@ -400,20 +409,26 @@ function onEvent(
       set({ petOverride: 'running' })
       return
     case 'reasoning_delta':
-      appendDelta(
-        threadId,
-        'thinking',
-        event.data.delta,
-        event.turn_id,
-        event.item_id,
-        event.seq,
-        productEventTime(event.ts),
-        patchThread
-      )
-      set({ petOverride: 'running' })
+    case 'reasoning_completed':
+      patchThread(threadId, (thread) => {
+        const outcome = event.turn_id ? thread.turnOutcomes?.[event.turn_id] : undefined
+        if (outcome && outcome !== 'running') return {}
+        const conversation = projectReasoningEvent(thread.conversation, event)
+        if (conversation === thread.conversation) return {}
+        return {
+          conversation,
+          ...(event.type === 'reasoning_delta' ? {
+            running: true,
+            status: 'running' as const,
+            turnOutcomes: turnOutcomes(thread, event.turn_id, 'running'),
+            turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts))
+          } : {})
+        }
+      })
       return
     case 'plan_snapshot':
       patchThread(threadId, (thread) => ({
+        planSnapshots: projectPlanSnapshots([event], thread.planSnapshots),
         todos: event.data.items.map((item) => ({ ...item })),
         todoTurnId: event.turn_id ?? null,
         turnOutcomes: event.data.plan?.source === RELEASED_PLAN_SOURCE ? thread.turnOutcomes : turnOutcomes(thread, event.turn_id, 'running'),
@@ -438,6 +453,7 @@ function onEvent(
               status: 'running',
               turnId: event.turn_id,
               itemId: event.item_id,
+              eventSeq: event.seq,
               startedAt: productEventTime(event.ts)
             }],
         turnOutcomes: turnOutcomes(thread, event.turn_id, 'running'),
@@ -466,6 +482,7 @@ function onEvent(
                 ...item,
                 name: event.data.name || item.name,
                 result: event.data.output ?? item.result,
+                exitCode: event.data.exit_code ?? item.exitCode,
                 status: event.data.success ? 'done' : 'error',
                 completedAt: productEventTime(event.ts)
               }
@@ -653,8 +670,8 @@ function onEvent(
         return
       }
       patchThread(threadId, (thread) => ({
-        running: true,
-        status: 'waiting',
+        running: event.data.lifetime === 'session' ? thread.running : true,
+        status: event.data.lifetime === 'session' && !thread.running ? thread.status : 'waiting',
         conversation: thread.conversation.some(
           (item) => item.kind === 'hil' && item.requestId === event.data.request_id
         )
@@ -678,8 +695,8 @@ function onEvent(
                 event.seq
               )
             ),
-        turnOutcomes: turnOutcomes(thread, event.turn_id, 'running'),
-        turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts))
+        turnOutcomes: event.data.lifetime === 'session' ? thread.turnOutcomes : turnOutcomes(thread, event.turn_id, 'running'),
+        turnTimings: event.data.lifetime === 'session' ? thread.turnTimings : turnTimings(thread, event.turn_id, productEventTime(event.ts))
       }))
       liveIndex.current[threadId] = null
       set({ petOverride: 'waiting' })
@@ -692,19 +709,13 @@ function onEvent(
         // owns the active turn and may continue with a failure result.  Turn
         // terminal events are the sole authority allowed to mark the session
         // done.  A stale HIL similarly leaves the current run state intact.
-        running: event.data.state === 'stale' ? thread.running : true,
-        status: event.data.state === 'stale' ? thread.status : 'running',
-        conversation: thread.conversation.map((item) => (
-          item.kind === 'hil' && item.requestId === event.data.request_id
-            ? {
-                ...item,
-                ...hilEventResolution(event.data.answer, event.data.state),
-                answers: event.data.answers,
-                decisionScope: event.data.decision_scope,
-                hilState: event.data.state
-              }
-            : item
-        ))
+        ...(event.data.state === 'stale' ? {} : hilResolvedRunState(thread, event.turn_id)),
+        conversation: resolveHilItem(thread.conversation, event.data.request_id, {
+          ...hilEventResolution(event.data.answer, event.data.state, event.data.resolved_at ?? event.ts),
+          answers: event.data.answers,
+          decisionScope: event.data.decision_scope,
+          hilState: event.data.state
+        }, event.seq)
       }))
       window.dispatchEvent(new CustomEvent('scholarseed:refresh-interactions'))
       return
@@ -746,7 +757,7 @@ function onEvent(
           true
         ),
         conversation: placeFinalAssistantLast(
-          settlePendingHil(thread.conversation, event.turn_id, 'stale'),
+          settlePendingHil(thread.conversation, event.turn_id, 'stale', true),
           [event.turn_id]
         )
       }))
@@ -770,12 +781,17 @@ function onEvent(
           true
         ),
         conversation: [
-          ...settlePendingHil(thread.conversation, event.turn_id, 'stale'),
+          ...settleInterruptedTools(
+            settlePendingHil(thread.conversation, event.turn_id, 'stale'),
+            event.turn_id,
+            productEventTime(event.ts)
+          ),
           {
             kind: 'status',
             text: TURN_INTERRUPTED_MESSAGES[event.data.reason ?? '']
               ?? TURN_INTERRUPTED_MESSAGE,
             tone: event.data.reason === 'process_exit' ? 'tension' : 'experience',
+            hideIcon: event.data.reason !== 'process_exit',
             retainOnHistoryRefresh: true,
             turnId: event.turn_id,
             itemId: event.item_id,
@@ -790,6 +806,14 @@ function onEvent(
     case 'turn_unknown':
       directiveStream.clearPrefix(threadId)
       liveIndex.current[threadId] = null
+      if (event.data.confirmed === true) {
+        patchThread(threadId, (thread) => ({
+          ...reportTurnReconciled(thread, event.turn_id ?? ''),
+          turnTimings: turnTimings(thread, event.turn_id, productEventTime(event.ts), true)
+        }))
+        refreshMeta.current()
+        return
+      }
       patchThread(threadId, (thread) => ({
         ...reportTurnUnknown(thread, {
           sessionId: event.session_id,
@@ -930,8 +954,11 @@ function reconcileThreadRuntime(
   for (const [id, thread] of Object.entries(threads)) {
     const session = byId.get(thread.sessionId ?? thread.id)
     if (!session) continue
-    const running = session.running === true
-    const status: SessionStatus = session.waiting
+    const stateCurrent = catalogRunStateIsCurrent(session, thread)
+    const running = stateCurrent ? session.running === true : thread.running
+    const status: SessionStatus = !stateCurrent
+      ? thread.status ?? (thread.running ? 'running' : 'done')
+      : session.waiting
       ? 'waiting'
       : running
         ? 'running'
@@ -942,6 +969,8 @@ function reconcileThreadRuntime(
     next[id] = {
       ...thread,
       running,
+      recoveryBlocked: stateCurrent ? session.recovery_blocked === true : thread.recoveryBlocked,
+      recoveryPending: stateCurrent ? session.recovery_pending === true : thread.recoveryPending,
       status,
       workdir: session.runtime_workdir || session.workdir || thread.workdir,
       projectPath: session.project_path !== undefined ? session.project_path : thread.projectPath ?? null,
@@ -969,6 +998,8 @@ export function useLiveSession(): void {
   const resumeStopped = useRef<Set<string>>(new Set())
   const serviceInstance = useRef<string | null>(null)
   const metadataRequest = useRef(0)
+  const metadataRetryAttempt = useRef(0)
+  const metadataRetryTimer = useRef<number | null>(null)
 
   useEffect(() => {
     stateRef.current = state
@@ -1013,10 +1044,10 @@ export function useLiveSession(): void {
       return
     }
 
-    const reportFailure = (failure: SessionResumeFailure): void => {
+    const reportFailure = (failure: SessionResumeFailure, recoveryBlocked = false): void => {
       const attempt = (resumeAttempts.current.get(sessionId) ?? 0) + 1
       resumeAttempts.current.set(sessionId, attempt)
-      const canRetry = shouldRetrySessionResume(
+      const canRetry = !recoveryBlocked && shouldRetrySessionResume(
         failure,
         attempt,
         SESSION_RESUME_MAX_ATTEMPTS
@@ -1064,7 +1095,19 @@ export function useLiveSession(): void {
       })
       const opened = await openSession({ resumeSessionId: sessionId })
       if (!opened || !('session_id' in opened) || !opened.session_id) {
-        reportFailure(classifySessionResumeFailure(opened))
+        const history = await getHistoryWithTodos(sessionId)
+        if (history) {
+          patchThread(threadId, (thread) => ({
+            conversation: projectHistorySnapshot(history, thread.conversation),
+            todos: history.todos,
+            todoTurnId: history.todo_turn_id,
+            planSnapshots: projectPlanSnapshots(history.activity_events),
+            artifacts: history.artifacts,
+            recoveryBlocked: history.recovery_blocked === true,
+            recoveryPending: history.recovery_pending === true,
+          }))
+        }
+        reportFailure(classifySessionResumeFailure(opened), history?.recovery_blocked === true)
         return
       }
 
@@ -1130,6 +1173,7 @@ export function useLiveSession(): void {
           conversation: recovered.conversation ?? conversation,
           todos: opened.todos ?? todos,
           todoTurnId: opened.todo_turn_id !== undefined ? opened.todo_turn_id : historyTodoTurnId,
+          planSnapshots: projectPlanSnapshots(history.activity_events, thread.planSnapshots),
           turnOutcomes: opened.last_turn_id && opened.last_turn_status
             ? {
                 ...thread.turnOutcomes,
@@ -1155,6 +1199,8 @@ export function useLiveSession(): void {
           resumeState: 'ready' as const,
           resumeMessage: undefined,
           running: Boolean(opened.running),
+          recoveryBlocked: opened.recovery_blocked === true,
+          recoveryPending: opened.recovery_pending === true,
           interrupting: Boolean(opened.interrupting),
           queuedMessages: mergeQueuedOutbox(
             sessionId,
@@ -1243,22 +1289,59 @@ export function useLiveSession(): void {
     return () => window.removeEventListener(SESSION_RESUME_REQUEST_EVENT, reconnect)
   }, [ensure, patchThread])
 
+  const cancelMetadataRetry = useCallback(() => {
+    if (metadataRetryTimer.current !== null) {
+      window.clearTimeout(metadataRetryTimer.current)
+      metadataRetryTimer.current = null
+    }
+  }, [])
+
+  const scheduleMetadataRetry = useCallback(() => {
+    if (metadataRetryTimer.current !== null) return
+    const delay = sessionCatalogRetryDelay(metadataRetryAttempt.current)
+    metadataRetryAttempt.current += 1
+    metadataRetryTimer.current = window.setTimeout(() => {
+      metadataRetryTimer.current = null
+      refreshMetaRef.current()
+    }, delay)
+  }, [])
+
   const refreshMeta = useCallback(async () => {
     const request = ++metadataRequest.current
     if (stateRef.current.workspaceLoadState !== 'ready') {
       set({ workspaceLoadState: 'loading' })
     }
-    const [projects, sessions] = await Promise.all([
+    const [projects, sessionCatalog] = await Promise.all([
       listProjects(),
-      listSessions({ limit: 60, scope: 'all' })
+      loadSessionCatalog({ limit: 60, scope: 'all' })
     ])
     if (request !== metadataRequest.current) return
-    // A transport/HTTP/schema failure is not an authoritative empty catalog.
-    // Preserve the selected conversation and retry on the next product refresh.
-    if (sessions === null) {
-      set({ workspaceLoadState: 'error' })
+    if (!sessionCatalog.ok) {
+      const projection = projectCatalogFailure(
+        stateRef.current.workspaceLoadState,
+        sessionCatalog.failure.retryable
+      )
+      if (projection.retry) {
+        scheduleMetadataRetry()
+      } else {
+        cancelMetadataRetry()
+        metadataRetryAttempt.current = 0
+      }
+      set((current) => ({
+        workspaceLoadState: projection.workspaceLoadState,
+        ...(projection.workspaceLoadState === 'ready'
+          ? {
+              foregroundError: sessionCatalog.failure.retryable
+                ? SESSION_CATALOG_RECOVERY_NOTICE
+                : SESSION_CATALOG_UNAVAILABLE_NOTICE
+            }
+          : {})
+      }))
       return
     }
+    cancelMetadataRetry()
+    metadataRetryAttempt.current = 0
+    const sessions = sessionCatalog.catalog.sessions
     const catalogSessionIds = new Set(sessions.map((session) => session.session_id))
     const currentSnapshot = stateRef.current
     const nowSeconds = Date.now() / 1_000
@@ -1330,11 +1413,16 @@ export function useLiveSession(): void {
         ...(projects
           ? {
               projects: projects.projects,
+              projectsLoaded: true,
               defaultWorkspacePath: projects.default || current.defaultWorkspacePath
             }
           : {}),
         sessionActivityInitialized: true,
-        workspaceLoadState: 'ready',
+        workspaceLoadState: projects || current.projectsLoaded ? 'ready' : 'error',
+        foregroundError: current.foregroundError === SESSION_CATALOG_RECOVERY_NOTICE
+          || current.foregroundError === SESSION_CATALOG_UNAVAILABLE_NOTICE
+          ? null
+          : current.foregroundError,
         sessionActivitySeen,
         activeSession,
         threads,
@@ -1349,9 +1437,15 @@ export function useLiveSession(): void {
         )
       }
     })
-  }, [set])
+  }, [cancelMetadataRetry, scheduleMetadataRetry, set])
 
   refreshMetaRef.current = () => void refreshMeta()
+
+  useEffect(() => cancelMetadataRetry, [cancelMetadataRetry])
+
+  useEffect(() => {
+    if (!state.backendReady) cancelMetadataRetry()
+  }, [cancelMetadataRetry, state.backendReady])
 
   useEffect(() => {
     const next = state.serviceInstanceId
@@ -1367,10 +1461,13 @@ export function useLiveSession(): void {
     Object.keys(resumeRetryTimers.current).forEach(
       (threadId) => delete resumeRetryTimers.current[threadId]
     )
+    cancelMetadataRetry()
+    metadataRetryAttempt.current = 0
     const active = stateRef.current.activeSession
     const thread = active ? stateRef.current.threads[active] : undefined
     if (active && thread) void ensure(active, thread.sessionId ?? undefined)
-  }, [ensure, state.serviceInstanceId])
+    void refreshMeta()
+  }, [cancelMetadataRetry, ensure, refreshMeta, state.serviceInstanceId])
 
   useEffect(() => {
     if (!state.backendReady) return
@@ -1405,15 +1502,14 @@ export function useLiveSession(): void {
     return () => window.removeEventListener('scholarseed:refresh-session-list', refresh)
   }, [refreshMeta])
 
+  const catalogRefreshNeeded = sessionCatalogNeedsRefresh(
+    state.sessions, state.activeSession, state.threads
+  )
   useEffect(() => {
-    const hasBackgroundRun = state.sessions.some((session) => (
-      session.id !== state.activeSession
-      && (session.status === 'running' || session.status === 'waiting')
-    ))
-    if (!state.backendReady || !hasBackgroundRun) return
+    if (!state.backendReady || !catalogRefreshNeeded) return
     const timer = window.setInterval(() => void refreshMeta(), BACKGROUND_SESSION_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [refreshMeta, state.activeSession, state.backendReady, state.sessions])
+  }, [refreshMeta, state.backendReady, catalogRefreshNeeded])
 
   useEffect(() => {
     if (!state.backendReady) return

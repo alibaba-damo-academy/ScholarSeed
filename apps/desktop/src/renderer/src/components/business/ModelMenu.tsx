@@ -1,12 +1,15 @@
-import { modelDisabledReason, modelDisplayLabels } from './profile'
+import type { TFunction } from 'i18next'
+import { modelDisabledReason, modelDisabledTag, modelDisplayLabels } from './profile'
 import { feedback } from '../../contracts/feedback'
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check } from 'lucide-react'
 
+import type {
+  ModelInfo
+} from '../../api'
 import {
   getModels,
-  ModelInfo,
   setDefaultModel,
   setSessionModel
 } from '../../api'
@@ -19,8 +22,10 @@ import { Icon } from '../../icons'
 import { modelDefaultEffort } from '../../reasoning'
 import { useApp } from '../../store'
 import {
+  Badge,
   Button,
   EllipsisText,
+  EmptyState,
   Popover,
   PopoverContent,
   PopoverTrigger
@@ -41,10 +46,10 @@ import { useEffort } from './Effort'
 
 const MODEL_ROW_CLASS = (selected: boolean, disabled: boolean): string =>
   [
-    'mb-[var(--vds-space-1)] flex min-h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[7px] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left text-[14px]',
+    'mb-[var(--vds-space-1)] flex min-h-[36px] w-full items-center gap-[var(--vds-space-2)] rounded-[7px] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left text-[length:var(--vds-font-body-lv2)]',
     selected
       ? 'bg-[var(--vds-brand-light-bg-default)]'
-      : 'bg-transparent hover:bg-[var(--vds-bg-gray-hover-transparent)]',
+      : 'bg-transparent hover:bg-[var(--vds-bg-white-hover-transparent)]',
     disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
     'transition-[background-color] duration-150'
   ].join(' ')
@@ -54,16 +59,35 @@ const MODEL_CHIP_CLASS = [
   'hover:bg-[var(--vds-surface-hover)] focus-visible:bg-[var(--vds-surface-hover)]'
 ].join(' ')
 const MODEL_CHIP_FRAME_CLASS = 'relative min-w-0 flex-[0_1_auto]'
-// 单弹窗卡片携带圆角抬升表面; 思考强度展开时右侧再并排一张二级卡片。
+// 单弹窗卡片携带圆角抬升表面; 思考强度展开时左侧再并排一张二级卡片 —— 二级卡在左,
+// 弹窗行右缘恒为主菜单(锚定触发器), 展开/收起不会把主菜单推得左右移动。
 const MENU_SHEET_CLASS = [
   'flex flex-col rounded-[var(--vds-radius-4)] bg-[var(--vds-surface-raised)]',
   'shadow-[var(--vds-shadow-2-center)]'
 ].join(' ')
+// 提供商分组标题: 订阅组与 API/个人模型组共用 —— 与模型行同字号、三级灰、常规字重,
+// 只靠颜色与行区分(设计参考: 下拉菜单分组标题)。
+const MODEL_GROUP_HEADER_CLASS =
+  'px-[var(--vds-space-3)] pb-[var(--vds-space-1)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] font-normal leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]'
+
+/** 模型行归属的分组标题: 有展示名用展示名, 否则个人连接/原始 provider/内置兜底。 */
+function modelGroupLabel(
+  model: ModelInfo,
+  account: TFunction<'account'>,
+  pick: TFunction<'components'>
+): string {
+  return (
+    modelDisplayLabels(model, account).providerLabel ||
+    (model.source === 'personal' ? pick('models.personal') : model.provider || pick('models.builtin'))
+  )
+}
 const MENU_ENTRY_CLASS = (active: boolean, disabled: boolean): string =>
   [
     'flex min-h-8 w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
-    'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
-    active ? 'bg-[var(--vds-surface-hover)]' : 'bg-transparent hover:bg-[var(--vds-surface-hover)]',
+    'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-primary)]',
+    active
+      ? 'bg-[var(--vds-bg-white-active-transparent)]'
+      : 'bg-transparent hover:bg-[var(--vds-bg-white-hover-transparent)]',
     disabled ? 'cursor-not-allowed opacity-45' : 'cursor-pointer',
     'transition-[background,color] duration-[120ms]'
   ].join(' ')
@@ -76,8 +100,8 @@ const MODEL_MENU_TOOLTIP_CONTENT_CLASS = '!z-[calc(var(--vds-z-modal)+2)]'
 const MODEL_MENU_MANAGE_CLASS = [
   'flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 bg-transparent',
   'px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-left',
-  'text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]',
-  'hover:bg-[var(--vds-bg-white-hover)] focus-visible:bg-[var(--vds-bg-white-hover)]',
+  'text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]',
+  'hover:bg-[var(--vds-bg-white-hover-transparent)] focus-visible:bg-[var(--vds-bg-white-hover-transparent)]',
   'transition-[background,color] duration-[120ms]'
 ].join(' ')
 
@@ -85,12 +109,12 @@ function ModelRow({
   model,
   selected,
   onSelect,
-  trailing
+  tag
 }: {
   model: ModelInfo
   selected: boolean
   onSelect: (model: ModelInfo) => void
-  trailing?: React.ReactNode
+  tag?: string
 }): React.JSX.Element {
   const { t: account } = useTranslation('account')
   return (
@@ -107,13 +131,17 @@ function ModelRow({
     >
       <EllipsisText
         wrapperClassName="flex-1"
-        className={`text-[length:var(--vds-font-body-lv1)] font-medium leading-relaxed ${selected ? 'text-[var(--vds-brand-bg-default)]' : 'text-[var(--vds-text-primary)]'}`}
+        className={`text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed ${selected ? 'text-[var(--vds-brand-bg-default)]' : 'text-[var(--vds-text-primary)]'}`}
         tooltipContentClassName={MODEL_MENU_TOOLTIP_CONTENT_CLASS}
         tooltipPortalled
       >
         {modelDisplayLabels(model, account).label}
       </EllipsisText>
-      {trailing}
+      {tag ? (
+        <Badge size="sm" tone="neutral" className="shrink-0">
+          {tag}
+        </Badge>
+      ) : null}
       <span className="flex w-[18px] shrink-0 items-center justify-center" aria-hidden>
         {selected ? (
           <Check className="text-[var(--vds-brand-bg-default)]" size={18} strokeWidth={1.8} />
@@ -194,6 +222,18 @@ export function ModelMenu({
     () => visibleModels.filter((model) => model.billing !== 'subscription'),
     [visibleModels]
   )
+  // API/个人模型按提供商分组(与订阅组同口径): 归属信息交给组标题, 行内模型名整行
+  // 铺开, 不再被右侧提供商副标签挤到只剩省略号。
+  const apiModelGroups = React.useMemo(() => {
+    const groups: { label: string; models: ModelInfo[] }[] = []
+    for (const model of apiModels) {
+      const label = modelGroupLabel(model, account, t)
+      const group = groups.find((entry) => entry.label === label)
+      if (group) group.models.push(model)
+      else groups.push({ label, models: [model] })
+    }
+    return groups
+  }, [apiModels, account, t])
   const panelRef = React.useRef<HTMLDivElement | null>(null)
   const controlsRef = React.useRef<HTMLDivElement | null>(null)
   const switching = React.useRef(false)
@@ -303,7 +343,9 @@ export function ModelMenu({
             title={
               pendingHere
                 ? t('models.switchingTo', { model: modelDisplayLabels(pendingHere.model, account).label })
-                : `${selectedLabel} · ${hasCurrentModel ? effort.label : '-'}`
+                : showEffort
+                  ? `${selectedLabel} · ${hasCurrentModel ? effort.label : '-'}`
+                  : selectedLabel
             }
             aria-expanded={menuOpen}
           >
@@ -313,9 +355,9 @@ export function ModelMenu({
             >
               {pendingHere ? t('models.switching') : selectedLabel}
             </span>
-            <span className="shrink-0 text-[var(--vds-text-tertiary)]">
+            {showEffort ? <span className="shrink-0 text-[var(--vds-text-tertiary)]">
               {hasCurrentModel ? effort.label : '-'}
-            </span>
+            </span> : null}
             <span className="inline-flex size-3 shrink-0 items-center justify-center text-[var(--text-3)]">
               <IconFont
                 type="icon-a-line-switch-arrow-down-s"
@@ -330,6 +372,45 @@ export function ModelMenu({
           aria-label={t('models.selection')}
           className="!z-[calc(var(--vds-z-modal)+1)] !flex !items-end !gap-[var(--vds-space-2)] !max-w-[calc(100vw_-_var(--vds-space-6))] !rounded-none !bg-transparent !p-0 !shadow-none"
         >
+          {showEffort && submenu === 'effort' ? (
+            <div
+              role="menu"
+              aria-label={t('models.effortRow')}
+              data-testid="model-effort-menu"
+              className={`${MENU_SHEET_CLASS} w-[var(--vds-model-menu-width)] p-[var(--vds-space-1)]`}
+            >
+              <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] font-normal leading-relaxed text-[var(--vds-text-tertiary)]">
+                {t('models.effortHint')}
+              </div>
+              {effort.options.map((option) => {
+                const selected = option.value === effort.value
+                return (
+                  <Button
+                    key={option.value || 'default'}
+                    type="button"
+                    role="menuitem"
+                    data-testid={`model-effort-option-${option.value || 'default'}`}
+                    size="content"
+                    unstyled
+                    className={MODEL_ROW_CLASS(selected, effort.pending || Boolean(pending))}
+                    aria-disabled={effort.pending || Boolean(pending)}
+                    onClick={() => {
+                      setSubmenu(null)
+                      void effort.select(option.value)
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 whitespace-nowrap text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed text-[var(--vds-text-primary)]">
+                      {option.label}
+                    </span>
+                    <span className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]" aria-hidden>
+                      {selected ? '✓' : ''}
+                    </span>
+                  </Button>
+                )
+              })}
+            </div>
+          ) : null}
+
           <div
             ref={controlsRef}
             tabIndex={-1}
@@ -349,7 +430,7 @@ export function ModelMenu({
                     const blocked = group.filter((model) => model.disabled)
                     return (
                       <div key={provider} className="mb-[var(--vds-space-1)]">
-                        <div className="px-[10px] pb-[2px] pt-[var(--vds-space-1)] text-[10px] font-[var(--vds-fw-medium)] text-[var(--text-3)]">
+                        <div className={MODEL_GROUP_HEADER_CLASS}>
                           {label}
                         </div>
                         {blocked.length > 0 && (
@@ -374,6 +455,7 @@ export function ModelMenu({
                             model={model}
                             selected={modelAvailable && model.key === selectedModelKey}
                             onSelect={(picked) => void selectModel(picked)}
+                            tag={modelDisabledTag(model, account)}
                           />
                         ))}
                       </div>
@@ -382,38 +464,25 @@ export function ModelMenu({
                 </>
               )}
 
-              {apiModels.length > 0 && (
-                <>
-                  {apiModels.map((model) => (
+              {apiModelGroups.map((group) => (
+                <div key={group.label} className="mb-[var(--vds-space-1)]">
+                  <div className={MODEL_GROUP_HEADER_CLASS}>
+                    {group.label}
+                  </div>
+                  {group.models.map((model) => (
                     <ModelRow
                       key={model.key}
                       model={model}
                       selected={modelAvailable && model.key === selectedModelKey}
                       onSelect={(picked) => void selectModel(picked)}
-                      trailing={
-                        <EllipsisText
-                          wrapperClassName="max-w-[40%] shrink-0"
-                          className="text-[length:var(--vds-font-caption)] text-[var(--vds-text-tertiary)]"
-                          tooltipContentClassName={MODEL_MENU_TOOLTIP_CONTENT_CLASS}
-                          tooltipPortalled
-                        >
-                          {modelDisplayLabels(model, account).providerLabel || (model.source === 'personal' ? t('models.personal') : model.provider || t('models.builtin'))}
-                        </EllipsisText>
-                      }
+                      tag={modelDisabledTag(model, account)}
                     />
                   ))}
-                </>
-              )}
+                </div>
+              ))}
 
-              {!controlled && visibleModels.some((model) => model.source === 'personal') && (
-                <div className="px-[10px] pb-[var(--vds-space-1)] pt-[6px] text-[9.5px] leading-[1.35] text-[var(--text-3)]">
-                  {t('models.effect')}
-                </div>
-              )}
               {visibleModels.length === 0 && (
-                <div className="px-[10px] py-[var(--vds-space-2)] text-[11px] text-[var(--text-3)]">
-                  {t('models.empty')}
-                </div>
+                <EmptyState variant="compact" icon={<Icon name="search" />} title={t('models.empty')} />
               )}
             </div>
             {showEffort ? <><div aria-hidden="true" className="mx-[var(--vds-space-2)] my-[var(--vds-space-1)] h-px shrink-0 bg-[var(--vds-divider-default)]" />
@@ -457,45 +526,6 @@ export function ModelMenu({
               </span>
             </Button>
           </div>
-
-          {showEffort && submenu === 'effort' ? (
-            <div
-              role="menu"
-              aria-label={t('models.effortRow')}
-              data-testid="model-effort-menu"
-              className={`${MENU_SHEET_CLASS} w-[var(--vds-model-menu-width)] p-[var(--vds-space-1)]`}
-            >
-              <div className="px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-caption)] leading-relaxed text-[var(--vds-text-tertiary)]">
-                {t('models.effortHint')}
-              </div>
-              {effort.options.map((option) => {
-                const selected = option.value === effort.value
-                return (
-                  <Button
-                    key={option.value || 'default'}
-                    type="button"
-                    role="menuitem"
-                    data-testid={`model-effort-option-${option.value || 'default'}`}
-                    size="content"
-                    unstyled
-                    className={MODEL_ROW_CLASS(selected, effort.pending || Boolean(pending))}
-                    aria-disabled={effort.pending || Boolean(pending)}
-                    onClick={() => {
-                      setSubmenu(null)
-                      void effort.select(option.value)
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 whitespace-nowrap text-[length:var(--vds-font-body-lv1)] font-medium leading-relaxed text-[var(--vds-text-primary)]">
-                      {option.label}
-                    </span>
-                    <span className="w-4 shrink-0 text-center text-[var(--vds-brand-text-primary)]" aria-hidden>
-                      {selected ? '✓' : ''}
-                    </span>
-                  </Button>
-                )
-              })}
-            </div>
-          ) : null}
 
         </PopoverContent>
       </div>

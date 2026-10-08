@@ -11,6 +11,7 @@ export interface TaskCenterValue {
   cancel: (task: ProductTask) => Promise<void>
   retry: (task: ProductTask) => Promise<void>
   errorText: (task: ProductTask) => string
+  failures: (task: ProductTask) => Array<{ name: string; reason: string }>
 }
 
 export const TaskCenterContext = createContext<TaskCenterValue | null>(null)

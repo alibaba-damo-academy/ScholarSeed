@@ -19,12 +19,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import tempfile
+import threading
+import time
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
+import httpx
 from docx import Document
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -61,6 +66,8 @@ from service.workbench.service.records import PdfRecordStore
 
 PASS = 0
 FAIL = 0
+RESOURCE_TREE_BLOCK_SECONDS = 0.5
+RESOURCE_TREE_HEALTH_MAX_SECONDS = 0.2
 
 
 class ResourceVersionSettings:
@@ -479,6 +486,59 @@ def test_resource_tree_carries_authoritative_link_root_identity() -> None:
     finally:
         shutil.rmtree(project, ignore_errors=True)
         shutil.rmtree(outside, ignore_errors=True)
+
+
+def test_resource_tree_scan_does_not_block_event_loop() -> None:
+    project = Path(tempfile.mkdtemp(prefix="v02-tree-loop-"))
+    client = _client(project)
+    try:
+        app = client.app
+        content = app.state.content
+        current = content.project("")
+        original_tree = content.tree
+        release = threading.Event()
+
+        @app.get("/api/test-healthz")
+        async def healthz() -> dict[str, bool]:
+            return {"ok": True}
+
+        def blocked_tree(*args, **kwargs):
+            release.wait(RESOURCE_TREE_BLOCK_SECONDS)
+            return original_tree(*args, **kwargs)
+
+        async def exercise() -> tuple[int, int, float]:
+            transport = httpx.ASGITransport(app=app)
+            timer = threading.Timer(RESOURCE_TREE_BLOCK_SECONDS, release.set)
+            timer.start()
+            try:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as browser:
+                    with patch.object(content, "tree", side_effect=blocked_tree):
+                        tree_request = asyncio.create_task(
+                            browser.get("/api/resource/tree", params={"project": current.id})
+                        )
+                        health_request = asyncio.create_task(browser.get("/api/test-healthz"))
+                        started = time.monotonic()
+                        health = await health_request
+                        elapsed = time.monotonic() - started
+                        tree = await tree_request
+                        return health.status_code, tree.status_code, elapsed
+            finally:
+                release.set()
+                timer.cancel()
+
+        health_status, tree_status, elapsed = asyncio.run(exercise())
+        check(
+            "resource tree scan leaves the event loop available for health checks",
+            health_status == 200
+            and tree_status == 200
+            and elapsed < RESOURCE_TREE_HEALTH_MAX_SECONDS,
+            f"health={health_status} tree={tree_status} elapsed={elapsed:.3f}s",
+        )
+    finally:
+        client.close()
+        shutil.rmtree(project, ignore_errors=True)
 
 
 def test_resource_search_matches_name_and_content() -> None:
@@ -1378,6 +1438,7 @@ def main() -> int:
     test_resource_delete_is_not_permanent()
     test_resource_import_modes()
     test_resource_tree_carries_authoritative_link_root_identity()
+    test_resource_tree_scan_does_not_block_event_loop()
     test_resource_search_matches_name_and_content()
     test_resource_search_reads_current_plain_and_docx_bytes()
     test_resource_search_ranks_metadata_before_content_and_limit()

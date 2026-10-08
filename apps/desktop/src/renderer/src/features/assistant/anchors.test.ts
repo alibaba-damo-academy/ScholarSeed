@@ -49,6 +49,24 @@ test('locates an immutable answer annotation by product sequence and UTF-16 hash
   assert.equal(result.item?.itemId, 'item-restored')
 })
 
+test('keeps an annotation located when the answer grows after selection', async () => {
+  const result = await locateAnswerAnnotation(
+    await annotation(),
+    conversation(`${ANSWER_TEXT}后续内容`)
+  )
+  assert.equal(result.status, ANSWER_ANNOTATION_LOCATION.AVAILABLE)
+})
+
+test('locates commentary annotated before its turn completes', async () => {
+  const result = await locateAnswerAnnotation(await annotation(), [{
+    kind: 'thinking',
+    text: `${ANSWER_TEXT}后续内容`,
+    turnId: 'turn-1',
+    itemId: 'item-old'
+  }])
+  assert.equal(result.status, ANSWER_ANNOTATION_LOCATION.AVAILABLE)
+})
+
 test('reports a lost position instead of fuzzy matching changed answer text', async () => {
   const result = await locateAnswerAnnotation(
     await annotation(),

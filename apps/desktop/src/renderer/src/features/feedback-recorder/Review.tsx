@@ -302,7 +302,7 @@ export function Review({
               size="md"
               writeText={(text) => writeClipboardContent(text, clipboardHtmlRef.current)}
             />
-            <Button data-testid="feedback-recorder-submit" disabled={!summary.final.trim()} loading={submitting} onClick={onSubmit}>
+            <Button data-testid="feedback-recorder-submit" disabled={submitting} loading={submitting} onClick={onSubmit}>
               {t('feedbackRecorder.review.submit')}
             </Button>
           </DialogFooter>

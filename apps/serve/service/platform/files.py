@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import errno
+import logging
 import mimetypes
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
 
 from fastapi import HTTPException
+from starlette.status import HTTP_403_FORBIDDEN, HTTP_503_SERVICE_UNAVAILABLE
 
 MAX_DIRECTORY_ITEMS = 500
 FILE_READ_MAX_BYTES = 512 * 1024
@@ -19,10 +22,41 @@ MEDIA_TYPE_OVERRIDES = {
     ".md": "text/markdown",
     ".markdown": "text/markdown",
 }
+FILE_ACCESS_DENIED = "file_access_denied"
+FILE_ACCESS_FAILED = "file_access_failed"
+WINDOWS_ACCESS_DENIED = 5
+LOGGER = logging.getLogger(__name__)
 
 
 class PathJailError(ValueError):
     """请求路径越出允许的根目录。"""
+
+
+def file_access_code(error: OSError) -> str:
+    """Classify one host filesystem failure without exposing platform details."""
+
+    if (
+        isinstance(error, PermissionError)
+        or error.errno in {errno.EACCES, errno.EPERM}
+        or getattr(error, "winerror", None) == WINDOWS_ACCESS_DENIED
+    ):
+        return FILE_ACCESS_DENIED
+    return FILE_ACCESS_FAILED
+
+
+def _raise_file_access_error(operation: str, path: str, error: OSError) -> NoReturn:
+    code = file_access_code(error)
+    diagnostic_path = Path(path).name if Path(path).is_absolute() else path
+    LOGGER.warning(
+        "file_access_failed operation=%s path=%s code=%s errno=%s winerror=%s",
+        operation,
+        diagnostic_path,
+        code,
+        error.errno,
+        getattr(error, "winerror", None),
+    )
+    status = HTTP_403_FORBIDDEN if code == FILE_ACCESS_DENIED else HTTP_503_SERVICE_UNAVAILABLE
+    raise HTTPException(status_code=status, detail=code) from error
 
 
 def guess_media_type(path: str | Path) -> str | None:
@@ -65,6 +99,8 @@ def resolve_child(root: Path, path: str) -> Path:
         return safe_join(root, path or ".")
     except PathJailError as error:
         raise HTTPException(status_code=400, detail="path escapes root") from error
+    except OSError as error:
+        _raise_file_access_error("resolve", path, error)
 
 
 def list_directory(
@@ -109,12 +145,23 @@ def read_file(root: Path, path: str) -> dict[str, Any]:
     """Read bounded UTF-8-compatible content below one canonical root."""
 
     target = resolve_child(root, path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="not a file")
-    size = target.stat().st_size
-    if size > FILE_READ_MAX_BYTES:
-        return {"path": path, "size": size, "binary": False, "truncated": True, "content": ""}
-    raw = target.read_bytes()
+    try:
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="not a file")
+        size = target.stat().st_size
+        if size > FILE_READ_MAX_BYTES:
+            return {
+                "path": path,
+                "size": size,
+                "binary": False,
+                "truncated": True,
+                "content": "",
+            }
+        raw = target.read_bytes()
+    except HTTPException:
+        raise
+    except OSError as error:
+        _raise_file_access_error("read", path, error)
     if b"\x00" in raw[:4096]:
         return {"path": path, "size": size, "binary": True, "truncated": False, "content": ""}
     return {
@@ -130,21 +177,29 @@ def read_file_raw(root: Path, path: str) -> tuple[bytes, str]:
     """Read bounded raw bytes below one canonical root for in-product preview."""
 
     target = resolve_child(root, path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="not a file")
-    if target.stat().st_size > FILE_RAW_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="file too large for preview")
-    media_type = guess_media_type(target.name)
-    return target.read_bytes(), media_type or "application/octet-stream"
+    try:
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="not a file")
+        if target.stat().st_size > FILE_RAW_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file too large for preview")
+        media_type = guess_media_type(target.name)
+        return target.read_bytes(), media_type or "application/octet-stream"
+    except HTTPException:
+        raise
+    except OSError as error:
+        _raise_file_access_error("read_raw", path, error)
 
 
 __all__ = [
     "FILE_RAW_MAX_BYTES",
     "FILE_READ_MAX_BYTES",
+    "FILE_ACCESS_DENIED",
+    "FILE_ACCESS_FAILED",
     "MEDIA_TYPE_OVERRIDES",
     "MAX_DIRECTORY_ITEMS",
     "PathJailError",
     "guess_media_type",
+    "file_access_code",
     "is_within",
     "list_directory",
     "read_file",

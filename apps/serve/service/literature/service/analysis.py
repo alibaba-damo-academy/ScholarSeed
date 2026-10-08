@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from enum import Enum
 from io import BytesIO
 
@@ -39,6 +40,8 @@ MAX_INTERPRETATION_INPUT_CHARS = 500_000
 FALLBACK_INTERPRETATION_INPUT_CHARS = 120_000
 INTERPRETATION_CONTEXT_RESERVE_TOKENS = 32_768
 MAX_OUTPUT_TOKENS = 16_384
+MAX_TRANSLATION_SEGMENT_CHARS = 2_000
+MIN_TRANSLATION_SOURCE_COVERAGE = 0.98
 CONTEXT_CHARS = 12_000
 CROP_SCALE = 2
 MIN_CROP_PIXELS = 20
@@ -103,6 +106,7 @@ class AnalysisErrorCode(str, Enum):
     TASK_MISSING = "pdf_ai_task_missing"
     PDF_INPUT_UNSUPPORTED = "pdf_ai_pdf_input_unsupported"
     IMAGE_INPUT_UNSUPPORTED = "pdf_ai_image_input_unsupported"
+    MODEL_UNAVAILABLE = "pdf_ai_model_unavailable"
     GENERATION_FAILED = "pdf_ai_generation_failed"
     LITERATURE_DELETED = "pdf_ai_literature_deleted"
     SOURCE_CHANGED_DURING_GENERATION = "pdf_ai_source_changed_during_generation"
@@ -175,6 +179,7 @@ class PreparedAnalysis:
     crop: str = ""
     segments: tuple["InterpretationSegment", ...] = ()
     interpretation_input_limit: int = MAX_INTERPRETATION_INPUT_CHARS
+    translation_segments: tuple[CompiledAssistantAction, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -315,6 +320,22 @@ def _compiled(
 
 def _payload_text(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _translation_parts(text: str) -> tuple[str, ...]:
+    parts: list[str] = []
+    start = 0
+    while len(text) - start > MAX_TRANSLATION_SEGMENT_CHARS:
+        limit = start + MAX_TRANSLATION_SEGMENT_CHARS
+        midpoint = start + MAX_TRANSLATION_SEGMENT_CHARS // 2
+        boundary = text.rfind("\n", midpoint, limit)
+        if boundary < 0:
+            boundary = text.rfind(" ", midpoint, limit)
+        end = boundary + 1 if boundary >= 0 else limit
+        parts.append(text[start:end])
+        start = end
+    parts.append(text[start:])
+    return tuple(parts)
 
 
 def _split_page(page: int, text: str, base: dict, limit: int) -> list[dict]:
@@ -599,6 +620,8 @@ def prepare(
     selected = request.text.strip()
     if request.kind in (ActionKind.WORD_TRANSLATION, ActionKind.EXPLANATION):
         context = selection_page_context(page_layout, selected, request.quads)
+    elif request.kind == ActionKind.TRANSLATION:
+        context = ""
     else:
         context = context[:CONTEXT_CHARS]
     attachments: tuple[ModelAttachment, ...] = ()
@@ -663,12 +686,32 @@ def prepare(
         max_interpretation_chars if request.kind == ActionKind.INTERPRETATION else MAX_INPUT_CHARS
     )
     segments: tuple[InterpretationSegment, ...] = ()
+    translation_segments: tuple[CompiledAssistantAction, ...] = ()
     if request.kind == ActionKind.INTERPRETATION and len(input_text) > input_limit:
         segments = _interpretation_segments(
             request,
             {key: value for key, value in payload.items() if key != "document_pages"},
             pages,
             input_limit,
+        )
+        compiled = None
+    elif (
+        request.kind == ActionKind.TRANSLATION
+        and len(pages[request.page - 1]) > MAX_TRANSLATION_SEGMENT_CHARS
+    ):
+        translation_segments = tuple(
+            _compiled(
+                request,
+                selection_prompt(request),
+                _payload_text(
+                    {
+                        **payload,
+                        "document_pages": [{"page": request.page, "text": part}],
+                    }
+                ),
+                purpose="literature.document_translation.segment",
+            )
+            for part in _translation_parts(pages[request.page - 1])
         )
         compiled = None
     elif len(input_text) > input_limit:
@@ -691,6 +734,7 @@ def prepare(
         crop,
         segments,
         input_limit,
+        translation_segments,
     )
 
 
@@ -849,6 +893,17 @@ def verify_translation(blocks: list, source: str) -> None:
         block["located"] = bool(normalize(block["source_text"])) and normalize(
             block["source_text"]
         ) in normalize(source)
+
+
+def verify_translation_coverage(blocks: list[dict], source: str) -> None:
+    original = normalize(source)
+    aligned = normalize("".join(block["source_text"] for block in blocks))
+    if (
+        original
+        and SequenceMatcher(None, original, aligned, autojunk=False).ratio()
+        < MIN_TRANSLATION_SOURCE_COVERAGE
+    ):
+        raise AnalysisError(AnalysisErrorCode.TRANSLATION_CONTENT_MISSING)
 
 
 def verify_evidence(

@@ -13,27 +13,456 @@ const FIXTURE_URL = '/components/ui.render.fixture.html'
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const MOTION_OBSERVATION_MS = 350
 
+async function withToastFixture(run: (page: Page) => Promise<void>): Promise<void> {
+  await withFixture(async (page) => {
+    await expect(page.getByRole('button', { name: '显示错误', exact: true })).toBeVisible()
+    const now = new Date('2026-09-24T00:00:00Z')
+    await page.clock.install({ time: now })
+    await page.clock.pauseAt(now)
+    await run(page)
+  }, '/components/toast.render.fixture.html')
+}
+
+test('toast lifecycle closes transient errors after six seconds and supports manual dismissal', async () => {
+  await withToastFixture(async (page) => {
+    await page.getByRole('button', { name: '显示错误', exact: true }).click()
+    await page.clock.runFor(5999)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await page.getByRole('button', { name: '显示错误', exact: true }).click()
+    await page.getByRole('alert').getByRole('button', { name: '关闭通知' }).click()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+})
+
+test('toast lifecycle pauses on hover and resumes only the remaining time', async () => {
+  await withToastFixture(async (page) => {
+    await page.getByRole('button', { name: '显示错误', exact: true }).click()
+    await page.clock.runFor(2000)
+    await page.getByRole('alert').hover()
+    await page.clock.runFor(10000)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.mouse.move(0, 0)
+    await page.clock.runFor(3999)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+})
+
+test('toast lifecycle deduplicates repeated errors and restarts their countdown', async () => {
+  await withToastFixture(async (page) => {
+    const trigger = page.getByRole('button', { name: '显示错误', exact: true })
+    await trigger.click()
+    const originalId = await page.getByTestId('toast-returned-id').textContent()
+    await page.clock.runFor(4000)
+    await trigger.click()
+    await expect(page.getByRole('alert')).toHaveCount(1)
+    await expect(page.getByTestId('toast-returned-id')).toHaveText(originalId!)
+    await page.clock.runFor(5999)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await page.getByRole('button', { name: '连续重复' }).click()
+    await expect(page.getByRole('alert')).toHaveCount(1)
+    await page.getByRole('button', { name: '富文本错误' }).click()
+    await page.getByRole('button', { name: '富文本错误' }).click()
+    await expect(page.getByRole('alert')).toHaveCount(2)
+  })
+})
+
+test('toast lifecycle does not restart other messages when the queue changes', async () => {
+  await withToastFixture(async (page) => {
+    await page.getByRole('button', { name: '显示错误', exact: true }).click()
+    await page.clock.runFor(2000)
+    await page.getByRole('button', { name: '其他错误' }).click()
+    await page.clock.runFor(2000)
+    await page.getByRole('button', { name: '无关更新' }).click()
+    await page.clock.runFor(2000)
+    await expect(page.getByRole('alert')).toHaveCount(1)
+    await expect(page.getByRole('alert')).toHaveText('另一错误')
+    await page.clock.runFor(2000)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+})
+
+test('toast lifecycle updates explicit ids in place and resets paused messages without losing focus', async () => {
+  await withToastFixture(async (page) => {
+    await page.getByRole('button', { name: '带操作的错误' }).click()
+    await page.clock.runFor(2000)
+    const action = page.getByRole('button', { name: '更新详情' })
+    await action.hover()
+    await action.click()
+    await expect(page.getByRole('alert')).toHaveCount(1)
+    await expect(page.getByRole('alert')).toContainText('失败详情 2')
+    await expect(action).toBeFocused()
+    await page.clock.runFor(10000)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.mouse.move(0, 0)
+    await page.getByRole('button', { name: '无关更新' }).focus()
+    await page.clock.runFor(5999)
+    await expect(page.getByRole('alert')).toBeVisible()
+    await page.clock.runFor(1)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+})
+
+test('toast lifecycle keeps explicit action notifications until manual dismissal', async () => {
+  await withToastFixture(async (page) => {
+    await page.getByRole('button', { name: '常驻通知' }).click()
+    await page.clock.runFor(12000)
+    const notification = page.getByRole('region').getByRole('status')
+    await expect(notification).toContainText('需要确认')
+    await notification.getByRole('button', { name: '关闭通知' }).click()
+    await expect(notification).toHaveCount(0)
+  })
+})
+
+test('update announcement opens full release notes in a centered dialog, not the side popover', async () => {
+  await withFixture(async (page) => {
+    const dialog = page.getByRole('dialog', { name: '更新内容' })
+    await expect(dialog).toBeInViewport({ ratio: 1 })
+    await expect(dialog).toHaveCSS('width', '420px')
+    await expect(
+      dialog.getByTestId('update-panel-list').locator(':scope > span').first()
+    ).toHaveCSS('font-size', '12px')
+    await expect(dialog).toContainText('完整更新说明')
+    await expect(dialog.getByTestId('update-panel-title')).toHaveText('更新内容')
+    await expect(page.locator('[data-presentation="popover"]')).toHaveCount(0)
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect
+      .poll(() =>
+        dialog.evaluate((element) => {
+          const rect = element.getBoundingClientRect()
+          return Math.max(
+            Math.abs(rect.x + rect.width / 2 - innerWidth / 2),
+            Math.abs(rect.y + rect.height / 2 - innerHeight / 2)
+          )
+        })
+      )
+      .toBeLessThan(1)
+    await page.keyboard.press('Tab')
+    assert.ok(await dialog.evaluate((element) => element.contains(document.activeElement)))
+    await page.setViewportSize({ width: 480, height: 720 })
+    await expect(dialog).toBeInViewport({ ratio: 1 })
+  }, '/components/update.render.fixture.html')
+})
+
+test('update announcement stays above an open settings dialog and restores focus after dismissal', async () => {
+  await withFixture(async (page) => {
+    const announcement = page.getByRole('dialog', { name: '更新内容' })
+    await announcement.getByTestId('update-panel-dismiss').click()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
+    const check = settings.getByRole('button', { name: 'Check for update' })
+    await check.click()
+    await expect(announcement).toBeVisible()
+    await expect
+      .poll(() =>
+        announcement.getByTestId('update-panel-action').evaluate((element) => {
+          const rect = element.getBoundingClientRect()
+          return element.contains(
+            document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+          )
+        })
+      )
+      .toBe(true)
+    await announcement.getByTestId('update-panel-dismiss').click()
+    await expect(announcement).toHaveCount(0)
+    await expect(settings).toBeVisible()
+    await expect(check).toBeFocused()
+  }, '/components/update.render.fixture.html')
+})
+
+test('update entry preserves unread on outside dismissal and acknowledges an explicit trigger click', async () => {
+  await withFixture(async (page) => {
+    const unread = page.getByTestId('update-entry-unread')
+    const panel = page.getByTestId('update-panel')
+    const entry = page.getByTestId('activity-update')
+    await expect(unread).toBeVisible()
+    await expect(panel).toHaveCount(1)
+    await page.mouse.click(900, 200)
+    await expect(panel).toHaveCount(0)
+    await expect(unread).toBeVisible()
+    await page.mouse.click(900, 200)
+    await expect(unread).toBeVisible()
+    await entry.click()
+    await expect(panel).toBeInViewport({ ratio: 1 })
+    await expect(panel).toHaveAttribute('data-presentation', 'popover')
+    await expect(panel).toHaveCSS('width', '360px')
+    await expect(panel.getByTestId('update-panel-title')).toHaveText('发现新版本')
+    await expect(panel.getByTestId('update-panel-list').locator(':scope > span')).toHaveCount(3)
+    await expect(panel.getByTestId('update-panel-list').locator(':scope > span').first()).toHaveCSS(
+      'font-size',
+      '14px'
+    )
+    await expect(page.getByRole('dialog', { name: '更新内容' })).toHaveCount(0)
+    await expect(unread).toHaveCount(0)
+    await expect(entry).toBeVisible()
+    await entry.click()
+    await expect(panel).toHaveCount(0)
+  }, '/components/update.render.fixture.html')
+})
+
+test('update entry preserves unread when Escape dismisses an automatic announcement', async () => {
+  await withFixture(async (page) => {
+    const unread = page.getByTestId('update-entry-unread')
+    await expect(unread).toBeVisible()
+    await expect(page.getByTestId('update-panel')).toHaveCount(1)
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('update-panel')).toHaveCount(0)
+    await expect(unread).toBeVisible()
+  }, '/components/update.render.fixture.html')
+})
+
+test('update entry preserves unread on announcement content and renders distinct warning and restart icons', async () => {
+  await withFixture(async (page) => {
+    const entry = page.getByTestId('activity-update')
+    await expect(entry).toBeVisible()
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await page.getByTestId('update-panel').click()
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect(entry).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Downloading', exact: true }).click()
+    await expect(entry).toHaveAttribute('aria-label', /40/)
+    await expect(entry.locator('[role="progressbar"]')).toBeVisible()
+    await expect(entry.locator('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '40')
+    await expect(page.getByTestId('update-entry-unread')).toHaveCount(0)
+    await page.getByRole('button', { name: 'Failure', exact: true }).click()
+    const warning = page.getByTestId('update-entry-warning')
+    await expect(warning.locator('.icon-fill-status-warning')).toBeVisible()
+    await expect(warning).toHaveCSS('top', '2px')
+    await expect(warning).toHaveCSS('right', '2px')
+    await expect(warning).toHaveCSS('width', '14px')
+    await expect(warning).toHaveCSS('height', '14px')
+    await expect(warning.locator('.icon-fill-status-warning')).toHaveCSS('font-size', '14px')
+    await expect(warning.locator('.icon-fill-status-warning')).toHaveCSS('line-height', '14px')
+    await expect(page.getByTestId('update-entry-ready')).toHaveCount(0)
+    await entry.click()
+    await expect(page.getByTestId('update-entry-warning')).toBeVisible()
+    await page.keyboard.press('Escape')
+    await page.getByRole('button', { name: 'Ready', exact: true }).click()
+    const ready = page.getByTestId('update-entry-ready').locator('.icon-chart-up-circle')
+    await expect(ready).toBeVisible()
+    await expect(page.getByTestId('update-entry-ready')).toHaveCSS('top', '2px')
+    await expect(page.getByTestId('update-entry-ready')).toHaveCSS('right', '2px')
+    await expect(page.getByTestId('update-entry-ready')).toHaveCSS('width', '14px')
+    await expect(page.getByTestId('update-entry-ready')).toHaveCSS('height', '14px')
+    await expect(ready).toHaveCSS('font-size', '14px')
+    await expect(ready).toHaveCSS('line-height', '14px')
+    expect(
+      await ready.evaluate((element) => getComputedStyle(element, '::before').content)
+    ).not.toBe('none')
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect(page.getByTestId('update-entry-unread')).toHaveCSS('top', '4px')
+    await expect(page.getByTestId('update-entry-unread')).toHaveCSS('right', '4px')
+    await expect(page.getByRole('dialog', { name: '更新内容' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('dialog', { name: '更新内容' })).toHaveCount(0)
+    await entry.click()
+    await expect(page.getByTestId('update-entry-unread')).toHaveCount(0)
+  }, '/components/update.render.fixture.html')
+})
+
+test('update announcement dismissal preserves unread and only a new build prompts again', async () => {
+  await withFixture(async (page) => {
+    const dialog = page.getByRole('dialog', { name: '更新内容' })
+    await dialog.getByTestId('update-panel-dismiss').click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('activity-update')).toBeVisible()
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect(page.getByTestId('update-actions')).toBeEmpty()
+    await page.getByRole('button', { name: 'Ready', exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('update-panel-close').click()
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await expect(page.getByTestId('update-actions')).toBeEmpty()
+  }, '/components/update.render.fixture.html')
+})
+
+test('update announcement keyboard dismissal preserves unread', async () => {
+  await withFixture(async (page) => {
+    const dialog = page.getByRole('dialog', { name: '更新内容' })
+    await dialog.getByTestId('update-panel-dismiss').focus()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('update-panel-close').focus()
+    await page.keyboard.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('update-entry-unread')).toBeVisible()
+    expect(
+      await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
+    ).toBeUndefined()
+    await expect(page.getByTestId('update-actions')).toBeEmpty()
+  }, '/components/update.render.fixture.html')
+})
+
+test('update announcement and side notes share download, failure and restart actions', async () => {
+  await withFixture(async (page) => {
+    const dialog = page.getByRole('dialog', { name: '更新内容' })
+    await dialog.getByTestId('update-panel-action').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update')
+    expect(
+      await page.evaluate(async () => (await window.scholarseed.getUpdateState()).announcedKey)
+    ).toBeDefined()
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByTestId('update-panel-progress')).toBeVisible()
+    await expect(dialog.getByTestId('update-panel-action')).toBeDisabled()
+    await expect(dialog.getByTestId('update-panel-dismiss')).toBeDisabled()
+    await page
+      .getByRole('button', { name: 'Failure', exact: true })
+      .evaluate((button: HTMLButtonElement) => button.click())
+    await expect(dialog.getByTestId('update-panel-error')).toBeVisible()
+    await expect(dialog.getByTestId('update-panel-action')).toHaveText('重启客户端')
+    await dialog.getByTestId('update-panel-action').click()
+    await expect(page.getByTestId('update-actions')).toHaveText('download:render-update,install')
+    await expect(page.getByTestId('update-overlay')).toBeVisible()
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { updateFixture: { publish: (next: { phase: string }) => void } }
+      ).updateFixture.publish({ phase: 'ready' })
+    })
+    await expect(page.getByTestId('update-overlay')).toHaveCount(0)
+    await dialog.getByTestId('update-panel-close').click()
+    await page.getByRole('button', { name: 'New build', exact: true }).click()
+    await expect(dialog).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toHaveCount(0)
+    await page.getByTestId('activity-update').click()
+    const panel = page.getByTestId('update-panel')
+    await panel.getByTestId('update-panel-more').click()
+    await expect(panel).toHaveAttribute('data-view', 'notes')
+    await expect(panel).toHaveCSS('width', '480px')
+    await expect(panel.getByTestId('update-panel-list').locator(':scope > span')).toHaveCount(4)
+    await expect(panel.getByTestId('update-panel-list').locator(':scope > span').first()).toHaveCSS(
+      'font-size',
+      '14px'
+    )
+    await panel.getByTestId('update-panel-action').click()
+    await expect(page.getByTestId('update-actions')).toHaveText(
+      'download:render-update,install,download:render-update'
+    )
+    await expect(panel.getByTestId('update-panel-action')).toBeDisabled()
+    await expect(panel.getByTestId('update-panel-progress')).toBeVisible()
+  }, '/components/update.render.fixture.html')
+})
+
+test('toasts center on the application viewport outside transformed panels', async () => {
+  await withFixture(async (page) => {
+    const toaster = page.getByTestId('render-toaster-position')
+    await expect(toaster).toHaveCSS('position', 'fixed')
+    for (const width of [1280, 720]) {
+      await page.setViewportSize({ width, height: 800 })
+      expect(
+        await toaster.evaluate((element) => {
+          const bounds = element.getBoundingClientRect()
+          return Math.abs(bounds.left + bounds.width / 2 - window.innerWidth / 2)
+        })
+      ).toBeLessThan(1)
+    }
+  })
+})
+
+test('alert icons center with single-line descriptions and top-align with multiline content', async () => {
+  await withFixture(async (page) => {
+    for (const mode of ['single', 'multiple']) {
+      const geometry = await page.getByTestId(`render-alert-align-${mode}`).evaluate((element) => {
+        const icon = element.querySelector('.vds-alert__icon')!.getBoundingClientRect()
+        const content = element.querySelector('.vds-alert__content')!.getBoundingClientRect()
+        const text = element.querySelector('.vds-alert__description')!.getBoundingClientRect()
+        return {
+          iconTop: icon.top,
+          contentTop: content.top,
+          iconCenter: icon.top + icon.height / 2,
+          textCenter: text.top + text.height / 2,
+        }
+      })
+      expect(
+        Math.abs(
+          mode === 'single'
+            ? geometry.iconCenter - geometry.textCenter
+            : geometry.iconTop - geometry.contentTop
+        )
+      ).toBeLessThan(0.5)
+    }
+  })
+})
+
+test('compact empty state uses small centered geometry without changing the default variant', async () => {
+  await withFixture(async (page) => {
+    const compact = page.getByTestId('render-empty-compact')
+    await expect(compact).toHaveCSS('row-gap', '16px')
+    await expect(compact).toHaveCSS('justify-items', 'center')
+    const icon = compact.locator('.vds-empty-state__icon')
+    await expect(icon).toHaveCSS('width', '36px')
+    await expect(icon).toHaveCSS('height', '36px')
+    await expect(icon).toHaveCSS('border-radius', '8px')
+    await expect(icon.locator('svg')).toHaveCSS('width', '16px')
+    await expect(icon.locator('svg')).toHaveCSS('height', '16px')
+    const glyph = page.getByTestId('render-empty-compact-font').locator('.iconfont')
+    await expect(glyph).toHaveCSS('width', '16px')
+    await expect(glyph).toHaveCSS('height', '16px')
+    await expect(glyph).toHaveCSS('font-size', '16px')
+    for (const selector of ['.vds-empty-state__title', '.vds-empty-state__description']) {
+      const label = compact.locator(selector)
+      await expect(label).toHaveCSS('font-size', '14px')
+      await expect(label).toHaveCSS('font-weight', '400')
+      expect(await label.evaluate((element) => getComputedStyle(element).color)).toBe(
+        await icon.evaluate((element) => getComputedStyle(element).color)
+      )
+    }
+    const standard = page.getByTestId('render-empty-state')
+    await expect(standard.locator('.vds-empty-state__icon')).toHaveCSS('width', '48px')
+    await expect(standard.locator('.vds-empty-state__title')).toHaveCSS('font-weight', '500')
+    await page.setViewportSize({ width: 360, height: 720 })
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await expect(icon).toHaveCSS('width', '36px')
+    expect(
+      await compact
+        .locator('.vds-empty-state__title')
+        .evaluate((element) => getComputedStyle(element).color)
+    ).toBe(await icon.evaluate((element) => getComputedStyle(element).color))
+  })
+})
+
 test('animated collapsible interpolates height, closes accessibly and reverses cleanly', async () => {
   await withFixture(async (page) => {
     const trigger = page.getByTestId('render-motion-trigger')
     const content = page.getByTestId('render-motion-content')
     await trigger.scrollIntoViewIfNeeded()
-    const sample = (opening: boolean) => page.evaluate(async ({ opening, duration }) => {
-      const content = document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!
-      const trigger = document.querySelector<HTMLButtonElement>('[data-testid="render-motion-trigger"]')!
-      const heights = [content.getBoundingClientRect().height]
-      if ((trigger.getAttribute('aria-expanded') === 'true') !== opening) trigger.click()
-      const started = performance.now()
-      await new Promise<void>((resolve) => {
-        const record = (): void => {
-          heights.push(content.getBoundingClientRect().height)
-          if (performance.now() - started < duration) requestAnimationFrame(record)
-          else resolve()
-        }
-        requestAnimationFrame(record)
-      })
-      return heights
-    }, { opening, duration: MOTION_OBSERVATION_MS })
+    const sample = (opening: boolean) =>
+      page.evaluate(
+        async ({ opening, duration }) => {
+          const content = document.querySelector<HTMLElement>(
+            '[data-testid="render-motion-content"]'
+          )!
+          const trigger = document.querySelector<HTMLButtonElement>(
+            '[data-testid="render-motion-trigger"]'
+          )!
+          const heights = [content.getBoundingClientRect().height]
+          if ((trigger.getAttribute('aria-expanded') === 'true') !== opening) trigger.click()
+          const started = performance.now()
+          await new Promise<void>((resolve) => {
+            const record = (): void => {
+              heights.push(content.getBoundingClientRect().height)
+              if (performance.now() - started < duration) requestAnimationFrame(record)
+              else resolve()
+            }
+            requestAnimationFrame(record)
+          })
+          return heights
+        },
+        { opening, duration: MOTION_OBSERVATION_MS }
+      )
     const opening = await sample(true)
     const fullHeight = opening.at(-1)!
     assert.ok(fullHeight > 0)
@@ -48,13 +477,26 @@ test('animated collapsible interpolates height, closes accessibly and reverses c
     await trigger.click()
     await trigger.click()
     await trigger.click()
-    await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!.getBoundingClientRect().height > 0)
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-testid="render-motion-content"]')!
+          .getBoundingClientRect().height > 0
+    )
     assert.equal(await trigger.getAttribute('aria-expanded'), 'true')
     assert.equal(await content.getAttribute('inert'), null)
     await page.emulateMedia({ reducedMotion: 'reduce' })
-    assert.equal(await content.evaluate((element) => getComputedStyle(element).transitionProperty), 'none')
+    assert.equal(
+      await content.evaluate((element) => getComputedStyle(element).transitionProperty),
+      'none'
+    )
     await trigger.press(' ')
-    await page.waitForFunction(() => document.querySelector<HTMLElement>('[data-testid="render-motion-content"]')!.getBoundingClientRect().height === 0)
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector<HTMLElement>('[data-testid="render-motion-content"]')!
+          .getBoundingClientRect().height === 0
+    )
     assert.equal(await trigger.getAttribute('aria-expanded'), 'false')
   })
 })
@@ -75,7 +517,10 @@ async function reservePort(): Promise<number> {
   })
 }
 
-async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
+async function withFixture(
+  run: (page: Page) => Promise<void>,
+  fixtureUrl = FIXTURE_URL
+): Promise<void> {
   let browser: Browser | undefined
   let server: ViteDevServer | undefined
 
@@ -84,14 +529,18 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     server = await createServer({
       configFile: false,
       // Concurrent Vite fixtures must not invalidate each other's optimized chunks.
-      cacheDir: path.join(ROOT_DIR, 'node_modules/.vite-tests', `${path.basename(FIXTURE_URL)}-${process.pid}`),
+      cacheDir: path.join(
+        ROOT_DIR,
+        'node_modules/.vite-tests',
+        `${path.basename(fixtureUrl)}-${process.pid}`
+      ),
       root: ROOT_DIR,
       plugins: [react()],
       server: {
         host: '127.0.0.1',
         port,
-        strictPort: true
-      }
+        strictPort: true,
+      },
     })
     await server.listen()
 
@@ -101,16 +550,23 @@ async function withFixture(run: (page: Page) => Promise<void>): Promise<void> {
     browser = await chromium.launch()
     const page = await browser.newPage()
     const startupErrors: string[] = []
-    page.on('pageerror', error => startupErrors.push(`pageerror: ${error.message}`))
-    page.on('requestfailed', request => startupErrors.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`))
-    page.on('response', response => {
-      if (response.status() >= 400) startupErrors.push(`response: ${response.status()} ${response.url()}`)
+    page.on('pageerror', (error) => startupErrors.push(`pageerror: ${error.message}`))
+    page.on('requestfailed', (request) =>
+      startupErrors.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`)
+    )
+    page.on('response', (response) => {
+      if (response.status() >= 400)
+        startupErrors.push(`response: ${response.status()} ${response.url()}`)
     })
     try {
-      await page.goto(new URL(FIXTURE_URL, url).toString())
+      await page.goto(new URL(fixtureUrl, url).toString())
       await run(page)
     } catch (error) {
-      console.error('UI fixture failure evidence', { url: page.url(), startupErrors, body: (await page.locator('body').innerText()).slice(0, 2000) })
+      console.error('UI fixture failure evidence', {
+        url: page.url(),
+        startupErrors,
+        body: (await page.locator('body').innerText()).slice(0, 2000),
+      })
       throw error
     }
   } finally {
@@ -138,16 +594,19 @@ test('sent and composer annotation chips keep the same opaque surface, border an
     const composer = page.getByTestId('answer-annotation-summary')
     const sent = page.getByTestId('render-sent-annotation-summary')
     const workspace = page.getByTestId('render-annotation-workspace')
-    const composerStyle = await composer.evaluate(element => {
+    const composerStyle = await composer.evaluate((element) => {
       const style = getComputedStyle(element)
       return [style.backgroundColor, style.backgroundImage, style.border, style.borderRadius]
     })
-    const sentStyle = await sent.evaluate(element => {
+    const sentStyle = await sent.evaluate((element) => {
       const style = getComputedStyle(element)
       return [style.backgroundColor, style.backgroundImage, style.border, style.borderRadius]
     })
     assert.deepEqual(sentStyle, composerStyle)
-    assert.equal(sentStyle[0], await workspace.evaluate(element => getComputedStyle(element).backgroundColor))
+    assert.equal(
+      sentStyle[0],
+      await workspace.evaluate((element) => getComputedStyle(element).backgroundColor)
+    )
     assert.notEqual(sentStyle[1], 'none')
   })
 })
@@ -179,24 +638,42 @@ test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feed
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
-        value: { writeText: async (text: string) => window.localStorage.setItem('copied-text', text) }
+        value: {
+          writeText: async (text: string) => window.localStorage.setItem('copied-text', text),
+        },
       })
     })
     const button = page.getByTestId('render-copy-icon')
-    const geometry = () => button.evaluate((element) => {
-      const bounds = element.getBoundingClientRect()
-      const style = getComputedStyle(element)
-      const iconBounds = element.querySelector('svg')!.getBoundingClientRect()
-      return { width: bounds.width, height: bounds.height, padding: style.padding, iconWidth: iconBounds.width, iconHeight: iconBounds.height }
-    })
-    const expectedGeometry = { width: 24, height: 24, padding: '0px', iconWidth: 14, iconHeight: 14 }
+    const geometry = () =>
+      button.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        const style = getComputedStyle(element)
+        const iconBounds = element.querySelector('svg')!.getBoundingClientRect()
+        return {
+          width: bounds.width,
+          height: bounds.height,
+          padding: style.padding,
+          iconWidth: iconBounds.width,
+          iconHeight: iconBounds.height,
+        }
+      })
+    const expectedGeometry = {
+      width: 24,
+      height: 24,
+      padding: '0px',
+      iconWidth: 14,
+      iconHeight: 14,
+    }
     assert.equal(await button.getAttribute('aria-label'), '复制')
     assert.deepEqual(await geometry(), expectedGeometry)
     await button.hover()
     assert.deepEqual(await geometry(), expectedGeometry)
     await button.focus()
     await page.keyboard.press('Enter')
-    assert.equal(await page.evaluate(() => window.localStorage.getItem('copied-text')), 'icon-copy-value')
+    assert.equal(
+      await page.evaluate(() => window.localStorage.getItem('copied-text')),
+      'icon-copy-value'
+    )
     assert.equal(await button.getAttribute('data-copy-status'), 'success')
     assert.equal(await button.getAttribute('aria-label'), '已复制')
     assert.equal(await button.locator('[aria-live="polite"]').textContent(), '已复制')
@@ -204,7 +681,11 @@ test('icon-only copy buttons retain 24px targets, 14px glyphs and clipboard feed
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
-        value: { writeText: async () => { throw new Error('clipboard rejected') } }
+        value: {
+          writeText: async () => {
+            throw new Error('clipboard rejected')
+          },
+        },
       })
     })
     await button.click()
@@ -225,18 +706,35 @@ test('image spinners load their asset without rotating it or changing default sp
     assert.equal(await image.getAttribute('alt'), '')
     assert.equal(await image.getAttribute('aria-hidden'), 'true')
     assert.equal(await imageSpinner.getAttribute('role'), 'status')
-    assert.equal(await imageSpinner.getAttribute('aria-label'), await defaultSpinner.getAttribute('aria-label'))
-    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).animationName), 'none')
-    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).borderTopWidth), '0px')
+    assert.equal(
+      await imageSpinner.getAttribute('aria-label'),
+      await defaultSpinner.getAttribute('aria-label')
+    )
+    assert.equal(
+      await imageSpinner.evaluate((element) => getComputedStyle(element).animationName),
+      'none'
+    )
+    assert.equal(
+      await imageSpinner.evaluate((element) => getComputedStyle(element).borderTopWidth),
+      '0px'
+    )
     assert.equal(await defaultSpinner.locator('img').count(), 0)
-    assert.equal(await defaultSpinner.evaluate(element => getComputedStyle(element).animationName), 'vds-spin')
-    assert.equal(await imageSpinner.evaluate(element => getComputedStyle(element).width),
-      await defaultSpinner.evaluate(element => getComputedStyle(element).width))
+    assert.equal(
+      await defaultSpinner.evaluate((element) => getComputedStyle(element).animationName),
+      'vds-spin'
+    )
+    assert.equal(
+      await imageSpinner.evaluate((element) => getComputedStyle(element).width),
+      await defaultSpinner.evaluate((element) => getComputedStyle(element).width)
+    )
     const imageButton = page.getByTestId('render-button-loading-image')
     const defaultButton = page.getByTestId('render-button-loading-default')
     assert.equal(await imageButton.isDisabled(), true)
     assert.equal(await imageButton.getAttribute('data-loading'), 'true')
-    assert.equal(await imageButton.locator('img').getAttribute('src'), await image.getAttribute('src'))
+    assert.equal(
+      await imageButton.locator('img').getAttribute('src'),
+      await image.getAttribute('src')
+    )
     assert.equal(await defaultButton.isDisabled(), true)
     assert.equal(await defaultButton.locator('img').count(), 0)
   })
@@ -247,8 +745,15 @@ test('closed Sheet portals remove both content and overlay from the page', async
     assert.equal(await page.getByTestId('render-sheet-content').count(), 0)
     assert.equal(await page.getByTestId('render-sheet-overlay').count(), 0)
     await page.getByTestId('render-sheet-open').click()
-    assert.equal(await page.getByTestId('render-sheet-content').count(), 1)
+    const content = page.getByTestId('render-sheet-content')
+    assert.equal(await content.count(), 1)
     await page.getByTestId('render-sheet-close').click()
+    assert.equal(await content.getAttribute('data-state'), 'closed')
+    assert.equal(
+      await content.evaluate((element) => getComputedStyle(element).animationName),
+      'vds-sheet-out-right'
+    )
+    await content.waitFor({ state: 'detached' })
     assert.equal(await page.getByTestId('render-sheet-content').count(), 0)
     assert.equal(await page.getByTestId('render-sheet-overlay').count(), 0)
   })
@@ -259,15 +764,15 @@ test('Sheet trigger restores focus after a modal sheet closes', async () => {
     const trigger = page.getByTestId('render-sheet-trigger')
     await trigger.click()
     const content = page.getByTestId('render-sheet-trigger-content')
-    assert.equal(await content.evaluate(el => el.contains(document.activeElement)), true)
+    assert.equal(await content.evaluate((el) => el.contains(document.activeElement)), true)
     await page.keyboard.press('Escape')
-    await content.waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    await content.waitFor({ state: 'detached' })
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
   })
 })
 
 test('Escape dismisses a child Sheet without closing its ancestor modal Sheet', async () => {
-  await withFixture(async page => {
+  await withFixture(async (page) => {
     await page.getByTestId('render-sheet-trigger').click()
     await page.getByTestId('nested-sheet-trigger').click()
     await page.getByTestId('nested-sheet-close').focus()
@@ -281,8 +786,14 @@ test('DialogClose asChild preserves child classes and composes its click handler
   await withFixture(async (page) => {
     await page.getByTestId('render-dialog-open').click()
     const close = page.getByTestId('render-dialog-close-child')
-    await assert.equal(await close.getAttribute('class').then((value) => value?.includes('absolute')), true)
-    await assert.equal(await close.getAttribute('class').then((value) => value?.includes('right-3')), true)
+    await assert.equal(
+      await close.getAttribute('class').then((value) => value?.includes('absolute')),
+      true
+    )
+    await assert.equal(
+      await close.getAttribute('class').then((value) => value?.includes('right-3')),
+      true
+    )
     await close.click()
     await assert.equal(await page.getByTestId('render-dialog-content').count(), 0)
     await assert.equal(await page.getByTestId('render-dialog-child-clicks').textContent(), '1')
@@ -297,34 +808,136 @@ test('assistant host constrains the transcript to its own scroll viewport', asyn
     await page.locator('#root').evaluate((root, className) => {
       root.innerHTML = `<div style="height:300px;display:flex;flex-direction:column"><div class="${className}"><div class="conversation-stream" style="flex:1;min-height:0;overflow-y:auto"><div style="height:1200px">Long transcript</div></div></div></div>`
     }, hostClass)
-    const dimensions = await page.locator('.conversation-stream').evaluate(el => ({ height: el.clientHeight, content: el.scrollHeight }))
+    const dimensions = await page
+      .locator('.conversation-stream')
+      .evaluate((el) => ({ height: el.clientHeight, content: el.scrollHeight }))
     assert.ok(dimensions.height < 300, 'Stream must receive a bounded height from its flex host')
     assert.ok(dimensions.content > dimensions.height, 'Stream, not its host, owns scrolling')
-    assert.equal(await page.locator('.vds-ai-stream').evaluate(el => getComputedStyle(el).overflowY), 'hidden')
+    assert.equal(
+      await page.locator('.vds-ai-stream').evaluate((el) => getComputedStyle(el).overflowY),
+      'hidden'
+    )
   })
 })
 
-test('question option check mark uses centered checkbox geometry', async () => {
-  await withFixture(async (page) => {
-    const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
-    const markClass = stream.match(/const QUESTION_OPTION_MARK_CLASS =\s*'([^']+)'/)?.[1]
-    assert.ok(markClass, 'question options should own a geometric check mark class')
-    assert.doesNotMatch(stream, /\{on \? '✓' : ''\}/)
-    await page.locator('#root').evaluate((root, className) => {
-      root.innerHTML = `<span data-testid="question-option-box" style="display:grid;place-items:center;width:14px;height:14px"><span data-testid="question-option-mark" class="${className}"></span></span>`
-    }, markClass)
-    const centers = await page.getByTestId('question-option-box').evaluate((box) => {
-      const mark = box.querySelector<HTMLElement>('[data-testid="question-option-mark"]')
-      if (!mark) throw new Error('missing question option mark')
-      const boxRect = box.getBoundingClientRect()
-      const markRect = mark.getBoundingClientRect()
-      return {
-        horizontal: Math.abs(boxRect.x + boxRect.width / 2 - (markRect.x + markRect.width / 2)),
-        vertical: Math.abs(boxRect.y + boxRect.height / 2 - (markRect.y + markRect.height / 2))
-      }
+test('nested activity disclosure follows its own state, not an expanded ancestor', async () => {
+  const source = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  const classes = Object.fromEntries(
+    ['STEP', 'STEP_TRIGGER', 'STEP_CARET', 'STEP_CONTENT', 'CONTENT_INNER'].map((name) => {
+      const value = source.match(new RegExp(`const TOOL_RUN_${name}_CLASS =\\s*'([^']+)'`))?.[1]
+      assert.ok(value)
+      return [name, value]
     })
-    assert.ok(centers.horizontal <= 1)
-    assert.ok(centers.vertical <= 1)
+  )
+  await withFixture(async (page) => {
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.locator('#root').evaluate((root, styles) => {
+      root.innerHTML = `<div class="${styles.STEP} is-open"><div class="${styles.STEP}"><button class="${styles.STEP_TRIGGER}" aria-expanded="false"><span class="${styles.STEP_CARET}">›</span>Child</button><div data-testid="nested-content" class="${styles.STEP_CONTENT}" aria-hidden="true"><div class="${styles.CONTENT_INNER}">Input and output</div></div></div></div>`
+    }, classes)
+    const content = page.getByTestId('nested-content')
+    const caret = page.getByRole('button', { name: 'Child' }).locator('span')
+    await expect(content).toHaveCSS('opacity', '0')
+    await expect(caret).toHaveCSS('rotate', 'none')
+    assert.equal(await content.evaluate((element) => element.getBoundingClientRect().height), 0)
+    await page.getByRole('button', { name: 'Child' }).evaluate((button) => {
+      button.setAttribute('aria-expanded', 'true')
+      button.nextElementSibling!.setAttribute('aria-hidden', 'false')
+    })
+    await expect(content).toHaveCSS('opacity', '1')
+    await expect(caret).toHaveCSS('rotate', '90deg')
+    assert.ok(await content.evaluate((element) => element.getBoundingClientRect().height > 0))
+  })
+})
+
+test('subagent detail tokens preserve readable typography and wrap long commands in narrow panels', async () => {
+  const source = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  const stackClass = source.match(/const TOOL_RUN_IO_STACK_CLASS =\s*'([^']+)'/)?.[1]
+  const labelClass = source.match(/const TOOL_RUN_IO_LABEL_CLASS =\s*'([^']+)'/)?.[1]
+  assert.ok(stackClass && labelClass)
+  const PANEL_WIDTH = 320
+  const LONG_COMMAND = `/bin/zsh -lc 'cat /${'long-directory/'.repeat(40)}file.md'`
+  await withFixture(async (page) => {
+    await page.locator('#root').evaluate(
+      (root, sample) => {
+        root.innerHTML = `<div data-testid="detail-panel" style="width:${sample.width}px;font-size:20px"><div class="${sample.stackClass}" data-testid="detail-stack"><div class="${sample.labelClass}" data-testid="detail-label">执行命令</div><div class="font-[family-name:var(--vds-font-code)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]" data-testid="detail-command"></div><div data-testid="detail-text">普通活动摘要</div></div></div>`
+        root.querySelector('[data-testid="detail-command"]')!.textContent = sample.command
+      },
+      { stackClass, labelClass, width: PANEL_WIDTH, command: LONG_COMMAND }
+    )
+    for (const theme of ['light', 'dark']) {
+      await page.locator('html').evaluate((element, value) => {
+        element.dataset.theme = value
+      }, theme)
+      const metrics = await page.getByTestId('detail-stack').evaluate((element) => {
+        const style = getComputedStyle(element)
+        return {
+          fontSize: style.fontSize,
+          expectedSize: style.getPropertyValue('--vds-font-body-lv1').trim(),
+          lineHeight: style.lineHeight,
+          expectedHeight: style.getPropertyValue('--vds-lh-body-lv1').trim(),
+          margin: parseFloat(style.marginLeft),
+        }
+      })
+      assert.equal(metrics.fontSize, metrics.expectedSize)
+      assert.equal(metrics.lineHeight, metrics.expectedHeight)
+      assert.ok(metrics.margin > 0)
+      await expect(page.getByTestId('detail-label')).toHaveCSS('font-size', metrics.fontSize)
+      await expect(page.getByTestId('detail-text')).toHaveCSS('font-size', metrics.fontSize)
+      await expect(page.getByTestId('detail-command')).toHaveCSS('font-size', metrics.fontSize)
+      await expect(page.getByTestId('detail-command')).toHaveText(LONG_COMMAND)
+      const font = await page
+        .getByTestId('detail-command')
+        .evaluate((element) => getComputedStyle(element).fontFamily)
+      assert.match(font, /mono/i)
+      const panel = await page.getByTestId('detail-panel').evaluate((element) => ({
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+      }))
+      assert.equal(panel.scrollWidth, panel.width)
+    }
+  })
+})
+
+test('question options select radio or checkbox by question type', async () => {
+  const stream = await readFile(path.join(ROOT_DIR, 'components/business/Stream.tsx'), 'utf8')
+  assert.match(stream, /const OptionControl = q\.multiSelect \? Checkbox : Radio/)
+  assert.match(stream, /<OptionControl[\s\S]*?data-testid={`hil-question-option-/)
+  assert.doesNotMatch(stream, /QUESTION_OPTION_MARK_CLASS/)
+})
+
+test('checkbox renders option content and keeps selection interactive', async () => {
+  await withFixture(async (page) => {
+    const checkbox = page.getByTestId('render-checkbox-content')
+    await expect(checkbox).toContainText('选项标题选项描述')
+    await checkbox.click()
+    await expect(checkbox).toHaveAttribute('aria-checked', 'true')
+  })
+})
+
+test('multiline question options align radio and checkbox with first text line', async () => {
+  await withFixture(async (page) => {
+    const options = page.getByTestId('render-question-options')
+    await expect(options).toBeVisible()
+    const geometry = await options
+      .locator('[data-testid^="render-question-option-"]')
+      .evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const indicator = button.querySelector('.vds-radio__dot, .vds-checkbox__box')!
+          const icon = indicator.getBoundingClientRect()
+          const labelElement = button.querySelector('.vds-radio__label, .vds-checkbox__box + span')!
+          const label = labelElement.getBoundingClientRect()
+          return {
+            variant: button.getAttribute('data-testid'),
+            iconCenter: icon.top + icon.height / 2,
+            firstLineCenter: label.top + parseFloat(getComputedStyle(labelElement).lineHeight) / 2,
+            marginTop: getComputedStyle(indicator).marginTop,
+          }
+        })
+      )
+    for (const option of geometry) {
+      assert.equal(option.marginTop, '3px')
+      assert.ok(Math.abs(option.iconCenter - option.firstLineCenter) < 1)
+    }
   })
 })
 
@@ -354,16 +967,29 @@ test('conversation and controls share a centered capped column at every panel wi
     assert.ok(columnClass && streamClass && controlsClass)
     for (const width of PANEL_WIDTHS) {
       for (const height of TRANSCRIPT_HEIGHTS) {
-        await page.locator('#root').evaluate((root, layout) => {
-          root.innerHTML = `<div data-layout="panel" style="width:${layout.width}px"><div class="${layout.streamClass}" style="height:${layout.viewportHeight}px;overflow-y:auto;padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="transcript" class="${layout.columnClass}" style="height:${layout.height}px">Transcript</div></div><div class="${layout.controlsClass}"><div style="padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="composer" class="${layout.columnClass}">Composer</div></div></div></div>`
-        }, { width, height, viewportHeight: VIEWPORT_HEIGHT, columnClass, streamClass, controlsClass })
+        await page.locator('#root').evaluate(
+          (root, layout) => {
+            root.innerHTML = `<div data-layout="panel" style="width:${layout.width}px"><div class="${layout.streamClass}" style="height:${layout.viewportHeight}px;overflow-y:auto;padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="transcript" class="${layout.columnClass}" style="height:${layout.height}px">Transcript</div></div><div class="${layout.controlsClass}"><div style="padding-inline:var(--vds-conversation-inline-gutter)"><div data-layout="composer" class="${layout.columnClass}">Composer</div></div></div></div>`
+          },
+          {
+            width,
+            height,
+            viewportHeight: VIEWPORT_HEIGHT,
+            columnClass,
+            streamClass,
+            controlsClass,
+          }
+        )
         const panel = await page.locator('[data-layout="panel"]').boundingBox()
         const transcript = await page.locator('[data-layout="transcript"]').boundingBox()
         const composer = await page.locator('[data-layout="composer"]').boundingBox()
         assert.ok(panel && transcript && composer)
         assert.ok(Math.abs(transcript.width - composer.width) < PIXEL_TOLERANCE)
         assert.ok(Math.abs(transcript.x - composer.x) < PIXEL_TOLERANCE)
-        assert.ok(Math.abs(transcript.x + transcript.width / 2 - panel.x - panel.width / 2) < PIXEL_TOLERANCE)
+        assert.ok(
+          Math.abs(transcript.x + transcript.width / 2 - panel.x - panel.width / 2) <
+            PIXEL_TOLERANCE
+        )
         assert.ok(transcript.width <= CONTENT_WIDTH)
         if (width > CONTENT_WIDTH) assert.equal(transcript.width, CONTENT_WIDTH)
       }
@@ -378,9 +1004,12 @@ test('answer selection comment fits the toolbar width in a narrow assistant', as
     const draft = source.slice(source.indexOf("{draft.mode === 'actions'"))
     const commentClass = draft.match(/\) : \(\s*<div className="([^"]+)"/)?.[1]
     assert.ok(commentClass)
-    await page.locator('#root').evaluate((root, layout) => {
-      root.innerHTML = `<div data-layout="anchor" style="width:${layout.width}px"><div data-layout="comment" class="${layout.commentClass}"><input style="min-width:0;width:100%" /></div></div>`
-    }, { width: TOOLBAR_WIDTH, commentClass })
+    await page.locator('#root').evaluate(
+      (root, layout) => {
+        root.innerHTML = `<div data-layout="anchor" style="width:${layout.width}px"><div data-layout="comment" class="${layout.commentClass}"><input style="min-width:0;width:100%" /></div></div>`
+      },
+      { width: TOOLBAR_WIDTH, commentClass }
+    )
     const anchor = await page.locator('[data-layout="anchor"]').boundingBox()
     const comment = await page.locator('[data-layout="comment"]').boundingBox()
     assert.ok(anchor && comment)
@@ -406,8 +1035,18 @@ test('split handle remains transparent when a host view supplies a background', 
 
 test('alert descriptions can show full instructions without changing default clamping', async () => {
   await withFixture(async (page) => {
-    assert.equal(await page.getByTestId('render-alert-full').evaluate(el => getComputedStyle(el).webkitLineClamp), 'none')
-    assert.equal(await page.getByTestId('render-alert-default').evaluate(el => getComputedStyle(el).webkitLineClamp), '2')
+    assert.equal(
+      await page
+        .getByTestId('render-alert-full')
+        .evaluate((el) => getComputedStyle(el).webkitLineClamp),
+      'none'
+    )
+    assert.equal(
+      await page
+        .getByTestId('render-alert-default')
+        .evaluate((el) => getComputedStyle(el).webkitLineClamp),
+      '2'
+    )
   })
 })
 
@@ -416,9 +1055,9 @@ test('NavigationTabs overview fills its allocated width in active and inactive s
     const navigationTabs = page.getByTestId('render-navigation-tabs')
     const overview = navigationTabs.getByRole('tab', { name: '总览', exact: true })
     const assertFilledWidth = async (): Promise<void> => {
-      const dimensions = await overview.evaluate(element => ({
+      const dimensions = await overview.evaluate((element) => ({
         tab: element.getBoundingClientRect().width,
-        slot: element.parentElement!.getBoundingClientRect().width
+        slot: element.parentElement!.getBoundingClientRect().width,
       }))
       assert.ok(dimensions.slot > 0)
       assert.equal(dimensions.tab, dimensions.slot)
@@ -433,10 +1072,19 @@ test('NavigationTabs overview fills its allocated width in active and inactive s
 test('NavigationTabs opens supplied context menu for the targeted document tab', async () => {
   await withFixture(async (page) => {
     await page.getByRole('tab', { name: 'Beta.md' }).click({ button: 'right' })
-    await assert.equal(await page.getByTestId('render-navigation-context-tab').textContent(), 'beta')
+    await assert.equal(
+      await page.getByTestId('render-navigation-context-tab').textContent(),
+      'beta'
+    )
     await assert.equal(await page.getByTestId('render-navigation-context-menu').isVisible(), true)
-    await assert.equal(await page.getByTestId('render-navigation-context-menu').textContent(), 'Beta.md')
-    await assert.equal(await page.getByRole('tab', { name: 'Alpha.md' }).getAttribute('aria-expanded'), null)
+    await assert.equal(
+      await page.getByTestId('render-navigation-context-menu').textContent(),
+      'Beta.md'
+    )
+    await assert.equal(
+      await page.getByRole('tab', { name: 'Alpha.md' }).getAttribute('aria-expanded'),
+      null
+    )
   })
 })
 
@@ -445,12 +1093,16 @@ test('NavigationTabs makes the draggable blank area interactive while a context 
     const navigationTabs = page.getByTestId('render-navigation-tabs')
     await page.getByRole('tab', { name: 'Beta.md' }).click({ button: 'right' })
     await assert.equal(
-      await navigationTabs.evaluate(element => getComputedStyle(element).getPropertyValue('-webkit-app-region')),
+      await navigationTabs.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue('-webkit-app-region')
+      ),
       'no-drag'
     )
     const navigationTabsBox = await navigationTabs.boundingBox()
     assert.ok(navigationTabsBox)
-    await navigationTabs.click({ position: { x: navigationTabsBox.width - 2, y: navigationTabsBox.height / 2 } })
+    await navigationTabs.click({
+      position: { x: navigationTabsBox.width - 2, y: navigationTabsBox.height / 2 },
+    })
     await assert.equal(await page.getByTestId('render-navigation-context-menu').count(), 0)
   })
 })
@@ -471,7 +1123,12 @@ test('EllipsisText shows tooltip only when the text is truncated', async () => {
 
     const longText = page.getByTestId('render-ellipsis-long')
     await longText.hover()
-    await assert.equal(await page.getByRole('tooltip', { name: '这是一段一定会超过容器宽度并被省略的长标题' }).isVisible(), true)
+    await assert.equal(
+      await page
+        .getByRole('tooltip', { name: '这是一段一定会超过容器宽度并被省略的长标题' })
+        .isVisible(),
+      true
+    )
   })
 })
 
@@ -490,7 +1147,7 @@ test('EllipsisText caps long tooltip content and keeps it scrollable', async () 
         overflowY: style.overflowY,
         pointerEvents: style.pointerEvents,
         scrollHeight: element.scrollHeight,
-        viewportHeight: window.innerHeight
+        viewportHeight: window.innerHeight,
       }
     })
     await assert.equal(metrics.maxHeight, `${metrics.viewportHeight * 0.8}px`)
@@ -512,8 +1169,13 @@ test('NavigationTabs caps each document tab and truncates long labels', async ()
     const longLabel = 'Multimodal Fusion and Vision-Language Models for Robot Learning.md'
     const longTab = page.getByTestId('render-navigation-tabs-long-label').getByRole('tab')
     const label = longTab.locator('[data-slot="ellipsis-text"]')
-    await assert.ok(await longTab.evaluate((element) => element.getBoundingClientRect().width <= 190))
-    await assert.equal(await label.evaluate((element) => getComputedStyle(element).textOverflow), 'ellipsis')
+    await assert.ok(
+      await longTab.evaluate((element) => element.getBoundingClientRect().width <= 190)
+    )
+    await assert.equal(
+      await label.evaluate((element) => getComputedStyle(element).textOverflow),
+      'ellipsis'
+    )
     await longTab.hover()
     const tooltip = page.getByRole('tooltip', { name: longLabel })
     await assert.equal(await tooltip.isVisible(), true)
@@ -525,7 +1187,7 @@ test('NavigationTabs caps each document tab and truncates long labels', async ()
       tooltip.evaluate((element) => {
         const rect = element.getBoundingClientRect()
         return { left: rect.left, top: rect.top }
-      })
+      }),
     ])
     await assert.ok(Math.abs(positions[1].left - positions[0].left) <= 1)
     await assert.ok(Math.abs(positions[1].top - positions[0].bottom - 10) <= 1)
@@ -535,7 +1197,10 @@ test('NavigationTabs caps each document tab and truncates long labels', async ()
 test('NavigationTabs marks only tabs with unsaved edits', async () => {
   await withFixture(async (page) => {
     const navigationTabs = page.getByTestId('render-navigation-tabs')
-    await assert.equal(await navigationTabs.getByRole('tab').locator('i[aria-label="未保存"]').count(), 1)
+    await assert.equal(
+      await navigationTabs.getByRole('tab').locator('i[aria-label="未保存"]').count(),
+      1
+    )
     await assert.equal(
       await page.getByRole('tab', { name: 'Beta.md' }).locator('i[aria-label="未保存"]').count(),
       1
@@ -570,7 +1235,9 @@ test('NavigationTabs reveals a newly activated tab', async () => {
 
     await page.getByTestId('render-navigation-tabs-activate-last').click()
     await page.waitForFunction(() => {
-      const element = document.querySelector<HTMLElement>('[data-testid="render-navigation-tabs-scroll"]')
+      const element = document.querySelector<HTMLElement>(
+        '[data-testid="render-navigation-tabs-scroll"]'
+      )
       return Boolean(element && element.scrollLeft > 0)
     })
 
@@ -588,74 +1255,153 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await page.getByTestId('render-button-clicks').textContent(), '1')
 
     const navigationTabs = page.getByTestId('render-navigation-tabs')
-    await assert.equal(await navigationTabs.locator('[data-slot="navigation-tab-divider"]').count(), 2)
     await assert.equal(
-      await page.getByRole('tab', { name: 'Beta.md' }).locator('[data-slot="navigation-tab-divider"]').count(),
+      await navigationTabs.locator('[data-slot="navigation-tab-divider"]').count(),
+      2
+    )
+    await assert.equal(
+      await page
+        .getByRole('tab', { name: 'Beta.md' })
+        .locator('[data-slot="navigation-tab-divider"]')
+        .count(),
       1
     )
     await assert.equal(
-      await page.getByRole('tab', { name: 'Gamma.md' }).locator('[data-slot="navigation-tab-divider"]').count(),
+      await page
+        .getByRole('tab', { name: 'Gamma.md' })
+        .locator('[data-slot="navigation-tab-divider"]')
+        .count(),
       0
     )
     const card = page.getByTestId('render-card')
     await assert.equal(await card.evaluate((element) => element.tagName), 'DIV')
     await assert.equal(await card.textContent(), '原子卡片')
     const structuredCard = page.getByTestId('render-card-structure')
-    await assert.equal(await structuredCard.getByRole('heading', { name: '研究项目' }).evaluate((element) => element.tagName), 'H3')
-    await assert.equal(await page.getByTestId('render-card-header').getByText('用于验证 Card 子组件语义。').textContent(), '用于验证 Card 子组件语义。')
+    await assert.equal(
+      await structuredCard
+        .getByRole('heading', { name: '研究项目' })
+        .evaluate((element) => element.tagName),
+      'H3'
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-card-header')
+        .getByText('用于验证 Card 子组件语义。')
+        .textContent(),
+      '用于验证 Card 子组件语义。'
+    )
     await assert.equal(await page.getByTestId('render-card-content').textContent(), '核心内容')
-    await assert.equal(await page.getByTestId('render-card-footer').getByRole('button', { name: '查看' }).textContent(), '查看')
+    await assert.equal(
+      await page
+        .getByTestId('render-card-footer')
+        .getByRole('button', { name: '查看' })
+        .textContent(),
+      '查看'
+    )
 
     const divider = page.getByTestId('render-divider')
     await assert.equal(await divider.evaluate((element) => element.tagName), 'HR')
     await assert.equal(await divider.getAttribute('aria-orientation'), 'horizontal')
-    await assert.equal(await page.getByTestId('render-separator').evaluate((element) => element.tagName), 'HR')
-    await assert.equal(await page.getByTestId('render-separator').getAttribute('aria-orientation'), 'horizontal')
-    await assert.equal(await page.getByTestId('render-divider-vertical').getAttribute('aria-orientation'), 'vertical')
+    await assert.equal(
+      await page.getByTestId('render-separator').evaluate((element) => element.tagName),
+      'HR'
+    )
+    await assert.equal(
+      await page.getByTestId('render-separator').getAttribute('aria-orientation'),
+      'horizontal'
+    )
+    await assert.equal(
+      await page.getByTestId('render-divider-vertical').getAttribute('aria-orientation'),
+      'vertical'
+    )
 
     const input = page.getByTestId('render-input')
     const messageId = await input.getAttribute('aria-describedby')
     assert.ok(messageId, 'Input error should be linked by aria-describedby')
     await assert.equal(await input.getAttribute('aria-invalid'), 'true')
     await assert.equal(await page.locator(`[id="${messageId}"]`).textContent(), '请输入有效名称')
-    await assert.equal(await input.getAttribute('data-i18n-placeholder'), 'examples:input.placeholder')
-    await assert.equal(await input.locator('..').getByText('名称', { exact: true }).getAttribute('data-i18n-text'), 'examples:input.label')
-    await assert.equal(await page.locator(`[id="${messageId}"]`).getAttribute('data-i18n-text'), 'examples:input.error')
+    await assert.equal(
+      await input.getAttribute('data-i18n-placeholder'),
+      'examples:input.placeholder'
+    )
+    await assert.equal(
+      await input.locator('..').getByText('名称', { exact: true }).getAttribute('data-i18n-text'),
+      'examples:input.label'
+    )
+    await assert.equal(
+      await page.locator(`[id="${messageId}"]`).getAttribute('data-i18n-text'),
+      'examples:input.error'
+    )
     const helperInput = page.getByTestId('render-input-helper')
     const helperInputMessageId = await helperInput.getAttribute('aria-describedby')
     assert.ok(helperInputMessageId, 'Input helperText should be linked by aria-describedby')
     await assert.equal(await helperInput.getAttribute('aria-invalid'), null)
-    await assert.equal(await page.locator(`[id="${helperInputMessageId}"]`).textContent(), '请输入项目公开名称。')
+    await assert.equal(
+      await page.locator(`[id="${helperInputMessageId}"]`).textContent(),
+      '请输入项目公开名称。'
+    )
     const invalidHelperInput = page.getByTestId('render-input-invalid-helper')
     const invalidHelperInputMessageId = await invalidHelperInput.getAttribute('aria-describedby')
-    assert.ok(invalidHelperInputMessageId, 'Input invalid helperText should be linked by aria-describedby')
+    assert.ok(
+      invalidHelperInputMessageId,
+      'Input invalid helperText should be linked by aria-describedby'
+    )
     await assert.equal(await invalidHelperInput.getAttribute('aria-invalid'), 'true')
-    await assert.equal(await page.locator(`[id="${invalidHelperInputMessageId}"]`).textContent(), '名称将展示给团队成员。')
+    await assert.equal(
+      await page.locator(`[id="${invalidHelperInputMessageId}"]`).textContent(),
+      '名称将展示给团队成员。'
+    )
     const errorPriorityInput = page.getByTestId('render-input-error-priority')
     const errorPriorityInputMessageId = await errorPriorityInput.getAttribute('aria-describedby')
-    assert.ok(errorPriorityInputMessageId, 'Input error should keep aria-describedby when helperText also exists')
-    await assert.equal(await page.locator(`[id="${errorPriorityInputMessageId}"]`).textContent(), '错误文案优先。')
+    assert.ok(
+      errorPriorityInputMessageId,
+      'Input error should keep aria-describedby when helperText also exists'
+    )
+    await assert.equal(
+      await page.locator(`[id="${errorPriorityInputMessageId}"]`).textContent(),
+      '错误文案优先。'
+    )
     await assert.equal(await page.getByText('辅助文案不应展示。').count(), 0)
 
     const textarea = page.getByTestId('render-textarea')
     const textareaMessageId = await textarea.getAttribute('aria-describedby')
     assert.ok(textareaMessageId, 'Textarea error should be linked by aria-describedby')
     await assert.equal(await textarea.getAttribute('aria-invalid'), 'true')
-    await assert.equal(await page.locator(`[id="${textareaMessageId}"]`).textContent(), '请输入至少 10 个字')
+    await assert.equal(
+      await page.locator(`[id="${textareaMessageId}"]`).textContent(),
+      '请输入至少 10 个字'
+    )
     const helperTextarea = page.getByTestId('render-textarea-helper')
     const helperTextareaMessageId = await helperTextarea.getAttribute('aria-describedby')
     assert.ok(helperTextareaMessageId, 'Textarea helperText should be linked by aria-describedby')
     await assert.equal(await helperTextarea.getAttribute('aria-invalid'), null)
-    await assert.equal(await page.locator(`[id="${helperTextareaMessageId}"]`).textContent(), '支持 Markdown 简述。')
+    await assert.equal(
+      await page.locator(`[id="${helperTextareaMessageId}"]`).textContent(),
+      '支持 Markdown 简述。'
+    )
     const invalidHelperTextarea = page.getByTestId('render-textarea-invalid-helper')
-    const invalidHelperTextareaMessageId = await invalidHelperTextarea.getAttribute('aria-describedby')
-    assert.ok(invalidHelperTextareaMessageId, 'Textarea invalid helperText should be linked by aria-describedby')
+    const invalidHelperTextareaMessageId =
+      await invalidHelperTextarea.getAttribute('aria-describedby')
+    assert.ok(
+      invalidHelperTextareaMessageId,
+      'Textarea invalid helperText should be linked by aria-describedby'
+    )
     await assert.equal(await invalidHelperTextarea.getAttribute('aria-invalid'), 'true')
-    await assert.equal(await page.locator(`[id="${invalidHelperTextareaMessageId}"]`).textContent(), '说明暂不可为空。')
+    await assert.equal(
+      await page.locator(`[id="${invalidHelperTextareaMessageId}"]`).textContent(),
+      '说明暂不可为空。'
+    )
     const errorPriorityTextarea = page.getByTestId('render-textarea-error-priority')
-    const errorPriorityTextareaMessageId = await errorPriorityTextarea.getAttribute('aria-describedby')
-    assert.ok(errorPriorityTextareaMessageId, 'Textarea error should keep aria-describedby when helperText also exists')
-    await assert.equal(await page.locator(`[id="${errorPriorityTextareaMessageId}"]`).textContent(), '错误说明优先。')
+    const errorPriorityTextareaMessageId =
+      await errorPriorityTextarea.getAttribute('aria-describedby')
+    assert.ok(
+      errorPriorityTextareaMessageId,
+      'Textarea error should keep aria-describedby when helperText also exists'
+    )
+    await assert.equal(
+      await page.locator(`[id="${errorPriorityTextareaMessageId}"]`).textContent(),
+      '错误说明优先。'
+    )
     await assert.equal(await page.getByText('辅助说明不应展示。').count(), 0)
 
     const switchControl = page.getByTestId('render-switch')
@@ -671,7 +1417,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await checkbox.getByText('同意条款').click()
     await assert.equal(await checkbox.getAttribute('aria-checked'), 'true')
     await assert.equal(await page.getByTestId('render-checkbox-value').textContent(), 'yes')
-    await assert.equal(await page.getByTestId('render-checkbox-mixed').getAttribute('aria-checked'), 'mixed')
+    await assert.equal(
+      await page.getByTestId('render-checkbox-mixed').getAttribute('aria-checked'),
+      'mixed'
+    )
 
     const radio = page.getByTestId('render-radio')
     await assert.equal(await radio.getAttribute('role'), 'radio')
@@ -683,29 +1432,69 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const radioGroup = page.getByTestId('render-radio-group')
     await assert.equal(await radioGroup.getAttribute('role'), 'radiogroup')
     await assert.equal(await radioGroup.getAttribute('aria-orientation'), 'vertical')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('aria-checked'), 'true')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'), '0')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('tabindex'), '-1')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '禁用模式' }).getAttribute('tabindex'), null)
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('aria-checked'),
+      'true'
+    )
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'),
+      '0'
+    )
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('tabindex'),
+      '-1'
+    )
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '禁用模式' }).getAttribute('tabindex'),
+      null
+    )
     await radioGroup.getByRole('radio', { name: '自动模式' }).click()
     await assert.equal(await page.getByTestId('render-radio-group-value').textContent(), 'auto')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('aria-checked'), 'true')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'), '-1')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('tabindex'), '0')
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('aria-checked'),
+      'true'
+    )
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'),
+      '-1'
+    )
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '自动模式' }).getAttribute('tabindex'),
+      '0'
+    )
     await radioGroup.getByRole('radio', { name: '自动模式' }).focus()
     await radioGroup.press('ArrowDown')
     await assert.equal(await page.getByTestId('render-radio-group-value').textContent(), 'manual')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'), '0')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '手动模式' }).evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await radioGroup.getByRole('radio', { name: '手动模式' }).getAttribute('tabindex'),
+      '0'
+    )
+    await assert.equal(
+      await radioGroup
+        .getByRole('radio', { name: '手动模式' })
+        .evaluate((element) => document.activeElement === element),
+      true
+    )
     await radioGroup.press('ArrowUp')
     await assert.equal(await page.getByTestId('render-radio-group-value').textContent(), 'auto')
-    await assert.equal(await radioGroup.getByRole('radio', { name: '自动模式' }).evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await radioGroup
+        .getByRole('radio', { name: '自动模式' })
+        .evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const disabledRadioGroup = page.getByTestId('render-radio-group-disabled')
     await assert.equal(await disabledRadioGroup.getAttribute('aria-disabled'), 'true')
-    await assert.equal(await disabledRadioGroup.getByRole('radio', { name: '极速模式' }).isDisabled(), true)
+    await assert.equal(
+      await disabledRadioGroup.getByRole('radio', { name: '极速模式' }).isDisabled(),
+      true
+    )
     await disabledRadioGroup.getByRole('radio', { name: '极速模式' }).click({ force: true })
-    await assert.equal(await page.getByTestId('render-radio-group-disabled-value').textContent(), 'safe')
+    await assert.equal(
+      await page.getByTestId('render-radio-group-disabled-value').textContent(),
+      'safe'
+    )
 
     const select = page.getByTestId('render-select')
     const selectMessageId = await select.getAttribute('aria-describedby')
@@ -718,9 +1507,18 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const alert = page.getByTestId('render-alert')
     await assert.equal(await alert.getAttribute('role'), 'alert')
     await assert.equal(await alert.getByText('保存失败').textContent(), '保存失败')
-    await assert.equal(await alert.getByText('请检查填写内容后重试。').textContent(), '请检查填写内容后重试。')
-    await assert.equal(await alert.getByText('保存失败').getAttribute('data-i18n-text'), 'examples:alert.title')
-    await assert.equal(await alert.getByText('请检查填写内容后重试。').getAttribute('data-i18n-text'), 'examples:alert.description')
+    await assert.equal(
+      await alert.getByText('请检查填写内容后重试。').textContent(),
+      '请检查填写内容后重试。'
+    )
+    await assert.equal(
+      await alert.getByText('保存失败').getAttribute('data-i18n-text'),
+      'examples:alert.title'
+    )
+    await assert.equal(
+      await alert.getByText('请检查填写内容后重试。').getAttribute('data-i18n-text'),
+      'examples:alert.description'
+    )
 
     const progress = page.getByTestId('render-progress')
     const progressTrack = progress.getByRole('progressbar')
@@ -733,7 +1531,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     )
     await assert.equal(await progress.getByText('上传进度').textContent(), '上传进度')
     await assert.equal(
-      await page.getByTestId('render-progress-indeterminate').getByRole('progressbar').getAttribute('aria-valuenow'),
+      await page
+        .getByTestId('render-progress-indeterminate')
+        .getByRole('progressbar')
+        .getAttribute('aria-valuenow'),
       null
     )
 
@@ -751,7 +1552,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const controlId = await formControl.getAttribute('id')
     assert.ok(controlId, 'FormControl should receive a stable id')
     await assert.equal(await formLabel.getAttribute('for'), controlId)
-    await assert.equal(await formControl.getAttribute('aria-describedby'), `${await description.getAttribute('id')} ${await message.getAttribute('id')}`)
+    await assert.equal(
+      await formControl.getAttribute('aria-describedby'),
+      `${await description.getAttribute('id')} ${await message.getAttribute('id')}`
+    )
     await assert.equal(await formControl.getAttribute('aria-invalid'), 'true')
 
     await assert.equal(
@@ -762,10 +1566,22 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const emptyState = page.getByTestId('render-empty-state')
     await assert.equal(await emptyState.getByText('暂无项目').textContent(), '暂无项目')
     await assert.equal(await emptyState.getByText('当前没有项目。').textContent(), '当前没有项目。')
-    await assert.equal(await emptyState.getByText('暂无项目').getAttribute('data-i18n-text'), 'examples:empty.title')
-    await assert.equal(await emptyState.getByText('当前没有项目。').getAttribute('data-i18n-text'), 'examples:empty.description')
-    await assert.equal(await emptyState.locator('.vds-empty-state__image').getAttribute('src'), '/assets/empty-test.webp')
-    await assert.equal(await emptyState.getByRole('button', { name: '创建项目' }).textContent(), '创建项目')
+    await assert.equal(
+      await emptyState.getByText('暂无项目').getAttribute('data-i18n-text'),
+      'examples:empty.title'
+    )
+    await assert.equal(
+      await emptyState.getByText('当前没有项目。').getAttribute('data-i18n-text'),
+      'examples:empty.description'
+    )
+    await assert.equal(
+      await emptyState.locator('.vds-empty-state__image').getAttribute('src'),
+      '/assets/empty-test.webp'
+    )
+    await assert.equal(
+      await emptyState.getByRole('button', { name: '创建项目' }).textContent(),
+      '创建项目'
+    )
 
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', {
@@ -773,23 +1589,33 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
         value: {
           writeText: (text: string) => {
             const mode = window.localStorage.getItem('copy-mode')
-            window.localStorage.setItem('copy-attempts', String(Number(window.localStorage.getItem('copy-attempts') ?? '0') + 1))
+            window.localStorage.setItem(
+              'copy-attempts',
+              String(Number(window.localStorage.getItem('copy-attempts') ?? '0') + 1)
+            )
             window.localStorage.setItem('copied-text', text)
             if (mode === 'reject') {
               return Promise.reject(new Error('clipboard rejected'))
             }
             return Promise.resolve()
-          }
-        }
+          },
+        },
       })
     })
     const copyButton = page.getByTestId('render-copy-button')
     await assert.equal(await copyButton.getAttribute('aria-label'), '复制')
     await copyButton.click()
-    await assert.equal(await page.evaluate(() => window.localStorage.getItem('copied-text')), 'copy-value')
+    await assert.equal(
+      await page.evaluate(() => window.localStorage.getItem('copied-text')),
+      'copy-value'
+    )
     await assert.equal(await copyButton.getAttribute('aria-label'), '已复制')
     await assert.equal(await copyButton.getAttribute('data-copy-status'), 'success')
-    await page.waitForFunction(() => document.querySelector('[data-testid="render-copy-button"]')?.getAttribute('aria-label') === '复制')
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-testid="render-copy-button"]')?.getAttribute('aria-label') ===
+        '复制'
+    )
     await assert.equal(await copyButton.getAttribute('data-copy-status'), 'idle')
 
     await page.evaluate(() => {
@@ -802,7 +1628,7 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
-        value: undefined
+        value: undefined,
       })
       window.localStorage.setItem('copy-mode', 'resolve')
     })
@@ -815,11 +1641,14 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
         configurable: true,
         value: {
           writeText: (text: string) => {
-            window.localStorage.setItem('copy-attempts', String(Number(window.localStorage.getItem('copy-attempts') ?? '0') + 1))
+            window.localStorage.setItem(
+              'copy-attempts',
+              String(Number(window.localStorage.getItem('copy-attempts') ?? '0') + 1)
+            )
             window.localStorage.setItem('copied-text', text)
             return Promise.resolve()
-          }
-        }
+          },
+        },
       })
       window.localStorage.setItem('copy-attempts', '0')
       window.localStorage.removeItem('copied-text')
@@ -849,38 +1678,82 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
 
     const pagination = page.getByTestId('render-pagination')
     await assert.equal(await pagination.getAttribute('aria-label'), '分页')
-    await assert.equal(await pagination.getByRole('button', { name: '第 4 页' }).getAttribute('aria-current'), 'page')
-    await pagination.getByRole('button', { name: '下一页' }).click()
-    await assert.equal(await page.getByTestId('render-pagination-value').textContent(), '5')
-    await assert.equal(await pagination.getByRole('button', { name: '第 5 页' }).getAttribute('aria-current'), 'page')
-
-    const disabledPagination = page.getByTestId('render-pagination-disabled')
-    await assert.equal(await disabledPagination.getByRole('button', { name: '上一页' }).isDisabled(), true)
-    await assert.equal(await disabledPagination.getByRole('button', { name: '第 3 页' }).isDisabled(), true)
-    await disabledPagination.getByRole('button', { name: '第 3 页' }).click({ force: true })
-    await assert.equal(await page.getByTestId('render-pagination-disabled-value').textContent(), '2')
-
-    await assert.equal(await page.getByTestId('render-pagination-first').getByRole('button', { name: '上一页' }).isDisabled(), true)
-    await assert.equal(await page.getByTestId('render-pagination-last').getByRole('button', { name: '下一页' }).isDisabled(), true)
     await assert.equal(
-      await page.getByTestId('render-pagination-overflow').getByRole('button', { name: '第 3 页' }).getAttribute('aria-current'),
+      await pagination.getByRole('button', { name: '第 4 页' }).getAttribute('aria-current'),
       'page'
     )
+    await pagination.getByRole('button', { name: '下一页' }).click()
+    await assert.equal(await page.getByTestId('render-pagination-value').textContent(), '5')
     await assert.equal(
-      await page.getByTestId('render-pagination-overflow').getByRole('button', { name: '下一页' }).isDisabled(),
+      await pagination.getByRole('button', { name: '第 5 页' }).getAttribute('aria-current'),
+      'page'
+    )
+
+    const disabledPagination = page.getByTestId('render-pagination-disabled')
+    await assert.equal(
+      await disabledPagination.getByRole('button', { name: '上一页' }).isDisabled(),
       true
     )
     await assert.equal(
-      await page.getByTestId('render-pagination-underflow').getByRole('button', { name: '第 1 页' }).getAttribute('aria-current'),
+      await disabledPagination.getByRole('button', { name: '第 3 页' }).isDisabled(),
+      true
+    )
+    await disabledPagination.getByRole('button', { name: '第 3 页' }).click({ force: true })
+    await assert.equal(
+      await page.getByTestId('render-pagination-disabled-value').textContent(),
+      '2'
+    )
+
+    await assert.equal(
+      await page
+        .getByTestId('render-pagination-first')
+        .getByRole('button', { name: '上一页' })
+        .isDisabled(),
+      true
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-pagination-last')
+        .getByRole('button', { name: '下一页' })
+        .isDisabled(),
+      true
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-pagination-overflow')
+        .getByRole('button', { name: '第 3 页' })
+        .getAttribute('aria-current'),
       'page'
     )
     await assert.equal(
-      await page.getByTestId('render-pagination-underflow').getByRole('button', { name: '上一页' }).isDisabled(),
+      await page
+        .getByTestId('render-pagination-overflow')
+        .getByRole('button', { name: '下一页' })
+        .isDisabled(),
+      true
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-pagination-underflow')
+        .getByRole('button', { name: '第 1 页' })
+        .getAttribute('aria-current'),
+      'page'
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-pagination-underflow')
+        .getByRole('button', { name: '上一页' })
+        .isDisabled(),
       true
     )
 
     const aspectRatio = page.getByTestId('render-aspect-ratio')
-    await assert.equal(await aspectRatio.evaluate((element) => getComputedStyle(element).getPropertyValue('--vds-aspect-ratio').trim()), '1.3333333333333333')
+    await assert.equal(
+      await aspectRatio.evaluate((element) =>
+        getComputedStyle(element).getPropertyValue('--vds-aspect-ratio').trim()
+      ),
+      '1.3333333333333333'
+    )
     assert.ok(
       (await aspectRatio.getAttribute('style'))?.includes('color: rgb(4, 5, 6);'),
       'AspectRatio should keep caller styles on its root element'
@@ -894,7 +1767,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await breadcrumb.getByLabel('更多路径').textContent(), '...')
     await assert.equal(await breadcrumb.locator('ol').count(), 1)
     await assert.equal(
-      await page.getByTestId('render-breadcrumb-custom-ellipsis').getByLabel('展开隐藏路径').textContent(),
+      await page
+        .getByTestId('render-breadcrumb-custom-ellipsis')
+        .getByLabel('展开隐藏路径')
+        .textContent(),
       '...'
     )
 
@@ -912,21 +1788,33 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     const keyboardCollapsibleTrigger = page.getByTestId('render-collapsible-keyboard')
     await keyboardCollapsibleTrigger.focus()
     await keyboardCollapsibleTrigger.press('Enter')
-    await assert.equal(await page.getByTestId('render-collapsible-controlled-value').textContent(), 'open')
+    await assert.equal(
+      await page.getByTestId('render-collapsible-controlled-value').textContent(),
+      'open'
+    )
     await keyboardCollapsibleTrigger.press(' ')
-    await assert.equal(await page.getByTestId('render-collapsible-controlled-value').textContent(), 'closed')
+    await assert.equal(
+      await page.getByTestId('render-collapsible-controlled-value').textContent(),
+      'closed'
+    )
 
     const disabledCollapsibleTrigger = page.getByTestId('render-collapsible-disabled-trigger')
     await assert.equal(await disabledCollapsibleTrigger.isDisabled(), true)
     await disabledCollapsibleTrigger.click({ force: true })
-    await assert.equal(await page.getByTestId('render-collapsible-disabled-content').getAttribute('hidden'), '')
+    await assert.equal(
+      await page.getByTestId('render-collapsible-disabled-content').getAttribute('hidden'),
+      ''
+    )
 
     const tabs = page.getByTestId('render-tabs')
     const overviewTab = tabs.getByRole('tab', { name: '概览' })
     const tasksTab = tabs.getByRole('tab', { name: '任务' })
     const disabledTab = tabs.getByRole('tab', { name: '禁用' })
     const settingsTab = tabs.getByRole('tab', { name: '设置' })
-    await assert.equal(await tabs.getByRole('tablist').getAttribute('aria-orientation'), 'horizontal')
+    await assert.equal(
+      await tabs.getByRole('tablist').getAttribute('aria-orientation'),
+      'horizontal'
+    )
     await assert.equal(await overviewTab.getAttribute('aria-selected'), 'true')
     await assert.equal(await overviewTab.getAttribute('tabindex'), '0')
     await assert.equal(await tasksTab.getAttribute('tabindex'), '-1')
@@ -938,28 +1826,70 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await tasksTab.focus()
     await tabs.getByRole('tablist').press('ArrowRight')
     await assert.equal(await page.getByTestId('render-tabs-value').textContent(), 'settings')
-    await assert.equal(await settingsTab.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await settingsTab.evaluate((element) => document.activeElement === element),
+      true
+    )
     await tabs.getByRole('tablist').press('ArrowLeft')
     await assert.equal(await page.getByTestId('render-tabs-value').textContent(), 'tasks')
-    await assert.equal(await tasksTab.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await tasksTab.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const defaultTabs = page.getByTestId('render-tabs-default')
-    await assert.equal(await defaultTabs.getByRole('tab', { name: '甲' }).getAttribute('aria-selected'), 'true')
-    await assert.equal(await defaultTabs.getByRole('tab', { name: '甲' }).getAttribute('tabindex'), '0')
-    await assert.equal(await defaultTabs.getByRole('tab', { name: '乙' }).getAttribute('aria-selected'), 'false')
-    await assert.equal(await defaultTabs.getByRole('tabpanel', { name: '甲' }).textContent(), '甲面板')
+    await assert.equal(
+      await defaultTabs.getByRole('tab', { name: '甲' }).getAttribute('aria-selected'),
+      'true'
+    )
+    await assert.equal(
+      await defaultTabs.getByRole('tab', { name: '甲' }).getAttribute('tabindex'),
+      '0'
+    )
+    await assert.equal(
+      await defaultTabs.getByRole('tab', { name: '乙' }).getAttribute('aria-selected'),
+      'false'
+    )
+    await assert.equal(
+      await defaultTabs.getByRole('tabpanel', { name: '甲' }).textContent(),
+      '甲面板'
+    )
 
     const invalidTabs = page.getByTestId('render-tabs-invalid')
-    await assert.equal(await invalidTabs.getByRole('tab', { name: '有效' }).getAttribute('aria-selected'), 'true')
-    await assert.equal(await invalidTabs.getByRole('tab', { name: '有效' }).getAttribute('tabindex'), '0')
-    await assert.equal(await invalidTabs.getByRole('tab', { name: '其他' }).getAttribute('aria-selected'), 'false')
-    await assert.equal(await invalidTabs.getByRole('tabpanel', { name: '有效' }).textContent(), '有效面板')
+    await assert.equal(
+      await invalidTabs.getByRole('tab', { name: '有效' }).getAttribute('aria-selected'),
+      'true'
+    )
+    await assert.equal(
+      await invalidTabs.getByRole('tab', { name: '有效' }).getAttribute('tabindex'),
+      '0'
+    )
+    await assert.equal(
+      await invalidTabs.getByRole('tab', { name: '其他' }).getAttribute('aria-selected'),
+      'false'
+    )
+    await assert.equal(
+      await invalidTabs.getByRole('tabpanel', { name: '有效' }).textContent(),
+      '有效面板'
+    )
 
     const allDisabledTabs = page.getByTestId('render-tabs-all-disabled')
-    await assert.equal(await allDisabledTabs.getByRole('tab', { name: '禁用一' }).isDisabled(), true)
-    await assert.equal(await allDisabledTabs.getByRole('tab', { name: '禁用二' }).isDisabled(), true)
-    await assert.equal(await allDisabledTabs.getByRole('tab', { name: '禁用一' }).getAttribute('aria-selected'), 'false')
-    await assert.equal(await allDisabledTabs.getByRole('tab', { name: '禁用二' }).getAttribute('aria-selected'), 'false')
+    await assert.equal(
+      await allDisabledTabs.getByRole('tab', { name: '禁用一' }).isDisabled(),
+      true
+    )
+    await assert.equal(
+      await allDisabledTabs.getByRole('tab', { name: '禁用二' }).isDisabled(),
+      true
+    )
+    await assert.equal(
+      await allDisabledTabs.getByRole('tab', { name: '禁用一' }).getAttribute('aria-selected'),
+      'false'
+    )
+    await assert.equal(
+      await allDisabledTabs.getByRole('tab', { name: '禁用二' }).getAttribute('aria-selected'),
+      'false'
+    )
     await assert.equal(await allDisabledTabs.getByText('禁用一面板').getAttribute('hidden'), '')
     await assert.equal(await allDisabledTabs.getByText('禁用二面板').getAttribute('hidden'), '')
 
@@ -975,11 +1905,20 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await detailTrigger.getAttribute('aria-expanded'), 'true')
     await detailTrigger.focus()
     await accordion.press('ArrowUp')
-    await assert.equal(await summaryTrigger.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await summaryTrigger.evaluate((element) => document.activeElement === element),
+      true
+    )
     await accordion.press('End')
-    await assert.equal(await detailTrigger.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await detailTrigger.evaluate((element) => document.activeElement === element),
+      true
+    )
     await accordion.press('Home')
-    await assert.equal(await summaryTrigger.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await summaryTrigger.evaluate((element) => document.activeElement === element),
+      true
+    )
     await summaryTrigger.press(' ')
     await assert.equal(await page.getByTestId('render-accordion-value').textContent(), 'summary')
     await summaryTrigger.press(' ')
@@ -995,10 +1934,16 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await secondAccordionTrigger.click()
     await assert.equal(await firstAccordionTrigger.getAttribute('aria-expanded'), 'true')
     await assert.equal(await secondAccordionTrigger.getAttribute('aria-expanded'), 'true')
-    await assert.equal(await page.getByTestId('render-accordion-multiple-value').textContent(), 'first,second')
+    await assert.equal(
+      await page.getByTestId('render-accordion-multiple-value').textContent(),
+      'first,second'
+    )
     await firstAccordionTrigger.click()
     await assert.equal(await firstAccordionTrigger.getAttribute('aria-expanded'), 'false')
-    await assert.equal(await page.getByTestId('render-accordion-multiple-value').textContent(), 'second')
+    await assert.equal(
+      await page.getByTestId('render-accordion-multiple-value').textContent(),
+      'second'
+    )
 
     const keydownAccordion = page.getByTestId('render-accordion-keydown')
     const keydownFirst = keydownAccordion.getByRole('button', { name: '键盘一' })
@@ -1006,16 +1951,28 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await keydownFirst.focus()
     await keydownAccordion.press('ArrowDown')
     await assert.equal(await page.getByTestId('render-accordion-keydown-events').textContent(), '1')
-    await assert.equal(await keydownSecond.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await keydownSecond.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const blockedKeydownAccordion = page.getByTestId('render-accordion-keydown-prevented')
     const blockedKeydownFirst = blockedKeydownAccordion.getByRole('button', { name: '阻止一' })
     const blockedKeydownSecond = blockedKeydownAccordion.getByRole('button', { name: '阻止二' })
     await blockedKeydownFirst.focus()
     await blockedKeydownAccordion.press('ArrowDown')
-    await assert.equal(await page.getByTestId('render-accordion-keydown-prevented-events').textContent(), '1')
-    await assert.equal(await blockedKeydownFirst.evaluate((element) => document.activeElement === element), true)
-    await assert.equal(await blockedKeydownSecond.evaluate((element) => document.activeElement === element), false)
+    await assert.equal(
+      await page.getByTestId('render-accordion-keydown-prevented-events').textContent(),
+      '1'
+    )
+    await assert.equal(
+      await blockedKeydownFirst.evaluate((element) => document.activeElement === element),
+      true
+    )
+    await assert.equal(
+      await blockedKeydownSecond.evaluate((element) => document.activeElement === element),
+      false
+    )
 
     const scrollArea = page.getByTestId('render-scroll-area')
     await assert.equal(await scrollArea.getAttribute('data-orientation'), 'both')
@@ -1024,9 +1981,18 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await scrollViewport.getAttribute('aria-label'), '滚动视口')
     await assert.equal(await scrollViewport.getAttribute('tabindex'), '0')
     await scrollViewport.focus()
-    await assert.equal(await scrollViewport.evaluate((element) => document.activeElement === element), true)
-    await assert.equal(await scrollViewport.evaluate((element) => getComputedStyle(element).overflowX), 'auto')
-    await assert.equal(await scrollViewport.evaluate((element) => getComputedStyle(element).overflowY), 'auto')
+    await assert.equal(
+      await scrollViewport.evaluate((element) => document.activeElement === element),
+      true
+    )
+    await assert.equal(
+      await scrollViewport.evaluate((element) => getComputedStyle(element).overflowX),
+      'auto'
+    )
+    await assert.equal(
+      await scrollViewport.evaluate((element) => getComputedStyle(element).overflowY),
+      'auto'
+    )
 
     const slider = page.getByTestId('render-slider')
     await assert.equal(await slider.getAttribute('role'), null)
@@ -1046,7 +2012,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await uncontrolledSlider.inputValue(), '10')
     await uncontrolledSlider.press('ArrowRight')
     await assert.equal(await uncontrolledSlider.inputValue(), '15')
-    await assert.equal(await page.getByTestId('render-slider-uncontrolled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-slider-uncontrolled-changes').textContent(),
+      '1'
+    )
     const verticalSlider = page.getByTestId('render-slider-vertical')
     await assert.equal(await verticalSlider.getAttribute('aria-orientation'), 'vertical')
     await verticalSlider.focus()
@@ -1066,18 +2035,30 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await otpGroup.count(), 1)
     const otpDescriptionId = await otpFirst.getAttribute('aria-describedby')
     assert.ok(otpDescriptionId, 'InputOTP description should be linked by aria-describedby')
-    await assert.equal(await page.locator(`[id="${otpDescriptionId}"]`).textContent(), '输入收到的 6 位验证码。')
+    await assert.equal(
+      await page.locator(`[id="${otpDescriptionId}"]`).textContent(),
+      '输入收到的 6 位验证码。'
+    )
     await otpFirst.fill('1')
     await assert.equal(await page.getByTestId('render-input-otp-value').textContent(), '1')
-    await assert.equal(await otpSecond.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await otpSecond.evaluate((element) => document.activeElement === element),
+      true
+    )
     await otpSecond.fill('2')
     await assert.equal(await page.getByTestId('render-input-otp-value').textContent(), '12')
     await otpSecond.press('Backspace')
     await assert.equal(await page.getByTestId('render-input-otp-value').textContent(), '1')
-    await assert.equal(await otpSecond.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await otpSecond.evaluate((element) => document.activeElement === element),
+      true
+    )
     await otpSecond.press('Backspace')
     await assert.equal(await page.getByTestId('render-input-otp-value').textContent(), '')
-    await assert.equal(await otpFirst.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await otpFirst.evaluate((element) => document.activeElement === element),
+      true
+    )
     await otpFirst.evaluate((element) => {
       const clipboardData = new DataTransfer()
       clipboardData.setData('text/plain', '987654')
@@ -1085,7 +2066,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     })
     await assert.equal(await page.getByTestId('render-input-otp-value').textContent(), '987654')
     await assert.equal(await page.getByTestId('render-input-otp-complete').textContent(), '987654')
-    await assert.equal(await otp.getByLabel('验证码 6').evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await otp.getByLabel('验证码 6').evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const textOtp = page.getByTestId('render-input-otp-text')
     await assert.equal(await textOtp.getByLabel('文本代码 1').inputValue(), 'A')
@@ -1100,19 +2084,37 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await compositionFirst.focus()
     await compositionFirst.evaluate((element) => {
       element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: 'n' }))
-        ; (element as HTMLInputElement).value = 'n'
+      ;(element as HTMLInputElement).value = 'n'
       element.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'n' }))
     })
-    await assert.equal(await page.getByTestId('render-input-otp-composition-value').textContent(), '')
-    await assert.equal(await page.getByTestId('render-input-otp-composition-changes').textContent(), '0')
-    await assert.equal(await compositionFirst.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await page.getByTestId('render-input-otp-composition-value').textContent(),
+      ''
+    )
+    await assert.equal(
+      await page.getByTestId('render-input-otp-composition-changes').textContent(),
+      '0'
+    )
+    await assert.equal(
+      await compositionFirst.evaluate((element) => document.activeElement === element),
+      true
+    )
     await compositionFirst.evaluate((element) => {
-      ; (element as HTMLInputElement).value = '你'
+      ;(element as HTMLInputElement).value = '你'
       element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '你' }))
     })
-    await assert.equal(await page.getByTestId('render-input-otp-composition-value').textContent(), '你')
-    await assert.equal(await page.getByTestId('render-input-otp-composition-changes').textContent(), '1')
-    await assert.equal(await compositionSecond.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await page.getByTestId('render-input-otp-composition-value').textContent(),
+      '你'
+    )
+    await assert.equal(
+      await page.getByTestId('render-input-otp-composition-changes').textContent(),
+      '1'
+    )
+    await assert.equal(
+      await compositionSecond.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const stableOtp = page.getByTestId('render-input-otp-stable')
     const stableFirst = stableOtp.getByLabel('稳定槽位 1')
@@ -1140,26 +2142,41 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await controlledSlotsSecond.inputValue(), '')
     await assert.equal(await controlledSlotsThird.inputValue(), '3')
     await assert.equal(await controlledSlotsFourth.inputValue(), '4')
-    await assert.equal(await page.getByTestId('render-input-otp-controlled-slots-value').textContent(), '1_34')
+    await assert.equal(
+      await page.getByTestId('render-input-otp-controlled-slots-value').textContent(),
+      '1_34'
+    )
 
     const customSlot = page.getByTestId('render-input-otp-slot-class').getByLabel('自定义槽位 1')
     const customSlotClass = await customSlot.getAttribute('class')
-    assert.ok(customSlotClass?.includes('vds-input-otp__slot'), 'InputOTP should keep its base slot class')
-    assert.ok(customSlotClass?.includes('custom-otp-slot'), 'InputOTP should merge slotProps.className')
+    assert.ok(
+      customSlotClass?.includes('vds-input-otp__slot'),
+      'InputOTP should keep its base slot class'
+    )
+    assert.ok(
+      customSlotClass?.includes('custom-otp-slot'),
+      'InputOTP should merge slotProps.className'
+    )
 
     const invalidOtp = page.getByTestId('render-input-otp-invalid')
     const invalidOtpFirst = invalidOtp.getByLabel('错误验证码 1')
     const invalidDescription = await invalidOtpFirst.getAttribute('aria-describedby')
     assert.ok(invalidDescription, 'InputOTP error should be linked by aria-describedby')
     await assert.equal(await invalidOtpFirst.getAttribute('aria-invalid'), 'true')
-    await assert.equal(await page.locator(`[id="${invalidDescription}"]`).textContent(), '验证码错误。')
+    await assert.equal(
+      await page.locator(`[id="${invalidDescription}"]`).textContent(),
+      '验证码错误。'
+    )
 
     const disabledOtp = page.getByTestId('render-input-otp-disabled')
     const disabledOtpFirst = disabledOtp.getByLabel('禁用验证码 1')
     await assert.equal(await disabledOtp.getAttribute('aria-disabled'), 'true')
     await assert.equal(await disabledOtpFirst.isDisabled(), true)
     await disabledOtpFirst.fill('9', { force: true })
-    await assert.equal(await page.getByTestId('render-input-otp-disabled-value').textContent(), '12')
+    await assert.equal(
+      await page.getByTestId('render-input-otp-disabled-value').textContent(),
+      '12'
+    )
 
     const command = page.getByTestId('render-command')
     const commandInput = page.getByTestId('render-command-input')
@@ -1174,9 +2191,19 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await archiveCommand.isDisabled(), true)
     await commandInput.fill('create')
     await assert.equal(await page.getByTestId('render-command-search').textContent(), 'create')
-    await page.waitForFunction(() => document.querySelector('[data-testid="render-command"] [value="open"]')?.hasAttribute('hidden'))
-    await assert.equal(await openCommand.evaluate((element) => (element as HTMLButtonElement).hidden), true)
-    await assert.equal(await newCommand.evaluate((element) => (element as HTMLButtonElement).hidden), false)
+    await page.waitForFunction(() =>
+      document
+        .querySelector('[data-testid="render-command"] [value="open"]')
+        ?.hasAttribute('hidden')
+    )
+    await assert.equal(
+      await openCommand.evaluate((element) => (element as HTMLButtonElement).hidden),
+      true
+    )
+    await assert.equal(
+      await newCommand.evaluate((element) => (element as HTMLButtonElement).hidden),
+      false
+    )
     await newCommand.click()
     await assert.equal(await page.getByTestId('render-command-value').textContent(), 'new')
     await assert.equal(await page.getByTestId('render-command-selects').textContent(), 'new')
@@ -1186,30 +2213,46 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await newCommand.focus()
     await commandList.press('ArrowDown')
     await assert.equal(await page.getByTestId('render-command-value').textContent(), 'list')
-    await assert.equal(await listCommand.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await listCommand.evaluate((element) => document.activeElement === element),
+      true
+    )
     await commandList.press('Home')
     await assert.equal(await page.getByTestId('render-command-value').textContent(), 'open')
-    await assert.equal(await openCommand.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await openCommand.evaluate((element) => document.activeElement === element),
+      true
+    )
     await commandList.press('End')
     await assert.equal(await page.getByTestId('render-command-value').textContent(), 'list')
 
     const defaultCommand = page.getByTestId('render-command-default')
     await assert.equal(
-      await defaultCommand.getByRole('option', { name: '新建项目' }).evaluate((element) => (element as HTMLButtonElement).hidden),
+      await defaultCommand
+        .getByRole('option', { name: '新建项目' })
+        .evaluate((element) => (element as HTMLButtonElement).hidden),
       false
     )
     await assert.equal(
-      await defaultCommand.getByRole('option', { includeHidden: true, name: '打开项目' }).evaluate((element) => (element as HTMLButtonElement).hidden),
+      await defaultCommand
+        .getByRole('option', { includeHidden: true, name: '打开项目' })
+        .evaluate((element) => (element as HTMLButtonElement).hidden),
       true
     )
-    await assert.equal(await page.getByTestId('render-command-default-input').inputValue(), 'create')
+    await assert.equal(
+      await page.getByTestId('render-command-default-input').inputValue(),
+      'create'
+    )
 
     const disabledCommand = page.getByTestId('render-command-disabled')
     const disabledCommandInput = page.getByTestId('render-command-disabled-input')
     await assert.equal(await disabledCommand.getAttribute('aria-disabled'), 'true')
     await assert.equal(await disabledCommandInput.isDisabled(), true)
     await disabledCommand.getByRole('option', { name: '其他' }).click({ force: true })
-    await assert.equal(await page.getByTestId('render-command-disabled-value').textContent(), 'locked')
+    await assert.equal(
+      await page.getByTestId('render-command-disabled-value').textContent(),
+      'locked'
+    )
 
     const resizable = page.getByTestId('render-resizable')
     const resizableHandle = page.getByTestId('render-resizable-handle')
@@ -1229,31 +2272,84 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     assert.ok(handleBox, 'Resizable handle should have a visible box')
     await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2)
     await page.mouse.down()
-    await page.mouse.move(handleBox.x + handleBox.width / 2 + 80, handleBox.y + handleBox.height / 2)
+    await page.mouse.move(
+      handleBox.x + handleBox.width / 2 + 80,
+      handleBox.y + handleBox.height / 2
+    )
     await page.mouse.up()
     const draggedSizes = (await page.getByTestId('render-resizable-sizes').textContent()) ?? ''
     assert.notEqual(draggedSizes, '20,80')
 
     const defaultResizable = page.getByTestId('render-resizable-default')
-    await assert.equal(await defaultResizable.getByLabel('默认左侧').getAttribute('data-panel-size'), '25')
+    await assert.equal(
+      await defaultResizable.getByLabel('默认左侧').getAttribute('data-panel-size'),
+      '25'
+    )
     await page.getByTestId('render-resizable-default-handle').press('ArrowRight')
-    await assert.equal(await defaultResizable.getByLabel('默认左侧').getAttribute('data-panel-size'), '30')
+    await assert.equal(
+      await defaultResizable.getByLabel('默认左侧').getAttribute('data-panel-size'),
+      '30'
+    )
 
     const panelDefaultResizable = page.getByTestId('render-resizable-panel-default')
-    await assert.equal(await panelDefaultResizable.getByLabel('面板默认左侧').getAttribute('data-panel-size'), '35')
-    await assert.equal(await panelDefaultResizable.getByLabel('面板默认右侧').getAttribute('data-panel-size'), '65')
+    await assert.equal(
+      await panelDefaultResizable.getByLabel('面板默认左侧').getAttribute('data-panel-size'),
+      '35'
+    )
+    await assert.equal(
+      await panelDefaultResizable.getByLabel('面板默认右侧').getAttribute('data-panel-size'),
+      '65'
+    )
 
     const defaultClampedResizable = page.getByTestId('render-resizable-default-clamped')
-    await assert.equal(Math.round(Number(await defaultClampedResizable.getByLabel('约束默认左侧').getAttribute('data-panel-size'))), 20)
-    await assert.equal(Math.round(Number(await defaultClampedResizable.getByLabel('约束默认右侧').getAttribute('data-panel-size'))), 80)
+    await assert.equal(
+      Math.round(
+        Number(
+          await defaultClampedResizable.getByLabel('约束默认左侧').getAttribute('data-panel-size')
+        )
+      ),
+      20
+    )
+    await assert.equal(
+      Math.round(
+        Number(
+          await defaultClampedResizable.getByLabel('约束默认右侧').getAttribute('data-panel-size')
+        )
+      ),
+      80
+    )
 
     const controlledClampedResizable = page.getByTestId('render-resizable-controlled-clamped')
     const controlledClampedHandle = page.getByTestId('render-resizable-controlled-clamped-handle')
-    await assert.equal(Math.round(Number(await controlledClampedResizable.getByLabel('受控约束左侧').getAttribute('data-panel-size'))), 20)
-    await assert.equal(Math.round(Number(await controlledClampedResizable.getByLabel('受控约束右侧').getAttribute('data-panel-size'))), 80)
+    await assert.equal(
+      Math.round(
+        Number(
+          await controlledClampedResizable
+            .getByLabel('受控约束左侧')
+            .getAttribute('data-panel-size')
+        )
+      ),
+      20
+    )
+    await assert.equal(
+      Math.round(
+        Number(
+          await controlledClampedResizable
+            .getByLabel('受控约束右侧')
+            .getAttribute('data-panel-size')
+        )
+      ),
+      80
+    )
     await controlledClampedHandle.press('End')
-    await assert.equal(await page.getByTestId('render-resizable-controlled-clamped-sizes').textContent(), '70,30')
-    await assert.equal(Math.round(Number(await controlledClampedHandle.getAttribute('aria-valuenow'))), 70)
+    await assert.equal(
+      await page.getByTestId('render-resizable-controlled-clamped-sizes').textContent(),
+      '70,30'
+    )
+    await assert.equal(
+      Math.round(Number(await controlledClampedHandle.getAttribute('aria-valuenow'))),
+      70
+    )
 
     const verticalResizable = page.getByTestId('render-resizable-vertical')
     const verticalHandle = page.getByTestId('render-resizable-vertical-handle')
@@ -1261,7 +2357,9 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await verticalHandle.getAttribute('aria-orientation'), 'vertical')
     await verticalHandle.press('ArrowUp')
     await assert.equal(
-      Math.round(Number(await verticalResizable.getByLabel('上方面板').getAttribute('data-panel-size'))),
+      Math.round(
+        Number(await verticalResizable.getByLabel('上方面板').getAttribute('data-panel-size'))
+      ),
       55
     )
 
@@ -1270,12 +2368,20 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await disabledResizable.getAttribute('aria-disabled'), 'true')
     await assert.equal(await disabledResizableHandle.getAttribute('tabindex'), null)
     await disabledResizableHandle.press('ArrowRight')
-    await assert.equal(await page.getByTestId('render-resizable-disabled-sizes').textContent(), '45,55')
+    await assert.equal(
+      await page.getByTestId('render-resizable-disabled-sizes').textContent(),
+      '45,55'
+    )
 
     const rightSplit = page.getByTestId('render-resizable-right-split')
-    const rightSplitHandle = rightSplit.getByRole('button', { name: /^(Resize panels|调整面板大小)$/ })
+    const rightSplitHandle = rightSplit.getByRole('button', {
+      name: /^(Resize panels|调整面板大小)$/,
+    })
     const rightSplitPanel = page.getByTestId('render-resizable-right-split-right').locator('..')
-    await assert.equal(await rightSplitPanel.evaluate((element) => getComputedStyle(element).width), '403px')
+    await assert.equal(
+      await rightSplitPanel.evaluate((element) => getComputedStyle(element).width),
+      '403px'
+    )
     await rightSplitHandle.scrollIntoViewIfNeeded()
     const rightSplitHandleBox = await rightSplitHandle.boundingBox()
     assert.ok(rightSplitHandleBox, 'Right split handle should have a visible box')
@@ -1289,7 +2395,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       rightSplitHandleBox.y + rightSplitHandleBox.height / 2
     )
     await page.mouse.up()
-    await assert.equal(await page.getByTestId('render-resizable-right-width').textContent(), '503px')
+    await assert.equal(
+      await page.getByTestId('render-resizable-right-width').textContent(),
+      '503px'
+    )
     const expandedRightSplitHandleBox = await rightSplitHandle.boundingBox()
     assert.ok(expandedRightSplitHandleBox, 'Expanded right split handle should have a visible box')
     await page.mouse.move(
@@ -1302,7 +2411,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
       expandedRightSplitHandleBox.y + expandedRightSplitHandleBox.height / 2
     )
     await page.mouse.up()
-    await assert.equal(await page.getByTestId('render-resizable-right-width').textContent(), '600px')
+    await assert.equal(
+      await page.getByTestId('render-resizable-right-width').textContent(),
+      '600px'
+    )
 
     const toggle = page.getByTestId('render-toggle')
     await assert.equal(await toggle.getAttribute('aria-pressed'), 'false')
@@ -1313,12 +2425,18 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await uncontrolledToggle.getAttribute('aria-pressed'), 'true')
     await uncontrolledToggle.click()
     await assert.equal(await uncontrolledToggle.getAttribute('aria-pressed'), 'false')
-    await assert.equal(await page.getByTestId('render-toggle-uncontrolled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-toggle-uncontrolled-changes').textContent(),
+      '1'
+    )
     const preventedToggle = page.getByTestId('render-toggle-prevented')
     await assert.equal(await preventedToggle.getAttribute('aria-pressed'), 'false')
     await preventedToggle.click()
     await assert.equal(await preventedToggle.getAttribute('aria-pressed'), 'false')
-    await assert.equal(await page.getByTestId('render-toggle-uncontrolled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-toggle-uncontrolled-changes').textContent(),
+      '1'
+    )
     const disabledToggle = page.getByTestId('render-toggle-disabled')
     await assert.equal(await disabledToggle.isDisabled(), true)
     await assert.equal(await disabledToggle.getAttribute('aria-pressed'), 'true')
@@ -1343,25 +2461,52 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await gridToggle.focus()
     await toggleGroup.press('ArrowRight')
     await assert.equal(await page.getByTestId('render-toggle-group-value').textContent(), 'chart')
-    await assert.equal(await chartToggle.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await chartToggle.evaluate((element) => document.activeElement === element),
+      true
+    )
     await toggleGroup.press('ArrowLeft')
     await assert.equal(await page.getByTestId('render-toggle-group-value').textContent(), 'grid')
-    await assert.equal(await gridToggle.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await gridToggle.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const multipleToggleGroup = page.getByTestId('render-toggle-group-multiple')
-    await assert.equal(await multipleToggleGroup.getByRole('button', { name: '标签' }).getAttribute('aria-pressed'), 'true')
+    await assert.equal(
+      await multipleToggleGroup.getByRole('button', { name: '标签' }).getAttribute('aria-pressed'),
+      'true'
+    )
     await multipleToggleGroup.getByRole('button', { name: '负责人' }).click()
-    await assert.equal(await page.getByTestId('render-toggle-group-multiple-value').textContent(), 'tag,owner')
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-multiple-value').textContent(),
+      'tag,owner'
+    )
     await multipleToggleGroup.getByRole('button', { name: '标签' }).click()
-    await assert.equal(await page.getByTestId('render-toggle-group-multiple-value').textContent(), 'owner')
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-multiple-value').textContent(),
+      'owner'
+    )
 
     const segmentedControl = page.getByTestId('render-segmented-control')
-    await assert.equal(await segmentedControl.getByRole('button', { name: '日' }).getAttribute('aria-pressed'), 'true')
+    await assert.equal(
+      await segmentedControl.getByRole('button', { name: '日' }).getAttribute('aria-pressed'),
+      'true'
+    )
     await segmentedControl.getByRole('button', { name: '日' }).click()
-    await assert.equal(await page.getByTestId('render-segmented-control-value').textContent(), 'day')
-    await assert.equal(await segmentedControl.getByRole('button', { name: '日' }).getAttribute('aria-pressed'), 'true')
+    await assert.equal(
+      await page.getByTestId('render-segmented-control-value').textContent(),
+      'day'
+    )
+    await assert.equal(
+      await segmentedControl.getByRole('button', { name: '日' }).getAttribute('aria-pressed'),
+      'true'
+    )
     await segmentedControl.getByRole('button', { name: '周' }).click()
-    await assert.equal(await page.getByTestId('render-segmented-control-value').textContent(), 'week')
+    await assert.equal(
+      await page.getByTestId('render-segmented-control-value').textContent(),
+      'week'
+    )
 
     const defaultToggleGroup = page.getByTestId('render-toggle-group-default')
     const defaultAlpha = defaultToggleGroup.getByRole('button', { name: '甲视图' })
@@ -1369,9 +2514,15 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await defaultAlpha.getAttribute('tabindex'), '0')
     await assert.equal(await defaultBeta.getAttribute('tabindex'), '-1')
     await defaultAlpha.click()
-    await assert.equal(await page.getByTestId('render-toggle-group-default-value').textContent(), 'alpha')
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-default-value').textContent(),
+      'alpha'
+    )
     await defaultAlpha.click()
-    await assert.equal(await page.getByTestId('render-toggle-group-default-value').textContent(), '')
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-default-value').textContent(),
+      ''
+    )
 
     const invalidToggleGroup = page.getByTestId('render-toggle-group-invalid')
     const validToggle = invalidToggleGroup.getByRole('button', { name: '有效视图' })
@@ -1380,14 +2531,29 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await otherToggle.getAttribute('tabindex'), '-1')
     await validToggle.focus()
     await invalidToggleGroup.press('ArrowRight')
-    await assert.equal(await page.getByTestId('render-toggle-group-invalid-value').textContent(), 'other')
-    await assert.equal(await otherToggle.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-invalid-value').textContent(),
+      'other'
+    )
+    await assert.equal(
+      await otherToggle.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const allDisabledToggleGroup = page.getByTestId('render-toggle-group-all-disabled')
-    await assert.equal(await allDisabledToggleGroup.getByRole('button', { name: '禁用甲' }).isDisabled(), true)
-    await assert.equal(await allDisabledToggleGroup.getByRole('button', { name: '禁用乙' }).isDisabled(), true)
+    await assert.equal(
+      await allDisabledToggleGroup.getByRole('button', { name: '禁用甲' }).isDisabled(),
+      true
+    )
+    await assert.equal(
+      await allDisabledToggleGroup.getByRole('button', { name: '禁用乙' }).isDisabled(),
+      true
+    )
     await allDisabledToggleGroup.press('ArrowRight')
-    await assert.equal(await page.getByTestId('render-toggle-group-all-disabled-value').textContent(), '')
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-all-disabled-value').textContent(),
+      ''
+    )
 
     const verticalToggleGroup = page.getByTestId('render-toggle-group-vertical')
     const topToggle = verticalToggleGroup.getByRole('button', { name: '上方' })
@@ -1395,19 +2561,39 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await verticalToggleGroup.getAttribute('aria-orientation'), 'vertical')
     await topToggle.focus()
     await verticalToggleGroup.press('ArrowDown')
-    await assert.equal(await page.getByTestId('render-toggle-group-vertical-value').textContent(), 'middle')
-    await assert.equal(await middleToggle.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-vertical-value').textContent(),
+      'middle'
+    )
+    await assert.equal(
+      await middleToggle.evaluate((element) => document.activeElement === element),
+      true
+    )
     await verticalToggleGroup.press('ArrowUp')
-    await assert.equal(await page.getByTestId('render-toggle-group-vertical-value').textContent(), 'top')
-    await assert.equal(await topToggle.evaluate((element) => document.activeElement === element), true)
+    await assert.equal(
+      await page.getByTestId('render-toggle-group-vertical-value').textContent(),
+      'top'
+    )
+    await assert.equal(
+      await topToggle.evaluate((element) => document.activeElement === element),
+      true
+    )
 
     const controlledToaster = page.getByTestId('render-toaster-controlled')
     await assert.equal(await controlledToaster.getAttribute('role'), 'region')
     await assert.equal(await controlledToaster.getAttribute('aria-live'), 'polite')
-    await assert.equal(await controlledToaster.getByRole('status').getByText('已保存').textContent(), '已保存')
-    await assert.equal(await controlledToaster.getByRole('button', { name: '撤销' }).textContent(), '撤销')
     await assert.equal(
-      await page.getByTestId('render-toaster-position').evaluate((element) => window.getComputedStyle(element).top),
+      await controlledToaster.getByRole('status').getByText('已保存').textContent(),
+      '已保存'
+    )
+    await assert.equal(
+      await controlledToaster.getByRole('button', { name: '撤销' }).textContent(),
+      '撤销'
+    )
+    await assert.equal(
+      await page
+        .getByTestId('render-toaster-position')
+        .evaluate((element) => window.getComputedStyle(element).top),
       '50px'
     )
     await assert.equal(
@@ -1427,20 +2613,31 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     )
     const errorToast = controlledToaster.getByRole('alert')
     await assert.equal(await errorToast.getByText('同步失败').textContent(), '同步失败')
-    await assert.equal(await errorToast.evaluate((element) => window.getComputedStyle(element).alignItems), 'flex-start')
+    await assert.equal(
+      await errorToast.evaluate((element) => window.getComputedStyle(element).alignItems),
+      'flex-start'
+    )
     await controlledToaster.getByRole('button', { name: '关闭通知' }).first().click()
     await assert.equal(await page.getByTestId('render-toaster-controlled-count').textContent(), '1')
 
     const autoToaster = page.getByTestId('render-toaster-auto')
     await page.getByTestId('render-toast-auto-add').click()
     await assert.equal(await autoToaster.getByText('自动关闭').count(), 1)
-    await page.waitForFunction(() => document.querySelector('[data-testid="render-toaster-auto-count"]')?.textContent === '0')
+    await page.waitForFunction(
+      () => document.querySelector('[data-testid="render-toaster-auto-count"]')?.textContent === '0'
+    )
     await assert.equal(await autoToaster.getByText('自动关闭').count(), 0)
 
     await page.getByTestId('render-toast-add').click()
     const queueToaster = page.getByTestId('render-toaster-queue')
-    await assert.equal(await queueToaster.getByRole('status').getByText('队列通知').textContent(), '队列通知')
-    await assert.equal(await queueToaster.getByRole('button', { name: '查看' }).textContent(), '查看')
+    await assert.equal(
+      await queueToaster.getByRole('status').getByText('队列通知').textContent(),
+      '队列通知'
+    )
+    await assert.equal(
+      await queueToaster.getByRole('button', { name: '查看' }).textContent(),
+      '查看'
+    )
     await queueToaster.getByRole('button', { name: '关闭队列通知' }).click()
     await assert.equal(await queueToaster.getByText('队列通知').count(), 0)
 
@@ -1449,7 +2646,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await nestedProviderToaster.getByText('Provider 同 id').count(), 1)
     await assert.equal(await nestedControlledToaster.getByText('受控同 id').count(), 1)
     await nestedControlledToaster.getByRole('button', { name: '关闭通知' }).click()
-    await assert.equal(await page.getByTestId('render-toaster-nested-controlled-count').textContent(), '0')
+    await assert.equal(
+      await page.getByTestId('render-toaster-nested-controlled-count').textContent(),
+      '0'
+    )
     await assert.equal(await nestedControlledToaster.getByText('受控同 id').count(), 0)
     await assert.equal(await nestedProviderToaster.getByText('Provider 同 id').count(), 1)
 
@@ -1473,12 +2673,16 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     assert.ok(sheetTitleId, 'Sheet title should be linked by aria-labelledby')
     assert.ok(sheetDescriptionId, 'Sheet description should be linked by aria-describedby')
     await assert.equal(await page.locator(`[id="${sheetTitleId}"]`).textContent(), '项目详情')
-    await assert.equal(await page.locator(`[id="${sheetDescriptionId}"]`).textContent(), '展示右侧详情 UI 壳层。')
+    await assert.equal(
+      await page.locator(`[id="${sheetDescriptionId}"]`).textContent(),
+      '展示右侧详情 UI 壳层。'
+    )
     await sheet.focus()
     await assert.equal(await sheet.evaluate((element) => document.activeElement === element), true)
     await page.keyboard.press('Escape')
     await assert.equal(await page.getByTestId('render-sheet-open-value').textContent(), 'closed')
     await assert.equal(await page.getByTestId('render-sheet-open-changes').textContent(), '1')
+    await sheet.waitFor({ state: 'detached' })
     await assert.equal(await sheet.count(), 0)
 
     await page.getByTestId('render-sheet-modal-open').click()
@@ -1486,11 +2690,13 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await assert.equal(await modalSheet.getAttribute('aria-modal'), 'true')
     await assert.equal(await modalSheet.getAttribute('data-side'), 'left')
     await page.getByTestId('render-sheet-modal-close').click()
+    await modalSheet.waitFor({ state: 'detached' })
     await assert.equal(await modalSheet.count(), 0)
 
     await page.getByTestId('render-sheet-open').click()
     await page.getByTestId('render-sheet-overlay').click()
     await assert.equal(await page.getByTestId('render-sheet-open-value').textContent(), 'closed')
+    await sheetOverlay.waitFor({ state: 'detached' })
     await assert.equal(await sheetOverlay.count(), 0)
 
     await page.getByTestId('render-sheet-open').click()
@@ -1511,7 +2717,10 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     assert.ok(drawerTitleId, 'Drawer title should be linked by aria-labelledby')
     assert.ok(drawerDescriptionId, 'Drawer description should be linked by aria-describedby')
     await assert.equal(await page.locator(`[id="${drawerTitleId}"]`).textContent(), '移动抽屉')
-    await assert.equal(await page.locator(`[id="${drawerDescriptionId}"]`).textContent(), '底部抽屉 UI 壳层。')
+    await assert.equal(
+      await page.locator(`[id="${drawerDescriptionId}"]`).textContent(),
+      '底部抽屉 UI 壳层。'
+    )
     await page.keyboard.press('Escape')
     await assert.equal(await page.getByTestId('render-drawer-open-value').textContent(), 'closed')
 
@@ -1530,9 +2739,15 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     await tooltipTrigger.hover()
     const tooltipContent = tooltip.getByRole('tooltip')
     await assert.equal(await tooltipContent.textContent(), '保存当前配置')
-    await assert.equal(await tooltipContent.getAttribute('data-i18n-text'), 'examples:tooltip.content')
+    await assert.equal(
+      await tooltipContent.getAttribute('data-i18n-text'),
+      'examples:tooltip.content'
+    )
     await assert.equal(await tooltipContent.getAttribute('data-side'), 'top')
-    await assert.equal((await tooltipContent.getAttribute('class'))?.includes('vds-tooltip--top'), true)
+    await assert.equal(
+      (await tooltipContent.getAttribute('class'))?.includes('vds-tooltip--top'),
+      true
+    )
     const tooltipContentId = await tooltipContent.getAttribute('id')
     assert.ok(tooltipContentId, 'Tooltip content should receive a stable id')
     await assert.equal(await tooltipTrigger.getAttribute('aria-describedby'), tooltipContentId)
@@ -1550,36 +2765,73 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
 
     const controlledTooltip = page.getByTestId('render-tooltip-controlled')
     const controlledTooltipTrigger = controlledTooltip.getByRole('button', { name: '受控说明' })
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-value').textContent(), 'closed')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-value').textContent(),
+      'closed'
+    )
     await controlledTooltipTrigger.hover()
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-value').textContent(), 'open')
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-value').textContent(),
+      'open'
+    )
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-changes').textContent(),
+      '1'
+    )
     await controlledTooltipTrigger.focus()
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-changes').textContent(),
+      '1'
+    )
     await assert.equal(await controlledTooltip.getByRole('tooltip').textContent(), '受控提示内容')
     await page.mouse.move(0, 0)
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-value').textContent(), 'closed')
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-changes').textContent(), '2')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-value').textContent(),
+      'closed'
+    )
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-changes').textContent(),
+      '2'
+    )
     await controlledTooltipTrigger.blur()
-    await assert.equal(await page.getByTestId('render-tooltip-controlled-changes').textContent(), '2')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-controlled-changes').textContent(),
+      '2'
+    )
     await assert.equal(await controlledTooltip.getByRole('tooltip').count(), 0)
 
     const customIdTooltip = page.getByTestId('render-tooltip-custom-id')
     const customIdTrigger = customIdTooltip.getByRole('button', { name: '自定义 ID 说明' })
-    await assert.equal(await customIdTrigger.getAttribute('aria-describedby'), 'tooltip-existing-help')
+    await assert.equal(
+      await customIdTrigger.getAttribute('aria-describedby'),
+      'tooltip-existing-help'
+    )
     await customIdTrigger.hover()
     const customIdContent = customIdTooltip.getByRole('tooltip')
     await assert.equal(await customIdContent.getAttribute('id'), 'tooltip-custom-content')
-    await assert.equal(await customIdTrigger.getAttribute('aria-describedby'), 'tooltip-existing-help tooltip-custom-content')
+    await assert.equal(
+      await customIdTrigger.getAttribute('aria-describedby'),
+      'tooltip-existing-help tooltip-custom-content'
+    )
     await page.mouse.move(0, 0)
     await assert.equal(await customIdTooltip.getByRole('tooltip').count(), 0)
-    await assert.equal(await customIdTrigger.getAttribute('aria-describedby'), 'tooltip-existing-help')
+    await assert.equal(
+      await customIdTrigger.getAttribute('aria-describedby'),
+      'tooltip-existing-help'
+    )
 
     const wrapperDescriptionTooltip = page.getByTestId('render-tooltip-trigger-wrapper-description')
-    const wrapperDescriptionTrigger = wrapperDescriptionTooltip.getByRole('button', { name: '外层描述说明' })
-    await assert.equal(await wrapperDescriptionTrigger.getAttribute('aria-describedby'), 'tooltip-trigger-wrapper-help')
+    const wrapperDescriptionTrigger = wrapperDescriptionTooltip.getByRole('button', {
+      name: '外层描述说明',
+    })
+    await assert.equal(
+      await wrapperDescriptionTrigger.getAttribute('aria-describedby'),
+      'tooltip-trigger-wrapper-help'
+    )
     await wrapperDescriptionTrigger.hover()
-    const wrapperDescriptionContentId = await wrapperDescriptionTooltip.getByRole('tooltip').getAttribute('id')
+    const wrapperDescriptionContentId = await wrapperDescriptionTooltip
+      .getByRole('tooltip')
+      .getAttribute('id')
     assert.ok(wrapperDescriptionContentId, 'Tooltip content should receive an id')
     await assert.equal(
       await wrapperDescriptionTrigger.getAttribute('aria-describedby'),
@@ -1587,14 +2839,22 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     )
     await page.mouse.move(0, 0)
     await assert.equal(await wrapperDescriptionTooltip.getByRole('tooltip').count(), 0)
-    await assert.equal(await wrapperDescriptionTrigger.getAttribute('aria-describedby'), 'tooltip-trigger-wrapper-help')
+    await assert.equal(
+      await wrapperDescriptionTrigger.getAttribute('aria-describedby'),
+      'tooltip-trigger-wrapper-help'
+    )
 
     const defaultOpenTooltip = page.getByTestId('render-tooltip-default-open')
     await assert.equal(await defaultOpenTooltip.getByRole('tooltip').textContent(), '默认提示内容')
-    await assert.equal(await defaultOpenTooltip.getByRole('tooltip').getAttribute('data-side'), 'left')
+    await assert.equal(
+      await defaultOpenTooltip.getByRole('tooltip').getAttribute('data-side'),
+      'left'
+    )
 
     const defaultOpenCustomIdTooltip = page.getByTestId('render-tooltip-default-open-custom-id')
-    const defaultOpenCustomIdTrigger = defaultOpenCustomIdTooltip.getByRole('button', { name: '默认自定义 ID' })
+    const defaultOpenCustomIdTrigger = defaultOpenCustomIdTooltip.getByRole('button', {
+      name: '默认自定义 ID',
+    })
     await assert.equal(
       await defaultOpenCustomIdTooltip.getByRole('tooltip').getAttribute('id'),
       'tooltip-default-open-custom-content'
@@ -1605,13 +2865,21 @@ test('ui primitives render accessible DOM and dispatch user events', async () =>
     )
 
     const uncontrolledEventsTooltip = page.getByTestId('render-tooltip-uncontrolled-events')
-    const uncontrolledEventsTrigger = uncontrolledEventsTooltip.getByRole('button', { name: '非受控事件说明' })
+    const uncontrolledEventsTrigger = uncontrolledEventsTooltip.getByRole('button', {
+      name: '非受控事件说明',
+    })
     await uncontrolledEventsTrigger.hover()
     await uncontrolledEventsTrigger.focus()
-    await assert.equal(await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(), '1')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(),
+      '1'
+    )
     await page.mouse.move(0, 0)
     await uncontrolledEventsTrigger.blur()
-    await assert.equal(await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(), '2')
+    await assert.equal(
+      await page.getByTestId('render-tooltip-uncontrolled-changes').textContent(),
+      '2'
+    )
 
     const disabledTooltip = page.getByTestId('render-tooltip-disabled')
     const disabledTooltipTrigger = disabledTooltip.getByRole('button', { name: '禁用说明' })
@@ -1633,30 +2901,31 @@ test('floating toolbar renders an opaque accessible action surface', async () =>
   })
 })
 
-
 test('modal dialog contains keyboard focus, dismisses only the nested layer and restores focus', async () => {
   await withFixture(async (page) => {
     const trigger = page.getByTestId('render-dialog-open')
     const outer = page.getByTestId('render-dialog-content')
     await trigger.click()
-    assert.equal(await outer.evaluate(el => el.contains(document.activeElement)), true)
+    assert.equal(await outer.evaluate((el) => el.contains(document.activeElement)), true)
     for (const key of ['Tab', 'Tab', 'Tab', 'Shift+Tab', 'Shift+Tab']) {
       await page.keyboard.press(key)
-      assert.equal(await outer.evaluate(el => el.contains(document.activeElement)), true)
+      assert.equal(await outer.evaluate((el) => el.contains(document.activeElement)), true)
     }
     await page.getByTestId('nested-dialog-open').click()
     const inner = page.getByTestId('nested-dialog-content')
-    assert.equal(await inner.evaluate(el => el.contains(document.activeElement)), true)
+    assert.equal(await inner.evaluate((el) => el.contains(document.activeElement)), true)
     await page.keyboard.press('Escape')
     await inner.waitFor({ state: 'hidden' })
     assert.equal(await outer.isVisible(), true)
-    assert.equal(await page.getByTestId('nested-dialog-open').evaluate(el => el === document.activeElement), true)
+    assert.equal(
+      await page.getByTestId('nested-dialog-open').evaluate((el) => el === document.activeElement),
+      true
+    )
     await page.keyboard.press('Escape')
     await outer.waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
   })
 })
-
 
 test('nonmodal dialog permits Tab to leave and ignores implicit dismissal without a blocking backdrop', async () => {
   await withFixture(async (page) => {
@@ -1665,7 +2934,10 @@ test('nonmodal dialog permits Tab to leave and ignores implicit dismissal withou
     assert.equal(await content.getAttribute('aria-modal'), null)
     await page.getByTestId('nonmodal-dialog-action').focus()
     await page.keyboard.press('Tab')
-    assert.equal(await page.getByTestId('nonmodal-after').evaluate(el => el === document.activeElement), true)
+    assert.equal(
+      await page.getByTestId('nonmodal-after').evaluate((el) => el === document.activeElement),
+      true
+    )
     await page.getByTestId('nonmodal-after').click()
     assert.equal(await content.isVisible(), true)
     await page.keyboard.press('Escape')
@@ -1674,7 +2946,6 @@ test('nonmodal dialog permits Tab to leave and ignores implicit dismissal withou
   })
 })
 
-
 test('popover focuses content after positioning, restores on Escape and permits focus outside', async () => {
   await withFixture(async (page) => {
     const trigger = page.getByTestId('focus-popover-trigger')
@@ -1682,20 +2953,24 @@ test('popover focuses content after positioning, restores on Escape and permits 
     const checkbox = page.getByTestId('focus-popover-checkbox')
     const outside = page.getByTestId('focus-popover-outside')
     await trigger.click()
-    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'focus-popover-checkbox')
+    await page.waitForFunction(
+      () => document.activeElement?.getAttribute('data-testid') === 'focus-popover-checkbox'
+    )
     await page.keyboard.press('Space')
     assert.equal(await checkbox.isChecked(), true)
     await page.keyboard.press('Escape')
     await content.waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
     await trigger.click()
-    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'focus-popover-checkbox')
+    await page.waitForFunction(
+      () => document.activeElement?.getAttribute('data-testid') === 'focus-popover-checkbox'
+    )
     await page.getByTestId('focus-popover-last').focus()
     await page.keyboard.press('Tab')
-    assert.equal(await content.evaluate(el => el.contains(document.activeElement)), false)
+    assert.equal(await content.evaluate((el) => el.contains(document.activeElement)), false)
     await outside.click()
     await content.waitFor({ state: 'hidden' })
-    assert.equal(await outside.evaluate(el => el === document.activeElement), true)
+    assert.equal(await outside.evaluate((el) => el === document.activeElement), true)
   })
 })
 
@@ -1706,75 +2981,86 @@ test('tall floating content stays inside the viewport and exposes its trailing a
     await content.waitFor({ state: 'visible' })
     await page.waitForTimeout(250)
 
-    const bounds = await content.evaluate(element => {
+    const bounds = await content.evaluate((element) => {
       const rect = element.getBoundingClientRect()
       return {
         bottom: rect.bottom,
         clientHeight: element.clientHeight,
         scrollHeight: element.scrollHeight,
         top: rect.top,
-        viewportHeight: window.innerHeight
+        viewportHeight: window.innerHeight,
       }
     })
     assert.ok(bounds.top >= 8, JSON.stringify(bounds))
     assert.ok(bounds.bottom <= bounds.viewportHeight - 8, JSON.stringify(bounds))
     assert.ok(bounds.scrollHeight > bounds.clientHeight, JSON.stringify(bounds))
 
-    await content.evaluate(element => element.scrollTo({ top: element.scrollHeight }))
+    await content.evaluate((element) => element.scrollTo({ top: element.scrollHeight }))
     const action = page.getByTestId('viewport-hover-card-action')
     await assert.equal(await action.isVisible(), true)
-    await assert.ok(await action.evaluate(element => {
-      const actionRect = element.getBoundingClientRect()
-      const contentRect = element.closest('[data-testid="viewport-hover-card-content"]')!.getBoundingClientRect()
-      return actionRect.bottom <= contentRect.bottom
-    }))
+    await assert.ok(
+      await action.evaluate((element) => {
+        const actionRect = element.getBoundingClientRect()
+        const contentRect = element
+          .closest('[data-testid="viewport-hover-card-content"]')!
+          .getBoundingClientRect()
+        return actionRect.bottom <= contentRect.bottom
+      })
+    )
   })
 })
 
-
 test('menu keyboard skips disabled items, wraps and dismisses only the focused submenu', async () => {
-  await withFixture(async page => {
+  await withFixture(async (page) => {
     const trigger = page.getByTestId('focus-menu-trigger')
     const menu = page.getByTestId('focus-menu')
     const first = page.getByTestId('focus-menu-first')
     const last = page.getByTestId('focus-menu-last')
     const subtrigger = page.getByTestId('focus-menu-subtrigger')
     await trigger.click()
-    await page.waitForFunction(() => document.activeElement?.getAttribute('data-testid') === 'focus-menu-first')
+    await page.waitForFunction(
+      () => document.activeElement?.getAttribute('data-testid') === 'focus-menu-first'
+    )
     await page.keyboard.press('ArrowDown')
-    assert.equal(await subtrigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await subtrigger.evaluate((el) => el === document.activeElement), true)
     await page.keyboard.press('End')
-    assert.equal(await last.evaluate(el => el === document.activeElement), true)
+    assert.equal(await last.evaluate((el) => el === document.activeElement), true)
     await page.keyboard.press('ArrowDown')
-    assert.equal(await first.evaluate(el => el === document.activeElement), true)
+    assert.equal(await first.evaluate((el) => el === document.activeElement), true)
     await page.keyboard.press('ArrowUp')
-    assert.equal(await last.evaluate(el => el === document.activeElement), true)
+    assert.equal(await last.evaluate((el) => el === document.activeElement), true)
     await subtrigger.click()
     const sub = page.getByTestId('focus-menu-sub')
     await sub.getByRole('menuitem').waitFor({ state: 'visible' })
-    assert.equal(await sub.evaluate(el => el.contains(document.activeElement)), true)
+    assert.equal(await sub.evaluate((el) => el.contains(document.activeElement)), true)
     await page.keyboard.press('Escape')
     await sub.waitFor({ state: 'hidden' })
     assert.equal(await menu.isVisible(), true)
-    assert.equal(await subtrigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await subtrigger.evaluate((el) => el === document.activeElement), true)
     await page.keyboard.press('Escape')
     await menu.waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
   })
 })
 
-
 test('icon buttons keep square geometry without text-button padding and loading replaces the icon', async () => {
-  await withFixture(async page => {
-    for (const [size, edge, iconEdge] of [['sm', 28, 14], ['md', 32, 16], ['lg', 40, 16]] as const) {
+  await withFixture(async (page) => {
+    for (const [size, edge, iconEdge] of [
+      ['sm', 28, 14],
+      ['md', 32, 16],
+      ['lg', 40, 16],
+    ] as const) {
       const button = page.getByTestId(`square-icon-${size}`)
-      const geometry = await button.evaluate(el => {
+      const geometry = await button.evaluate((el) => {
         const bounds = el.getBoundingClientRect()
         const icon = el.querySelector('.vds-icon-button__content')!.getBoundingClientRect()
         return {
-          width: bounds.width, height: bounds.height, iconWidth: icon.width, iconHeight: icon.height,
+          width: bounds.width,
+          height: bounds.height,
+          iconWidth: icon.width,
+          iconHeight: icon.height,
           offsetX: Math.abs((icon.left + icon.right) / 2 - (bounds.left + bounds.right) / 2),
-          offsetY: Math.abs((icon.top + icon.bottom) / 2 - (bounds.top + bounds.bottom) / 2)
+          offsetY: Math.abs((icon.top + icon.bottom) / 2 - (bounds.top + bounds.bottom) / 2),
         }
       })
       assert.equal(geometry.width, edge)
@@ -1789,7 +3075,6 @@ test('icon buttons keep square geometry without text-button padding and loading 
     assert.equal(await loading.getByRole('status').count(), 1)
   })
 })
-
 
 test('disabled tooltip forgets previous hover before being enabled again', async () => {
   await withFixture(async (page) => {
@@ -1807,14 +3092,14 @@ test('disabled tooltip forgets previous hover before being enabled again', async
 })
 
 test('visible tooltip dismisses on Escape without moving focused trigger', async () => {
-  await withFixture(async page => {
+  await withFixture(async (page) => {
     const root = page.getByTestId('render-tooltip')
     const trigger = root.getByRole('button')
     await trigger.focus()
     await root.getByRole('tooltip').waitFor({ state: 'visible' })
     await page.keyboard.press('Escape')
     await root.getByRole('tooltip').waitFor({ state: 'hidden' })
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
     assert.equal(await trigger.getAttribute('aria-describedby'), null)
     await page.mouse.move(0, 0)
     await trigger.hover()
@@ -1824,27 +3109,41 @@ test('visible tooltip dismisses on Escape without moving focused trigger', async
   })
 })
 
-
 test('composed select opens from keyboard, skips disabled options, selects and restores focus', async () => {
-  await withFixture(async page => {
+  await withFixture(async (page) => {
     const trigger = page.getByTestId('keyboard-select')
     const list = page.getByTestId('keyboard-options')
     await trigger.focus()
     await page.keyboard.press('ArrowDown')
     await list.waitFor({ state: 'visible' })
-    assert.equal(await list.getByRole('option', { name: '第一项', exact: true }).evaluate(el => el === document.activeElement), true)
+    assert.equal(
+      await list
+        .getByRole('option', { name: '第一项', exact: true })
+        .evaluate((el) => el === document.activeElement),
+      true
+    )
     await page.keyboard.press('ArrowDown')
-    assert.equal(await list.getByRole('option', { name: '最后项', exact: true }).evaluate(el => el === document.activeElement), true)
+    assert.equal(
+      await list
+        .getByRole('option', { name: '最后项', exact: true })
+        .evaluate((el) => el === document.activeElement),
+      true
+    )
     await page.keyboard.press('Enter')
     await list.waitFor({ state: 'hidden' })
     assert.match(await trigger.innerText(), /最后项/)
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
     await trigger.click()
-    assert.equal(await list.getByRole('option', { name: '最后项', exact: true }).evaluate(el => el === document.activeElement), true)
+    assert.equal(
+      await list
+        .getByRole('option', { name: '最后项', exact: true })
+        .evaluate((el) => el === document.activeElement),
+      true
+    )
     await page.keyboard.press('Home')
     await page.keyboard.press('Escape')
     await list.waitFor({ state: 'hidden' })
     assert.match(await trigger.innerText(), /最后项/)
-    assert.equal(await trigger.evaluate(el => el === document.activeElement), true)
+    assert.equal(await trigger.evaluate((el) => el === document.activeElement), true)
   })
 })

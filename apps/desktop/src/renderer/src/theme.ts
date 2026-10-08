@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Theme } from './model'
+import type { Theme } from './model'
 
 /** resolve + apply a theme to <html data-theme>; returns the effective theme */
 export function applyTheme(theme: Theme): 'dark' | 'light' {

@@ -2,7 +2,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { createFormatters } from '../../../../localization/format'
-import { Project } from '../../api'
+import type { Project } from '../../api'
 import { Button, IconButton, Input } from '../../components/ui'
 import { Icon } from '../../icons'
 import { filterProjects, projectFileLabel, projectSummary, projectTimeLabel } from '../../project'

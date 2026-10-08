@@ -14,8 +14,8 @@
     {
       "mode": 420,
       "path": "README.md",
-      "sha256": "ef1ff88b66a3a84b60db9a6265bf4e7f9d6d3e663107a36439a8859d8407774e",
-      "size": 8831
+      "sha256": "7a6e0b4c8bd8e43b7e06b0e231c702a4957fa6f94a319dd81b53b6e9070cc606",
+      "size": 8976
     },
     {
       "mode": 420,
@@ -26,14 +26,14 @@
     {
       "mode": 420,
       "path": "SKILL.md",
-      "sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
-      "size": 10731
+      "sha256": "fafdcd20d3f917ad03ceadc0908d595a75b57bfc222a12a94c5585a17108930c",
+      "size": 10570
     },
     {
       "mode": 420,
       "path": "agents/openai.yaml",
-      "sha256": "f516bd20ffa241626ed697874c27b2e32ae2b3b14866a9120bb0ca2e4d936e4a",
-      "size": 279
+      "sha256": "8c6fb0d3f1ba81eb2dff2f961ca57b054334a42519eef8fa3188476d3370794e",
+      "size": 368
     },
     {
       "mode": 420,
@@ -80,8 +80,8 @@
     {
       "mode": 420,
       "path": "references/balanced-quality-workflow.md",
-      "sha256": "15e07305e352a7218cbae80a1e36605d1bad64ad21add0a50e3afd091cd87c0f",
-      "size": 8003
+      "sha256": "e6dc98584b302ed9bad76f225721f1361ee13c3f10339cafc7712ea5a98133ae",
+      "size": 8070
     },
     {
       "mode": 420,
@@ -200,8 +200,8 @@
     {
       "mode": 420,
       "path": "tools/tests/test_product_endpoints.py",
-      "sha256": "de4614810d8e0e7d9bf8740379f718db080ca3e0d394e7f9d8dcaede89d57a0d",
-      "size": 3075
+      "sha256": "cc6dd1ee4d15a0e7dc194a9a80efea0c1c760d324612ddeea0825c68ef3365a3",
+      "size": 3635
     },
     {
       "mode": 420,
@@ -215,6 +215,6 @@
   "source": {
     "kind": "directory"
   },
-  "source_document_sha256": "668bc90dbdbdf4315e4868705fd6acfa254251697ca70e70941a53da55a72322",
+  "source_document_sha256": "fafdcd20d3f917ad03ceadc0908d595a75b57bfc222a12a94c5585a17108930c",
   "version": "1.1.0"
 }

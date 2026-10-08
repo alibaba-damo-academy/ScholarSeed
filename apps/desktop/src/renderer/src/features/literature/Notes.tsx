@@ -10,6 +10,7 @@ import {
   AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
+  AlertDialogPortal,
   AlertDialogTitle,
   Button,
   EllipsisText,
@@ -31,6 +32,14 @@ interface LiteratureNotesProps {
   itemId: string
   notes: LiteratureNote[]
   onReload: () => Promise<void>
+  /**
+   * 外部要求「现在就开一篇新笔记」的 nonce; 0 = 没有请求。
+   *
+   * 用 nonce 而不是布尔: 同一条文献连续两次从行右键菜单进来, 布尔值不变就不会再触发。
+   */
+  startNew?: number
+  /** 新笔记已经开出来, 调用方可以回收它那份意图。 */
+  onStartNew?: () => void
 }
 
 export function LiteratureNotes(
@@ -42,7 +51,9 @@ export function LiteratureNotes(
 function LiteratureNotesContent({
   itemId,
   notes,
-  onReload
+  onReload,
+  startNew = 0,
+  onStartNew
 }: LiteratureNotesProps): React.JSX.Element {
   const { t } = useTranslation('literature')
   const [pendingDelete, setPendingDelete] = useState<LiteratureNote | null>(
@@ -87,6 +98,15 @@ function LiteratureNotesContent({
       catalogue.reload()
     }
   })
+  // 回调挂在 ref 上: 只按 nonce 触发一次。requestNew 的身份会随草稿状态变化,
+  // 放进依赖里会让用户正在写的那一篇被反复重开。
+  const startRequest = useRef({ requestNew, onStartNew })
+  startRequest.current = { requestNew, onStartNew }
+  useEffect(() => {
+    if (!startNew) return
+    startRequest.current.requestNew()
+    startRequest.current.onStartNew?.()
+  }, [startNew])
 
   const sortedNotes = [...notes].sort((a, b) => b.updated_at - a.updated_at)
   const selectedIndex = sortedNotes.findIndex((note) => note.id === selectedId)
@@ -100,6 +120,11 @@ function LiteratureNotesContent({
     )
 
   const requestClose = (): void => {
+    if (error || exportError) {
+      setExportError('')
+      close()
+      return
+    }
     if (status === 'saved') {
       close()
       return
@@ -137,20 +162,22 @@ function LiteratureNotesContent({
         if (!open) setPendingDelete(null)
       }}
     >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{t('notes.deleteTitle')}</AlertDialogTitle>
-          <AlertDialogDescription>
-            {t('notes.deleteDescription')}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>{t('notes.cancel')}</AlertDialogCancel>
-          <Button variant="danger" onClick={() => void confirmRemove()}>
-            {t('notes.delete')}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
+      <AlertDialogPortal>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('notes.deleteTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('notes.deleteDescription')}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('notes.cancel')}</AlertDialogCancel>
+            <Button variant="danger" onClick={() => void confirmRemove()}>
+              {t('notes.delete')}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialogPortal>
     </AlertDialog>
   )
 

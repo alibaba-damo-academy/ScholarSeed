@@ -17,8 +17,12 @@ const WINDOWS_ABSOLUTE_PATH = /^[A-Za-z]:[\\/]/
 export const COMPOSER_SKILL_KIND = 'skill'
 const ASSISTANT_CONTEXT_UNAVAILABLE = 'assistant_context_unavailable'
 const RESOURCE_REVIEW_REQUIRED = 'resource_review_required'
+const PREVIOUS_TURN_PENDING_HIL = 'previous_turn_pending_hil'
+const PREVIOUS_TURN_BACKGROUND_ACTIVE = 'previous_turn_background_active'
+const PREVIOUS_TURN_ACTIVITY_UNAVAILABLE = 'previous_turn_activity_unavailable'
 const SOURCE_REVISION_CHANGED = 'source_revision_changed'
 const SELECTION_TEXT_CHANGED = 'selection_text_changed'
+const SELECTION_SNAPSHOT_REQUIRED = 'selection_snapshot_required'
 const SOURCE_MISSING = 'source_missing'
 const COMPOSER_TRIGGERS = [
   { pattern: /(^|\s)@([^\s@]{0,40})$/, prefix: '' },
@@ -74,9 +78,10 @@ export function canSubmitComposer(state: ComposerSubmissionState): boolean {
 
 /** The server may finish the active turn before a queue-intended request arrives. */
 export function isComposerSubmissionAccepted(response: TurnResponse | null): boolean {
-  return response?.ok === true && !response.error && Boolean(
-    response.turn_id || (response.queued && response.queued_message_id)
-  )
+  return response?.ok === true
+    && response.accepted === true
+    && !response.error
+    && Boolean(response.turn_id || response.queued_message_id)
 }
 
 export function composerSubmissionOutcome(
@@ -122,8 +127,10 @@ export function describeTurnAdmissionFailure(
       : name.key === 'sources.selectionLabel'
         ? t('sources.selectionLabel', { ns: 'assistant', name: String(name.values?.name ?? '') }) : String(name)
     : String(name ?? '')
-  // Remove this redundant check since contextAdmissionFeedback already handles RESOURCE_REVIEW_REQUIRED correctly
-  return t(message.key, { name: label, error: '', detail: '', mode: '' }) as string
+  const values = { name: label, error: '', detail: '', status: 0, message: '', mode: '' }
+  return message.ns === 'conversation'
+    ? t(message.key, { ...values, ns: 'conversation' })
+    : t(message.key, values)
 }
 
 
@@ -138,6 +145,15 @@ function contextAdmissionFeedback(failure: TurnAdmissionFailure): TurnAdmissionF
   if (code === RESOURCE_REVIEW_REQUIRED) {
     return resourceReviewRequiredFeedback()
   }
+  if (code === PREVIOUS_TURN_PENDING_HIL) {
+    return feedback('components', 'composer.previousTurnPendingHil')
+  }
+  if (code === PREVIOUS_TURN_BACKGROUND_ACTIVE) {
+    return feedback('components', 'composer.previousTurnBackgroundActive')
+  }
+  if (code === PREVIOUS_TURN_ACTIVITY_UNAVAILABLE) {
+    return feedback('components', 'composer.previousTurnActivityUnavailable')
+  }
   const issue = firstContextIssue(failure)
   if (code === ASSISTANT_CONTEXT_UNAVAILABLE && issue) {
     const fallback = contextLabelFallback(issue.kind, issue.label_fallback)
@@ -147,6 +163,9 @@ function contextAdmissionFeedback(failure: TurnAdmissionFailure): TurnAdmissionF
         ? feedback('assistant', 'sources.selectionLabel', { name: issue.selection_source_label }) : issue.label || issue.kind
     if (issue.reason === SELECTION_TEXT_CHANGED) {
       return feedback('components', 'composer.selectionContextChanged', { name })
+    }
+    if (issue.reason === SELECTION_SNAPSHOT_REQUIRED) {
+      return feedback('components', 'composer.selectionSnapshotRequired', { name })
     }
     if (issue.reason === SOURCE_REVISION_CHANGED) {
       return feedback('components', 'composer.sourceContextChanged', { name })

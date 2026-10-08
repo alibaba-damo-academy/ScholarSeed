@@ -14,9 +14,9 @@ callers never need to know how deep they sit.
 
 Proxy hygiene
 -------------
-`bootstrap()` also adds every host in `config/endpoints.json` to `NO_PROXY`, so
-PaperHub traffic is never handed to an outbound proxy that has no route to it.
-See `lib/no_proxy.py` for why that failure is worth pre-empting.
+`bootstrap()` adds only endpoints marked `proxy_bypass` in
+`config/endpoints.json` to `NO_PROXY`. PaperHub keeps the inherited proxy
+route and its downloader can fall back to a direct connection.
 
 Profile overlay
 ---------------
@@ -30,14 +30,19 @@ the shared copy otherwise -- without any caller changing its import statements.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
 
+import no_proxy
+from endpoint_defaults import paperhub_base
+
 __all__ = [
     "HOME", "PROFILES", "find_home", "resolve_profile", "bootstrap",
     "lib_dir", "config_path", "schema_path", "asset_path",
-    "script_path", "module_dirs", "endpoints", "model_config_path",
+    "script_path", "module_dirs", "endpoint_specs", "endpoints",
+    "apply_proxy_policy", "model_config_path",
     "profile_config", "workspace",
 ]
 
@@ -151,16 +156,7 @@ def bootstrap(caller_file: str | Path | None = None,
 
     os.environ.setdefault("SLR_PROFILE", active)
 
-    # Keep this skill's own service traffic off any ambient HTTP proxy. Import
-    # is deferred to here because no_proxy imports slr_paths back for
-    # endpoints(); at module scope that would be a cycle.
-    try:
-        import no_proxy
-        no_proxy.apply()
-    except Exception:
-        # Never let proxy hygiene stop a script from starting -- worst case the
-        # request goes through the proxy and fails with a clear HTTP error.
-        pass
+    apply_proxy_policy()
 
     return active
 
@@ -219,7 +215,18 @@ def script_path(rel_dir: str, name: str, profile: str) -> Path:
 
 # ------------------------------------------------------------------ configs --
 
+_endpoint_specs_cache: dict | None = None
 _endpoints_cache: dict | None = None
+
+
+def endpoint_specs() -> dict:
+    """Raw service specifications from one cached configuration snapshot."""
+    global _endpoint_specs_cache
+    if _endpoint_specs_cache is None:
+        path = config_path("endpoints.json")
+        data = json.loads(path.read_text()) if path.is_file() else {}
+        _endpoint_specs_cache = data.get("services", {})
+    return _endpoint_specs_cache
 
 
 def endpoints() -> dict:
@@ -231,21 +238,26 @@ def endpoints() -> dict:
     """
     global _endpoints_cache
     if _endpoints_cache is None:
-        import json
-        path = config_path("endpoints.json")
-        data = json.loads(path.read_text()) if path.is_file() else {}
         resolved = {}
-        for key, spec in data.get("services", {}).items():
+        for key, spec in endpoint_specs().items():
             value = spec.get("default", "")
             env_name = spec.get("env")
             if env_name:
                 value = os.environ.get(env_name) or value
             if key == "paper_hub":
-                from endpoint_defaults import paperhub_base
                 value=paperhub_base(value)
             resolved[key] = value
         _endpoints_cache = resolved
     return _endpoints_cache
+
+
+def apply_proxy_policy() -> list[str]:
+    """Apply bypass markers to resolved endpoints from the same snapshot."""
+    bypass_services = {
+        name for name, spec in endpoint_specs().items()
+        if spec.get("proxy_bypass") is True
+    }
+    return no_proxy.apply(endpoints(), bypass_services)
 
 
 def profile_config(profile: str) -> dict:

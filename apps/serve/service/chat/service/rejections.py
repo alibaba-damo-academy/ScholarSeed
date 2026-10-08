@@ -73,11 +73,28 @@ TRANSIENT_PROVIDER_HTTP_STATUSES = frozenset(
         HTTPStatus.GATEWAY_TIMEOUT,
     )
 )
+# 流内瞬时 5xx 的上游码（与 adapter ``failure._UNAVAILABLE_CODES`` 同族，两包不可互导入故各持
+# 一份）：上游以 HTTP 200 + SSE 首事件 response.failed 表达瞬时失败时没有头部状态可恢复，
+# 靠本表把码恢复成「暂时不可用」而非塌进通用「rejected the request」。内容安全经 normalizer
+# 先改写成 invalid_prompt + CONTENT_SAFETY_BLOCKED（streams._normalize_native_response_line），
+# 到达本表时已不是这些码，不会被误标成可重试。
+TRANSIENT_PROVIDER_CODES = frozenset(
+    ("overloaded", "server_error", "server_is_overloaded", "service_unavailable", "timeout")
+)
 
 # 首批范围（proposal 106 评审已定：含更多 4xx，按 LiteLLM「4xx 即确定性、不重试」分档）。
-# 5xx/429 不在此确定性错误表；耗尽的瞬时 5xx 由上方 HTTP 状态集合单独恢复。
+# 头部 5xx 耗尽由上方 HTTP 状态集合单独恢复；流内 200 的瞬时 5xx 码走 TRANSIENT_PROVIDER_CODES。
 # 键一律 casefold（匹配时 ``code.casefold()``）。
 PRODUCT_PROVIDER_REJECTIONS: Mapping[str, RejectionPolicy] = {
+    **dict.fromkeys(
+        TRANSIENT_PROVIDER_CODES,
+        RejectionPolicy(
+            retryability=RuntimeRetryability.USER_RETRYABLE,
+            http_status=HTTPStatus.SERVICE_UNAVAILABLE,
+            message=RejectionMessage.FIXED,
+            safe_message=TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+        ),
+    ),
     CONTENT_SAFETY_BLOCKED.casefold(): RejectionPolicy(
         retryability=RuntimeRetryability.TERMINAL,
         http_status=400,
@@ -204,12 +221,23 @@ def terminal_provider_failure(fields: Mapping[str, Any]) -> dict[str, Any]:
         message = policy.safe_message
     else:
         message = str(downstream.get("error_message") or "").strip() or policy.safe_message
+    stream_retries = fields.get("stream_retries")
     return {
         "error": message,
         "error_code": policy.product_code or code,
         "safe_error": message,
         "retryability": policy.retryability.value,
         "provider_http_status": policy.http_status,
+        **(
+            {"automatic_retry_attempts": attempt}
+            if code.casefold() in TRANSIENT_PROVIDER_CODES
+            and isinstance(stream_retries, int)
+            and not isinstance(stream_retries, bool)
+            and stream_retries > 0
+            and isinstance(attempt, int)
+            and not isinstance(attempt, bool)
+            else {}
+        ),
     }
 
 
@@ -218,6 +246,7 @@ __all__ = [
     "PRODUCT_PROVIDER_REJECTIONS",
     "RejectionMessage",
     "RejectionPolicy",
+    "TRANSIENT_PROVIDER_CODES",
     "TRANSIENT_PROVIDER_HTTP_STATUSES",
     "terminal_provider_failure",
 ]

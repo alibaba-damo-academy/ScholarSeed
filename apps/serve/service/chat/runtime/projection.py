@@ -150,6 +150,7 @@ ARTIFACT_PUBLISH_PATH_INVALID = "artifact_publish_path_invalid"
 
 ARTIFACT_PUBLISH_FILE_NOT_FOUND = "artifact_publish_file_not_found"
 
+ARTIFACT_PUBLISH_ACCESS_DENIED = "artifact_publish_access_denied"
 ARTIFACT_PUBLISH_IO_FAILED = "artifact_publish_io_failed"
 
 
@@ -312,10 +313,12 @@ def queued_message_payload(record: QueuedMessageRecord) -> dict[str, Any]:
         "state": record.state.value,
         "deadline": record.deadline,
         "purpose": record.purpose,
+        "submission_mode": record.submission_mode.value,
         "input": record.body.get("input", []),
         "assistant_context_revision": record.body.get("assistant_context_revision"),
         "assistant_references": record.body.get(QUEUED_ASSISTANT_REFERENCES, []),
         "safe_error": record.safe_error,
+        "safe_error_details": record.safe_error_details,
         # The uncertainty correlation handle a human confirmation must present.
         "native_turn_id": record.native_turn_id,
         "created_at": record.created_at,

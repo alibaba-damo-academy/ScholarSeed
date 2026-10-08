@@ -13,7 +13,7 @@ export type AnswerAnnotationLocation =
   typeof ANSWER_ANNOTATION_LOCATION[keyof typeof ANSWER_ANNOTATION_LOCATION]
 
 export interface AnswerAnnotationTarget {
-  item: Extract<ConvItem, { kind: 'agent' }> | null
+  item: Extract<ConvItem, { kind: 'agent' | 'thinking' }> | null
   status: AnswerAnnotationLocation
 }
 
@@ -31,18 +31,21 @@ export async function sha256Text(text: string): Promise<string> {
 function sourceAnswer(
   annotation: AnswerAnnotation,
   conversation: ConvItem[]
-): Extract<ConvItem, { kind: 'agent' }> | null {
+): Extract<ConvItem, { kind: 'agent' | 'thinking' }> | null {
   const byProductSequence = conversation.find((item) => (
-    item.kind === 'agent' && item.eventSeq === annotation.source_product_seq
+    (item.kind === 'agent' || item.kind === 'thinking')
+    && item.eventSeq === annotation.source_product_seq
   ))
-  if (byProductSequence?.kind === 'agent') return byProductSequence
+  if (byProductSequence?.kind === 'agent' || byProductSequence?.kind === 'thinking') return byProductSequence
   if (!annotation.source_item_id) return null
   const byRuntimeIdentity = conversation.find((item) => (
-    item.kind === 'agent'
+    (item.kind === 'agent' || item.kind === 'thinking')
       && item.itemId === annotation.source_item_id
       && item.turnId === annotation.source_turn_id
   ))
-  return byRuntimeIdentity?.kind === 'agent' ? byRuntimeIdentity : null
+  return byRuntimeIdentity?.kind === 'agent' || byRuntimeIdentity?.kind === 'thinking'
+    ? byRuntimeIdentity
+    : null
 }
 
 export async function locateAnswerAnnotation(
@@ -62,14 +65,10 @@ export async function locateAnswerAnnotation(
   if (!rangeValid) {
     return { item, status: ANSWER_ANNOTATION_LOCATION.POSITION_LOST }
   }
-  const [answerRevision, selectedTextHash] = await Promise.all([
-    sha256Text(item.text),
-    sha256Text(item.text.slice(annotation.start_utf16, annotation.end_utf16))
-  ])
-  if (
-    answerRevision !== annotation.answer_revision
-    || selectedTextHash !== annotation.selected_text_hash
-  ) {
+  const selectedTextHash = await sha256Text(
+    item.text.slice(annotation.start_utf16, annotation.end_utf16)
+  )
+  if (selectedTextHash !== annotation.selected_text_hash) {
     return { item, status: ANSWER_ANNOTATION_LOCATION.POSITION_LOST }
   }
   return { item, status: ANSWER_ANNOTATION_LOCATION.AVAILABLE }

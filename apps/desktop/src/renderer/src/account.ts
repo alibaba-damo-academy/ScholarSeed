@@ -142,11 +142,10 @@ export type AccountLogoutResult = AccountResult<{ local_cleared: true }>
 /** Translate only product-generated explanations; raw diagnostics never imply an error identity. */
 export function accountFailureText(failure: AccountFailure, t: TFunction<'account'>): string {
   const descriptor = failure.applicationFailure
-  if (!descriptor || !Object.prototype.hasOwnProperty.call(ACCOUNT_FAILURE_KEYS, descriptor.code)) return failure.error
-  const message = t(ACCOUNT_FAILURE_KEYS[descriptor.code as keyof typeof ACCOUNT_FAILURE_KEYS], {
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(ACCOUNT_FAILURE_KEYS, descriptor.code)) return t('failure.unknown')
+  return t(ACCOUNT_FAILURE_KEYS[descriptor.code as keyof typeof ACCOUNT_FAILURE_KEYS], {
     count: PASSWORD_MIN_LENGTH, status: descriptor.status ?? 0
   })
-  return descriptor.diagnostic ? t('failure.diagnostic', { message, detail: descriptor.diagnostic }) : message
 }
 
 export function parseAccountProfile(payload: Record<string, unknown>): AccountResult<AccountProfile> {

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from service.chat.runtime.evidence import SessionTrace
 from service.chat.runtime.live import LiveSession
 from service.chat.service.cards import (
     DISPLAY_CARD_MAX_PER_TURN,
+    DISPLAY_CARD_PATH_UNAVAILABLE,
     CardRegistry,
     DisplayCardError,
     card_identity,
@@ -195,6 +197,18 @@ class DisplayCardContract(unittest.TestCase):
                 LITERATURE_REFERENCES_CARD,
                 DisplayCardContent(path="bad\0path.json"),
             )
+
+    def test_unreadable_card_path_has_stable_failure(self) -> None:
+        source = self.root / "references.json"
+        source.write_text(json.dumps(reference_payload()), encoding="utf-8")
+        with patch.object(Path, "stat", side_effect=PermissionError(13, "denied")):
+            with self.assertRaisesRegex(DisplayCardError, DISPLAY_CARD_PATH_UNAVAILABLE):
+                normalize_card(
+                    self.root,
+                    self.registry,
+                    LITERATURE_REFERENCES_CARD,
+                    DisplayCardContent(path=source.name),
+                )
 
     def test_duplicate_handles_preserve_all_references(self) -> None:
         payload = reference_payload()

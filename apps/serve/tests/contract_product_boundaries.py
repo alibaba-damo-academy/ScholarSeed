@@ -6,11 +6,13 @@ Run: .venv/bin/python -m tests.contract_product_boundaries
 from __future__ import annotations
 
 import inspect
+import json
 import tempfile
 from pathlib import Path
 
 from scholarseed_runtime.gateway.catalog import RuntimeCatalog
 from service.bootstrap import create_app
+from service.chat.active import RUNTIME_ALLOWED_NETWORK_DOMAINS
 from service.chat.persistence.events import ProductEventStore
 from service.chat.runtime.live import LiveSession
 
@@ -84,9 +86,27 @@ def test_serve_route_owner() -> None:
     )
 
 
+def test_network_domain_policy() -> None:
+    root = Path(__file__).resolve().parents[3]
+    source = json.loads((root / "product.json").read_text(encoding="utf-8"))
+    packaged = json.loads(
+        (root / "apps/desktop/resources/product.json").read_text(encoding="utf-8")
+    )
+    domains = source["runtimes"]["codex"]["default_permission"]["allowed_network_domains"]
+    packaged_domains = packaged["runtimes"]["codex"]["default_permission"][
+        "allowed_network_domains"
+    ]
+    check(
+        "product and packaged manifests grant only the exact PaperHub host",
+        domains == packaged_domains == ["scholarseed.damo.alibaba.com"]
+        and RUNTIME_ALLOWED_NETWORK_DOMAINS == tuple(domains),
+    )
+
+
 def main() -> int:
     test_live_session_boundary()
     test_serve_route_owner()
+    test_network_domain_policy()
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0
 

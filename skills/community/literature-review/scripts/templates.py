@@ -19,7 +19,7 @@ import shutil  # noqa: E402
 import sys  # noqa: E402
 
 import slr_paths as _slr_paths  # noqa: E402
-from generation.citation_styles import CITATION_STYLES  # noqa: E402
+from citation_styles import CITATION_STYLES  # noqa: E402
 
 HOME = _slr_paths.HOME
 ASSETS = HOME / "assets"

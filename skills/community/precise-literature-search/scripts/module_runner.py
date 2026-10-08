@@ -18,10 +18,11 @@ from progress import heartbeat_if_due, read_progress, update_progress
 EXIT_INPUT = 2
 EXIT_MODULE = 3
 EXIT_OUTPUT = 4
+DOWNLOAD_MANIFEST_CONTRACT = "download-manifest"
 OUTPUT_CONTRACTS = {
     "search": "metadata",
-    "open-download": "download-manifest",
-    "paid-download": "download-manifest",
+    "open-download": DOWNLOAD_MANIFEST_CONTRACT,
+    "paid-download": DOWNLOAD_MANIFEST_CONTRACT,
 }
 MODULE_PROGRESS = {
     "open-download": ("download", "Downloading arXiv papers"),

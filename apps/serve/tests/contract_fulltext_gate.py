@@ -17,15 +17,29 @@ from service.assistant.service.authorization import (
     LITERATURE_REVIEW_FULLTEXT,
     PRECISE_SEARCH_FULLTEXT,
     RESEARCH_IDEA_FULLTEXT,
+    AuthorizationDisposition,
+    AuthorizationState,
+    FulltextAuthorization,
     FulltextAuthorizer,
+    derive_granted_scope,
 )
 from service.chat.constants import (
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
 )
-from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
+from service.chat.persistence.catalog import (
+    HilStatus,
+    SessionCatalogStore,
+    SessionPrincipal,
+    SessionStatus,
+)
 from service.chat.runtime.interaction import SessionInteractions
-from service.literature.api.gate import CONTINUATION_PLAN, CONTINUATION_REJECTED, FulltextGate
+from service.literature.api.gate import (
+    CONTINUATION_PLAN,
+    CONTINUATION_REJECTED,
+    FulltextGate,
+    authorize_sources,
+)
 from service.literature.service.checkpoint import (
     active_policies,
     discover_triggers,
@@ -62,13 +76,146 @@ class RecordingTurns:
         self.posts: list[dict[str, Any]] = []
 
     async def post(
-        self, session_id: str, body: dict[str, Any], *, side: bool
+        self,
+        session_id: str,
+        body: dict[str, Any],
+        *,
+        side: bool,
+        expected_submission_id: str = "",
+        expected_interrupt_generation: int | None = None,
     ) -> tuple[dict[str, Any], int]:
         self.posts.append({"session_id": session_id, "body": body, "side": side})
         return {"ok": True}, 202
 
 
 class FulltextGateContract(unittest.TestCase):
+    def test_duplicate_bridge_checkpoint_shares_one_authorization_wait(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            gate = FulltextGate(self.authorizer, RecordingTurns(), poll_seconds=0)
+            arguments = {
+                "turn_id": "native-turn-1",
+                "snapshot_id": "snapshot-1",
+                "authorization_type": LITERATURE_REVIEW_FULLTEXT,
+                "refs": ("paper", "artifact-hash"),
+                "source_count": 1,
+            }
+            first = asyncio.create_task(gate.authorize_sources(live, **arguments))
+            while not self.catalog.pending_hil(SESSION_ID):
+                await asyncio.sleep(0)
+            second = asyncio.create_task(gate.authorize_sources(live, **arguments))
+            await asyncio.sleep(POLL_SECONDS)
+            pending = self.catalog.pending_hil(SESSION_ID)
+            self.assertEqual(len(pending), 1)
+            self.assertFalse(second.done())
+            await live.interactions.resolve(
+                None,
+                pending[0].product_request_id,
+                {"answers": {pending[0].product_request_id: AUTHORIZE}},
+            )
+            first_result, second_result = await asyncio.gather(first, second)
+            self.assertEqual(first_result, second_result)
+            self.assertEqual(first_result[1].value, "authorized")
+            self.assertEqual(len(self.catalog.turn_hil(SESSION_ID, "native-turn-1")), 1)
+
+        asyncio.run(scenario())
+
+    def test_bridge_wait_survives_http_cancel_but_stop_cancels_continuation(self) -> None:
+        async def scenario() -> None:
+            live = self.live(ProductTaskType.LITERATURE_REVIEW.value)
+            cleanup = asyncio.Event()
+            live.current_task = asyncio.create_task(cleanup.wait())
+            turns = RecordingTurns()
+            gate = FulltextGate(self.authorizer, turns, poll_seconds=0)
+            request = asyncio.create_task(
+                gate.authorize_sources(
+                    live,
+                    turn_id="native-turn-1",
+                    snapshot_id="snapshot-1",
+                    authorization_type=LITERATURE_REVIEW_FULLTEXT,
+                    refs=("paper", "artifact-hash"),
+                    source_count=1,
+                )
+            )
+            while not self.catalog.pending_hil(SESSION_ID):
+                await asyncio.sleep(0)
+            pending = self.catalog.pending_hil(SESSION_ID)[0]
+            request.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            live.ledger.active_turn_id = ""
+            live.running = False
+            self.catalog.update_status(
+                SESSION_ID,
+                SessionStatus.COMPLETED,
+                turn_id="native-turn-1",
+                turn_status="completed",
+            )
+            response = await live.interactions.resolve(
+                None,
+                pending.product_request_id,
+                {"answers": {pending.product_request_id: AUTHORIZE}},
+            )
+            self.assertIsNotNone(response)
+            await asyncio.sleep(0)
+            live.interrupt_generation += 1
+            cleanup.set()
+            await asyncio.gather(*gate._bridge_tasks)
+            self.assertEqual(turns.posts, [])
+
+        asyncio.run(scenario())
+
+    def test_bridge_authorization_continues_only_completed_origin(self) -> None:
+        async def scenario(authorization_type, task_type, completed, answer) -> None:
+            live = self.live(task_type)
+            turns = RecordingTurns()
+            gate = FulltextGate(self.authorizer, turns, poll_seconds=0)
+            waiting = asyncio.create_task(
+                gate.authorize_sources(
+                    live,
+                    turn_id="native-turn-1",
+                    snapshot_id="snapshot-1",
+                    authorization_type=authorization_type,
+                    refs=("paper-one",),
+                    source_count=1,
+                )
+            )
+            while not self.catalog.pending_hil(SESSION_ID):
+                await asyncio.sleep(0)
+            pending = self.catalog.pending_hil(SESSION_ID)[0]
+            if completed:
+                live.ledger.active_turn_id = ""
+                live.running = False
+                self.catalog.update_status(
+                    SESSION_ID,
+                    SessionStatus.COMPLETED,
+                    turn_id="native-turn-1",
+                    turn_status="completed",
+                )
+            await live.interactions.resolve(
+                None, pending.product_request_id, {"answers": {pending.product_request_id: answer}}
+            )
+            await waiting
+            expected = int(
+                completed and (answer == AUTHORIZE or authorization_type == RESEARCH_IDEA_FULLTEXT)
+            )
+            self.assertEqual(len(turns.posts), expected)
+            if expected:
+                self.assertEqual(turns.posts[0]["body"]["task_type"], task_type)
+            if completed:
+                self.assertNotEqual(self.catalog.get(SESSION_ID).status, SessionStatus.RUNNING)
+
+        for authorization_type, task_type in (
+            (LITERATURE_REVIEW_FULLTEXT, ProductTaskType.LITERATURE_REVIEW.value),
+            (PRECISE_SEARCH_FULLTEXT, ProductTaskType.PRECISE_SEARCH.value),
+            (RESEARCH_IDEA_FULLTEXT, ProductTaskType.RESEARCH_IDEA.value),
+        ):
+            for completed, answer in ((False, AUTHORIZE), (True, AUTHORIZE), (True, REJECT)):
+                with self.subTest(
+                    authorization_type=authorization_type, completed=completed, answer=answer
+                ):
+                    self.setUp()
+                    asyncio.run(scenario(authorization_type, task_type, completed, answer))
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -219,6 +366,7 @@ class FulltextGateContract(unittest.TestCase):
             active_turn_started_at=time.time() - PAST_SECONDS / 2,
             running=running,
             interrupting=False,
+            interrupt_generation=0,
             terminating=False,
             terminated=False,
             current_task=None,
@@ -230,7 +378,8 @@ class FulltextGateContract(unittest.TestCase):
             interrupts=interrupts,
         )
 
-        async def interrupt() -> None:
+        async def interrupt(*, cleanup_background_processes: bool = False) -> None:
+            assert cleanup_background_processes
             interrupts.append(True)
             live.running = False
 
@@ -292,7 +441,8 @@ class FulltextGateContract(unittest.TestCase):
         self.assertIsNotNone(precise)
         self.assertIsNotNone(review)
         self.assertEqual([source.id for source in precise.content.sources], ["p1"])
-        self.assertTrue(precise.content.refs[-1].startswith("artifact:"))
+        # The selection digest travels in decision values, never in the ledger scope.
+        self.assertEqual(tuple(precise.content.refs), ("paper:p1",))
         self.assertEqual(
             {artifact.field for artifact in precise.content.artifacts},
             {"report", "metadata", "selection"},
@@ -563,7 +713,8 @@ class FulltextGateContract(unittest.TestCase):
         live = self.live("literature_review")
         live.active_assistant_revision = 1
 
-        async def interrupt() -> None:
+        async def interrupt(*, cleanup_background_processes: bool = False) -> None:
+            assert cleanup_background_processes
             live.interrupts.append(True)
             live.running = False
             live.active_assistant_revision = None
@@ -612,6 +763,232 @@ class FulltextGateContract(unittest.TestCase):
 
         asyncio.run(scenario())
         self.assertEqual(turns.posts, [])
+
+
+class SubsetDerivationContract(unittest.TestCase):
+    """The granted subset is derived from the durable decision, never from the row."""
+
+    QUESTION_ID = "precise-search-fulltext:subset"
+    REFS = ("paper:p1", "paper:p2")
+
+    def _authorization(self, authorization_type: str = PRECISE_SEARCH_FULLTEXT):
+        return FulltextAuthorization(
+            authorization_id="a1",
+            session_id="s1",
+            snapshot_id="snap1",
+            turn_id="t1",
+            authorization_type=authorization_type,
+            refs=self.REFS,
+            scope_digest="d1",
+            question_id=self.QUESTION_ID,
+            state=AuthorizationState.PENDING,
+            created_at=0.0,
+        )
+
+    def _authorizer(self, decision: dict | None):
+        catalog = SimpleNamespace(
+            turn_hil=lambda session_id, turn_id: [
+                SimpleNamespace(
+                    status=HilStatus.RESOLVED,
+                    decision=decision,
+                    payload={"questions": [{"id": self.QUESTION_ID}]},
+                )
+            ]
+        )
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return FulltextAuthorizer(Path(temporary.name) / "auth.sqlite3", catalog)
+
+    @staticmethod
+    def _decision(**values: Any) -> dict:
+        return {"answers": {SubsetDerivationContract.QUESTION_ID: AUTHORIZE}, "values": values}
+
+    def test_selected_subset_narrows_the_grant(self) -> None:
+        authorizer = self._authorizer(self._decision(selected_paper_ids=["paper:p2"]))
+        self.assertEqual(authorizer.granted_refs(self._authorization()), ("paper:p2",))
+
+    def test_absent_values_keep_the_challenged_set(self) -> None:
+        authorizer = self._authorizer({"answers": {self.QUESTION_ID: AUTHORIZE}})
+        self.assertEqual(authorizer.granted_refs(self._authorization()), self.REFS)
+
+    def test_oversized_or_malformed_selection_fails_closed(self) -> None:
+        for values in (
+            {"selected_paper_ids": ["paper:p2", "paper:p9"]},
+            {"selected_paper_ids": "paper:p2"},
+            {"selected_paper_ids": [""]},
+        ):
+            authorizer = self._authorizer(self._decision(**values))
+            self.assertEqual(authorizer.granted_refs(self._authorization()), ())
+
+    def test_rejection_grants_nothing(self) -> None:
+        authorizer = self._authorizer(
+            {"answers": {self.QUESTION_ID: REJECT}, "values": {"selected_paper_ids": ["paper:p1"]}}
+        )
+        self.assertEqual(authorizer.granted_refs(self._authorization()), ())
+
+    def test_non_subset_policy_ignores_values(self) -> None:
+        authorizer = self._authorizer(self._decision(selected_paper_ids=["paper:p2"]))
+        authorization = self._authorization(RESEARCH_IDEA_FULLTEXT)
+        self.assertEqual(authorizer.granted_refs(authorization), self.REFS)
+        self.assertEqual(
+            derive_granted_scope(authorization, self._decision(selected_paper_ids=["paper:p2"])),
+            self.REFS,
+        )
+
+
+class CrossTurnGrantContract(unittest.TestCase):
+    """A durable allow is spendable only by the turn that holds it.
+
+    Reusing an earlier turn's answer without asking produced `disposition=authorized`
+    with an empty derived subset, so a resumed run could neither acquire nor read.
+    """
+
+    REFS = ("paper:p1", "paper:p2")
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.answers: dict[str, dict] = {}
+        database = Path(temporary.name) / "sessions.sqlite3"
+        # prepare() carries a foreign key into the session catalog, so register the session
+        # in the same database the authorizer writes to.
+        SessionCatalogStore(database).register(
+            "s1",
+            SessionPrincipal("local"),
+            runtime_id="codex",
+            vendor_thread_id="s1",
+            vendor_session_id=None,
+            runtime_workdir=temporary.name,
+            project_path=None,
+            output_root=str(Path(temporary.name) / "outputs"),
+            codex_version="contract",
+            model_id="contract",
+            policy_id="on-request",
+            status=SessionStatus.READY,
+            title="contract",
+            created_at=1.0,
+        )
+        catalog = SimpleNamespace(
+            turn_hil=lambda session_id, turn_id: [
+                SimpleNamespace(
+                    status=HilStatus.RESOLVED,
+                    decision=decision,
+                    payload={"questions": [{"id": question_id}]},
+                )
+                for question_id, decision in self.answers.items()
+            ]
+        )
+        self.authorizer = FulltextAuthorizer(database, catalog)
+
+    def _allow(self, question_id: str, selected: list[str]) -> dict:
+        decision = {
+            "answers": {question_id: AUTHORIZE},
+            "values": {"selected_paper_ids": selected},
+        }
+        self.answers[question_id] = decision
+        return decision
+
+    def test_earlier_grant_is_not_spendable_and_scope_still_looks_reusable(self) -> None:
+        first = self.authorizer.prepare(
+            session_id="s1",
+            snapshot_id="snap1",
+            turn_id="t1",
+            authorization_type=PRECISE_SEARCH_FULLTEXT,
+            refs=self.REFS,
+        )
+        self._allow(first.question_id, ["paper:p2"])
+        scope = {
+            "session_id": "s1",
+            "authorization_type": PRECISE_SEARCH_FULLTEXT,
+            "refs": self.REFS,
+        }
+        # Session-level reuse says "already allowed"; the later turn can spend nothing.
+        self.assertTrue(self.authorizer.granted_scope(**scope))
+        self.assertEqual(
+            self.authorizer.turn_granted_refs(snapshot_id="snap1", turn_id="t1", **scope),
+            ("paper:p2",),
+        )
+        self.assertEqual(
+            self.authorizer.turn_granted_refs(snapshot_id="snap2", turn_id="t2", **scope), ()
+        )
+
+    def test_a_new_turn_asks_again_instead_of_reporting_an_empty_grant(self) -> None:
+        first = self.authorizer.prepare(
+            session_id="s1",
+            snapshot_id="snap1",
+            turn_id="t1",
+            authorization_type=PRECISE_SEARCH_FULLTEXT,
+            refs=self.REFS,
+        )
+        self._allow(first.question_id, ["paper:p2"])
+
+        asked: list[dict] = []
+
+        async def request_product_input(question: dict, *, turn_id: str) -> dict:
+            asked.append(question)
+            return self._allow(str(question["id"]), list(self.REFS))
+
+        live = SimpleNamespace(
+            id="s1",
+            active_product_turn_id="client-t2",
+            interactions=SimpleNamespace(request_product_input=request_product_input),
+        )
+        challenge, disposition, decision = asyncio.run(
+            authorize_sources(
+                live,
+                self.authorizer,
+                turn_id="t2",
+                snapshot_id="snap2",
+                authorization_type=PRECISE_SEARCH_FULLTEXT,
+                refs=self.REFS,
+            )
+        )
+        self.assertEqual(len(asked), 1, "a new turn must publish its own card")
+        self.assertEqual(challenge.turn_id, "t2")
+        self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+        self.assertIsNotNone(decision)
+        self.assertEqual(
+            self.authorizer.turn_granted_refs(
+                session_id="s1",
+                snapshot_id="snap2",
+                turn_id="t2",
+                authorization_type=PRECISE_SEARCH_FULLTEXT,
+                refs=self.REFS,
+                client_turn_id="client-t2",
+            ),
+            self.REFS,
+        )
+
+    def test_the_same_turn_is_not_asked_twice(self) -> None:
+        first = self.authorizer.prepare(
+            session_id="s1",
+            snapshot_id="snap1",
+            turn_id="t1",
+            authorization_type=PRECISE_SEARCH_FULLTEXT,
+            refs=self.REFS,
+        )
+        self._allow(first.question_id, list(self.REFS))
+
+        async def request_product_input(question: dict, *, turn_id: str) -> dict:
+            raise AssertionError("an already granted turn must not be asked again")
+
+        live = SimpleNamespace(
+            id="s1",
+            active_product_turn_id="client-t1",
+            interactions=SimpleNamespace(request_product_input=request_product_input),
+        )
+        _challenge, disposition, decision = asyncio.run(
+            authorize_sources(
+                live,
+                self.authorizer,
+                turn_id="t1",
+                snapshot_id="snap1",
+                authorization_type=PRECISE_SEARCH_FULLTEXT,
+                refs=self.REFS,
+            )
+        )
+        self.assertIs(disposition, AuthorizationDisposition.AUTHORIZED)
+        self.assertIsNone(decision)
 
 
 if __name__ == "__main__":

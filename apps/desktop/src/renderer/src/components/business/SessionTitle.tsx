@@ -4,7 +4,8 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { renameSession } from '../../api'
-import { SESSION_TITLE_MAX_LENGTH, SessionNode } from '../../model'
+import type { SessionNode } from '../../model'
+import { SESSION_TITLE_MAX_LENGTH } from '../../model'
 import { useApp } from '../../store'
 import { Input } from '../ui'
 

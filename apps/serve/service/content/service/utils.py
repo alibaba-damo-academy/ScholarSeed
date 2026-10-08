@@ -44,10 +44,7 @@ def name_length_error(error: OSError, path: Path | None = None) -> ContentError 
         path is not None
         and (
             windows_error == WINDOWS_PATH_NOT_FOUND
-            or (
-                windows_error is None
-                and error.errno == WINDOWS_PATH_NOT_FOUND
-            )
+            or (windows_error is None and error.errno == WINDOWS_PATH_NOT_FOUND)
         )
         and len(str(path)) >= WINDOWS_MAX_PATH
     )
@@ -60,9 +57,7 @@ def name_length_error(error: OSError, path: Path | None = None) -> ContentError 
     return None
 
 
-def filesystem_error(
-    error: OSError, fallback: str, path: Path | None = None
-) -> ContentError:
+def filesystem_error(error: OSError, fallback: str, path: Path | None = None) -> ContentError:
     """Preserve actionable length failures without imposing a filesystem limit."""
     return name_length_error(error, path) or ContentError(fallback)
 

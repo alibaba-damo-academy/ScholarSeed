@@ -8,6 +8,9 @@ from scholarseed_codex.protocol.state import (
     CODEX_COLLAB_TOOL_CALL_ITEM_TYPE,
     CODEX_SUB_AGENT_ACTIVITY_ITEM_TYPE,
 )
+from scholarseed_runtime.contract.history import TurnStatus
+
+SUBAGENT_SUMMARY_LIMIT = 2000
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,8 @@ class ThreadRouter:
         self._items: dict[str, str] = {}
         self._agents: dict[str, AgentRoute] = {}
         self._agent_statuses: dict[str, str] = {}
+        self._agent_activity_at: dict[str, float] = {}
+        self._agent_summaries: dict[tuple[str, str], str] = {}
 
     def bind_turn(self, turn_id: str, thread_id: str) -> None:
         self._turns[turn_id] = thread_id
@@ -51,6 +56,33 @@ class ThreadRouter:
         }
         self._agent_statuses = {
             key: status for key, status in self._agent_statuses.items() if key in self._agents
+        }
+        self._agent_activity_at = {
+            key: observed
+            for key, observed in self._agent_activity_at.items()
+            if key in self._agents
+        }
+        self._agent_summaries = {
+            key: summary for key, summary in self._agent_summaries.items() if key[0] in self._agents
+        }
+
+    def append_agent_summary(self, thread_id: str, item_id: str, delta: str) -> str:
+        if not item_id or not delta:
+            return self._agent_summaries.get((thread_id, item_id), "")
+        key = (thread_id, item_id)
+        summary = (self._agent_summaries.get(key, "") + delta)[-SUBAGENT_SUMMARY_LIMIT:]
+        self._agent_summaries[key] = summary
+        return summary
+
+    def agent_summary(self, thread_id: str, item_id: str) -> str:
+        return self._agent_summaries.get((thread_id, item_id), "")
+
+    def forget_agent_summary(self, thread_id: str, item_id: str) -> None:
+        self._agent_summaries.pop((thread_id, item_id), None)
+
+    def forget_agent_summaries(self, thread_id: str) -> None:
+        self._agent_summaries = {
+            key: summary for key, summary in self._agent_summaries.items() if key[0] != thread_id
         }
 
     def register_agents(
@@ -88,6 +120,22 @@ class ThreadRouter:
         if not thread_id or not status or self._agent_statuses.get(thread_id) == status:
             return False
         self._agent_statuses[thread_id] = status
+        return True
+
+    def observe_agent_activity(
+        self, thread_id: str, *, now: float, interval: float, boundary: bool
+    ) -> bool:
+        if self._agent_statuses.get(thread_id) in {
+            TurnStatus.COMPLETED.value,
+            TurnStatus.FAILED.value,
+            TurnStatus.INTERRUPTED.value,
+            "cancelled",
+        }:
+            return False
+        previous = self._agent_activity_at.get(thread_id)
+        if not boundary and previous is not None and now - previous < interval:
+            return False
+        self._agent_activity_at[thread_id] = now
         return True
 
     def resolve(self, params: Mapping[str, Any]) -> str:

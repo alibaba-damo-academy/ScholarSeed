@@ -8,6 +8,36 @@
     "release_date/last_updated 为 ISO 日期，取自 models.dev 注册表；未收录即留空，不猜。"
   ],
   "models": {
+    "qwen3-next-80b-a3b-thinking": {
+      "limits": {
+        "context": 131072,
+        "max_input": 126976,
+        "max_output": 32768,
+        "max_reasoning": null,
+        "max_input_thinking": null
+      },
+      "modalities": {
+        "input": ["text"],
+        "output": ["text"]
+      },
+      "reasoning": {
+        "supported": true,
+        "options": []
+      },
+      "long_context": null,
+      "provenance": {
+        "limits": "vendor-doc",
+        "modalities": "vendor-doc",
+        "reasoning": "vendor-doc"
+      },
+      "source": {
+        "url": "https://help.aliyun.com/zh/model-studio/qwen3-next-80b-a3b-thinking",
+        "retrieved": "2026-09-29"
+      },
+      "release_date": "",
+      "last_updated": "",
+      "notes": []
+    },
     "qwen": {
       "limits": {
         "context": 256000,

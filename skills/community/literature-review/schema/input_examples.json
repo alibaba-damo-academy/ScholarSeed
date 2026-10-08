@@ -111,6 +111,20 @@
       }
     }
   ],
+  "writing.review-complete": [
+    {
+      "packet_id": "<unchanged bridge confirmation.packet_id>",
+      "snapshot_id": "<unchanged bridge confirmation.snapshot_id>",
+      "request_id": "<unchanged bridge confirmation.request_id>",
+      "started_at": 1700000000,
+      "deadline_at": 1700000300,
+      "decision": {
+        "answers": {
+          "<unchanged bridge confirmation.request_id>": "<actual user answer from the bridge>"
+        }
+      }
+    }
+  ],
   "writing.review-start": [
     {"packet_id":"<current displayed packet_id>","displayed":true}
   ],

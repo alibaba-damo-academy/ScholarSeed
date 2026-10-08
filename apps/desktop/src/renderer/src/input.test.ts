@@ -76,22 +76,33 @@ test('admits running submissions into the queue while preserving launch and inte
 })
 
 test('accepts a queue-intended submission that the server starts immediately', () => {
-  assert.equal(isComposerSubmissionAccepted({ ok: true, turn_id: 'started-turn' }), true)
-  assert.equal(isComposerSubmissionAccepted({ ok: true, queued: true, queued_message_id: 'queued' }), true)
+  assert.equal(isComposerSubmissionAccepted({ ok: true, accepted: true, turn_id: 'started-turn' }), true)
+  assert.equal(isComposerSubmissionAccepted({ ok: true, accepted: true, disposition: 'queued', queued_message_id: 'queued' }), true)
   assert.equal(isComposerSubmissionAccepted(null), false)
-  assert.equal(isComposerSubmissionAccepted({ ok: true }), false)
-  assert.equal(isComposerSubmissionAccepted({ ok: true, queued: true }), false)
-  assert.equal(isComposerSubmissionAccepted({ ok: false, error: 'failed', turn_id: 'stale' }), false)
+  assert.equal(isComposerSubmissionAccepted({ ok: true, accepted: true }), false)
+  assert.equal(isComposerSubmissionAccepted({ ok: true, queued_message_id: 'queued' }), false)
+  assert.equal(isComposerSubmissionAccepted({ ok: false, accepted: true, error: 'failed', turn_id: 'stale' }), false)
 })
 
 test('distinguishes a server rejection from an unconfirmed transport outcome', () => {
-  assert.equal(composerSubmissionOutcome({ ok: true, turn_id: 'started-turn' }), 'accepted')
+  assert.equal(composerSubmissionOutcome({ ok: true, accepted: true, turn_id: 'started-turn' }), 'accepted')
+  assert.equal(composerSubmissionOutcome({ ok: true, turn_id: 'legacy-turn' }), 'unknown')
   assert.equal(composerSubmissionOutcome({ ok: false, submissionOutcome: 'rejected' }), 'rejected')
   assert.equal(composerSubmissionOutcome({ ok: false, submissionOutcome: 'unknown' }), 'unknown')
   assert.equal(composerSubmissionOutcome(null), 'unknown')
 })
 
 test('maps structured Assistant context failures to actionable localized messages', () => {
+  assert.equal(describeTurnAdmissionFailure(translate, {
+    error: 'assistant_context_unavailable',
+    issues: [{
+      ref_id: 'legacy-selection',
+      kind: 'selection',
+      label: 'evidence.docx',
+      state: 'unavailable',
+      reason: 'selection_snapshot_required'
+    }]
+  }), 'composer.selectionSnapshotRequired:evidence.docx')
   assert.equal(describeTurnAdmissionFailure(translate, {
     error: 'assistant_context_unavailable',
     issues: [{
@@ -117,6 +128,12 @@ test('maps structured Assistant context failures to actionable localized message
     turnAdmissionFeedback({ code: 'resource_review_required' }),
     { ns: 'conversation', key: 'request.resourceReviewRequired', values: undefined }
   )
+  assert.deepEqual(turnAdmissionFeedback({ code: 'previous_turn_pending_hil' }), {
+    ns: 'components', key: 'composer.previousTurnPendingHil', values: undefined
+  })
+  assert.deepEqual(turnAdmissionFeedback({ code: 'previous_turn_background_active' }), {
+    ns: 'components', key: 'composer.previousTurnBackgroundActive', values: undefined
+  })
 })
 
 test('summarizes frozen queue references without exposing paths', async () => {

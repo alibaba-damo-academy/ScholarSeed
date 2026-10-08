@@ -15,6 +15,7 @@ const { REQUIREMENTS_FILENAME, INVENTORY_FILENAME, VERIFIER_FILENAME } = require
 const {
   APP_COMPONENTS_FILENAME,
   COMPONENTS_DIRNAME,
+  POWERSHELL_TREE_DIRNAME,
   PYTHON_TREE_DIRNAME,
   TEXLIVE_TREE_DIRNAME,
   parseAppComponents
@@ -249,7 +250,7 @@ async function verifyComponentContent(application, frozen, current, closure) {
       throw new Error(`packaged component archive differs from manifest: ${component.archive}`)
     }
   }
-  for (const tree of [PYTHON_TREE_DIRNAME, TEXLIVE_TREE_DIRNAME]) {
+  for (const tree of [PYTHON_TREE_DIRNAME, TEXLIVE_TREE_DIRNAME, POWERSHELL_TREE_DIRNAME]) {
     if (fs.existsSync(path.join(backend, tree))) {
       throw new Error(`componentized payload must not keep a loose ${tree} tree`)
     }

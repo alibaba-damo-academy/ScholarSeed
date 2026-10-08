@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import sqlite3
 import tempfile
 import unittest
@@ -11,11 +12,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scholarseed_runtime.contract import (
+    ActorKind,
     CapabilitySet,
     CapabilityState,
+    DeliveryClass,
     RuntimeBinding,
     RuntimeCapability,
     RuntimeCapabilityName,
+    RuntimeEvent,
+    RuntimeEventKind,
 )
 from service.assistant.service.authorization import (
     AUTHORIZATION_REQUIRED,
@@ -45,6 +50,7 @@ from service.chat.persistence.catalog import (
     SessionQueueCapacityError,
     SessionStateConflictError,
     SessionStatus,
+    SubmissionMode,
 )
 from service.chat.runtime.interaction import SessionInteractions
 
@@ -106,6 +112,95 @@ def register_session(
 
 
 class SessionCatalogContract(unittest.TestCase):
+    def test_queue_error_details_survive_additive_migration_and_clear_on_retry(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        allocate_session(catalog, "permission-session")
+        catalog.enqueue_message("permission-session", "denied", {"text": "continue"})
+        with sqlite3.connect(self.database) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute(f"PRAGMA table_info({SESSION_MESSAGE_QUEUE_TABLE})")
+            }
+            if "safe_error_details" in columns:
+                connection.execute(
+                    f"ALTER TABLE {SESSION_MESSAGE_QUEUE_TABLE} DROP COLUMN safe_error_details"
+                )
+        catalog = SessionCatalogStore(self.database)
+        self.assertEqual(
+            catalog.queued_message("permission-session", "denied").safe_error_details, {}
+        )
+        catalog.begin_queued_submission("permission-session", "denied")
+        details = {"path": "resources/受限文件.md"}
+        catalog.fail_queued_submission(
+            "permission-session",
+            "denied",
+            unknown=False,
+            safe_error="resource_baseline_permission_denied",
+            safe_error_details=details,
+        )
+        reopened = SessionCatalogStore(self.database)
+        failed = reopened.queued_message("permission-session", "denied")
+        self.assertEqual(failed.safe_error_details, details)
+        self.assertEqual(failed.state, QueuedMessageState.FAILED)
+        retried = reopened.begin_queued_submission("permission-session", "denied")
+        self.assertEqual(retried.safe_error_details, {})
+        self.assertEqual(retried.safe_error, "")
+
+    def test_late_product_question_preserves_terminal_status(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "late-question")
+            catalog.update_status(
+                "late-question", SessionStatus.COMPLETED, turn_id="turn-1", turn_status="completed"
+            )
+
+            async def publish(kind, data, **kwargs):
+                pass
+
+            interactions = SessionInteractions("late-question", catalog, publish)
+            waiting = asyncio.create_task(
+                interactions.request_product_input({"id": "late"}, turn_id="turn-1")
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(catalog.get("late-question").last_turn_status, "completed")
+            await interactions.resolve(
+                None, "late", {"answers": {"late": "一键授权"}}, active_turn_id="turn-1"
+            )
+            await waiting
+            self.assertEqual(catalog.get("late-question").status, SessionStatus.COMPLETED)
+
+        asyncio.run(scenario())
+
+    def test_product_answer_does_not_resurrect_completed_turn(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "completed-question")
+            events = []
+
+            async def publish(kind, data, **kwargs):
+                events.append((kind, data))
+
+            interactions = SessionInteractions("completed-question", catalog, publish)
+            waiting = asyncio.create_task(
+                interactions.request_product_input({"id": "authorization"}, turn_id="turn-1")
+            )
+            await asyncio.sleep(0)
+            catalog.update_status(
+                "completed-question",
+                SessionStatus.COMPLETED,
+                turn_id="turn-1",
+                turn_status="completed",
+            )
+            await interactions.resolve(
+                None, "authorization", {"answers": {"authorization": "拒绝"}}
+            )
+            await waiting
+            self.assertEqual(catalog.get("completed-question").status, SessionStatus.COMPLETED)
+            self.assertEqual(events[0][1]["lifetime"], "session")
+            self.assertIsNone(await interactions.resolve(None, "authorization", {}))
+
+        asyncio.run(scenario())
+
     def test_product_owned_question_resolves_without_runtime_delivery(self) -> None:
         async def scenario() -> None:
             catalog = SessionCatalogStore(self.database)
@@ -136,6 +231,97 @@ class SessionCatalogContract(unittest.TestCase):
             self.assertEqual(await waiting, {"answers": {question["id"]: "一键授权"}})
             self.assertEqual(catalog.hil(question["id"]).status, HilStatus.RESOLVED)
             self.assertEqual([event[0] for event in events], ["hil_requested", "hil_resolved"])
+
+        asyncio.run(scenario())
+
+    def test_product_question_timeout_is_durable_and_not_a_user_answer(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "timed-question")
+            events = []
+
+            async def publish(kind, data, **kwargs):
+                events.append((kind, data))
+
+            interactions = SessionInteractions("timed-question", catalog, publish)
+            question = {"id": "timed", "question": "Continue?"}
+            decision = await interactions.request_product_input(
+                question, turn_id="turn-1", timeout_seconds=0.01
+            )
+            self.assertTrue(decision["timed_out"])
+            self.assertNotIn("answers", decision)
+            self.assertEqual(catalog.hil("timed").decision, decision)
+            self.assertEqual(
+                await interactions.request_product_input(
+                    question, turn_id="turn-1", timeout_seconds=0.01
+                ),
+                decision,
+            )
+            self.assertEqual([event[0] for event in events], ["hil_requested", "hil_resolved"])
+
+        asyncio.run(scenario())
+
+    def test_product_question_answer_wins_and_duplicate_waits_share_result(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "shared-question")
+
+            async def publish(kind, data, **kwargs):
+                return None
+
+            interactions = SessionInteractions("shared-question", catalog, publish)
+            question = {"id": "shared", "question": "Continue?"}
+            pending = [
+                asyncio.create_task(
+                    interactions.request_product_input(
+                        question, turn_id="turn-1", timeout_seconds=1
+                    )
+                )
+                for _ in range(2)
+            ]
+            await asyncio.sleep(0)
+            answer = {"answers": {"shared": "Please modify the outline"}}
+            await interactions.resolve(None, "shared", answer, active_turn_id="turn-1")
+            decisions = await asyncio.gather(*pending)
+            self.assertEqual(decisions, [answer, answer])
+            self.assertIsNone(await interactions.resolve(None, "shared", answer))
+
+        asyncio.run(scenario())
+
+    def test_product_question_stale_and_cancelled_never_timeout_to_approval(self) -> None:
+        async def scenario() -> None:
+            catalog = SessionCatalogStore(self.database)
+            allocate_session(catalog, "stale-question")
+
+            async def publish(kind, data, **kwargs):
+                return None
+
+            interactions = SessionInteractions("stale-question", catalog, publish)
+            question = {"id": "stale", "question": "Continue?"}
+            waiting = asyncio.create_task(
+                interactions.request_product_input(question, turn_id="turn-1", timeout_seconds=0.01)
+            )
+            await asyncio.sleep(0)
+            catalog.stale_hil("stale")
+            self.assertTrue((await waiting)["cancelled"])
+            self.assertTrue(
+                (
+                    await interactions.request_product_input(
+                        question, turn_id="turn-1", timeout_seconds=0.01
+                    )
+                )["cancelled"]
+            )
+            waiting = asyncio.create_task(
+                interactions.request_product_input(
+                    {"id": "cancel", "question": "Continue?"}, turn_id="turn-1"
+                )
+            )
+            await asyncio.sleep(0)
+            waiting.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiting
+            self.assertTrue(catalog.hil("cancel").decision["cancelled"])
+            self.assertEqual(interactions._product_waiters, {})
 
         asyncio.run(scenario())
 
@@ -629,7 +815,10 @@ class SessionCatalogContract(unittest.TestCase):
         catalog = SessionCatalogStore(self.database)
         register_session(catalog, "product-a", "thread-a")
         one = catalog.enqueue_message(
-            "product-a", "queue-1", {"input": [{"type": "text", "text": "1"}]}
+            "product-a",
+            "queue-1",
+            {"input": [{"type": "text", "text": "1"}]},
+            submission_mode=SubmissionMode.DIRECT,
         )
         two = catalog.enqueue_message(
             "product-a", "queue-2", {"input": [{"type": "text", "text": "2"}]}
@@ -638,6 +827,8 @@ class SessionCatalogContract(unittest.TestCase):
             "product-a", "queue-3", {"input": [{"type": "text", "text": "3"}]}
         )
         self.assertEqual((one.enqueue_seq, two.enqueue_seq, three.enqueue_seq), (1, 2, 3))
+        self.assertEqual(one.submission_mode, SubmissionMode.DIRECT)
+        self.assertEqual(two.submission_mode, SubmissionMode.QUEUED)
 
         third_submission = catalog.begin_queued_submission("product-a", "queue-3")
         first_submission = catalog.begin_queued_submission("product-a", "queue-1")
@@ -958,9 +1149,116 @@ class SessionCatalogContract(unittest.TestCase):
         self.assertEqual(record.purpose, "turn")
         self.assertIsNone(record.deadline)
         self.assertEqual(record.native_turn_id, "")
+        self.assertEqual(record.submission_mode, SubmissionMode.QUEUED)
         self.assertEqual(
             reopened.enqueue_message("product-old", "old-request", {"text": "preserved"}), record
         )
+
+    def test_pending_turn_settlement_survives_reopen_and_rejects_other_turns(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        register_session(catalog, "product-settlement", "thread-settlement")
+        event = RuntimeEvent(
+            schema_version=1,
+            event_id="terminal-event",
+            runtime_id=RUNTIME_ID,
+            product_session_id="product-settlement",
+            native_session_id="thread-settlement",
+            process_generation=2,
+            sequence=8,
+            kind=RuntimeEventKind.TURN_FAILED,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="2026-09-24T00:00:00Z",
+            native_turn_id="native-turn",
+            actor_kind=ActorKind.MAIN,
+            payload={"reason": "native failure", "details": ["one", "two"]},
+        )
+        recorded = catalog.record_turn_settlement("product-settlement", "client-turn", event)
+        reopened = SessionCatalogStore(self.database)
+        restored = reopened.pending_turn_settlement("product-settlement")
+        self.assertEqual(restored, recorded)
+        self.assertIs(type(restored.event.kind), RuntimeEventKind)
+        self.assertIs(type(restored.event.delivery), DeliveryClass)
+        self.assertIs(type(restored.event.actor_kind), ActorKind)
+        self.assertEqual(
+            reopened.record_turn_settlement("product-settlement", "client-turn", event), recorded
+        )
+        self.assertTrue(reopened.mark_turn_recovery_blocked("product-settlement", True))
+        blocked = SessionCatalogStore(self.database).pending_turn_settlement("product-settlement")
+        self.assertIsNotNone(blocked)
+        self.assertTrue(blocked.recovery_blocked)
+        self.assertTrue(reopened.mark_turn_recovery_blocked("product-settlement", False))
+        self.assertFalse(
+            SessionCatalogStore(self.database)
+            .pending_turn_settlement("product-settlement")
+            .recovery_blocked
+        )
+        with self.assertRaises(SessionStateConflictError):
+            reopened.record_turn_settlement("product-settlement", "other-client-turn", event)
+        with self.assertRaises(SessionStateConflictError):
+            reopened.record_turn_settlement(
+                "product-settlement",
+                "client-turn",
+                dataclasses.replace(event, event_id="other-event"),
+            )
+        with self.assertRaises(SessionStateConflictError):
+            reopened.record_turn_settlement(
+                "product-settlement",
+                "client-turn",
+                dataclasses.replace(event, native_turn_id="other-native-turn"),
+            )
+        self.assertFalse(reopened.clear_turn_settlement("product-settlement", "other-native-turn"))
+        self.assertEqual(reopened.pending_turn_settlement("product-settlement"), recorded)
+        self.assertTrue(reopened.clear_turn_settlement("product-settlement", "native-turn"))
+        self.assertIsNone(reopened.pending_turn_settlement("product-settlement"))
+
+    def test_unknown_turn_settlement_promotes_only_matching_resolution(self) -> None:
+        catalog = SessionCatalogStore(self.database)
+        register_session(catalog, "product-unknown", "thread-unknown")
+        unknown = RuntimeEvent(
+            schema_version=1,
+            event_id="unknown-event",
+            runtime_id=RUNTIME_ID,
+            product_session_id="product-unknown",
+            native_session_id="thread-unknown",
+            process_generation=2,
+            sequence=8,
+            kind=RuntimeEventKind.TURN_UNKNOWN,
+            delivery=DeliveryClass.MUST_PERSIST,
+            observed_at="2026-09-24T00:00:00Z",
+            native_turn_id="client-turn",
+            correlation_id="client-turn",
+            actor_kind=ActorKind.MAIN,
+            payload={"incident": {"incident_id": "incident-unknown"}},
+        )
+        recorded = catalog.record_turn_settlement("product-unknown", "client-turn", unknown)
+        completed = dataclasses.replace(
+            unknown,
+            event_id="completed-event",
+            process_generation=3,
+            sequence=9,
+            kind=RuntimeEventKind.TURN_COMPLETED,
+            native_turn_id="native-turn",
+            payload={"resolved_ambiguous_incident_id": "incident-unknown"},
+        )
+        with self.assertRaises(SessionStateConflictError):
+            catalog.record_turn_settlement(
+                "product-unknown",
+                "client-turn",
+                dataclasses.replace(
+                    completed, payload={"resolved_ambiguous_incident_id": "other-incident"}
+                ),
+            )
+        promoted = catalog.record_turn_settlement("product-unknown", "client-turn", completed)
+        self.assertEqual(promoted.event, completed)
+        self.assertEqual(promoted.created_at, recorded.created_at)
+        self.assertEqual(catalog.pending_turn_settlement("product-unknown"), promoted)
+        self.assertEqual(
+            catalog.record_turn_settlement("product-unknown", "client-turn", completed), promoted
+        )
+        with self.assertRaises(SessionStateConflictError):
+            catalog.record_turn_settlement(
+                "product-unknown", "client-turn", dataclasses.replace(completed, event_id="other")
+            )
 
     def test_message_queue_has_a_durable_per_session_capacity(self) -> None:
         catalog = SessionCatalogStore(self.database)

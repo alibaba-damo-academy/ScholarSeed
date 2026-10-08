@@ -18,6 +18,8 @@ HOME_ENV = "HOME"
 USERPROFILE_ENV = "USERPROFILE"
 XDG_CONFIG_HOME_ENV = "XDG_CONFIG_HOME"
 CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
+CODEX_REMOTE_CONTROL_DISABLED_ENV = "CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED"
+CODEX_REMOTE_CONTROL_DISABLED_VALUE = "1"
 
 CONFIG_OPTION = "-c"
 STRICT_CONFIG_OPTION = "--strict-config"
@@ -54,6 +56,7 @@ def managed_codex_launch(
 
     environment = dict(process_environment)
     environment[CODEX_HOME_ENV] = str(resolved_runtime_home)
+    environment[CODEX_REMOTE_CONTROL_DISABLED_ENV] = CODEX_REMOTE_CONTROL_DISABLED_VALUE
     environment[HOME_ENV] = str(discovery_home)
     if original_userprofile or os.name == "nt":
         environment[USERPROFILE_ENV] = str(discovery_home)

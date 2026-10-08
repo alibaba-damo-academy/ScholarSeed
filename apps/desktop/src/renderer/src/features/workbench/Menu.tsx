@@ -61,6 +61,42 @@ const MOVE_TEST_IDS: Record<AdjacentPosition, string> = {
   bottomRight: 'tab-move-bottom-right'
 }
 
+export function WorkbenchTabMenu({
+  tabId,
+  tabIds
+}: {
+  tabId: string
+  tabIds: readonly string[]
+}): React.JSX.Element {
+  const { act } = useApp()
+  const { t } = useTranslation('ui')
+  const documents = useDocumentWorkspace()
+  const workspace = useWorkspaceController()
+
+  const closeTabs = (ids: readonly string[]): void => {
+    workspace.requestCloseTabs(ids.filter((id) => Boolean(documents.tabs[id])))
+    ids.filter((id) => !documents.tabs[id]).forEach(act.closeWorkbenchTab)
+  }
+
+  return (
+    <ContextMenuContent className={PRODUCT_MENU_CONTENT_CLASS} data-testid="workbench-tab-menu">
+      {TAB_CLOSE_ITEMS.map((item) => {
+        const ids = tabIdsForClose(tabIds, tabId, item.scope)
+        return (
+          <ContextMenuItem
+            key={item.scope}
+            data-testid={item.testId}
+            disabled={ids.length === 0}
+            onSelect={() => closeTabs(ids)}
+          >
+            {t(item.labelKey)}
+          </ContextMenuItem>
+        )
+      })}
+    </ContextMenuContent>
+  )
+}
+
 export function DocumentTabMenu({
   tabId,
   tabIds
@@ -72,7 +108,7 @@ export function DocumentTabMenu({
   const { t } = useTranslation('ui')
   const { t: conversation } = useTranslation('conversation')
   const { t: workbench } = useTranslation('workbench')
-  const { t: resourceText } = useTranslation('resources')
+  const { t: resourceText } = useTranslation(['resources'])
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
   const tab = state.tabs[tabId]

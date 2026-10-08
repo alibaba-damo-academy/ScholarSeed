@@ -1,8 +1,8 @@
 @font-face {
   font-family: "iconfont"; /* Project id 5230906 */
-  src: url('iconfont.woff2?t=1789203652317') format('woff2'),
-       url('iconfont.woff?t=1789203652317') format('woff'),
-       url('iconfont.ttf?t=1789203652317') format('truetype');
+  src: url('iconfont.woff2?t=1790587187248') format('woff2'),
+       url('iconfont.woff?t=1790587187248') format('woff'),
+       url('iconfont.ttf?t=1790587187248') format('truetype');
 }
 
 .iconfont {
@@ -13,8 +13,32 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-.icon-zotero1:before {
-  content: "\e629";
+.icon-line-tool-batch-follow-up:before {
+  content: "\e6df";
+}
+
+.icon-h1:before {
+  content: "\e732";
+}
+
+.icon-h3:before {
+  content: "\e700";
+}
+
+.icon-h2:before {
+  content: "\e9e2";
+}
+
+.icon-chart-up-circle:before {
+  content: "\e7ee";
+}
+
+.icon-fill-tool-pin:before {
+  content: "\e721";
+}
+
+.icon-line-tool-pin:before {
+  content: "\e762";
 }
 
 .icon-zotero:before {

@@ -1,4 +1,5 @@
 import { onboardingEqual, sanitizeOnboarding, type OnboardingPreferences } from './onboarding.ts'
+import { navigationLocationsEqual, sanitizeNavigationLocation, type NavigationLocation } from './navigation.ts'
 
 import {
   sanitizeSelectionPrompts,
@@ -25,6 +26,7 @@ export const MAX_MODEL_KEY_LENGTH = 512
 export const LITERATURE_AI_MODEL_ACTIONS = [
   'document_translation',
   'selection_translation',
+  'selection_explanation',
   'interpretation',
   'figure_explanation'
 ] as const
@@ -131,6 +133,7 @@ export const PREFERENCE_LANGUAGES: readonly PreferenceLanguage[] = ['zh', 'en']
 export const PREFERENCE_THEMES: readonly PreferenceTheme[] = ['light', 'dark', 'system']
 
 export interface RendererPreferences {
+  lastLocation: NavigationLocation | null
   onboarding?: OnboardingPreferences
   selectionPrompts: SelectionPrompts
   reasoningPreferences?: Record<string, string>
@@ -138,6 +141,8 @@ export interface RendererPreferences {
   sidebarOpen: boolean
   sessionActivityInitialized: boolean
   sessionActivitySeen: Record<string, number>
+  /** mac/dev 首启一次性「高级」数据位置入口是否已消费（跳过或完成），不再重弹。 */
+  storageFirstLaunchSeen: boolean
   desktopNotifications: boolean
   soundAlerts: boolean
   autoSave: boolean
@@ -154,11 +159,13 @@ export interface RendererPreferences {
 
 /** 各项默认值。其中 `language` 是检测链全部失败时的最终兜底，不是无条件默认值。 */
 export const DEFAULT_RENDERER_PREFERENCES: RendererPreferences = {
+  lastLocation: null,
   selectionPrompts: sanitizeSelectionPrompts(undefined),
   literatureAiModels: {},
   sidebarOpen: true,
   sessionActivityInitialized: false,
   sessionActivitySeen: {},
+  storageFirstLaunchSeen: false,
   desktopNotifications: true,
   soundAlerts: true,
   autoSave: true,
@@ -354,6 +361,7 @@ export function rendererPreferencesEqual(
   right: RendererPreferences
 ): boolean {
   return onboardingEqual(left.onboarding, right.onboarding)
+    && navigationLocationsEqual(left.lastLocation, right.lastLocation)
     && left.sidebarOpen === right.sidebarOpen
     && left.sessionActivityInitialized === right.sessionActivityInitialized
     && preferenceRecordEqual(left.sessionActivitySeen, right.sessionActivitySeen)
@@ -363,6 +371,7 @@ export function rendererPreferencesEqual(
     )
     && preferenceRecordEqual(left.literatureAiModels, right.literatureAiModels)
     && left.desktopNotifications === right.desktopNotifications
+    && left.storageFirstLaunchSeen === right.storageFirstLaunchSeen
     && left.soundAlerts === right.soundAlerts
     && left.autoSave === right.autoSave
     && left.formatOnSave === right.formatOnSave
@@ -452,6 +461,7 @@ export function sanitizeRendererPreferences(
   }
   const parsed = value as Partial<RendererPreferences>
   return {
+    lastLocation: sanitizeNavigationLocation(parsed.lastLocation),
     ...(parsed.onboarding ? { onboarding: sanitizeOnboarding(parsed.onboarding) } : {}),
     selectionPrompts: sanitizeSelectionPrompts(parsed.selectionPrompts),
     reasoningPreferences: parsed.reasoningPreferences && typeof parsed.reasoningPreferences === 'object'
@@ -463,6 +473,7 @@ export function sanitizeRendererPreferences(
       : DEFAULT_RENDERER_PREFERENCES.sidebarOpen,
     sessionActivityInitialized: parsed.sessionActivityInitialized === true,
     sessionActivitySeen: activityMap(parsed.sessionActivitySeen),
+    storageFirstLaunchSeen: parsed.storageFirstLaunchSeen === true,
     desktopNotifications: typeof parsed.desktopNotifications === 'boolean'
       ? parsed.desktopNotifications
       : DEFAULT_RENDERER_PREFERENCES.desktopNotifications,

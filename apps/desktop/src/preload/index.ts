@@ -1,5 +1,12 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
-import { LOGIN_WINDOW_CHANNEL, WINDOW_CLOSE_REQUEST_CHANNEL, WINDOW_CLOSE_REPLY_CHANNEL, type WindowCloseRequest, type WindowCloseReply } from '../window'
+import {
+  LOGIN_WINDOW_CHANNEL,
+  WINDOW_CLOSE_REQUEST_CHANNEL,
+  WINDOW_CLOSE_REPLY_CHANNEL,
+  WINDOW_FULLSCREEN_CHANNEL,
+  type WindowCloseRequest,
+  type WindowCloseReply,
+} from '../window'
 // preload — the only bridge between renderer and main. Exposes the backend API
 // base URL (the renderer talks ASP/HTTP/SSE straight to it), backend log stream,
 // shoot-scene events, an external-open helper, and the version-update surface.
@@ -12,6 +19,7 @@ import type { StartUpdateResult, UpdateDiagnosis, UpdateSnapshot } from '../upda
 import type { PreferenceLanguage, RendererPreferences } from '../preferences'
 import type { DesktopNotificationInput, DesktopNotificationResult } from '../notifications'
 import type { SystemPermissionId, SystemPermissionsSnapshot } from '../permissions'
+import type { CommitDataHomeResult, StorageConfig } from '../storage'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
 import type { ImportPickerTarget } from '../picker'
 import { SKILLS_CHANNEL, type DeviceSkillRequest, type DeviceSkillResponse } from '../skills'
@@ -19,20 +27,25 @@ import {
   FEEDBACK_CAPTURE_CHANNEL,
   FEEDBACK_CLIPBOARD_IMAGE_CHANNEL,
   type FeedbackClipboardImageResult,
-  type FeedbackScreenshotResult
+  type FeedbackScreenshotResult,
 } from '../feedback'
 import {
   CLIPBOARD_PASTE_CHANNEL,
   CLIPBOARD_WRITE_CONTENT_CHANNEL,
   type ClipboardContentPayload,
-  type ClipboardContentResult
+  type ClipboardContentResult,
 } from '../clipboard'
 
-import { SUBSCRIPTION_CHANNEL, type SubscriptionRequest, type SubscriptionReply } from '../subscriptions'
+import {
+  SUBSCRIPTION_CHANNEL,
+  type SubscriptionRequest,
+  type SubscriptionReply,
+} from '../subscriptions'
 
 interface Boot {
   apiBase: string
   platform: string
+  fullscreen: boolean
   shoot: boolean
   backlog: string
   version: string
@@ -68,6 +81,12 @@ const bridge = {
     return apiBase
   },
   platform: boot.platform,
+  fullscreen: boot.fullscreen,
+  onFullscreenChange(callback: (fullscreen: boolean) => void): () => void {
+    const handler = (_event: unknown, fullscreen: boolean): void => callback(fullscreen)
+    ipcRenderer.on(WINDOW_FULLSCREEN_CHANNEL, handler)
+    return () => ipcRenderer.removeListener(WINDOW_FULLSCREEN_CHANNEL, handler)
+  },
   shoot: boot.shoot,
   backlog: boot.backlog,
   version: boot.version,
@@ -141,7 +160,9 @@ const bridge = {
   revealPath(path: string): Promise<{ ok: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('scholarseed:reveal-path', path)
   },
-  appsForFile(filePath: string): Promise<{ name: string; path: string; isDefault: boolean; icon?: string }[]> {
+  appsForFile(
+    filePath: string
+  ): Promise<{ name: string; path: string; isDefault: boolean; icon?: string }[]> {
     return ipcRenderer.invoke('scholarseed:apps-for-file', filePath)
   },
   openPathWith(path: string, appPath: string): Promise<{ ok: boolean; error?: string }> {
@@ -177,7 +198,10 @@ const bridge = {
   pickExecutable(): Promise<string | null> {
     return ipcRenderer.invoke('scholarseed:pick-executable')
   },
-  saveFileCopy(payload: { suggestedName: string; bytes: Uint8Array }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
+  saveFileCopy(payload: {
+    suggestedName: string
+    bytes: Uint8Array
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
     return ipcRenderer.invoke('scholarseed:save-copy', payload)
   },
   requestOfficeFontAccess(): Promise<boolean> {
@@ -196,7 +220,11 @@ const bridge = {
     return ipcRenderer.invoke('veda:device-info')
   },
   // ── 桌面登录交接（官网浏览器登录 + 深链回跳）──
-  desktopLoginStart(language: PreferenceLanguage): Promise<{ ok: boolean; error?: string; applicationFailure?: { code: string; diagnostic?: string } }> {
+  desktopLoginStart(language: PreferenceLanguage): Promise<{
+    ok: boolean
+    error?: string
+    applicationFailure?: { code: string; diagnostic?: string }
+  }> {
     return ipcRenderer.invoke('scholarseed:desktop-login-start', language)
   },
   desktopLoginCancel(): Promise<{ ok: boolean }> {
@@ -241,14 +269,20 @@ const bridge = {
   diagnoseUpdate(): Promise<UpdateDiagnosis> {
     return ipcRenderer.invoke('scholarseed:update-diagnose')
   },
-  runtimeStorePath(): Promise<string | null> {
-    return ipcRenderer.invoke('scholarseed:runtime-store-path')
+  storageConfig(): Promise<StorageConfig> {
+    return ipcRenderer.invoke('scholarseed:storage-config')
+  },
+  commitDataHome(parent: string): Promise<CommitDataHomeResult> {
+    return ipcRenderer.invoke('scholarseed:commit-data-home', parent)
   },
   startUpdate(id: string): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-start', id)
   },
   installUpdate(): Promise<StartUpdateResult> {
     return ipcRenderer.invoke('scholarseed:update-install')
+  },
+  cancelUpdate(): Promise<StartUpdateResult> {
+    return ipcRenderer.invoke('scholarseed:update-cancel')
   },
   // 不带参数：要记哪个候选由主进程按当前快照自己算，渲染层不传身份。
   acknowledgeUpdateAnnouncement(): Promise<boolean> {
@@ -258,7 +292,7 @@ const bridge = {
     const h = (_e: unknown, state: UpdateSnapshot) => cb(state)
     ipcRenderer.on('scholarseed:update-state', h)
     return () => ipcRenderer.removeListener('scholarseed:update-state', h)
-  }
+  },
 }
 
 ipcRenderer.on('scholarseed:backend-base', (_e, nextApiBase: string) => {

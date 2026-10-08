@@ -97,7 +97,7 @@ function ScopedLiteratureResultTab({ tabId, projectId }: { tabId: string; projec
       .catch(() => { if (!controller.signal.aborted) setError(true) })
     return () => controller.abort()
   }, [tabId, attempt, projectId])
-  if (error) return <Alert tone="warning"><AlertDescription>{t('result.retryDescription')}</AlertDescription><Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>{ui('retry')}</Button></Alert>
+  if (error) return <Alert action={<Button variant="secondary" onClick={() => setAttempt(value => value + 1)}>{ui('retry')}</Button>} description={t('result.retryDescription')} layout="stacked" tone="warning" />
   const result = content ? parseResult(content) : null
   if (!result) return <p>{t('result.opening')}</p>
   const statusWarningText = statusWarning ? t('result.statusUnavailable') : ''

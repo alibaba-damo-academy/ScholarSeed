@@ -18,11 +18,14 @@ from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
 SEARCH_DIR = TOOLS_DIR.parent
+SCRIPTS_DIR = SEARCH_DIR.parents[1] / "scripts"
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(SEARCH_DIR))
+sys.path.insert(0, str(SCRIPTS_DIR))
 
 from normalize import normalize_paper  # noqa: E402
 from state import safe_endpoint  # noqa: E402
+from io_utils import atomic_write_json  # noqa: E402
 
 
 DEFAULT_BASE_URL = "https://scholarseed.damo.alibaba.com/paperhub/"
@@ -359,8 +362,7 @@ def get_references(
 
 
 def _write_output(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(path, value)
 
 
 def main() -> int:

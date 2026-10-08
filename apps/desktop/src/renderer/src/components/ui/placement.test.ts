@@ -25,6 +25,11 @@ test('menu opens below when there is enough space', () => {
   assert.equal(position.top, 136)
 })
 
+test('menu can prefer opening above its anchor', () => {
+  const position = menuPositionStyle({ ...anchor, top: 300, bottom: 328 }, { width: 204, height: 100 }, viewport, 'top')
+  assert.equal(position.top, 192)
+})
+
 test('right click uses the pointer and actual dimensions for viewport collision', () => {
   assert.deepEqual(menuPositionStyle({ kind: 'point', x: 275, y: 626 }, { width: 204, height: 256 }, viewport), {
     left: 275, top: 396, position: 'fixed'

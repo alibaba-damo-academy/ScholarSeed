@@ -16,6 +16,8 @@
   },
   "scanners": ["skill-scanner"],
   "dependencies": {
+    "academic-research-guidance": {},
+    "scholarseed-product-operations": {},
     "agentic-search": {"skills": ["web-search"]},
     "fast-search": {"skills": ["web-search"]},
     "project-literature": {
@@ -26,15 +28,17 @@
     },
     "research-idea-partner": {"skills": ["agentic-search"], "executables": ["scholarseed-bridge"]},
     "precise-literature-search": {
+      "skills": ["web-search"],
       "wheels": ["vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl"],
       "imports": ["paper_dl"],
       "modules": ["paper_dl"]
     },
     "literature-review": {
       "skills": ["agentic-search"],
-      "python": ["matplotlib==3.10.8", "pysbd==0.3.4"],
-      "imports": ["openai", "httpx", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock"],
+      "python": ["matplotlib==3.10.8", "pysbd==0.3.4", "socksio==1.0.0"],
+      "imports": ["openai", "httpx", "socksio", "pypdfium2", "pdfplumber", "pypdf", "matplotlib", "PIL", "pysbd", "filelock"],
       "bundled_executables": ["xelatex", "pdflatex", "bibtex", "kpsewhich"]
-    }
+    },
+    "pdf-evidence": {}
   }
 }

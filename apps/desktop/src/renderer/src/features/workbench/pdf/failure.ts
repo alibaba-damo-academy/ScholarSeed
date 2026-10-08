@@ -12,9 +12,11 @@ export interface PdfAiFailureRecovery {
 }
 
 export const PDF_AI_IMAGE_INPUT_UNSUPPORTED = 'pdf_ai_image_input_unsupported'
+export const PDF_AI_MODEL_UNAVAILABLE = 'pdf_ai_model_unavailable'
 
 const MODEL_CONFIGURATION_CODES = new Set([
   'pdf_ai_preparation_failed',
+  PDF_AI_MODEL_UNAVAILABLE,
   'pdf_ai_pdf_input_unsupported',
   PDF_AI_IMAGE_INPUT_UNSUPPORTED,
 ])
@@ -56,6 +58,7 @@ const ERROR_KEYS = {
   pdf_ai_source_changed_during_generation: 'reading.errors.source_changed_during_generation',
   pdf_ai_execution_failed: 'reading.errors.execution_failed',
   pdf_ai_preparation_failed: 'reading.errors.preparation_failed',
+  [PDF_AI_MODEL_UNAVAILABLE]: 'reading.errors.model_unavailable',
   pdf_ai_operation_busy: 'reading.errors.operation_busy',
   pdf_ai_figure_stream_required: 'reading.errors.figure_stream_required',
 } as const
@@ -83,9 +86,7 @@ export function pdfAiCaughtFailure(cause: unknown): PdfAiFailure {
 export function pdfAiFailureText(failure: PdfAiFailure, t: TFunction<'pdf'>): string {
   const key = failure.code && Object.prototype.hasOwnProperty.call(ERROR_KEYS, failure.code)
     ? ERROR_KEYS[failure.code as keyof typeof ERROR_KEYS] : undefined
-  const message = key ? t(key) : t('reading.failed')
-  const detail = [!key && failure.code !== failure.diagnostic ? failure.code : '', failure.diagnostic].filter(Boolean).join('\n')
-  return detail ? t('reading.errorDiagnostic', { message, detail }) : message
+  return key ? t(key) : t('reading.failed')
 }
 
 export function pdfAiFailureRecovery(failure?: PdfAiFailure): PdfAiFailureRecovery {

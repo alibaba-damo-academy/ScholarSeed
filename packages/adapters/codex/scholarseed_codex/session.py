@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
+import os
 import re
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -20,11 +23,19 @@ from scholarseed_codex.directive import parse_declarations
 from scholarseed_codex.environment import (
     configured_codex_executable,
     prepare_codex_runtime_home,
+    proxy_bypass_environment,
     source_model_provider,
 )
 from scholarseed_codex.events import RUNTIME_EVENT_SCHEMA_VERSION, translate_event
 from scholarseed_codex.isolation import managed_codex_launch
-from scholarseed_codex.permission import CODEX_PERMISSION_POLICIES, local_socket_permissions
+from scholarseed_codex.loop import ToolLoopGuard
+from scholarseed_codex.mailbox import ObservationMailbox
+from scholarseed_codex.permission import (
+    CODEX_PERMISSION_POLICIES,
+    PERMISSION_SCOPE_NEXT_TURN,
+    local_socket_permissions,
+    reviewer_only_update,
+)
 from scholarseed_codex.pool import CodexHostPool, PoolReservation
 from scholarseed_codex.profile import (
     CODEX_PROTOCOL_SCHEMA_HASH,
@@ -44,6 +55,9 @@ from scholarseed_codex.protocol.mcp import (
     McpTrustRequest,
 )
 from scholarseed_codex.protocol.session import (
+    CODEX_REASONING_SUMMARY_AUTO,
+    CODEX_REASONING_SUMMARY_CONFIG,
+    CodexDynamicTool,
     CodexRuntimeIdentity,
     CodexSessionEvent,
     CodexSessionEventKind,
@@ -51,12 +65,14 @@ from scholarseed_codex.protocol.session import (
     CodexToolResponse,
 )
 from scholarseed_codex.protocol.state import CODEX_RUNTIME_ID, AppServerError, CodexActivationStage
+from scholarseed_codex.sandbox import windows_sandbox_arguments
 from scholarseed_codex.skill import session_skill_config, session_skill_inventory
-from scholarseed_codex.thread import CodexThreadSession
+from scholarseed_codex.thread import CODEX_THREAD_RESTORE_FAILED, CodexThreadSession
 from scholarseed_codex.utils import json_value
 from scholarseed_runtime.contract import (
     AppliedState,
     ArchiveRequest,
+    CallbackKind,
     CapabilitySet,
     CommandReceipt,
     CommandState,
@@ -68,7 +84,9 @@ from scholarseed_runtime.contract import (
     InventoryRequest,
     ModelConnectionMode,
     ModelCredential,
+    ModelCredentialPort,
     ModelIntent,
+    ModelToolProtocol,
     OpenSessionRequest,
     RuntimeBinding,
     RuntimeCallbackRequest,
@@ -85,9 +103,18 @@ from scholarseed_runtime.contract import (
     SteerRequest,
     TerminateSessionRequest,
     TurnRequest,
+    service_tool_profile,
+)
+from scholarseed_runtime.contract.incident import (
+    RuntimeIncidentKind,
+    RuntimeIncidentScope,
+    RuntimeIncidentState,
+    RuntimeRecoveryStrategy,
+    RuntimeRetryability,
 )
 from scholarseed_runtime.contract.input import CollaborationMode, InputItem, InputKind, TurnInput
 from scholarseed_runtime.contract.mcp import McpTrustDecision
+from scholarseed_runtime.contract.permission import PermissionIntent, PermissionUpdateScope
 from scholarseed_runtime.contract.resource import ResourceEvidence
 from scholarseed_runtime.contract.session import (
     RUNTIME_SUSPEND_BUSY,
@@ -101,8 +128,10 @@ from scholarseed_runtime.contract.session import (
     SuspendTicket,
 )
 
-UNSUPPORTED_DYNAMIC_TOOL_ERROR = "runtime_dynamic_tool_unsupported"
-CODEX_EVENT_QUEUE_CAPACITY = 2048
+TOOL_ENVIRONMENT_POLICY_CONFIG = "shell_environment_policy"
+TOOL_ENVIRONMENT_INHERIT_CONFIG = "inherit"
+TOOL_ENVIRONMENT_SET_CONFIG = "set"
+TOOL_ENVIRONMENT_CORE = "core"
 CODEX_REMOTE_PROVIDER_ID = "scholarseed"
 CODEX_REMOTE_PROVIDER_NAME = "ScholarSeed"
 CODEX_MODEL_API_KEY_ENV = "SCHOLARSEED_MODEL_API_KEY"
@@ -118,6 +147,7 @@ TURN_SUBMISSION_FAILED_ERROR = "runtime_turn_submission_failed"
 FAILED_STATE = "failed"
 ACTIVITY_COMMAND_PENDING = "runtime_command_pending"
 ACTIVITY_OPERATION_PENDING = "runtime_operation_pending"
+ACTIVITY_OBSERVATION_PENDING = "runtime_observation_pending"
 ACTIVITY_CHANGED = "runtime_activity_changed"
 SUBAGENT_LIFECYCLE_KINDS = frozenset(
     {
@@ -128,6 +158,10 @@ SUBAGENT_LIFECYCLE_KINDS = frozenset(
         RuntimeEventKind.SUBAGENT_INTERRUPTED,
     }
 )
+REPEATED_TOOL_LOOP_ERROR = "codex_repeated_tool_loop"
+REPEATED_TOOL_INTERRUPT_ERROR = "codex_repeated_tool_interrupt_failed"
+REPEATED_TOOL_INCIDENT_SUFFIX = "repeated-tool-loop"
+logger = logging.getLogger(__name__)
 
 
 def _admitted(method):
@@ -174,6 +208,34 @@ def _same_thread_preferences(current: ModelIntent, requested: ModelIntent) -> bo
         # Same reason for the non-effort thinking forms: the bridge registration is
         # built once per connection, so a changed toggle/budget must not look applied.
         and current.thinking == requested.thinking
+        and current.approval_model_ref == requested.approval_model_ref
+    )
+
+
+def _same_process_configuration(
+    current: CodexSessionOpenRequest, requested: CodexSessionOpenRequest
+) -> bool:
+    return (
+        current.executable == requested.executable
+        and current.identity == requested.identity
+        and current.cwd == requested.cwd
+        and current.execution_scope == requested.execution_scope
+        and current.process_environment == requested.process_environment
+        and current.remove_environment == requested.remove_environment
+        and current.launch_arguments == requested.launch_arguments
+        and current.authentication_required == requested.authentication_required
+        and current.model_provider == requested.model_provider
+        and current.sandbox == requested.sandbox
+        and current.permissions_profile == requested.permissions_profile
+        and current.approval_policy == requested.approval_policy
+        and current.approval_reviewer == requested.approval_reviewer
+        and current.multi_agent_mode == requested.multi_agent_mode
+        and current.base_instructions == requested.base_instructions
+        and current.developer_instructions == requested.developer_instructions
+        and current.dynamic_tools == requested.dynamic_tools
+        and current.skill_roots == requested.skill_roots
+        and current.writable_roots == requested.writable_roots
+        and current.network_access == requested.network_access
     )
 
 
@@ -228,9 +290,11 @@ class CodexRuntimeSession:
         request: OpenSessionRequest,
         resume_binding: RuntimeBinding | None = None,
         launch_environment: Mapping[str, str] | None = None,
+        tool_environment: Mapping[str, str] | None = None,
         host_pool: CodexHostPool | None = None,
     ) -> None:
         self._host_pool = host_pool or CodexHostPool()
+        self._tool_environment = dict(tool_environment or {})
         self._model_prepared = False
         self._admission_lock = asyncio.Lock()
         self._active_operations = 0
@@ -242,9 +306,7 @@ class CodexRuntimeSession:
         self._released_evidence: ResourceEvidence | None = None
         self._request = replace(request, secret_port=None)
         self._required_capabilities = required_capabilities(request.required_capabilities)
-        self._events: asyncio.Queue[RuntimeEvent | RuntimeCallbackRequest] = asyncio.Queue(
-            maxsize=CODEX_EVENT_QUEUE_CAPACITY
-        )
+        self._events = ObservationMailbox()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._sequence = 0
         self._evidence_sequence = 0
@@ -254,6 +316,7 @@ class CodexRuntimeSession:
         self._capability_resolution: dict[str, Any] | None = None
         self._active_command_id = ""
         self._committed_commands: set[str] = set()
+        self._loop_guard = ToolLoopGuard()
         executable = configured_codex_executable()
         runtime_home = prepare_codex_runtime_home(
             native_authentication=request.model.transport.mode is ModelConnectionMode.NATIVE
@@ -263,7 +326,10 @@ class CodexRuntimeSession:
             permission_policy.sandbox,
             request.permission.local_sockets,
             network_access=request.permission.network_access,
+            network_domains=request.permission.network_domains,
+            deny_read_roots=request.permission.deny_read_roots,
         )
+        launch_arguments += windows_sandbox_arguments(permission_policy.sandbox)
         process_environment, launch_arguments = managed_codex_launch(
             runtime_home,
             dict(launch_environment or {}),
@@ -274,6 +340,7 @@ class CodexRuntimeSession:
                 request_id=request.product_session_id,
                 runtime_id=CODEX_RUNTIME_ID,
                 cwd=request.cwd,
+                execution_scope=request.execution_scope,
                 resume_session_id=(
                     resume_binding.opaque_session_ref if resume_binding is not None else ""
                 ),
@@ -293,6 +360,16 @@ class CodexRuntimeSession:
                     service_name="scholarseed",
                 ),
                 developer_instructions=request.developer_instructions,
+                dynamic_tools=tuple(
+                    CodexDynamicTool(
+                        name=tool.name,
+                        description=tool.description,
+                        input_schema=(
+                            tool.input_schema if isinstance(tool.input_schema, Mapping) else {}
+                        ),
+                    )
+                    for tool in request.service_tools
+                ),
                 base_instructions=request.base_instructions,
                 ephemeral=request.ephemeral,
                 skill_roots=request.skill_roots,
@@ -303,6 +380,7 @@ class CodexRuntimeSession:
             on_event=self._on_native_event,
             host_pool=self._host_pool,
         )
+        self._native_base_request = self._native.request
         self._binding: RuntimeBinding | None = None
         self._permission = request.permission
         self._model = request.model
@@ -333,9 +411,14 @@ class CodexRuntimeSession:
     async def _publish_observation(
         self, observation: RuntimeEvent | RuntimeCallbackRequest
     ) -> None:
-        if isinstance(observation, RuntimeEvent):
-            self._watermark = observation.sequence
-        await self._events.put(observation)
+        async def accept() -> None:
+            await self._events.put(observation)
+            if isinstance(observation, RuntimeEvent):
+                self._watermark = observation.sequence
+
+        # Cancellation may arrive during a spill. Finish admission and its
+        # watermark together before propagating it to the producer.
+        await ObservationMailbox._finish(asyncio.create_task(accept()))
 
     async def activity(self) -> RuntimeActivitySnapshot:
         generation = f"{self._event_namespace}:{self._native.host.process_generation}"
@@ -344,14 +427,8 @@ class CodexRuntimeSession:
             blockers.append(ACTIVITY_COMMAND_PENDING)
         if self._active_operations:
             blockers.append(ACTIVITY_OPERATION_PENDING)
-        if blockers:
-            return RuntimeActivitySnapshot(
-                generation,
-                self._current_activity_revision(),
-                self._watermark,
-                False,
-                tuple(blockers),
-            )
+        if self._events.qsize():
+            blockers.append(ACTIVITY_OBSERVATION_PENDING)
         revision = self._current_activity_revision()
         native = await NativeActivity(
             self._native.host,
@@ -371,6 +448,8 @@ class CodexRuntimeSession:
             self._watermark,
             native.complete,
             tuple(blockers),
+            execution_tree_complete=native.complete and ACTIVITY_CHANGED not in blockers,
+            execution_tree_blockers=native.execution_tree_blockers,
         )
 
     async def prepare_suspend(self, expected_revision: int) -> SuspendTicket:
@@ -495,6 +574,7 @@ class CodexRuntimeSession:
             protocol_schema_hash=CODEX_PROTOCOL_SCHEMA_HASH,
             opaque_session_ref=self._native.session_id,
             capabilities=self.capabilities,
+            profile=service_tool_profile(self._request.service_tools),
         )
 
     async def _verify_required_capabilities(self) -> None:
@@ -508,33 +588,51 @@ class CodexRuntimeSession:
             )
 
     async def _apply_model_connection(self) -> None:
-        await self._configure_model_connection()
-        request = self._native.request
-        with self._request.timing.measure(CodexActivationStage.MODEL_CATALOG):
-            catalog_argument = await model_catalog_argument(self._request.model, request)
-        self._native.request = replace(
-            request, launch_arguments=(*request.launch_arguments, catalog_argument)
+        self._native.request = await self._project_model_connection(
+            self._request.model, self._request.credential_port
         )
 
-    async def _configure_model_connection(self) -> None:
-        intent = self._request.model
-        request = self._native.request
+    async def _project_model_connection(
+        self, intent: ModelIntent, credential_port: ModelCredentialPort | None
+    ) -> CodexSessionOpenRequest:
+        request = replace(
+            await self._configure_model_connection(
+                intent, self._native_base_request, credential_port
+            ),
+            model=intent.model_ref,
+        )
+        with self._request.timing.measure(CodexActivationStage.MODEL_CATALOG):
+            catalog_argument = await model_catalog_argument(intent, request)
+        return replace(request, launch_arguments=(*request.launch_arguments, catalog_argument))
+
+    async def _configure_model_connection(
+        self,
+        intent: ModelIntent,
+        request: CodexSessionOpenRequest,
+        credential_port: ModelCredentialPort | None,
+    ) -> CodexSessionOpenRequest:
         config = session_thread_config(self._required_capabilities)
         config.update(session_skill_config(self._skill_configurations))
+        if self._tool_environment:
+            config[TOOL_ENVIRONMENT_POLICY_CONFIG] = {
+                TOOL_ENVIRONMENT_INHERIT_CONFIG: TOOL_ENVIRONMENT_CORE,
+                TOOL_ENVIRONMENT_SET_CONFIG: dict(self._tool_environment),
+            }
         if intent.reasoning_effort:
             config[CODEX_REASONING_EFFORT_CONFIG] = intent.reasoning_effort
         if intent.service_tier:
             config[CODEX_SERVICE_TIER_CONFIG] = intent.service_tier
+        if intent.capabilities.tool_protocol is ModelToolProtocol.PROVIDER_NATIVE:
+            config[CODEX_REASONING_SUMMARY_CONFIG] = CODEX_REASONING_SUMMARY_AUTO
         if intent.transport.mode is ModelConnectionMode.NATIVE:
             provider_id, definition = source_model_provider()
             if definition:
                 config["model_providers"] = {provider_id: definition}
-            self._native.request = replace(
+            return replace(
                 request,
                 model_provider=provider_id,
                 thread_config=config,
             )
-            return
         transport = intent.transport
         if not transport.endpoint:
             raise ValueError("remote model endpoint is required")
@@ -552,12 +650,18 @@ class CodexRuntimeSession:
         if transport.request_max_retries is not None:
             provider["request_max_retries"] = transport.request_max_retries
         environment = dict(request.process_environment)
+        # 子进程从 os.environ 继承代理变量，而厂商模型客户端默认不豁免 loopback，
+        # 所以产品声明的内部通道 host 必须合并进 NO_PROXY，否则请求被宿主代理截走。
+        # adapter 只落地键名与合并语义，不解析 endpoint 归属 —— 那是产品的拓扑知识。
+        environment.update(
+            proxy_bypass_environment({**os.environ, **environment}, transport.proxy_bypass_hosts)
+        )
         material = ModelCredential()
         if transport.credential_ref:
-            if self._request.credential_port is None:
+            if credential_port is None:
                 raise ValueError("model credential port is required")
             with self._request.timing.measure(CodexActivationStage.MODEL_CREDENTIALS):
-                material = await self._request.credential_port.resolve(transport.credential_ref)
+                material = await credential_port.resolve(transport.credential_ref)
         if material.api_key:
             provider["env_key"] = CODEX_MODEL_API_KEY_ENV
             environment[CODEX_MODEL_API_KEY_ENV] = material.api_key
@@ -576,7 +680,7 @@ class CodexRuntimeSession:
         config["model_providers"] = {CODEX_REMOTE_PROVIDER_ID: provider}
         if intent.context_window is not None:
             config["model_context_window"] = intent.context_window
-        self._native.request = replace(
+        return replace(
             request,
             model_provider=CODEX_REMOTE_PROVIDER_ID,
             authentication_required=False,
@@ -597,23 +701,36 @@ class CodexRuntimeSession:
     async def _on_native_event(self, event: CodexSessionEvent) -> None:
         self._activity_revision += 1
         await self._observe_evidence(event)
-        if event.kind is CodexSessionEventKind.TURN_STARTED and self._active_command_id:
+        if (
+            event.kind
+            in {
+                CodexSessionEventKind.TURN_STARTED,
+                CodexSessionEventKind.TURN_UNKNOWN,
+            }
+            and self._active_command_id
+        ):
             self._committed_commands.add(self._active_command_id)
         if event.kind is CodexSessionEventKind.DYNAMIC_TOOL_REQUESTED:
-            request_id = str(event.payload.get("request_id") or "")
-            if request_id:
+            tool_name = str(event.payload.get("tool") or "")
+            declared_tools = {tool.name for tool in self._request.service_tools}
+            if tool_name not in declared_tools:
+                logger.warning(
+                    "codex_dynamic_tool_undeclared session_id=%s tool=%s namespace=%s declared=%s",
+                    event.session_id,
+                    tool_name,
+                    str(event.payload.get("namespace") or ""),
+                    sorted(declared_tools),
+                )
                 await self._native.resolve_tool(
-                    request_id,
+                    str(event.payload.get("request_id") or ""),
                     CodexToolResponse(
                         success=False,
                         content_items=(
-                            {
-                                "type": "inputText",
-                                "text": UNSUPPORTED_DYNAMIC_TOOL_ERROR,
-                            },
+                            {"type": "inputText", "text": "runtime_service_tool_unknown"},
                         ),
                     ),
                 )
+                return
         parsed = None
         if event.kind is CodexSessionEventKind.ASSISTANT_COMPLETED:
             parsed = parse_declarations(
@@ -655,6 +772,11 @@ class CodexRuntimeSession:
         if isinstance(normalized, RuntimeEvent):
             normalized = replace(normalized, event_id=self._event_id(event.session_id))
         await self._publish_observation(normalized)
+        if self._loop_guard.observe(event):
+            await self._publish_loop_incident(event, REPEATED_TOOL_LOOP_ERROR)
+            task = asyncio.create_task(self._interrupt_loop(event))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         if parsed is not None and isinstance(normalized, RuntimeEvent):
             declarations = (
                 (RuntimeEventKind.ARTIFACT_DECLARED, asdict(item)) for item in parsed.declarations
@@ -687,6 +809,56 @@ class CodexRuntimeSession:
         }:
             self._committed_commands.discard(self._active_command_id)
             self._active_command_id = ""
+
+    async def _publish_loop_incident(self, event: CodexSessionEvent, safe_error: str) -> None:
+        self._sequence += 1
+        failed = safe_error == REPEATED_TOOL_INTERRUPT_ERROR
+        await self._publish_observation(
+            RuntimeEvent(
+                schema_version=RUNTIME_EVENT_SCHEMA_VERSION,
+                event_id=self._event_id(event.session_id),
+                runtime_id=CODEX_RUNTIME_ID,
+                product_session_id=self._request.product_session_id,
+                native_session_id=event.session_id,
+                native_turn_id=event.turn_id,
+                process_generation=self._native.host.readiness.process_generation,
+                sequence=self._sequence,
+                kind=RuntimeEventKind.RUNTIME_INCIDENT,
+                delivery=DeliveryClass.MUST_PERSIST,
+                observed_at=datetime.now(UTC).isoformat(),
+                correlation_id=self._active_command_id,
+                payload={
+                    "incident": {
+                        "incident_id": (
+                            f"{event.session_id}:{event.turn_id}:{REPEATED_TOOL_INCIDENT_SUFFIX}"
+                        ),
+                        "scope": RuntimeIncidentScope.TURN.value,
+                        "state": (
+                            RuntimeIncidentState.FAILED.value
+                            if failed
+                            else RuntimeIncidentState.DETECTED.value
+                        ),
+                        "kind": RuntimeIncidentKind.REPEATED_TOOL_LOOP.value,
+                        "strategy": RuntimeRecoveryStrategy.MANUAL_RETRY.value,
+                        "retryability": RuntimeRetryability.USER_RETRYABLE.value,
+                        "safe_error": safe_error,
+                        "process_generation": self._native.host.readiness.process_generation,
+                        "attempt": 0,
+                        "max_attempts": 0,
+                        "native_session_id": event.session_id,
+                        "native_turn_id": event.turn_id,
+                    }
+                },
+            )
+        )
+
+    async def _interrupt_loop(self, event: CodexSessionEvent) -> None:
+        try:
+            await self._native.host.attachment(self._native.session_id).turn.interrupt()
+        except Exception:
+            logger.exception("codex_repeated_tool_interrupt_failed turn_id=%s", event.turn_id)
+            if self._native.active_turn_id == event.turn_id:
+                await self._publish_loop_incident(event, REPEATED_TOOL_INTERRUPT_ERROR)
 
     async def _publish_capability_resolution(
         self, event: CodexSessionEvent, source: RuntimeEvent
@@ -887,7 +1059,9 @@ class CodexRuntimeSession:
 
     @_admitted
     async def interrupt(self, request: InterruptRequest) -> CommandReceipt:
-        await self._native.host.attachment(self._native.session_id).turn.interrupt()
+        await self._native.host.attachment(self._native.session_id).turn.interrupt(
+            cleanup_background_processes=request.cleanup_background_processes
+        )
         return CommandReceipt(request.command_id, CommandState.ACCEPTED)
 
     @_admitted
@@ -915,26 +1089,127 @@ class CodexRuntimeSession:
     @_admitted
     async def respond(self, response: RuntimeCallbackResponse) -> CommandReceipt:
         values = response.values if isinstance(response.values, Mapping) else {}
+        if response.decision == CallbackKind.DYNAMIC_TOOL.value:
+            payload = json_value(values)
+            resolved = await self._native.resolve_tool(
+                response.request_id,
+                CodexToolResponse(
+                    success=bool(values.get("ok")),
+                    content_items=(
+                        {"type": "inputText", "text": json.dumps(payload, ensure_ascii=False)},
+                    ),
+                ),
+            )
+            return CommandReceipt(
+                response.idempotency_key,
+                CommandState.APPLIED if resolved else CommandState.REJECTED,
+            )
         resolved = await self._native.resolve_hil(response.request_id, values)
         return CommandReceipt(
             response.idempotency_key,
             CommandState.APPLIED if resolved else CommandState.REJECTED,
         )
 
+    async def _switch_model_in_place(self, model: ModelIntent) -> bool:
+        async with self._admission_lock:
+            if (
+                not self._model_prepared
+                or self._native.lease is None
+                or self._native.request.ephemeral
+                or model.transport.credential_ref
+                or self._active_operations != 1
+                or self._active_command_id
+                or any(not task.done() for task in self._tasks)
+                or not (self._native.history or any(self._native.usage.values()))
+            ):
+                return False
+            candidate = await self._project_model_connection(model, None)
+            if not _same_process_configuration(self._native.request, candidate):
+                return False
+            host = self._native.host
+            activity_revision = host.activity_revision
+            if host.suspend_blockers(self._native.session_id):
+                return False
+            activity = await NativeActivity(
+                host,
+                self._native.session_id,
+                known_roots=host.known_roots,
+            ).inspect()
+            if (
+                not activity.complete
+                or activity.blockers
+                or activity_revision != host.activity_revision
+            ):
+                return False
+            try:
+                await self._native.reopen(
+                    replace(candidate, resume_session_id=self._native.session_id)
+                )
+            except AppServerError as error:
+                if error.safe_error == CODEX_THREAD_RESTORE_FAILED:
+                    raise
+                logger.warning(
+                    "codex_same_process_model_switch_failed safe_error=%s",
+                    error.safe_error,
+                )
+                return False
+            return True
+
+    def _permission_candidate(self, intent: PermissionIntent) -> CodexSessionOpenRequest | None:
+        if self._permission.deny_read_roots != intent.deny_read_roots:
+            return None
+        current_policy = CODEX_PERMISSION_POLICIES[self._permission.mode]
+        requested_policy = CODEX_PERMISSION_POLICIES[intent.mode]
+        current_profile, current_arguments = local_socket_permissions(
+            current_policy.sandbox,
+            self._permission.local_sockets,
+            network_access=self._permission.network_access,
+            network_domains=self._permission.network_domains,
+            deny_read_roots=self._permission.deny_read_roots,
+        )
+        requested_profile, requested_arguments = local_socket_permissions(
+            requested_policy.sandbox,
+            intent.local_sockets,
+            network_access=intent.network_access,
+            network_domains=intent.network_domains,
+            deny_read_roots=intent.deny_read_roots,
+        )
+        if (
+            current_profile != requested_profile
+            or current_arguments != requested_arguments
+            or windows_sandbox_arguments(current_policy.sandbox)
+            != windows_sandbox_arguments(requested_policy.sandbox)
+        ):
+            return None
+        return replace(
+            self._native.request,
+            sandbox=requested_policy.sandbox,
+            approval_policy=requested_policy.approval_policy,
+            approval_reviewer=requested_policy.approval_reviewer,
+            writable_roots=intent.writable_roots,
+            network_access=intent.network_access,
+        )
+
+    def permission_update_scope(self, intent: PermissionIntent) -> PermissionUpdateScope:
+        candidate = self._permission_candidate(intent)
+        if candidate is not None and reviewer_only_update(self._native.request, candidate):
+            return PermissionUpdateScope.TURN
+        return PermissionUpdateScope.NEXT_TURN
+
     @_admitted
     async def reconfigure(self, request: RuntimeConfigurationIntent) -> AppliedState:
         if request.permission is not None:
-            current_policy = CODEX_PERMISSION_POLICIES[self._permission.mode]
             requested_policy = CODEX_PERMISSION_POLICIES[request.permission.mode]
-            if (
-                current_policy == requested_policy
-                and self._permission.local_sockets == request.permission.local_sockets
-                and self._permission.network_access == request.permission.network_access
-            ):
+            candidate = self._permission_candidate(request.permission)
+            if candidate is not None:
+                applied = await self._native.update_permissions(candidate)
+                scope = applied.scope
+                if self._active_command_id and not applied.turn_id:
+                    scope = PERMISSION_SCOPE_NEXT_TURN
                 self._permission = request.permission
                 self._request = replace(self._request, permission=request.permission)
-                self._native.request = replace(
-                    self._native.request,
+                self._native_base_request = replace(
+                    self._native_base_request,
                     sandbox=requested_policy.sandbox,
                     approval_policy=requested_policy.approval_policy,
                     approval_reviewer=requested_policy.approval_reviewer,
@@ -943,14 +1218,31 @@ class CodexRuntimeSession:
                 )
                 return AppliedState(
                     requested_revision=request.revision,
-                    applied_revision=request.revision,
-                    state=CommandState.APPLIED,
-                    scope="session",
+                    applied_revision=(
+                        "" if scope == PERMISSION_SCOPE_NEXT_TURN else request.revision
+                    ),
+                    state=(
+                        CommandState.ACCEPTED
+                        if scope == PERMISSION_SCOPE_NEXT_TURN
+                        else CommandState.APPLIED
+                    ),
+                    scope=scope,
+                    safe_error=applied.safe_error,
+                    values={"turn_id": applied.turn_id},
                 )
         if request.model is not None:
             if _same_model_connection(self._model, request.model) and _same_thread_preferences(
                 self._model, request.model
             ):
+                self._model = request.model
+                self._request = replace(self._request, model=request.model)
+                return AppliedState(
+                    requested_revision=request.revision,
+                    applied_revision=request.revision,
+                    state=CommandState.APPLIED,
+                    scope="session",
+                )
+            if await self._switch_model_in_place(request.model):
                 self._model = request.model
                 self._request = replace(self._request, model=request.model)
                 return AppliedState(
@@ -1112,4 +1404,7 @@ class CodexRuntimeSession:
         )
 
     async def detach(self) -> None:
-        await self._native.aclose()
+        try:
+            await self._native.aclose()
+        finally:
+            await self._events.close()

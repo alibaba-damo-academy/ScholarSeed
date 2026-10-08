@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { createPortal } from 'react-dom'
 
 import { submitFeedback } from '../../api'
+import { useAccountAccess } from '../../components/business/access'
 import {
   Button,
   Dialog,
@@ -22,6 +23,7 @@ import {
 } from '../../components/ui'
 import { CAPTURE_SETTLE_FRAMES, waitForFrames } from '../../frames'
 import { useApp } from '../../store'
+import { isFeedbackRecorderAvailable } from './access'
 import { Annotator, type AnnotatorResult } from './Annotator'
 import { Capture } from './Capture'
 import {
@@ -77,6 +79,9 @@ function captureErrorText(t: TFunction<'components'>, error: FeedbackCaptureErro
 export function Recorder(): React.JSX.Element {
   const { t } = useTranslation('components')
   const { state } = useApp()
+  const internalEnabled = window.scholarseed.feedbackRecorderEnabled
+  const { authenticated } = useAccountAccess(state.backendReady && internalEnabled)
+  const available = isFeedbackRecorderAvailable(internalEnabled, authenticated)
   const rootRef = React.useRef<HTMLDivElement>(null)
   const leaseRef = React.useRef<RecorderLease | null>(null)
   const sessionRef = React.useRef<RecordingSession | null>(null)
@@ -120,6 +125,10 @@ export function Recorder(): React.JSX.Element {
     setDescriptionTruncated(false)
     setPhase('idle')
   }, [dispose])
+
+  React.useEffect(() => {
+    if (!available) clearSession()
+  }, [available, clearSession])
 
   React.useEffect(() => {
     sessionRef.current = session
@@ -403,6 +412,8 @@ export function Recorder(): React.JSX.Element {
       setPhase('review')
     }
   }
+
+  if (!available) return <></>
 
   return createPortal((
     <div

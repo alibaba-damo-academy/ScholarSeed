@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from scholarseed_codex.mcp import CodexMcpControl
 from scholarseed_codex.model import CodexModelControl
-from scholarseed_codex.permission import sandbox_policy
+from scholarseed_codex.permission import PERMISSION_SCOPE_SESSION, PermissionUpdate, sandbox_policy
 from scholarseed_codex.pool import CodexHostPool, HostLease
 from scholarseed_codex.process import CodexProcessHost
 from scholarseed_codex.protocol.mcp import JsonValue, McpEvent
@@ -35,6 +36,7 @@ from scholarseed_runtime.contract.history import HistoryEntry, ResumeTurnSnapsho
 from scholarseed_runtime.contract.input import TurnInput
 
 CODEX_MODEL_PROVIDER_CAPABILITIES_METHOD = "modelProvider/capabilities/read"
+CODEX_THREAD_RESTORE_FAILED = "codex_thread_restore_failed"
 
 
 def _json_int(value: JsonValue | None) -> int:
@@ -160,27 +162,56 @@ class CodexThreadSession:
             self._lease = await self._host_pool.acquire(self.request)
             self._host = self._lease.host
         try:
-            self.session_id, self.model, self._history = await self.host.open_thread(
-                self.request,
-                self._on_event,
-            )
-            self.mcp_control = CodexMcpControl(
-                request=self._thread_request,
-                session_id=lambda: self.session_id,
-            )
-            self._mcp_unsubscribe = self.mcp_control.subscribe(self._on_mcp_event)
-            self.host.set_mcp_handler(self.session_id, self.mcp_control.handle_notification)
-            self.skill_control = CodexSkillControl(
-                request=self.host.request,
-                cwd=self.request.cwd,
-            )
-            self.model_control = CodexModelControl(request=self.host.request)
-            self._opened = True
+            await self._attach()
         except BaseException:
             if self._lease is not None:
                 await self._lease.close()
                 self._lease = None
                 self._host = None
+            raise
+
+    async def _attach(self) -> None:
+        self.session_id, self.model, self._history = await self.host.open_thread(
+            self.request,
+            self._on_event,
+        )
+        self.mcp_control = CodexMcpControl(
+            request=self._thread_request,
+            session_id=lambda: self.session_id,
+        )
+        self._mcp_unsubscribe = self.mcp_control.subscribe(self._on_mcp_event)
+        self.host.set_mcp_handler(self.session_id, self.mcp_control.handle_notification)
+        self.skill_control = CodexSkillControl(
+            request=self.host.request,
+            cwd=self.request.cwd,
+        )
+        self.model_control = CodexModelControl(request=self.host.request)
+        self._opened = True
+
+    async def reopen(self, request: CodexSessionOpenRequest) -> None:
+        if not self._opened or self._lease is None or request.resume_session_id != self.session_id:
+            raise AppServerError("Codex thread cannot be reopened in place")
+        await self.host.suspend_thread(self.session_id, self.host.process_generation)
+        if self._mcp_unsubscribe is not None:
+            self._mcp_unsubscribe()
+            self._mcp_unsubscribe = None
+        self._opened = False
+        self.mcp_control = None
+        self.skill_control = None
+        self.model_control = None
+        previous_request = replace(self.request, resume_session_id=self.session_id)
+        self.request = request
+        try:
+            await self._attach()
+        except BaseException:
+            self.request = previous_request
+            try:
+                await self._attach()
+            except BaseException as restore_error:
+                raise AppServerError(
+                    "Codex thread could not restore its previous configuration",
+                    safe_error=CODEX_THREAD_RESTORE_FAILED,
+                ) from restore_error
             raise
 
     async def model_provider_capabilities(self) -> Mapping[str, JsonValue]:
@@ -271,6 +302,15 @@ class CodexThreadSession:
     async def steer(self, turn_input: TurnInput) -> str:
         await self.open()
         return await self.host.attachment(self.session_id).turn.steer(turn_input)
+
+    async def update_permissions(self, request: CodexSessionOpenRequest) -> PermissionUpdate:
+        applied = PermissionUpdate(PERMISSION_SCOPE_SESSION)
+        if self._opened:
+            applied = await self.host.update_permissions(self.session_id, request)
+        self.request = request
+        self.sandbox = request.sandbox
+        self.approval_policy = request.approval_policy
+        return applied
 
     async def resolve_hil(
         self,

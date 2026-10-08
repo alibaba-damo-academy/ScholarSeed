@@ -6,7 +6,7 @@
 # OpenAI-protocol gateway, so the openai SDK is the only client the pipeline
 # needs. (Codex subagents use the host model and do not use this gateway.)
 openai>=1.40
-httpx>=0.27
+httpx[socks]>=0.27
 
 # PDF text extraction, the last step of fetch_fulltext.py's acquisition
 # cascade. Without it a PDF can be downloaded and not read, and those papers

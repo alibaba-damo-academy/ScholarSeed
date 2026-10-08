@@ -20,6 +20,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_CANCELLED,
     RESOURCE_QUEUE_FULL,
     RESOURCE_RESERVATION_INVALID,
+    RESOURCE_THREAD_CAPACITY,
     RESOURCE_WAIT_TIMEOUT,
     ResourcePurpose,
     ResourceReceipt,
@@ -27,17 +28,24 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from service.chat.provenance import ModelRun
-from service.chat.runtime.live import LiveSession
+from service.chat.runtime.live import PENDING_HIL_BLOCKER, LiveSession
 from service.chat.runtime.timing import ActivationStage
 
 SESSION_OPEN_UNKNOWN = "runtime_session_open_unknown"
 SESSION_ACTIVATION_CLOSED = "runtime_session_activation_closed"
+RESOURCE_WAIT_BLOCKED = "runtime_resource_wait_blocked"
+RESOURCE_WAIT_PENDING_HIL = "runtime_resource_wait_pending_hil"
+RESOURCE_WAIT_ACTIVITY_UNAVAILABLE = "runtime_resource_wait_activity_unavailable"
 ACTIVATION_SAFE_ERRORS = frozenset(
     {
         RESOURCE_CANCELLED,
         RESOURCE_QUEUE_FULL,
         RESOURCE_RESERVATION_INVALID,
+        RESOURCE_THREAD_CAPACITY,
         RESOURCE_WAIT_TIMEOUT,
+        RESOURCE_WAIT_BLOCKED,
+        RESOURCE_WAIT_PENDING_HIL,
+        RESOURCE_WAIT_ACTIVITY_UNAVAILABLE,
         SESSION_OPEN_UNKNOWN,
         SESSION_ACTIVATION_CLOSED,
     }
@@ -217,6 +225,13 @@ class SessionActivation:
                 raise SessionActivationError(SESSION_ACTIVATION_CLOSED)
             if await live.suspend_runtime():
                 return
+            if getattr(live, "suspend_blockers", ()):
+                error = (
+                    RESOURCE_WAIT_PENDING_HIL
+                    if PENDING_HIL_BLOCKER in live.suspend_blockers
+                    else RESOURCE_WAIT_BLOCKED
+                )
+                raise SessionActivationError(error)
             remaining = expires - time.time()
             if remaining <= 0:
                 raise SessionActivationError(RESOURCE_WAIT_TIMEOUT)
@@ -237,6 +252,15 @@ class SessionActivation:
         granted = False
         try:
             receipt = await provider.reserve(request)
+            if (
+                receipt.state is ResourceState.REJECTED
+                and receipt.safe_error == RESOURCE_THREAD_CAPACITY
+            ):
+                await provider.cancel_resource(receipt.reservation_id)
+                await self._reclaim(provider.descriptor.runtime_id, pressure=True)
+                receipt = await provider.reserve(
+                    replace(request, request_id=f"{request.request_id}:{uuid.uuid4().hex}")
+                )
             if receipt.state is ResourceState.WAITING:
                 if on_wait is not None:
                     await on_wait(receipt, receipt.deadline or request.deadline)

@@ -1,9 +1,11 @@
 // Windows 组件仓库的运行时存储（proposal 108 §7.2，P2a）。
 //
-// 职责：按已冻结的 app-components.json 把 python / texlive 组件 provision 到
+// 职责：按已冻结的 app-components.json 把 python / texlive / powershell 组件 provision 到
 // `$SCHOLARSEED_HOME/runtime/`，命中即跳过展开；未命中走「校验压缩载荷 → 同卷 staging
 // 展开 → 运行探测 → rename 发布不可变目录 → 提交 store 清单」的完整流程。崩溃遗留的
-// staging 永远不算命中；发布后目录不可变（缓存/pycache 写别处，见提案）。
+// staging 永远不算命中；发布后目录除字节码缓存外不可变 —— 发布期 compileall 以
+// unchecked-hash 预热树内 __pycache__（唯一被允许的后置写入），运行期只读，让冷展开
+// 后的首次后端启动不必全量编译（真机实测无缓存 import 25-32s、有缓存 3.4s）。
 //
 // 本模块不 import electron：storeRoot / backendDirectory / 日志 sink 全部由调用方注入，
 // 逻辑可被 node --test 直测（解压器与探测器同样可注入，mac 上无需真 zip/tar.exe）。
@@ -22,14 +24,17 @@ import {
   renameSync,
   rmSync,
   statSync,
-  writeFileSync
+  writeFileSync,
 } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 
 import {
   COMPONENTS_DIRNAME,
   APP_COMPONENTS_FILENAME,
+  COMPONENT_KINDS,
   PYTHON_KIND,
+  PYTHON_TREE_DIRNAME,
+  POWERSHELL_KIND,
   TEXLIVE_KIND,
   parseAppComponents,
   storeComponentDirectory,
@@ -37,9 +42,10 @@ import {
   storeLocksDirectory,
   storeManifestPath,
   storeManifestsDirectory,
-  storeStagingDirectory
+  storeStagingDirectory,
 } from '../../runtime/components.cjs'
 import type { AppComponentEntry, AppComponentsManifest } from '../../runtime/components.cjs'
+import { probe as probePowerShell } from '../../runtime/powershell.cjs'
 
 export type ComponentLog = (line: string) => void
 
@@ -47,14 +53,30 @@ export type ComponentLog = (line: string) => void
 export type ComponentExtractor = (archive: string, destination: string) => Promise<void>
 
 /** 注入点：组件发布前的运行探测（生产 = 真跑解释器/查引擎；测试 = 直通过）。 */
-export type ComponentProbe = (component: AppComponentEntry, componentDirectory: string) => Promise<void>
+export type ComponentProbe = (
+  component: AppComponentEntry,
+  componentDirectory: string
+) => Promise<void>
+
+/**
+ * 注入点：python 组件发布后的字节码预热（生产 = compileall 写树内 __pycache__；测试 = 记录调用）。
+ * 预热失败只降级为「首次启动慢」，不得让发布失败（性能问题不是可信性问题）。
+ */
+export type ComponentBytecodeWarm = (
+  component: AppComponentEntry,
+  componentDirectory: string
+) => Promise<void>
 
 export interface ProvisionedComponents {
   manifest: AppComponentsManifest
   pythonExecutable: string
   pythonComponentDirectory: string
+  /** 本轮是否有组件错过命中（本实例发布或等待他人发布）：调用方据此放宽启动预算。 */
+  coldProvisioned: boolean
   texliveBinDirectory: string
   texliveComponentDirectory: string
+  powershellBinDirectory: string
+  powershellComponentDirectory: string
 }
 
 export interface EnsureComponentsOptions {
@@ -65,6 +87,7 @@ export interface EnsureComponentsOptions {
   log: ComponentLog
   extractor?: ComponentExtractor
   probe?: ComponentProbe
+  bytecodeWarm?: ComponentBytecodeWarm
   now?: () => number
 }
 
@@ -79,10 +102,34 @@ const TRANSIENT_RENAME_ERROR_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
 const WINDOWS_SYSTEM_ROOT_ENV = 'SystemRoot'
 const WINDOWS_SYSTEM_ROOT_FALLBACK = 'C:\\Windows'
 const TAR_EXECUTABLE_NAME = 'tar.exe'
-const PYTHON_PROBE_ARGS = ['-I', '-B', '-c', 'import sqlite3, sys; print(sys.version); print(sqlite3.sqlite_version)'] as const
+const PYTHON_PROBE_ARGS = [
+  '-I',
+  '-B',
+  '-c',
+  'import sqlite3, sys; print(sys.version); print(sqlite3.sqlite_version)',
+] as const
+// unchecked-hash：.pyc 不记录源文件 mtime/哈希，冷展开重置 mtime 后依然有效
+// （真机事故：归档自带 mtime 基 .pyc 被展开失效，冷启动全量编译 25-32s 撞穿 45s 健康预算）。
+// 缓存写树内 __pycache__（源码旁）：PYTHONPYCACHEPREFIX 镜像布局会把源路径整体再拼一遍，
+// 深 site-packages 文件超 MAX_PATH 全部 ENOENT（Windows 实测镜像 0 条）。树内路径最长约
+// 234 字符可容纳；这是发布目录唯一被允许的后置写入，unchecked-hash 保证其长期有效。
+// -I 隔离模式不影响树内缓存落点，保留以隔绝宿主 env/site。
+const BYTECODE_WARM_ARGS = [
+  '-I',
+  '-m',
+  'compileall',
+  '-q',
+  '--invalidation-mode',
+  'unchecked-hash',
+] as const
+const BYTECODE_WARM_TIMEOUT_MS = 5 * 60 * 1000
 
 export function windowsTarExecutable(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env[WINDOWS_SYSTEM_ROOT_ENV] || WINDOWS_SYSTEM_ROOT_FALLBACK, 'System32', TAR_EXECUTABLE_NAME)
+  return join(
+    env[WINDOWS_SYSTEM_ROOT_ENV] || WINDOWS_SYSTEM_ROOT_FALLBACK,
+    'System32',
+    TAR_EXECUTABLE_NAME
+  )
 }
 
 export function defaultExtractor(tarExecutable = windowsTarExecutable()): ComponentExtractor {
@@ -96,7 +143,9 @@ export function defaultExtractor(tarExecutable = windowsTarExecutable()): Compon
       })
       child.on('error', reject)
       child.on('close', (code) =>
-        code === 0 ? resolve() : reject(new Error(`component extraction failed (${code}): ${stderr.slice(0, 500)}`))
+        code === 0
+          ? resolve()
+          : reject(new Error(`component extraction failed (${code}): ${stderr.slice(0, 500)}`))
       )
     })
 }
@@ -162,14 +211,22 @@ function isRegularFile(path: string): boolean {
   }
 }
 
-/** store 清单是「已发布」的唯一凭据：内容必须与本轮期望逐项一致才算命中。 */
+/**
+ * store 清单是「已发布」的唯一凭据：内容身份逐项一致才算命中。
+ * 比较项刻意不含 archiveSha256：它记录的是「当次构建重打包归档」的摘要，而归档字节不承诺
+ * 跨构建稳定（components.cjs 定档）；拿它做命中比较会让内容完全相同的组件在每个新构建被
+ * 误判 miss 重解压（真机 texlive be79 每轮重展开 7s 的根因）。内容身份由 contentId 承担
+ * （冻结输入的内容寻址摘要）；归档可信性由 publishComponent 展开前对当轮 manifest 的摘要
+ * 校验 fail-closed 保证，与 store 清单里的历史摘要无关。
+ */
 function readStoreManifest(storeRoot: string, component: AppComponentEntry): boolean {
   try {
-    const value = JSON.parse(readFileSync(storeManifestPath(storeRoot, component.contentId), 'utf8')) as Record<string, unknown>
+    const value = JSON.parse(
+      readFileSync(storeManifestPath(storeRoot, component.contentId), 'utf8')
+    ) as Record<string, unknown>
     return (
       value.kind === component.kind &&
       value.contentId === component.contentId &&
-      value.archiveSha256 === component.archiveSha256 &&
       value.entry === component.entry &&
       typeof value.publishedAt === 'number'
     )
@@ -202,7 +259,12 @@ interface LockState {
  * O_EXCL 锁：多实例不得同时发布同一组件（提案 §7.2）。拿不到锁 = 别的实例正在
  * provision，本实例等待其发布结果而不是并发解压。
  */
-function acquireComponentLock(storeRoot: string, contentId: string, pid: number, now: () => number): LockState {
+function acquireComponentLock(
+  storeRoot: string,
+  contentId: string,
+  pid: number,
+  now: () => number
+): LockState {
   const lockPath = storeLockPath(storeRoot, contentId)
   mkdirSync(storeLocksDirectory(storeRoot), { recursive: true })
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -249,7 +311,9 @@ async function waitForPublishedComponent(
     if (componentHit(storeRoot, target, component)) return
     await delay(PUBLISHED_WAIT_INTERVAL_MS)
   }
-  throw new Error(`timed out waiting for another instance to publish ${component.kind} ${component.contentId}`)
+  throw new Error(
+    `timed out waiting for another instance to publish ${component.kind} ${component.contentId}`
+  )
 }
 
 async function publishComponent(
@@ -258,6 +322,7 @@ async function publishComponent(
   component: AppComponentEntry,
   extractor: ComponentExtractor,
   probe: ComponentProbe,
+  bytecodeWarm: ComponentBytecodeWarm,
   now: () => number
 ): Promise<void> {
   const { backendDirectory, storeRoot, log } = options
@@ -275,7 +340,12 @@ async function publishComponent(
   mkdirSync(staging)
   try {
     await extractor(archive, staging)
-    const finalDirectory = storeComponentDirectory(storeRoot, component.kind, target, component.contentId)
+    const finalDirectory = storeComponentDirectory(
+      storeRoot,
+      component.kind,
+      target,
+      component.contentId
+    )
     if (!existsSync(join(staging, ...component.entry.split('/')))) {
       throw new Error(`extracted component does not contain its entry: ${component.entry}`)
     }
@@ -291,7 +361,23 @@ async function publishComponent(
       storeManifestPath(storeRoot, component.contentId),
       `${JSON.stringify({ ...component, publishedAt: now() })}\n`
     )
-    log(`${COMPONENTS_LOG_CONTEXT} published ${component.kind} ${component.contentId} in ${now() - startedAt}ms\n`)
+    if (component.kind === PYTHON_KIND) {
+      // 冷展开后的首次后端启动若全量编译字节码会撞穿健康预算（真机 25-32s）；
+      // 预热写树内 __pycache__，失败只降级为慢启动，不 fail-closed。
+      const warmStartedAt = now()
+      try {
+        await bytecodeWarm(component, finalDirectory)
+        log(
+          `${COMPONENTS_LOG_CONTEXT} bytecode warm ${component.contentId} in ${now() - warmStartedAt}ms\n`
+        )
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        log(`${COMPONENTS_LOG_CONTEXT} bytecode warm failed ${component.contentId}: ${detail}\n`)
+      }
+    }
+    log(
+      `${COMPONENTS_LOG_CONTEXT} published ${component.kind} ${component.contentId} in ${now() - startedAt}ms\n`
+    )
   } finally {
     rmSync(staging, { recursive: true, force: true })
   }
@@ -299,8 +385,11 @@ async function publishComponent(
 
 let cachedManifest: { backendDirectory: string; manifest: AppComponentsManifest } | null = null
 
-export function readAppComponents(options: Pick<EnsureComponentsOptions, 'backendDirectory'>): AppComponentsManifest {
-  if (cachedManifest && cachedManifest.backendDirectory === options.backendDirectory) return cachedManifest.manifest
+export function readAppComponents(
+  options: Pick<EnsureComponentsOptions, 'backendDirectory'>
+): AppComponentsManifest {
+  if (cachedManifest && cachedManifest.backendDirectory === options.backendDirectory)
+    return cachedManifest.manifest
   const path = join(options.backendDirectory, COMPONENTS_DIRNAME, APP_COMPONENTS_FILENAME)
   const manifest = parseAppComponents(readFileSync(path, 'utf8'))
   if (manifest === null) throw new Error(`app components manifest is unusable: ${path}`)
@@ -335,8 +424,16 @@ export function defaultProbe(): ComponentProbe {
     if (component.kind === TEXLIVE_KIND) {
       for (const executable of component.executables ?? []) {
         const engine = join(entry, `${executable}.exe`)
-        if (!isRegularFile(engine)) throw new Error(`texlive component is missing engine ${executable}`)
+        if (!isRegularFile(engine))
+          throw new Error(`texlive component is missing engine ${executable}`)
       }
+      return
+    }
+    if (component.kind === POWERSHELL_KIND) {
+      if (!isRegularFile(entry) || !component.version) {
+        throw new Error('powershell component is missing its executable or version')
+      }
+      await probePowerShell(entry, component.version)
       return
     }
     throw new Error(`unsupported component kind: ${component.kind}`)
@@ -344,32 +441,101 @@ export function defaultProbe(): ComponentProbe {
 }
 
 /**
+ * 字节码预热：对已发布 python 树的 Lib（stdlib + site-packages）跑 compileall，
+ * 产物落树内 __pycache__。打包后端带 PYTHONDONTWRITEBYTECODE 只读不写，正好消费
+ * 这份缓存；unchecked-hash 让缓存对冷展开的 mtime 重置免疫。
+ */
+export function defaultBytecodeWarm(): ComponentBytecodeWarm {
+  return (component, componentDirectory) =>
+    new Promise<void>((resolve, reject) => {
+      if (component.kind !== PYTHON_KIND) {
+        resolve()
+        return
+      }
+      const libRoot = join(componentDirectory, PYTHON_TREE_DIRNAME, 'Lib')
+      if (!isDirectoryEntry(libRoot)) {
+        resolve()
+        return
+      }
+      const child = spawn(
+        entryPathOf(componentDirectory, component),
+        [...BYTECODE_WARM_ARGS, libRoot],
+        { windowsHide: true }
+      )
+      let stderr = ''
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(`bytecode warm timed out after ${BYTECODE_WARM_TIMEOUT_MS}ms`))
+      }, BYTECODE_WARM_TIMEOUT_MS)
+      child.on('error', (error) => {
+        clearTimeout(timer)
+        reject(error)
+      })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        // exit 1 = 个别文件未编译：Windows MAX_PATH 下最深最长文件名的 __pycache__
+        // 临时写入 ENOENT（best-effort 预热的预期缺口，运行期内存编译兜底毫秒级）；
+        // 只有 spawn 错误/超时才算真失败。
+        if (code === 0 || code === 1) resolve()
+        else reject(new Error(`bytecode warm exited (${code}): ${stderr.slice(0, 300)}`))
+      })
+    })
+}
+
+/**
  * provision 全部组件并返回解析好的运行路径。命中路径不遍历组件树（提案 §7.2：
  * store 清单 + 入口存在即命中）；任何失败都抛错，由调用方按启动失败处理。
  */
-export async function ensureComponents(options: EnsureComponentsOptions): Promise<ProvisionedComponents> {
+export async function ensureComponents(
+  options: EnsureComponentsOptions
+): Promise<ProvisionedComponents> {
   const now = options.now ?? (() => Date.now())
   const manifest = readAppComponents(options)
   const extractor = options.extractor ?? defaultExtractor()
   const probe = options.probe ?? defaultProbe()
+  const bytecodeWarm = options.bytecodeWarm ?? defaultBytecodeWarm()
   const { storeRoot, log } = options
   sweepStaleStaging(storeRoot, now, log)
   const directories = new Map<string, string>()
+  let coldProvisioned = false
   for (const component of manifest.components) {
     const startedAt = now()
     const lock = acquireComponentLock(storeRoot, component.contentId, process.pid, now)
     try {
       if (componentHit(storeRoot, manifest.target, component)) {
         log(`${COMPONENTS_LOG_CONTEXT} hit ${component.kind} ${component.contentId}\n`)
-      } else if (lock.acquired) {
-        log(`${COMPONENTS_LOG_CONTEXT} provisioning ${component.kind} ${component.contentId}\n`)
-        await publishComponent(options, manifest.target, component, extractor, probe, now)
       } else {
-        await waitForPublishedComponent(storeRoot, manifest.target, component, log, now)
+        // 错过命中 = 本机 store 对这份内容身份是冷的：无论本实例发布还是等别人发布，
+        // 随后的首次后端启动都要付一次性成本，调用方据此放宽健康预算。
+        coldProvisioned = true
+        if (lock.acquired) {
+          log(`${COMPONENTS_LOG_CONTEXT} provisioning ${component.kind} ${component.contentId}\n`)
+          await publishComponent(
+            options,
+            manifest.target,
+            component,
+            extractor,
+            probe,
+            bytecodeWarm,
+            now
+          )
+        } else {
+          await waitForPublishedComponent(storeRoot, manifest.target, component, log, now)
+        }
       }
-      const directory = storeComponentDirectory(storeRoot, component.kind, manifest.target, component.contentId)
+      const directory = storeComponentDirectory(
+        storeRoot,
+        component.kind,
+        manifest.target,
+        component.contentId
+      )
       if (!componentHit(storeRoot, manifest.target, component)) {
-        throw new Error(`component ${component.kind} ${component.contentId} is not usable after provisioning`)
+        throw new Error(
+          `component ${component.kind} ${component.contentId} is not usable after provisioning`
+        )
       }
       directories.set(component.kind, directory)
       log(`${COMPONENTS_LOG_CONTEXT} ready ${component.kind} in ${now() - startedAt}ms\n`)
@@ -379,15 +545,26 @@ export async function ensureComponents(options: EnsureComponentsOptions): Promis
   }
   const pythonDirectory = directories.get(PYTHON_KIND)
   const texliveDirectory = directories.get(TEXLIVE_KIND)
-  if (!pythonDirectory || !texliveDirectory) throw new Error('app components manifest did not resolve both kinds')
+  const powershellDirectory = directories.get(POWERSHELL_KIND)
+  if (!pythonDirectory || !texliveDirectory || !powershellDirectory) {
+    throw new Error('app components manifest did not resolve every kind')
+  }
   const python = manifest.components.find((component) => component.kind === PYTHON_KIND)
   const texlive = manifest.components.find((component) => component.kind === TEXLIVE_KIND)
+  const powershell = manifest.components.find((component) => component.kind === POWERSHELL_KIND)
+  if (!python || !texlive || !powershell) {
+    throw new Error('app components manifest did not resolve every kind')
+  }
+  const powershellExecutable = join(powershellDirectory, ...powershell.entry.split('/'))
   return {
     manifest,
-    pythonExecutable: join(pythonDirectory, ...(python?.entry ?? '').split('/')),
+    pythonExecutable: join(pythonDirectory, ...python.entry.split('/')),
     pythonComponentDirectory: pythonDirectory,
-    texliveBinDirectory: join(texliveDirectory, ...(texlive?.entry ?? '').split('/')),
-    texliveComponentDirectory: texliveDirectory
+    coldProvisioned,
+    texliveBinDirectory: join(texliveDirectory, ...texlive.entry.split('/')),
+    texliveComponentDirectory: texliveDirectory,
+    powershellBinDirectory: dirname(powershellExecutable),
+    powershellComponentDirectory: powershellDirectory,
   }
 }
 
@@ -417,9 +594,13 @@ export function sweepStaleStaging(storeRoot: string, now: () => number, log: Com
  * 未被当前 app 清单引用的组件回收（提案 §7.3：至少保留当前引用；Windows 无旧版回滚，
  * 恢复引用 = 当前引用）。更新关键路径之外调用，best-effort。
  */
-export function sweepUnreferencedComponents(storeRoot: string, referenced: Iterable<string>, log: ComponentLog): void {
+export function sweepUnreferencedComponents(
+  storeRoot: string,
+  referenced: Iterable<string>,
+  log: ComponentLog
+): void {
   const keep = new Set(referenced)
-  for (const kind of [PYTHON_KIND, TEXLIVE_KIND]) {
+  for (const kind of COMPONENT_KINDS) {
     const root = join(storeRoot, kind)
     try {
       if (!existsSync(root)) continue

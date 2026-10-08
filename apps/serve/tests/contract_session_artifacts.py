@@ -34,6 +34,7 @@ from service.chat.service.artifacts import (
     ARTIFACT_NOT_FOUND,
     ARTIFACT_PATH_FORBIDDEN,
     ARTIFACT_REVISION_CONFLICT,
+    ARTIFACT_TOO_LARGE,
     ArtifactReadError,
     ArtifactService,
 )
@@ -46,6 +47,7 @@ from service.chat.service.publication import (
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.port import ContentService, ProjectRegistry
 from service.platform.content import ArtifactScopeKind
+from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
 from service.workbench.domain.model import WorkbenchFormatPolicy
 
 SESSION_ID = "product-a"
@@ -55,6 +57,42 @@ OWNER = SessionPrincipal("artifact-owner")
 
 
 class SessionArtifactContract(unittest.TestCase):
+    def test_large_pdf_can_stream_without_becoming_editable(self) -> None:
+        source = self.root / SESSION_ID / "outputs" / "large.pdf"
+        with source.open("wb") as stream:
+            stream.write(b"%PDF-1.7\n")
+            stream.truncate(17 * 1024 * 1024)
+        artifact = self.index(
+            original_path="outputs/large.pdf",
+            mime_type="application/pdf",
+            size_bytes=source.stat().st_size,
+        )
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+
+        document = reader.open_document(SESSION_ID, artifact_identity(artifact))
+
+        self.assertFalse(document.editable)
+        self.assertEqual(document.size, source.stat().st_size)
+        self.assertEqual(document.media_type, "application/pdf")
+        self.assertNotIsInstance(document.body, bytes)
+        self.assertEqual(document.body.read(8), b"%PDF-1.7")
+        document.body.close()
+
+    def test_pdf_above_preview_limit_has_stable_error(self) -> None:
+        source = self.root / SESSION_ID / "outputs" / "oversized.pdf"
+        with source.open("wb") as stream:
+            stream.write(b"%PDF-1.7\n")
+            stream.truncate(DOCUMENT_PREVIEW_MAX_BYTES + 1)
+        artifact = self.index(
+            original_path="outputs/oversized.pdf",
+            mime_type="application/pdf",
+            size_bytes=source.stat().st_size,
+        )
+        reader = ArtifactService(self.catalog, self.artifacts, self.events, WorkbenchFormatPolicy())
+
+        with self.assertRaisesRegex(ArtifactReadError, ARTIFACT_TOO_LARGE):
+            reader.open_document(SESSION_ID, artifact_identity(artifact))
+
     def test_sent_pdf_keeps_original_attachment_after_rebinding(self) -> None:
         before = self.catalog.get(SESSION_ID)
         attachments = Path(before.runtime_workdir).resolve() / "attachments"

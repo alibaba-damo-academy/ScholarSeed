@@ -138,7 +138,8 @@
     "linksFailed": "导入已提交，但关联查询失败，请重试查询。",
     "collectionsFailed": "文献分类查询失败，请重新打开导入窗口。",
     "unlinked": "未关联项目",
-    "import": "导入到资料库",
+    "import": "导入资料库",
+    "importShort": "导入",
     "open": "打开",
     "openWith": "打开方式",
     "loadingApps": "正在读取应用…",
@@ -177,6 +178,17 @@
     "unfiled": "未整理"
   },
   "citations": {
+    "searchSources": "候选来源（未逐项关联）",
+    "toolDeclared": "工具声明的候选，尚未关联到正文证据",
+    "unresolved": "未能关联证据的内容",
+    "coverage": {
+      "pending": "待检查来源关联",
+      "reviewing": "正在检查来源关联…",
+      "reviewed": "已自动关联检索证据，关键事实请核对原文",
+      "partial": "来源核验有限，部分内容或网页未能核对",
+      "unavailable": "无法完成逐项来源核验，请核对原文",
+      "interrupted": "来源核验已中断，部分内容可能没有引用"
+    },
     "displayUnavailable": "该片段暂无法正常展示，请查看原文。",
     "manualCheck": "供人工核对",
     "pageOnly": "暂无法精确定位，当前展示对应页面缩略图。",
@@ -187,6 +199,8 @@
     "preview": "PDF 引用预览",
     "webPreview": "网页来源预览",
     "webSearchSource": "网页搜索来源",
+    "pageEvidenceSource": "已读取网页并关联证据",
+    "declaredSource": "回答声明的网页来源",
     "paperSearchSource": "论文搜索来源",
     "stalePreview": "暂时无法更新来源状态，以下保留上次信息。",
     "previewFailed": "引用信息暂时无法加载，点击重试。",
@@ -299,6 +313,14 @@
     "reference": "引用",
     "retry": "读取失败，点击重试",
     "more": "加载更多"
+  },
+  "referencePicker": {
+    "select": "选择 {{name}}",
+    "selected": "已选择 {{count}} 项",
+    "add": "添加引用",
+    "file": "文件",
+    "folderItems_one": "文件夹 · {{count}}项",
+    "folderItems_other": "文件夹 · {{count}}项"
   },
   "sources": {
     "resources": "资料库",

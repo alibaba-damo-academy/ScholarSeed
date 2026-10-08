@@ -123,6 +123,7 @@ class ReviewBatchDecision:
     pending_revision: int
     action: ReviewAction
     expected_disk_revision: str | None
+    revised_content: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -362,6 +363,7 @@ class VersionRef:
     review_outcome: ReviewOutcome | None = None
     alias: str | None = None
     metadata_revision: int = 0
+    review_backup: bool = False
 
 
 @dataclass(frozen=True)
@@ -419,6 +421,7 @@ class SealResult:
 
     version: VersionRef
     unchanged: bool
+    replaced: bool = False
 
 
 @dataclass(frozen=True)

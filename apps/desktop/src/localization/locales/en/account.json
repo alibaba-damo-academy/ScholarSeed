@@ -60,6 +60,9 @@
       "gatewayCredentialRequired": "Sign in to use built-in models",
       "subscriptionConnectionRequired": "Connect ChatGPT in Model services"
     },
+    "disabledTags": {
+      "gatewayCredentialRequired": "Sign in to use"
+    },
     "capabilitiesTitle": "Model capabilities",
     "capabilitiesDescription": "Manage reasoning levels, context windows, and input modalities for each model on the right. Provider defaults are suggestions; saved model declarations take priority in conversations.",
     "contextWindowHint": "Leave empty to use the provider default",
@@ -168,6 +171,7 @@
     "local_logout_failed": "Could not clear local sign-in credentials. Try again.",
     "logout_revocation_failed": "Could not clear local execution credentials. Try signing out again.",
     "http_failure": "Request failed ({{status}})",
+    "unknown": "The operation did not complete. Please try again.",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "modelSettings": {

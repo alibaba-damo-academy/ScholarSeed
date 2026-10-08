@@ -9,6 +9,7 @@ import { openReviewTab, reviewTab } from '../workbench/tabs'
 import {
   fetchResourceReviewBatch,
   fetchReviewMemberContent,
+  fetchReviewMemberCurrent,
   type ResourceReviewAction,
   type ResourceReviewMemberState
 } from './api'
@@ -21,6 +22,7 @@ interface FileSummary {
   state: ResourceReviewMemberState | null
   added: number | null
   deleted: number | null
+  externalModified: boolean
 }
 
 const DECODER = new TextDecoder('utf-8', { fatal: true })
@@ -73,7 +75,7 @@ export function ReviewCard({ review }: { review: ReviewReadyCard }): React.JSX.E
   const { t } = useTranslation('resources')
   const [batch, setBatch] = useState<Awaited<ReturnType<typeof fetchResourceReviewBatch>>>(null)
   const [summaries, setSummaries] = useState<FileSummary[]>(
-    review.paths.map((path) => ({ path, origin: null, action: null, state: null, added: null, deleted: null }))
+    review.paths.map((path) => ({ path, origin: null, action: null, state: null, added: null, deleted: null, externalModified: false }))
   )
   const [loading, setLoading] = useState(true)
 
@@ -93,22 +95,25 @@ export function ReviewCard({ review }: { review: ReviewReadyCard }): React.JSX.E
           action: member.action,
           state: member.state,
           added: null,
-          deleted: null
+          deleted: null,
+          externalModified: false
         })))
         setLoading(false)
         return
       }
       const loaded = await Promise.all(batch.members.map(async (member) => {
-        const [base, current] = await Promise.all([
+        const [base, candidate, current] = await Promise.all([
           fetchReviewMemberContent(review.projectId, review.batchId, member.file_id, 'base'),
-          fetchReviewMemberContent(review.projectId, review.batchId, member.file_id, 'current')
+          fetchReviewMemberContent(review.projectId, review.batchId, member.file_id, 'candidate'),
+          fetchReviewMemberCurrent(review.projectId, review.batchId, member.file_id)
         ])
         return {
           path: member.path,
           origin: member.origin,
           action: member.action,
           state: member.state,
-          ...(base && current ? lineCounts(base, current) : { added: null, deleted: null })
+          externalModified: Boolean(current && current.revision !== member.candidate_revision),
+          ...(base && candidate ? lineCounts(base, candidate) : { added: null, deleted: null })
         }
       }))
       if (!cancelled) {
@@ -180,6 +185,7 @@ export function ReviewCard({ review }: { review: ReviewReadyCard }): React.JSX.E
                 : summary.origin
                   ? <Badge size="sm" tone={summary.origin === 'agent' ? 'brand' : 'neutral'}>{summary.origin === 'agent' ? t('reviewOrigin.agent') : t('reviewOrigin.external')}</Badge>
                   : null}
+              {!completed && summary.externalModified ? <Badge size="sm" tone="warning">{t('reviewBatch.changedBadge')}</Badge> : null}
             </span>
             {!completed && (summary.added === null || summary.deleted === null
               ? <span className="text-[var(--vds-text-tertiary)]">{t('reviewCard.modified')}</span>
@@ -189,7 +195,7 @@ export function ReviewCard({ review }: { review: ReviewReadyCard }): React.JSX.E
       </CardContent>
       {!completed
         ? <CardFooter className="m-0 border-t border-[var(--vds-divider-default)] p-[var(--vds-space-3)]">
-            <Button icon={<Icon name="chevron-right" size={14} />} onClick={open}>{t('reviewCard.review')}</Button>
+            <Button data-testid={`review-card-open-${review.batchId}`} icon={<Icon name="chevron-right" size={14} />} onClick={open}>{t('reviewCard.review')}</Button>
           </CardFooter>
         : null}
     </Card>

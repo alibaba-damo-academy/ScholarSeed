@@ -96,13 +96,14 @@ def _review_packet(ws):
     elif confirmation_state=='approved':
         action='The current outline/task/publication snapshot already has a real approval; continue with manuscript prepare without another question.'
     elif timed:
-        action=('Display the publication settings and five-minute timeout notice, then call writing review-start after actual display. '
-                'Keep an interruptible host wait active or use bounded writing review-wait calls; record any user reply immediately with writing review-response. '
-                'At expiry, process pending messages before writing review-timeout. Deliver its notice before manuscript prepare; do not fabricate user approval.')
+        action=('Display the publication settings, then call scholarseed_bridge literature.review checkpoint=outline. '
+                'The product confirmation card owns the five-minute wait. Save its confirmation receipt unchanged and call writing review-complete --request FILE. '
+                'Do not run review-start/review-wait alongside the bridge. Deliver a timeout notice before manuscript prepare; do not fabricate user approval.')
     else:
         action=('Retain publication choices explicitly stated by the user; do not ask the user to choose them again. '
                 'The current review still needs a real confirmation: ask once for missing choices or confirmation of the current settings, offering only usable options, '
-                'then record the actual reply with writing approve --request. Configured defaults alone are not user approval.')
+                'Use scholarseed_bridge literature.review checkpoint=outline and consume its confirmation receipt with writing review-complete. '
+                'Then record an actual confirmation with writing approve --request. Configured defaults alone are not user approval.')
     result={'status':'SUCCESS','packet_id':packet_id or uuid.uuid4().hex,'snapshot':snapshot,'outline':outline,
         'outline_markdown':rendered,'display_instructions':display+' '+action,
         'publication':publication, 'publication_display':publication_display, 'options':options,
@@ -117,7 +118,7 @@ def _review_packet(ws):
         result['confirmation'].update(wait_state,timeout_seconds=SECONDS,
             timeout_notice=('请在 5 分钟内确认或提出修改；若未回复，将按以上推荐设置继续。' if read_request(ws)['language']=='CHINESE' else
                             'Please confirm or request changes within five minutes. Without a reply, the displayed settings will be used.'),
-            host_integration='Start only after actual display. Schedule wakeup at deadline_at or keep this turn alive with review-wait (<=30s). On reply arrival, call review-response before interpretation. No background scheduler is installed by this CLI.')
+            host_integration='ScholarSeed: call the outline review bridge and consume its confirmation with writing review-complete; do not start a second timer. Standalone hosts must provide their own display and interruptible wait.')
         if wait_state['state']!='awaiting_display':
             result['next_action']=display+' '+wait_state['next_action']
             result['display_instructions']=result['next_action']

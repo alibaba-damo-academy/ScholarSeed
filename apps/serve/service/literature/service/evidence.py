@@ -193,14 +193,21 @@ class LiteratureEvidenceService:
             storage_scope=GLOBAL_STORAGE,
         )
 
-    def document(self, project_id: str, source_id: str) -> CitationDocument:
-        item = self._item(source_id)
+    def document(
+        self, project_id: str, source_id: str, attachment_id: str | None = None
+    ) -> CitationDocument:
+        item = self._scoped_item(project_id, source_id)
         primary = None
         try:
-            payload = self._payload(item)
-            # Reuse the primary attachment that was already fetched in _payload
-            primary = self._pdf.primary(item.id)
-        except (ContentError, OSError, ValueError):
+            primary = (
+                self._pdf.attachment(item.id, attachment_id)
+                if attachment_id
+                else self._pdf.primary(item.id)
+            )
+            payload = self._pdf.read_attachment(item.id, primary.id)[0]
+        except (ContentError, OSError, ValueError) as cause:
+            if attachment_id:
+                raise ValueError(PDF_UNAVAILABLE) from cause
             payload = b""
         document = self._document(project_id, item, payload)
         if not payload or primary is None:
@@ -316,14 +323,27 @@ class LiteratureEvidenceService:
         }
 
     def read_pages(
-        self, project_id: str, source_id: str, start_page: int, end_page: int
+        self,
+        project_id: str,
+        source_id: str,
+        start_page: int,
+        end_page: int,
+        attachment_id: str | None = None,
     ) -> LiteraturePageRead:
         item = self._scoped_item(project_id, source_id)
         try:
-            payload = self._payload(item)
+            attachment = (
+                self._pdf.attachment(item.id, attachment_id)
+                if attachment_id
+                else self._pdf.primary(item.id)
+            )
+            payload = self._pdf.read_attachment(item.id, attachment.id)[0]
         except (ContentError, OSError, ValueError) as cause:
             raise ValueError(PDF_UNAVAILABLE) from cause
-        document = self._document(project_id, item, payload)
+        document = replace(
+            self._document(project_id, item, payload),
+            record_target=RecordTarget(RecordOwner.LITERATURE_ATTACHMENT, item.id, attachment.id),
+        )
         total_pages = self._indexes.page_count(document)
         if end_page > total_pages:
             raise ValueError("literature_page_range_invalid")

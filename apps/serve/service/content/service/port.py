@@ -39,6 +39,7 @@ from service.content.domain.model import (
     PROJECT_STATE_DIRNAME,
     ROOT_UNAVAILABLE_ERROR,
     ContentError,
+    ContentReadPermissionError,
     resolve_root,
     visible,
 )
@@ -1027,6 +1028,8 @@ class ContentService:
         except OSError as exc:
             if exc.errno == ENOSPC:
                 raise ContentError(DISK_FULL_ERROR) from exc
+            if isinstance(exc, PermissionError):
+                raise ContentReadPermissionError(path) from exc
             raise filesystem_error(exc, "read_failed") from exc
         finally:
             if parent is not None:
@@ -1144,10 +1147,6 @@ class ContentService:
             raise ContentError("file_too_large")
         scope = self._space(project_id)
         target = scope.absolute(path)
-        if target.is_dir():
-            raise ContentError("not_a_file")
-        if default is None and not target.is_file():
-            raise ContentError("file_not_found")
         lock = _file_lock(target)
         temporary: str | None = None
         directory: DirectoryHandle | None = None
@@ -1155,6 +1154,10 @@ class ContentService:
         stage_identity: os.stat_result | None = None
         with lock:
             try:
+                if target.is_dir():
+                    raise ContentError("not_a_file")
+                if default is None and not target.is_file():
+                    raise ContentError("file_not_found")
                 directory, target_name = scope.open_parent(path, create=default is not None)
                 parent_descriptor = directory
 

@@ -1250,6 +1250,15 @@ wheels = [
 ]
 
 [[package]]
+name = "linkify-it-py"
+version = "2.2.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/45/98/7a1a5f31fd5c7ba93e963b168e244b8e3dd705b3d2a718e3c3307583bf57/linkify_it_py-2.2.0.tar.gz", hash = "sha256:907acd2d17ac1fbb9ddb62c8957ccbd6158cac602231a15c3b0cd1e215f03cee" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/13/d4/1152d1c7ab42d8b908be64fd200ddc870dc9d4925e951198702084aa1a7d/linkify_it_py-2.2.0-py3-none-any.whl", hash = "sha256:3adc40eb5af300b2605fcfdb968c24e1d780a90f1f2221af7c15e5111e94d443" },
+]
+
+[[package]]
 name = "lxml"
 version = "6.1.1"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
@@ -1357,6 +1366,11 @@ dependencies = [
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz", hash = "sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/b3/81/4da04ced5a082363ecfa159c010d200ecbd959ae410c10c0264a38cac0f5/markdown_it_py-4.2.0-py3-none-any.whl", hash = "sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a" },
+]
+
+[package.optional-dependencies]
+linkify = [
+    { name = "linkify-it-py" },
 ]
 
 [[package]]
@@ -2520,7 +2534,7 @@ dependencies = [
     { name = "httpx" },
     { name = "json-repair" },
     { name = "lxml" },
-    { name = "markdown-it-py" },
+    { name = "markdown-it-py", extra = ["linkify"] },
     { name = "numpy" },
     { name = "openai" },
     { name = "openpyxl" },
@@ -2595,7 +2609,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "json-repair" },
     { name = "lxml", specifier = ">=5.2" },
-    { name = "markdown-it-py", specifier = ">=4.2.0" },
+    { name = "markdown-it-py", extras = ["linkify"], specifier = ">=4.2.0" },
     { name = "numpy" },
     { name = "openai" },
     { name = "openpyxl" },
@@ -2684,6 +2698,7 @@ desktop = [
     { name = "paper-fulltext-dl" },
     { name = "pip" },
     { name = "pysbd" },
+    { name = "socksio" },
 ]
 
 [package.metadata]
@@ -2713,6 +2728,7 @@ desktop = [
     { name = "paper-fulltext-dl", path = "skills/community/precise-literature-search/vendor/paper_fulltext_dl-0.1.3-py3-none-any.whl" },
     { name = "pip", specifier = ">=25" },
     { name = "pysbd", specifier = "==0.3.4" },
+    { name = "socksio", specifier = "==1.0.0" },
 ]
 
 [[package]]
@@ -2753,6 +2769,15 @@ source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
 sdist = { url = "https://mirrors.aliyun.com/pypi/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc" }
 wheels = [
     { url = "https://mirrors.aliyun.com/pypi/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2" },
+]
+
+[[package]]
+name = "socksio"
+version = "1.0.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple" }
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/f8/5c/48a7d9495be3d1c651198fd99dbb6ce190e2274d0f28b9051307bdec6b85/socksio-1.0.0.tar.gz", hash = "sha256:f88beb3da5b5c38b9890469de67d0cb0f9d494b78b106ca1845f96c10b91c4ac" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/37/c3/6eeb6034408dac0fa653d126c9204ade96b819c936e136c5e8a6897eee9c/socksio-1.0.0-py3-none-any.whl", hash = "sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3" },
 ]
 
 [[package]]

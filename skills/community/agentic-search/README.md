@@ -128,9 +128,9 @@ deadline 可以阻止新的检索批次，但不能中断正在生成的一次�
 默认策略是 **有凭据时 PaperHub 直连优先 + `$web-search` skill + 不使用 Brave**：
 
 1. **PaperHub** 是可选的结构化增强源，用于关键词、题名、论文详情和参考文献查询；
-2. **`$web-search` skill** 统一承接公网检索，宿主依次尝试 `official-api`、`codex-native`、
-   `visible-browser`；三者统一返回 `scholarseed.web_search.v1` 候选核心，agentic-search 不直接
-   绕过该 skill 调用原生 Web Search；
+2. **`$web-search` skill** 统一承接公网检索，宿主依次尝试 `official-api`、`codex-native`；
+   两者统一返回 `scholarseed.web_search.v1` 候选核心，agentic-search 不直接绕过该 skill
+   调用原生 Web Search，也不使用 automatic/browser profile；
 3. **Brave 默认关闭**。即使环境中存在 `BRAVE_API_KEY`，也不会自动使用。
 
 凭据缺失、被拒绝，或 PaperHub 在有界重试后整体不可达时，Skill 会停止 PaperHub
@@ -141,9 +141,10 @@ deadline 可以阻止新的检索批次，但不能中断正在生成的一次�
 降级数量契约、故障记录和旧版行为对比见
 [PaperHub 降级策略](docs/PAPERHUB_FALLBACK.md)。
 
-PaperHub 默认配置为 `auto`，同时把当前服务地址加入 `NO_PROXY`，因此增强路径会绕过
-代理直接访问；传输异常时还会尝试清理代理环境后的直连。需要 HTTP 代理或 SSH 隧道
-的机器，可以修改用户配置，详见 [SETUP.md](SETUP.md)。
+PaperHub 默认配置为 `auto`，并继承当前网络代理；传输异常时还会尝试清理代理环境后的
+直连。若宿主通过受限网络代理执行域名授权，旧用户配置中的 PaperHub `NO_PROXY`
+绕行可能导致请求失败，需移除该配置。需要直连或 SSH 隧道的机器，可以修改用户配置，
+详见 [SETUP.md](SETUP.md)。
 
 只有用户明确允许，或 PaperHub/`$web-search` 不可用且用户接受备用路径时，才会
 使用 Brave。例如：

@@ -22,6 +22,7 @@ from scholarseed_runtime.contract.session import RuntimeActivitySnapshot
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore, SessionPrincipal
 from service.chat.runtime.activation import (
     RESOURCE_RESERVATION_INVALID,
+    RESOURCE_WAIT_BLOCKED,
     SESSION_ACTIVATION_CLOSED,
     SESSION_OPEN_UNKNOWN,
     ActivationPlan,
@@ -102,6 +103,7 @@ class ProductFixture:
         self._active = False
         self.attachment_generation = 0
         self.measurements = []
+        self.suspend_blockers: tuple[str, ...] = ()
 
     def activation_timing(self, request_id: str) -> ActivationTiming:
         return ActivationTiming(request_id, self.measurements.append)
@@ -114,6 +116,8 @@ class ProductFixture:
 
     async def suspend_runtime(self) -> bool:
         async with self.lifecycle_lock:
+            if self.suspend_blockers:
+                return False
             if self.runtime_session is None or not (await self.runtime_session.activity()).idle:
                 return False
             self.suspensions += 1
@@ -276,6 +280,13 @@ class ActivationContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(SessionActivationError) as caught:
                 await self.activation.wait_until_suspended(self.live, deadline=1.0)
         self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_TIMEOUT)
+
+    async def test_quiescence_wait_fails_fast_when_runtime_reports_blockers(self) -> None:
+        self.live.runtime_session = AttachmentFixture(idle=False)
+        self.live.suspend_blockers = ("native_background_terminal_active",)
+        with self.assertRaises(SessionActivationError) as caught:
+            await self.activation.wait_until_suspended(self.live)
+        self.assertEqual(caught.exception.safe_error, RESOURCE_WAIT_BLOCKED)
 
     async def test_termination_owner_can_restore_binding_without_reopening_other_admission(
         self,

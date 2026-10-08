@@ -1,4 +1,26 @@
 {
+  "batchSync": {
+    "title": "Sync metadata",
+    "progressTitle": "Sync progress",
+    "resultTitle": "Sync results",
+    "description": "Sync automatically by DOI or arXiv ID. Papers with only a title, no identifier, or an active single-paper sync are skipped; sync and confirm them in their details. Closing this panel keeps the task running; quitting the app does not preserve it.",
+    "progress": "Processed {{completed}} / {{total}} papers",
+    "completed": "Sync finished: {{completed}} / {{total}} papers processed",
+    "cancelling": "Stopping after the current paper finishes…",
+    "pending": "Pending",
+    "running": "Syncing",
+    "success": "Succeeded",
+    "missing": "Not found",
+    "failed": "Failed",
+    "quota": "Rate limited",
+    "skipped": "Skipped",
+    "deferred": "Deferred by rate limit",
+    "cancelled": "Cancelled",
+    "cancel": "Stop sync",
+    "retry": "Retry failed and unfinished papers",
+    "startSelected": "Sync {{count}} selected papers",
+    "close": "Close"
+  },
   "navigation": {
     "overview": "Literature",
     "project": "Project literature",
@@ -127,7 +149,6 @@
     "projects": "Projects"
   },
   "list": {
-    "noProject": "No linked project",
     "moreProjects_one": "{{count}} more project: {{names}}",
     "moreProjects_other": "{{count}} more projects: {{names}}",
     "moreTags_one": "{{count}} more tag: {{names}}",
@@ -152,7 +173,15 @@
     "import": "Import",
     "page_one": "Page {{page}}/{{pageCount}} · {{count}} item",
     "page_other": "Page {{page}}/{{pageCount}} · {{count}} items",
-    "importTask": "Import task"
+    "importTask": "Import task",
+    "rowMenu": {
+      "viewPdf": "View PDF",
+      "viewInfo": "View basic information",
+      "addNote": "Add note",
+      "addAttachment": "Add attachment",
+      "removeDescription": "Remove “{{title}}” from this project? It will remain in the literature overview.",
+      "deleteDescription": "Delete “{{title}}”? This cannot be undone."
+    }
   },
   "zotero": {
     "title": "Import from Zotero Desktop",
@@ -495,6 +524,9 @@
     "loadFailed": "Unable to load details.",
     "saveFailed": "Save failed",
     "fulltextFailed": "Unable to fetch full text",
+    "fulltextNotFound": "Not found",
+    "fulltextNoAccess": "Unable to access",
+    "fulltextRateLimited": "Rate limited",
     "uploadFailed": "Upload failed",
     "deleteAttachmentFailed": "Unable to delete the attachment.",
     "sync": {
@@ -733,6 +765,23 @@
       "issueAffected": "Affected content: {{content}}",
       "interactionTitle": "Review output settings",
       "authorizationTitle": "Confirm search results",
+      "authorizationReplyTitle": "User authorized literature access",
+      "authorizationReplyGranted": "The user has authorized AI to read the full text of the papers retrieved in this search to continue generating the literature review.",
+      "authorizationReplyRejected": "I do not authorize reading the full text of the papers at this time.",
+      "authorization": {
+        "authorize": "Authorize",
+        "reject": "Deny",
+        "authorizeDescription": "Allow reading full text within this task and the displayed papers.",
+        "subsetHint": "Full texts of the following papers will be downloaded and read:",
+        "subsetSelectAll": "Select all",
+        "rejectDescription": "Do not read full text, and stop full-text processing for this task.",
+        "preciseHeader": "Paper search authorization",
+        "preciseQuestion": "Allow downloading, reading, and using the full text of the displayed papers as evidence?",
+        "reviewHeader": "Literature review authorization",
+        "reviewQuestion": "Allow reading the full text of the displayed papers to continue the literature review?",
+        "ideaHeader": "Research idea authorization",
+        "ideaQuestion": "Allow reading the full text of the displayed papers to generate evidence-grounded research ideas?"
+      },
       "authorizationRejected": "Full-text authorization was denied. This task has stopped without reading any paper's full text.",
       "interactionDefault": "Use defaults: Markdown + generic numeric order",
       "interactionDefaultLabel": "Defaults · Markdown · generic numeric order"

@@ -64,6 +64,7 @@ from service.resources.persistence.objects import CasEntryKind, GcEntry, GcPlan,
 OBJECT_READY = "READY"
 MANAGED = "managed"
 MILLISECONDS_PER_SECOND = 1000
+EDITOR_VERSION_WINDOW_MS = 60 * MILLISECONDS_PER_SECOND
 MUTATION_AUDIT_RETENTION_MS = 24 * 60 * 60 * MILLISECONDS_PER_SECOND
 EXTERNAL_OBSERVATION_REASON = "external"
 SQLITE_BIND_BATCH_SIZE = 500
@@ -313,6 +314,8 @@ SCHEMA = (
         origin TEXT NOT NULL CHECK (origin IN (
             'initial_scan','user','external_confirmed','agent','restore','delivery_revert'
         )),
+        review_backup INTEGER NOT NULL DEFAULT 0,
+        editor_save INTEGER NOT NULL DEFAULT 0,
         delivery_id TEXT,
         restored_from_id TEXT REFERENCES resources_versions(version_id),
         restored_from_sequence INTEGER,
@@ -513,6 +516,8 @@ ADDITIVE_COLUMNS = {
     "resources_versions": (
         ("source_review_id", "TEXT"),
         ("review_outcome", "TEXT CHECK (review_outcome IN ('accepted','revised'))"),
+        ("review_backup", "INTEGER NOT NULL DEFAULT 0"),
+        ("editor_save", "INTEGER NOT NULL DEFAULT 0"),
     ),
     "resources_mutations": (
         ("request_digest", "TEXT"),
@@ -602,6 +607,7 @@ def _version(row: sqlite3.Row) -> VersionRef:
             if "metadata_revision" in keys and row["metadata_revision"] is not None
             else 0
         ),
+        review_backup=bool(row["review_backup"]) if "review_backup" in keys else False,
     )
 
 
@@ -1391,9 +1397,6 @@ class VersionStore:
         self.ensure()
         with transaction(self._database) as connection:
             connection.execute("BEGIN")
-            current = pending.read(connection, file_id)
-            if current is not None and current.needs_review:
-                return SnapshotState.PENDING
             working = connection.execute(
                 "SELECT * FROM resources_heads WHERE file_id = ?", (file_id,)
             ).fetchone()
@@ -1431,7 +1434,6 @@ class VersionStore:
                                heads.mode_bits AS head_mode_bits,
                                versions.version_id,
                                (versions.version_id IS NOT NULL
-                                AND pending.review_id IS NULL
                                 AND heads.file_state IS versions.file_state
                                 AND heads.object_id IS versions.object_id
                                 AND heads.path IS versions.path
@@ -3526,12 +3528,12 @@ class VersionStore:
             rows = connection.execute(
                 """
                 SELECT version_id, file_id FROM (
-                    SELECT version_id, file_id,
+                    SELECT version_id, file_id, review_backup,
                            ROW_NUMBER() OVER (
                                PARTITION BY file_id ORDER BY sequence DESC
                            ) AS position
                     FROM resources_versions
-                ) WHERE position > ? AND version_id NOT IN (
+                ) WHERE position > ? AND review_backup = 0 AND version_id NOT IN (
                     SELECT base_version_id FROM resources_pending WHERE base_version_id IS NOT NULL
                 ) ORDER BY version_id
                 """,
@@ -3815,7 +3817,65 @@ class VersionStore:
                         now,
                     ),
                 )
-            return result
+        return result
+
+    def backup_review_current(
+        self,
+        file_id: str,
+        review_id: str,
+        expected_pending_revision: int,
+        snapshot: SnapshotVersion,
+        descriptor: ObjectDescriptor | None,
+    ) -> VersionRef:
+        self.ensure()
+        now = _now_ms()
+        with transaction(self._database, immediate=True) as connection:
+            existing = connection.execute(
+                """
+                SELECT * FROM resources_versions
+                WHERE file_id = ? AND source_review_id = ? AND review_backup = 1
+                  AND object_id IS ? AND file_state = ? AND path = ? AND mode_bits IS ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (
+                    file_id,
+                    review_id,
+                    snapshot.object_id,
+                    snapshot.state.value,
+                    snapshot.path,
+                    snapshot.mode_bits,
+                ),
+            ).fetchone()
+            if existing is not None:
+                return _version(existing)
+            current = pending.read(connection, file_id)
+            if current is None or current.review is None or current.review.id != review_id:
+                raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
+            if current.revision != expected_pending_revision:
+                raise VersionStoreConflict(ReviewConflict.PENDING_REVISION.value)
+            return self._seal_snapshot(
+                connection,
+                snapshot,
+                descriptor,
+                now,
+                file_id=file_id,
+                force_new=True,
+                review_backup=True,
+            ).version
+
+    def review_backup(self, file_id: str, review_id: str, object_id: str) -> VersionRef | None:
+        self.ensure()
+        with closing(connect(self._database)) as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM resources_versions
+                WHERE file_id = ? AND source_review_id = ? AND review_backup = 1
+                  AND object_id = ?
+                ORDER BY sequence DESC LIMIT 1
+                """,
+                (file_id, review_id, object_id),
+            ).fetchone()
+            return _version(row) if row is not None else None
 
     @staticmethod
     def _validate_seal_snapshot(
@@ -3998,6 +4058,13 @@ class VersionStore:
                     review = current.review
                     if review is None:
                         raise VersionStoreConflict(ReviewConflict.NOT_FOUND.value)
+                    if resolution.choice is ReviewResolutionChoice.RESTORE_CANDIDATE and (
+                        member["before_object_id"] != member["target_object_id"]
+                        or member["before_state"] != member["target_state"]
+                        or member["before_path"] != member["target_path"]
+                        or member["before_mode_bits"] != member["target_mode_bits"]
+                    ):
+                        self._seal_review_backup(connection, file_id, review.id, member, now)
                     if (
                         resolution.choice is ReviewResolutionChoice.RESTORE_CANDIDATE
                         and target != review.candidate
@@ -4035,6 +4102,17 @@ class VersionStore:
                             ReviewOutcome.REJECTED,
                         )
                         current = self._validate_review(connection, file_id, decision)
+                        review = current.review
+                        candidate = review.candidate if review is not None else None
+                        before = SnapshotIdentity(
+                            member["before_object_id"],
+                            FileState(member["before_state"]),
+                            str(member["before_path"]),
+                            member["before_mode_bits"],
+                            member["before_annotation_object_id"],
+                        )
+                        if review is not None and candidate is not None and before != candidate:
+                            self._seal_review_backup(connection, file_id, review.id, member, now)
                     else:
                         current = self._validate_discard(
                             connection,
@@ -4042,7 +4120,31 @@ class VersionStore:
                             int(manifest["pending_revision"]),
                             manifest["source_id"],
                         )
+                    latest = connection.execute(
+                        "SELECT * FROM resources_versions WHERE file_id = ? ORDER BY sequence DESC LIMIT 1",
+                        (file_id,),
+                    ).fetchone()
+                    restored = SnapshotIdentity(
+                        snapshot.object_id,
+                        snapshot.state,
+                        snapshot.path,
+                        snapshot.mode_bits,
+                        snapshot.annotation_object_id,
+                    )
+                    seal_restored_base = manifest["review_id"] is not None and (
+                        latest is None or _snapshot_identity(latest) != restored
+                    )
                     self._cancel_pending(connection, file_id, snapshot, current, now)
+                    if seal_restored_base and current.review is not None:
+                        self._seal_snapshot(
+                            connection,
+                            replace(snapshot, source_review_id=current.review.id),
+                            descriptor,
+                            now,
+                            annotation_descriptor=annotation_descriptor,
+                            file_id=file_id,
+                            force_new=True,
+                        )
                 else:
                     results_list.append(
                         self._seal_snapshot(
@@ -4104,6 +4206,39 @@ class VersionStore:
                         ),
                     )
         return results
+
+    def _seal_review_backup(
+        self,
+        connection: sqlite3.Connection,
+        file_id: str,
+        review_id: str,
+        member: sqlite3.Row,
+        now: int,
+    ) -> None:
+        row = connection.execute(
+            "SELECT media_type FROM resources_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if row is None:
+            raise VersionStoreConflict("file_not_managed")
+        self._seal_snapshot(
+            connection,
+            SnapshotVersion(
+                path=str(member["before_path"]),
+                media_type=str(row["media_type"]),
+                revision=member["before_object_id"],
+                object_id=member["before_object_id"],
+                mode_bits=member["before_mode_bits"],
+                mtime_ns=None,
+                origin=VersionOrigin.EXTERNAL_CONFIRMED,
+                state=FileState(member["before_state"]),
+                source_review_id=review_id,
+            ),
+            None,
+            now,
+            file_id=file_id,
+            force_new=True,
+            review_backup=True,
+        )
 
     def _cancel_pending(
         self,
@@ -4174,6 +4309,8 @@ class VersionStore:
         file_id: str | None = None,
         expected_version_id: str | None = None,
         force_new: bool = False,
+        review_backup: bool = False,
+        editor_save: bool = False,
     ) -> SealResult:
         if descriptor is not None:
             self._record_object(connection, descriptor, now)
@@ -4244,8 +4381,8 @@ class VersionStore:
                 file_state, root_id, path, mode_bits, annotation_object_id,
                 origin, delivery_id, restored_from_id, restored_from_sequence,
                 restored_from_object_id, source_delivery_id, session_id, turn_id,
-                created_at_ms, source_review_id, review_outcome
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at_ms, source_review_id, review_outcome, review_backup, editor_save
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 version_id,
@@ -4268,6 +4405,8 @@ class VersionStore:
                 now,
                 snapshot.source_review_id,
                 snapshot.review_outcome.value if snapshot.review_outcome else None,
+                int(review_backup),
+                int(editor_save),
             ),
         )
         connection.execute(
@@ -4506,14 +4645,24 @@ class VersionStore:
             )
             sealed = None
             if seals_version:
-                sealed = self._seal_snapshot(
-                    connection,
-                    snapshot,
-                    None,
-                    now,
-                    annotation_descriptor=annotation_descriptor,
-                    file_id=str(row["file_id"]),
+                editor_save = (
+                    str(row["kind"]) == ProductMutationKind.WRITE.value
+                    and row["request_digest"] is None
                 )
+                if editor_save:
+                    sealed = self._coalesce_working_version(
+                        connection, str(row["file_id"]), snapshot, now, annotation_descriptor
+                    )
+                if sealed is None:
+                    sealed = self._seal_snapshot(
+                        connection,
+                        snapshot,
+                        None,
+                        now,
+                        annotation_descriptor=annotation_descriptor,
+                        file_id=str(row["file_id"]),
+                        editor_save=editor_save,
+                    )
             else:
                 if annotation_descriptor is not None:
                     self._record_object(connection, annotation_descriptor, now)
@@ -4563,6 +4712,86 @@ class VersionStore:
                 (now, mutation_id),
             )
         return sealed
+
+    def _coalesce_working_version(
+        self,
+        connection: sqlite3.Connection,
+        file_id: str,
+        snapshot: SnapshotVersion,
+        now: int,
+        annotation_descriptor: ObjectDescriptor | None,
+    ) -> SealResult | None:
+        version = connection.execute(
+            """
+            SELECT versions.*, metadata.alias,
+                   COALESCE(metadata.revision, 0) AS metadata_revision
+            FROM resources_versions AS versions
+            LEFT JOIN resources_version_metadata AS metadata USING(version_id)
+            WHERE versions.file_id = ? ORDER BY sequence DESC LIMIT 1
+            """,
+            (file_id,),
+        ).fetchone()
+        if version is None:
+            return None
+        version_id = str(version["version_id"])
+        if (
+            snapshot.origin is not VersionOrigin.USER
+            or snapshot.state is not FileState.PRESENT
+            or version["origin"] != VersionOrigin.USER.value
+            or not version["editor_save"]
+            or version["file_state"] != snapshot.state.value
+            or version["path"] != snapshot.path
+            or not 0 <= now - int(version["created_at_ms"]) < EDITOR_VERSION_WINDOW_MS
+            or version["alias"]
+            or version["review_backup"]
+            or version["source_review_id"] is not None
+            or version["session_id"] is not None
+            or version["restored_from_id"] is not None
+        ):
+            return None
+        _version_row, blockers, delivery_ids, _current_id = self._delete_facts(
+            connection, version_id
+        )
+        if delivery_ids or any(blocker != VERSION_DELETE_CURRENT for blocker in blockers):
+            return None
+        references = connection.execute(
+            """
+            SELECT 1 FROM resources_turn_changes WHERE baseline_version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_versions WHERE restored_from_id = :version_id
+            UNION ALL SELECT 1 FROM resources_restores WHERE source_id = :version_id
+            UNION ALL SELECT 1 FROM resources_operations WHERE result_version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_operation_versions WHERE version_id = :version_id
+            UNION ALL SELECT 1 FROM resources_review_batch_members WHERE result_version_id = :version_id
+            LIMIT 1
+            """,
+            {"version_id": version_id},
+        ).fetchone()
+        if references is not None:
+            return None
+        if (
+            version["object_id"] == snapshot.object_id
+            and version["mode_bits"] == snapshot.mode_bits
+            and version["annotation_object_id"] == snapshot.annotation_object_id
+        ):
+            return None
+        if annotation_descriptor is not None:
+            self._record_object(connection, annotation_descriptor, now)
+        connection.execute(
+            """
+            UPDATE resources_versions
+            SET object_id = ?, mode_bits = ?, annotation_object_id = ?
+            WHERE version_id = ?
+            """,
+            (snapshot.object_id, snapshot.mode_bits, snapshot.annotation_object_id, version_id),
+        )
+        self._advance_head(connection, file_id, snapshot, now)
+        updated = replace(
+            _version(version),
+            object_id=snapshot.object_id,
+            mode_bits=snapshot.mode_bits,
+            annotation_object_id=snapshot.annotation_object_id,
+        )
+        return SealResult(version=updated, unchanged=False, replaced=True)
 
     def pending_working_mutations(self) -> tuple[WorkingMutation, ...]:
         """Return intents whose disk/ledger outcome must be reconciled."""

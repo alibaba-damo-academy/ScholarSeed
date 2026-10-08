@@ -1,11 +1,37 @@
 import type { createFormatters } from '../../../../localization/format'
-import { isAttachmentAvailable, type LiteratureSummary } from '../../contracts/literature.ts'
+import {
+  isAttachmentAvailable,
+  type LiteratureAttachmentSummary,
+  type LiteratureSummary
+} from '../../contracts/literature.ts'
 
 /** 首页「最近打开」只展示三条，更多历史回文献库看。 */
 export const RECENT_LITERATURE_DISPLAY_LIMIT = 3
 
-/** 比展示数多取几条：条目被删除后仍能补齐三行。 */
+/** 比展示数多取几条：条目被删除、或没有可打开的附件时仍能补齐三行。 */
 export const RECENT_LITERATURE_RESOLVE_LIMIT = 5
+
+const GLOBAL_LITERATURE_PROJECT_ID = ''
+
+interface RecentLiteratureActions {
+  openLiteratureItem: (id: string, projectId: string) => Promise<boolean>
+  openLiteratureAttachment: (
+    id: string,
+    attachmentId?: string,
+    page?: number,
+    options?: { projectId?: string | null }
+  ) => Promise<boolean>
+}
+
+export async function openRecentLiterature(
+  actions: RecentLiteratureActions,
+  id: string
+): Promise<'opened' | 'item_unavailable' | 'attachment_unavailable'> {
+  if (!await actions.openLiteratureItem(id, GLOBAL_LITERATURE_PROJECT_ID)) return 'item_unavailable'
+  return await actions.openLiteratureAttachment(id, undefined, undefined, {
+    projectId: GLOBAL_LITERATURE_PROJECT_ID
+  }) ? 'opened' : 'attachment_unavailable'
+}
 
 const TEXT_ATTACHMENT_EXTENSIONS = new Set(['md', 'markdown', 'txt', 'text'])
 
@@ -54,11 +80,23 @@ export function openedLiteratureLabel(
   return format.date(date, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+/**
+ * 首页「最近打开」的入选条件：只收能点开的附件行。
+ * 没有主附件（纯文献条目）、或主附件文件已丢失的，都不进列表。
+ */
+export function openedLiteratureAttachment(
+  item: LiteratureSummary
+): LiteratureAttachmentSummary | null {
+  const attachment = item.primary_attachment
+  // 附件行可以比它的字节活得久：文件被移走后只剩一条打不开的记录。
+  return isAttachmentAvailable(attachment) ? attachment : null
+}
+
 /** 行图标种类；资产映射留在 HomeOverview（png 导入不进 node 测试面）。 */
 export function openedLiteratureIconKind(item: LiteratureSummary): RecentLiteratureIconKind {
-  const attachment = item.primary_attachment
+  const attachment = openedLiteratureAttachment(item)
   // 文件已丢失的主附件不算「有全文」: 首页那枚 PDF 图标承诺的是点开就能读。
-  if (!attachment || !isAttachmentAvailable(attachment)) return 'unknown'
+  if (!attachment) return 'unknown'
   if (attachment.kind === 'pdf' || attachment.media_type === 'application/pdf') return 'pdf'
   const dot = attachment.name.lastIndexOf('.')
   const extension = dot >= 0 ? attachment.name.slice(dot + 1).toLowerCase() : ''

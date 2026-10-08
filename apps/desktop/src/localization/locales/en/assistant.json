@@ -139,6 +139,7 @@
     "collectionsFailed": "Could not load literature collections. Reopen the import dialog.",
     "unlinked": "No linked project",
     "import": "Import to resources",
+    "importShort": "Import",
     "open": "Open",
     "openWith": "Open with",
     "loadingApps": "Loading applications…",
@@ -177,6 +178,17 @@
     "unfiled": "Unorganized"
   },
   "citations": {
+    "searchSources": "Candidate sources (not linked to claims)",
+    "toolDeclared": "Tool-declared candidate, not yet linked to supporting evidence",
+    "unresolved": "Claims without supporting evidence",
+    "coverage": {
+      "pending": "Source association check pending",
+      "reviewing": "Checking source associations…",
+      "reviewed": "Evidence associated automatically; check important facts against originals",
+      "partial": "Limited review: some claims or pages could not be checked",
+      "unavailable": "Claim-level source review unavailable; check the originals",
+      "interrupted": "Source review interrupted; some claims may lack citations"
+    },
     "displayUnavailable": "This excerpt cannot be displayed correctly. View the original source.",
     "manualCheck": "For manual verification",
     "pageOnly": "Exact location unavailable; showing a page thumbnail.",
@@ -187,6 +199,8 @@
     "preview": "PDF citation preview",
     "webPreview": "Web source preview",
     "webSearchSource": "Web search source",
+    "pageEvidenceSource": "Page read and supporting evidence linked",
+    "declaredSource": "Web source declared by the answer",
     "paperSearchSource": "Paper search source",
     "stalePreview": "Unable to update source status. Previous information is shown below.",
     "previewFailed": "Unable to load citation information. Click to retry.",
@@ -300,6 +314,14 @@
     "reference": "Reference",
     "retry": "Could not load. Retry",
     "more": "Load more"
+  },
+  "referencePicker": {
+    "select": "Select {{name}}",
+    "selected": "{{count}} selected",
+    "add": "Add references",
+    "file": "File",
+    "folderItems_one": "Folder · {{count}} item",
+    "folderItems_other": "Folder · {{count}} items"
   },
   "sources": {
     "resources": "Resources",

@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Ellipsis } from 'lucide-react'
 
 import type { ArtifactItem } from '../../activity'
 import { appsForFile, downloadSessionArtifact, openPathWith, revealSystemPath, type OpenWithApp } from '../../api'
@@ -77,14 +78,12 @@ type ArtifactMenuKind = 'context' | 'dropdown'
 interface ArtifactMenuItemsProps {
   apps: OpenWithApp[] | null
   appsLoading: boolean
-  canImport: boolean
   canSaveAs: boolean
   canUsePath: boolean
   downloading: boolean
   kind: ArtifactMenuKind
   loadApps: () => void
   onCopyPath: () => void
-  onImport: () => void
   onOpenWith: (app: OpenWithApp) => void
   onReveal: () => void
   onSaveAs: () => void
@@ -94,14 +93,12 @@ interface ArtifactMenuItemsProps {
 function ArtifactMenuItems({
   apps,
   appsLoading,
-  canImport,
   canSaveAs,
   canUsePath,
   downloading,
   kind,
   loadApps,
   onCopyPath,
-  onImport,
   onOpenWith,
   onReveal,
   onSaveAs,
@@ -116,9 +113,6 @@ function ArtifactMenuItems({
 
   return (
     <>
-      <Item data-testid={`artifact-${kind}-import`} disabled={!canImport} onSelect={onImport}>
-        {t('artifactEntry.import')}
-      </Item>
       <Sub>
         <SubTrigger
           data-testid={`artifact-${kind}-open-with`}
@@ -205,7 +199,7 @@ export function ArtifactCard({
 
 function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Element {
   const { state, act } = useApp()
-  const { t: a } = useTranslation('assistant')
+  const { t: a } = useTranslation(['assistant', 'resources'])
   const { toast } = useToast()
   const thread = activeThread(state)
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
@@ -471,16 +465,15 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
     ? state.aiPanel.artifactLinksState : 'idle'
   const projectName = sessionProject?.name ?? a('artifactEntry.unlinked')
   const revealLabel = a(revealLabelKey())
+  const canImport = Boolean(thread.sessionId) && !saving && state.projects.length > 0
   const menuProps = {
     apps: openWithApps,
     appsLoading: openWithLoading,
-    canImport: Boolean(thread.sessionId) && !saving && state.projects.length > 0,
     canSaveAs: Boolean(thread.sessionId),
     canUsePath,
     downloading,
     loadApps: loadOpenWithApps,
     onCopyPath: () => void copyArtifactPath(),
-    onImport: openImport,
     onOpenWith: (app: OpenWithApp) => void openArtifactWith(app),
     onReveal: () => void revealArtifact(),
     onSaveAs: () => { closeMenus(); void download() },
@@ -492,13 +485,13 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
       <ContextMenu open={contextMenuOpen} onOpenChange={setContextMenuOpen}>
         <ContextMenuTrigger asChild>
           {/* 与执行计划卡片一致: bordered 背景/边框 + 12px 圆角 + 无阴影。 */}
-          <Card className="mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] !shadow-none [--vds-card-radius:var(--vds-radius-6)]" padding="sm" data-artifact-role={primary.role}>
-            <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]" data-testid={`turn-artifact-${primary.artifact_id}`}>
+          <Card className="@container/artifact mt-[var(--vds-space-3)] grid gap-[var(--vds-space-3)] !shadow-none [--vds-card-radius:var(--vds-radius-6)]" padding="sm" data-artifact-role={primary.role}>
+            <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-[var(--vds-space-2)] @max-[16.5rem]/artifact:grid-cols-[auto_minmax(0,1fr)]" data-testid={`turn-artifact-${primary.artifact_id}`}>
               <span className="grid size-8 shrink-0 place-items-center rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-muted)] text-[var(--vds-text-secondary)]"><Icon name="doc" size={20} sw={1.8} /></span>
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span className="flex min-w-0 flex-col gap-0.5">
                 <EllipsisText
                   className="text-[length:var(--vds-font-body-lv2)] font-medium leading-relaxed text-[var(--vds-text-primary)]"
-                  tooltip={`${primary.title || primary.name}\n${primary.path}`}
+                  tooltip={primary.name}
                   tooltipContentClassName="whitespace-pre-wrap"
                   tooltipPortalled
                 >
@@ -508,23 +501,38 @@ function ArtifactEntry({ primary }: { primary: SessionArtifact }): React.JSX.Ele
                   {primaryMeta}
                 </EllipsisText>
               </span>
-              <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)]">
-                <DropdownMenu open={dropdownMenuOpen} onOpenChange={setDropdownMenuOpen}>
-                  <DropdownMenuTrigger asChild>
-                    <IconButton
-                      data-testid="artifact-more-actions"
-                      icon={<Icon name="more-horizontal" size={16} />}
-                      label={a('artifactEntry.moreActions', { name: primary.title || primary.name })}
-                      size="sm"
-                      variant="ghostIcon"
-                    />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className={MENU_CLASS_NAME} data-testid="artifact-dropdown-menu">
-                    <ArtifactMenuItems {...menuProps} kind="dropdown" />
-                  </DropdownMenuContent>
-                </DropdownMenu>
+              <div className="ml-auto flex shrink-0 items-center gap-[var(--vds-space-1)] @max-[16.5rem]/artifact:col-span-2 @max-[16.5rem]/artifact:ml-0 @max-[16.5rem]/artifact:w-full @max-[16.5rem]/artifact:border-t @max-[16.5rem]/artifact:border-[var(--vds-divider-default)] @max-[16.5rem]/artifact:pt-[var(--vds-space-2)]">
+                <div>
+                  <DropdownMenu open={dropdownMenuOpen} onOpenChange={setDropdownMenuOpen}>
+                    <DropdownMenuTrigger asChild>
+                      <IconButton
+                        data-testid="artifact-more-actions"
+                        icon={<Ellipsis size={16} />}
+                        label={a('artifactEntry.moreActions', { name: primary.title || primary.name })}
+                        size="sm"
+                        variant="ghostIcon"
+                      />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className={MENU_CLASS_NAME} data-testid="artifact-dropdown-menu">
+                      <ArtifactMenuItems {...menuProps} kind="dropdown" />
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                <Button
+                  aria-label={a('artifactEntry.import')}
+                  data-testid="artifact-import-resources"
+                  disabled={!canImport}
+                  onClick={openImport}
+                  title={a('artifactEntry.import')}
+                  size="sm"
+                  variant="outline"
+                >
+                  <span className="@max-[20rem]/artifact:hidden">{a('artifactEntry.import')}</span>
+                  <span className="hidden @max-[20rem]/artifact:inline">{a('artifactEntry.importShort')}</span>
+                </Button>
                 <Button
                   aria-label={a('artifactEntry.openName', { name: primary.name })}
+                  data-testid="artifact-open"
                   disabled={opening}
                   loading={opening}
                   onClick={() => void preview(primary)}

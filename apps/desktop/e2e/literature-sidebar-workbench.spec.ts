@@ -4,6 +4,43 @@ import { join, resolve } from 'node:path'
 import { DesktopSession, apiBase } from './fixtures/electron'
 import { createRuntime } from './fixtures/runtime'
 
+test('toolbar import follows the selected literature collection', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const base = await apiBase(page)
+    for (const name of ['目标分类甲', '目标分类乙']) {
+      const response = await page.request.post(`${base}/api/v1/collections`, { data: { name } })
+      expect(response.ok()).toBe(true)
+      const collection = await response.json()
+      await page.reload()
+      await page.getByTestId('activity-literature').click()
+      await page.getByTestId(`literature-collection-${collection.id}`).click()
+      const trigger = page.getByTestId('literature-toolbar-import')
+      await expect(trigger).toBeVisible()
+      await trigger.click()
+      const menu = page.getByRole('menu')
+      await expect(menu.getByRole('menuitem')).toHaveCount(3)
+      const chooser = page.waitForEvent('filechooser')
+      await menu.getByRole('menuitem', { name: /Bib.*Ris/ }).click()
+      const imported = page.waitForResponse(response => response.url().includes('/imports/bibliography') && response.request().method() === 'POST')
+      await (await chooser).setFiles({ name: 'toolbar.bib', mimeType: 'application/x-bibtex', buffer: Buffer.from(`@article{${collection.id},title={${name}导入验证},author={Import Test},year={2026}}`) })
+      const receipt = await imported
+      expect(receipt.ok(), await receipt.text()).toBe(true)
+      expect(new URL(receipt.url()).searchParams.get('collection_id')).toBe(collection.id)
+      await expect(page.getByTestId('literature-overview').getByText(`${name}导入验证`, { exact: true })).toBeVisible()
+      await expect(trigger).toBeVisible()
+    }
+    await page.getByTestId('literature-toolbar-import').click()
+    await page.screenshot({ path: testInfo.outputPath('literature-toolbar-import.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('tag search keeps sidebar geometry stable when opened and dismissed', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))

@@ -11,7 +11,7 @@ export function menuPositionStyle(
   position: MenuPosition,
   contentRect: { width: number; height: number },
   viewport: { width: number; height: number },
-  side: 'bottom' | 'left' | 'right' = 'bottom',
+  side: 'bottom' | 'left' | 'right' | 'top' = 'bottom',
   align: 'center' | 'end' | 'start' = 'start'
 ): CSSProperties {
   const viewportWidth = viewport.width
@@ -52,6 +52,8 @@ export function menuPositionStyle(
   const aboveTop = position.top - contentRect.height - MENU_OFFSET
   const fitsBelow = belowTop + contentRect.height <= viewportHeight - MENU_VIEWPORT_PADDING
   const fitsAbove = aboveTop >= MENU_VIEWPORT_PADDING
-  const top = fitsBelow || !fitsAbove ? belowTop : aboveTop
+  const top = side === 'top'
+    ? (fitsAbove || !fitsBelow ? aboveTop : belowTop)
+    : (fitsBelow || !fitsAbove ? belowTop : aboveTop)
   return { left, position: 'fixed', top: Math.min(Math.max(MENU_VIEWPORT_PADDING, top), Math.max(MENU_VIEWPORT_PADDING, viewportHeight - contentRect.height - MENU_VIEWPORT_PADDING)) }
 }

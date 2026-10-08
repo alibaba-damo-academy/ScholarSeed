@@ -3,32 +3,42 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+_HOME = tempfile.mkdtemp(prefix="ss-result-")
+os.environ["SCHOLARSEED_HOME"] = _HOME
 
-from service.chat.api.cards import register_card_routes
-from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
-from service.chat.persistence.catalog import SessionCatalogStore, SessionPrincipal, SessionStatus
-from service.chat.persistence.events import ProductEventStore
-from service.chat.service.cards import CardRegistry
-from service.cli.bridge import BLOCKING_CHECKPOINTS, parser
-from service.literature.api.result import register_result_routes
-from service.literature.persistence.store import LiteratureRepository
-from service.literature.schema import LiteratureItem
-from service.literature.service.result import (
+from fastapi import FastAPI  # noqa: E402  # imports after SCHOLARSEED_HOME isolation on purpose
+from fastapi.testclient import TestClient  # noqa: E402
+
+from service.chat.api.cards import register_card_routes  # noqa: E402
+from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD  # noqa: E402
+from service.chat.persistence.catalog import (  # noqa: E402
+    SessionCatalogStore,
+    SessionPrincipal,
+    SessionStatus,
+)
+from service.chat.persistence.events import ProductEventStore  # noqa: E402
+from service.chat.service.cards import CardRegistry  # noqa: E402
+from service.cli.bridge import BLOCKING_CHECKPOINTS, parser  # noqa: E402
+from service.literature.api.gate import FulltextGate  # noqa: E402
+from service.literature.api.result import register_result_routes  # noqa: E402
+from service.literature.persistence.store import LiteratureRepository  # noqa: E402
+from service.literature.schema import LiteratureItem  # noqa: E402
+from service.literature.service.result import (  # noqa: E402
     SEARCH_CARD,
+    AuthorizedFulltext,
     prepare_final_delivery,
     prepare_result,
     validate_search_card,
 )
-from service.literature.service.status import ResultIdentity, ResultStatusService
-from service.platform.bridge import (
+from service.literature.service.status import ResultIdentity, ResultStatusService  # noqa: E402
+from service.platform.bridge import (  # noqa: E402
     BRIDGE_SESSION_HEADER,
     BRIDGE_TOKEN_HEADER,
     DISPLAY_CARD_ROUTE,
@@ -36,7 +46,39 @@ from service.platform.bridge import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def fake_authorizer(*, granted: tuple[str, ...] = ()) -> SimpleNamespace:
+    """A ledger double: one live challenge when a grant is stated, none otherwise."""
+
+    challenge = SimpleNamespace(
+        authorization_id="a1",
+        session_id="s1",
+        snapshot_id="snapshot",
+        turn_id="t1",
+        authorization_type="precise_search_fulltext",
+        refs=granted,
+        scope_digest="d1",
+        question_id="precise-search-fulltext:q1",
+        state=None,
+        created_at=0.0,
+    )
+    return SimpleNamespace(
+        turn_scope=lambda **_scope: (challenge,) if granted else (),
+        granted_refs=lambda _challenge: granted,
+        turn_granted_refs=lambda **_scope: granted,
+        decided=lambda _challenge: bool(granted),
+    )
+
+
+#: Delivery runs in this suite never downloaded, so serve vouches for nothing.
+AUTHORIZED = AuthorizedFulltext()
+MANAGED_REVISION = "sha256:" + "a" * 64
 PRECISE_SKILL = REPO_ROOT / "skills" / "community" / "precise-literature-search" / "SKILL.md"
+RESEARCH_GUIDANCE_SKILL = (
+    REPO_ROOT / "skills" / "community" / "academic-research-guidance" / "SKILL.md"
+)
+RESEARCH_IDEA_SKILL = REPO_ROOT / "skills" / "community" / "research-idea-partner" / "SKILL.md"
 HOST_PROMPT = (
     REPO_ROOT / "apps" / "serve" / "service" / "chat" / "prompts" / "developerInstructions.md"
 )
@@ -56,7 +98,7 @@ class LiteratureResultContract(unittest.TestCase):
             "paths": {
                 "intent": "intent.json",
                 "latest_metadata": "search/round-001/metadata.json",
-                "latest_search_report": "search/round-001/report.md",
+                "latest_search_report": "search/round-001/search_report.md",
             },
         }
         self.paper = {
@@ -93,7 +135,7 @@ class LiteratureResultContract(unittest.TestCase):
                 },
             },
         )
-        (self.work.parent / "report.md").write_text(
+        (self.work.parent / "search_report.md").write_text(
             "# Search report\nActual metadata summary", encoding="utf-8"
         )
 
@@ -116,18 +158,23 @@ class LiteratureResultContract(unittest.TestCase):
             {
                 "final_report": "final_report.md",
                 "paper_summary": "paper_summary.md",
-                "report": "report.md",
+                "report": "read_report.md",
             }
         )
         self.write(self.run / "state.json", self.state)
-        for name in ("final_report.md", "paper_summary.md", "report.md"):
+        for name in ("final_report.md", "paper_summary.md", "read_report.md"):
             (self.run / name).write_text(f"# {name}\nverified content\n", encoding="utf-8")
 
     def test_precise_skill_requires_selected_list_before_one_click_authorization(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
-        self.assertIn("use the installed precise-literature-search skill", prompt.lower())
-        self.assertIn('"checkpoint":"search"', prompt)
+        self.assertIn("`academic-research-guidance`", prompt)
+        self.assertIn(
+            "`precise-literature-search` skill's clarification",
+            RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
+        )
+        self.assertIn('"checkpoint":"search"', skill)
+        self.assertNotIn('"checkpoint":"search"', prompt)
         self.assertNotIn('"checkpoint":"selection"', prompt)
         self.assertNotIn("stage.py authorize-download", prompt)
         self.assertIn("selection.json", skill)
@@ -136,10 +183,47 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertIn("ends the current turn immediately", skill)
         phase_four = skill.index("## Phase 4: authorize and download")
         skill_stage = skill.index('stage.py" authorize-download', phase_four)
-        skill_publication = skill.index("scholarseed-bridge literature result", skill_stage)
+        skill_publication = skill.index("`scholarseed_bridge` model tool", skill_stage)
         skill_download = skill.index('stage.py" download', skill_publication)
         self.assertLess(skill_stage, skill_publication)
         self.assertLess(skill_publication, skill_download)
+
+    def test_precise_search_delivery_precedes_download_choices(self) -> None:
+        skill = PRECISE_SKILL.read_text(encoding="utf-8")
+        review = skill.split("## Phase 3: review or refine", 1)[1]
+        review = review.split("## Phase 4: authorize and download", 1)[0]
+
+        self.assertNotIn("`report.md`", review)
+        checkpoint = review.index('"checkpoint":"search"')
+        self.assertLess(checkpoint, review.index("Present numbered candidates"))
+        for requirement in (
+            "Before asking the user to select papers or a download scope",
+            "activate this turn's task lease",
+            ".precise-literature-search/runs",
+            "session working directory",
+            "search_report.md",
+            "ok: true",
+            "card_id",
+            "do not proceed to download selection",
+            "Outside ScholarSeed",
+        ):
+            self.assertIn(requirement, review)
+
+    def test_precise_skill_owns_the_product_authorization_contract(self) -> None:
+        prompt = HOST_PROMPT.read_text(encoding="utf-8")
+        skill = " ".join(PRECISE_SKILL.read_text(encoding="utf-8").split())
+
+        self.assertNotIn("精准检索授权", prompt)
+        self.assertNotIn("checkpoint=selection", prompt)
+        self.assertIn("the product owns the `精准检索授权` interaction", skill.lower())
+        self.assertIn("including the download subset chosen on that card", skill)
+        self.assertIn("do not call `literature authorize` for this task", skill.lower())
+        # The skill must not keep its own download-scope or reading-confirmation question.
+        self.assertNotIn("Offer all papers, arXiv-only papers, or numbered papers", skill)
+        self.assertIn("do not ask a separate scope question", skill)
+        self.assertIn("no separate reading-confirmation question is asked", skill)
+        self.assertIn("stage.py authorize-download", skill)
+        self.assertNotIn("require_escalated", skill)
 
     def test_precise_skill_exclusively_owns_confirmation(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
@@ -147,17 +231,59 @@ class LiteratureResultContract(unittest.TestCase):
 
         self.assertIn("Before starting — mandatory confirmation", skill)
         self.assertIn("Then STOP and wait for an explicit affirmative response", skill)
-        self.assertIn("Follow the installed skill's confirmation", prompt)
+        self.assertIn(
+            "skill's clarification and confirmation contract",
+            RESEARCH_GUIDANCE_SKILL.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "Host context never bypasses the mandatory start confirmation", " ".join(skill.split())
+        )
         self.assertNotIn("skip its additional clarification and confirmation", prompt)
+
+    def test_precise_skill_owns_search_publication_and_authorization_recovery(self) -> None:
+        skill = PRECISE_SKILL.read_text(encoding="utf-8")
+        search = skill.index('"checkpoint":"search"')
+        selection = skill.index('"checkpoint":"selection"')
+        self.assertLess(search, selection)
+        self.assertIn("another skill's output", skill)
+        self.assertIn("keep the existing", skill)
+        self.assertIn("plan unchanged while waiting", skill)
+        self.assertIn("without searching, selecting or asking for authorization", skill)
+        self.assertIn("未读取原文", skill)
+        clarification = (PRECISE_SKILL.parent / "modules/intent/clarification.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Explicit auto mode does not waive that confirmation", clarification)
+        self.assertIn("one 1–3 question card", clarification)
+        self.assertIn("at most one conflict-resolution follow-up", clarification)
+        self.assertNotIn("Ask one question per turn", clarification)
 
     def test_research_idea_uses_checkpoint_owned_one_click_authorization(self) -> None:
         prompt = HOST_PROMPT.read_text(encoding="utf-8")
+        skill = " ".join(RESEARCH_IDEA_SKILL.read_text(encoding="utf-8").split())
 
-        self.assertIn('"checkpoint":"candidates"', prompt)
-        self.assertIn("the product owns the `想法原文授权` interaction", prompt)
-        self.assertIn("Do not call `literature authorize`, `request_user_input`", prompt)
-        self.assertNotIn("authorization_type=research_idea_fulltext", prompt)
-        self.assertNotIn("Use the returned question object unchanged", prompt)
+        self.assertNotIn('"checkpoint":"candidates"', prompt)
+        self.assertNotIn("checkpoint=candidates", prompt)
+        self.assertNotIn("想法原文授权", prompt)
+        self.assertIn('"checkpoint":"candidates"', skill)
+        self.assertIn("the product owns the `想法原文授权` interaction", skill)
+        self.assertIn("Do not call `literature authorize`, `request_user_input`", skill)
+        self.assertNotIn("authorization_type=research_idea_fulltext", skill)
+        self.assertNotIn("Use the returned question object unchanged", skill)
+
+    def test_research_idea_skill_retains_recovery_and_abstract_only_boundaries(self) -> None:
+        skill = " ".join(RESEARCH_IDEA_SKILL.read_text(encoding="utf-8").split())
+        self.assertIn("only titles and abstracts need no full-text authorization", skill)
+        self.assertIn("keep the existing plan unchanged", skill)
+        self.assertIn("do not search, select or ask for authorization again", skill)
+        self.assertIn("do not read full text through another route", skill)
+        self.assertIn("never the pre-authorization candidate scope", skill)
+        self.assertIn("Do not create page citations", skill)
+        self.assertIn("未读取原文", skill)
+        chinese = RESEARCH_IDEA_SKILL.with_name("SKILL.zh.md").read_text(encoding="utf-8")
+        self.assertIn('"checkpoint":"candidates"', chinese)
+        self.assertIn("authorization.disposition", chinese)
+        self.assertIn("未读取原文", chinese)
 
     def test_precise_skill_requires_final_checkpoint_before_claiming_delivery(self) -> None:
         skill = PRECISE_SKILL.read_text(encoding="utf-8")
@@ -168,7 +294,7 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertLess(checkpoint, claim_gate)
         self.assertIn("final_report.md", skill[checkpoint:])
         self.assertIn("paper_summary.md", skill[checkpoint:])
-        self.assertIn("report.md", skill[checkpoint:])
+        self.assertIn("read_report.md", skill[checkpoint:])
         self.assertNotIn('"checkpoint":"final"', prompt)
 
     @staticmethod
@@ -209,10 +335,7 @@ class LiteratureResultContract(unittest.TestCase):
             [(source.id, source.ref_id, source.title) for source in result.authorization_sources],
             [("p2", "paper:p2", "第二篇文献")],
         )
-        self.assertEqual(
-            result.authorization_refs,
-            ("paper:p2", f"artifact:{result.selection_sha256}"),
-        )
+        self.assertEqual(result.authorization_refs, ("paper:p2",))
 
     def test_selection_checkpoint_rejects_unbound_or_unknown_papers(self) -> None:
         self.write_selection(["missing"])
@@ -229,14 +352,14 @@ class LiteratureResultContract(unittest.TestCase):
         self.write_final_delivery()
         before = {str(path): path.read_bytes() for path in self.run.rglob("*") if path.is_file()}
 
-        result = prepare_final_delivery(self.root, "run")
+        result = prepare_final_delivery(self.root, "run", authorized=AUTHORIZED)
 
         self.assertEqual(
             [(artifact.path, artifact.role) for artifact in result.artifacts],
             [
                 ("run/final_report.md", "final"),
                 ("run/paper_summary.md", "supporting"),
-                ("run/report.md", "supporting"),
+                ("run/read_report.md", "supporting"),
             ],
         )
         self.assertTrue(all(len(artifact.sha256) == 64 for artifact in result.artifacts))
@@ -246,24 +369,278 @@ class LiteratureResultContract(unittest.TestCase):
 
     def test_final_checkpoint_rejects_incomplete_empty_or_unsafe_delivery(self) -> None:
         with self.assertRaisesRegex(ValueError, "run_incomplete"):
-            prepare_final_delivery(self.root, "run")
+            prepare_final_delivery(self.root, "run", authorized=AUTHORIZED)
 
         self.write_final_delivery()
         (self.run / "final_report.md").write_text("", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "artifact_empty"):
-            prepare_final_delivery(self.root, "run")
+            prepare_final_delivery(self.root, "run", authorized=AUTHORIZED)
 
         (self.run / "final_report.md").write_text("# final\n", encoding="utf-8")
         self.state["paths"]["final_report"] = "../escape.md"
         self.write(self.run / "state.json", self.state)
         with self.assertRaisesRegex(ValueError, "path_invalid"):
-            prepare_final_delivery(self.root, "run")
+            prepare_final_delivery(self.root, "run", authorized=AUTHORIZED)
 
         self.state["paths"]["final_report"] = "final_report.md"
         self.state["paths"]["paper_summary"] = "final_report.md"
         self.write(self.run / "state.json", self.state)
         with self.assertRaisesRegex(ValueError, "artifact_duplicate"):
-            prepare_final_delivery(self.root, "run")
+            prepare_final_delivery(self.root, "run", authorized=AUTHORIZED)
+
+    def deliver_final(self, authorizer) -> int:
+        """Post `checkpoint=final` for this run; assert the refusal reason when blocked."""
+
+        async def publish_artifact(path, role, **kwargs):
+            return {
+                "artifact_id": f"artifact-{path}",
+                "path": path,
+                "name": Path(path).name,
+                "sha256": kwargs["expected_sha256"],
+            }
+
+        live = SimpleNamespace(
+            id="s1",
+            bridge_token="private",
+            publication_turn_id="t1",
+            active_task_type="precise_search",
+            active_assistant_snapshot_id="snapshot",
+            active_product_turn_id="t1",
+            ledger=SimpleNamespace(active_turn_id="t1"),
+            runtime_workdir=self.root,
+            publish_artifact=publish_artifact,
+        )
+        sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
+        app = FastAPI()
+        register_result_routes(
+            app, sessions, SimpleNamespace(), SimpleNamespace(), authorizer=authorizer
+        )
+        with TestClient(app) as client:
+            response = client.post(
+                LITERATURE_RESULT_ROUTE,
+                headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
+                json={"run": "run", "checkpoint": "final"},
+            )
+        if response.status_code != 200:
+            self.assertEqual(response.json()["reason"], "literature_result_fulltext_unverified")
+        return response.status_code
+
+    def test_final_checkpoint_route_verifies_managed_claims_against_serve(self) -> None:
+        self.write_final_delivery()
+        (self.run / "downloads").mkdir(parents=True, exist_ok=True)
+        self.write(
+            self.run / "downloads" / "manifest.json",
+            {
+                "schema_version": "1.0",
+                "run_id": "run1",
+                "generated_at": "2026-09-27T00:00:00Z",
+                "is_placeholder": False,
+                "papers": [
+                    {
+                        "paper_id": "p1",
+                        "title": "t",
+                        "access_type": "open",
+                        "status": "downloaded",
+                        "storage": "managed",
+                        "ref": "paper:p1",
+                        "revision": MANAGED_REVISION,
+                        "file_path": None,
+                        "verified_exists": True,
+                        "message": "acquired by serve",
+                    }
+                ],
+                "summary": {
+                    "selected": 1,
+                    "downloaded": 1,
+                    "action_required": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                },
+                "warnings": [],
+            },
+        )
+
+        # A manifest claiming managed bytes serve never acquired cannot be delivered.
+        self.assertEqual(self.deliver_final(fake_authorizer()), 400)
+        # A grant without the bytes behind it cannot be delivered either.
+        self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 400)
+
+        from service.literature.persistence import fulltexts
+        from service.literature.persistence.store import connect
+
+        with connect() as connection:
+            fulltexts.ensure_fulltext_schema(connection)
+            fulltexts.record_fulltext_object(
+                connection,
+                fulltexts.FulltextObject(
+                    paper_id="p1",
+                    object_name="p1-managed.pdf",
+                    revision=MANAGED_REVISION,
+                    source_kind="arxiv",
+                    acquired_at=1.0,
+                ),
+            )
+        self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 200)
+        # No task lease means no authorization context: managed claims stay refused.
+        self.assertEqual(self.deliver_final(None), 400)
+
+    def test_final_checkpoint_holds_the_grant_line_for_run_storage_entries(self) -> None:
+        """paid-route PDFs are untrusted input too: delivery keeps the authorization line."""
+        self.write_final_delivery()
+        papers = self.run / "downloads" / "papers"
+        papers.mkdir(parents=True)
+        (papers / "p1.pdf").write_bytes(b"%PDF-1.7 bytes the sandbox fetched itself\n")
+        self.write(
+            self.run / "downloads" / "manifest.json",
+            {
+                "schema_version": "1.0",
+                "run_id": "run1",
+                "generated_at": "2026-09-27T00:00:00Z",
+                "is_placeholder": False,
+                "papers": [
+                    {
+                        "paper_id": "p1",
+                        "title": "t",
+                        "access_type": "paid",
+                        "status": "downloaded",
+                        "file_path": "downloads/papers/p1.pdf",
+                        "content_type": "application/pdf",
+                        "verified_exists": True,
+                        "message": "downloaded by paper-dl",
+                    }
+                ],
+                "summary": {
+                    "selected": 1,
+                    "downloaded": 1,
+                    "action_required": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                },
+                "warnings": [],
+            },
+        )
+
+        # A forged relay record put this paper into the paid route; the grant never covered it.
+        self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p2",))), 400)
+        # The same bytes under a granted ref deliver without any serve object row.
+        self.assertEqual(self.deliver_final(fake_authorizer(granted=("paper:p1",))), 200)
+
+    def test_final_checkpoint_without_a_lease_still_delivers_an_unmanaged_run(self) -> None:
+        """A run that never acquired managed full text must not lose its delivery path."""
+        self.write_final_delivery()
+        (self.run / "downloads").mkdir(parents=True, exist_ok=True)
+        self.write(
+            self.run / "downloads" / "manifest.json",
+            {
+                "schema_version": "1.0",
+                "run_id": "run1",
+                "generated_at": "2026-09-27T00:00:00Z",
+                "is_placeholder": False,
+                "papers": [
+                    {
+                        "paper_id": "p1",
+                        "title": "t",
+                        "access_type": "open",
+                        "status": "skipped",
+                        "storage": None,
+                        "ref": None,
+                        "revision": None,
+                        "file_path": None,
+                        "verified_exists": False,
+                        "message": "the product did not acquire this paper",
+                    }
+                ],
+                "summary": {
+                    "selected": 1,
+                    "downloaded": 0,
+                    "action_required": 0,
+                    "failed": 0,
+                    "skipped": 1,
+                },
+                "warnings": [],
+            },
+        )
+
+        async def publish_artifact(path, role, **kwargs):
+            return {
+                "artifact_id": f"artifact-{path}",
+                "path": path,
+                "name": Path(path).name,
+                "sha256": kwargs["expected_sha256"],
+            }
+
+        live = SimpleNamespace(
+            id="s1",
+            bridge_token="private",
+            publication_turn_id="t1",
+            active_task_type="",
+            runtime_workdir=self.root,
+            publish_artifact=publish_artifact,
+        )
+        sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
+        app = FastAPI()
+        register_result_routes(app, sessions, SimpleNamespace(), SimpleNamespace())
+        with TestClient(app) as client:
+            response = client.post(
+                LITERATURE_RESULT_ROUTE,
+                headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
+                json={"run": "run", "checkpoint": "final"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["ok"])
+
+    def test_final_checkpoint_refuses_managed_claims_serve_cannot_vouch_for(self) -> None:
+        self.write_final_delivery()
+        (self.run / "downloads").mkdir(parents=True, exist_ok=True)
+        self.write(
+            self.run / "downloads" / "manifest.json",
+            {
+                "schema_version": "1.0",
+                "run_id": "run1",
+                "generated_at": "2026-09-27T00:00:00Z",
+                "is_placeholder": False,
+                "papers": [
+                    {
+                        "paper_id": "p1",
+                        "title": "t",
+                        "access_type": "open",
+                        "status": "downloaded",
+                        "storage": "managed",
+                        "ref": "paper:p1",
+                        "revision": MANAGED_REVISION,
+                        "file_path": None,
+                        "verified_exists": True,
+                        "message": "acquired by serve",
+                    }
+                ],
+                "summary": {
+                    "selected": 1,
+                    "downloaded": 1,
+                    "action_required": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                },
+                "warnings": [],
+            },
+        )
+        granted = AuthorizedFulltext(refs=("paper:p1",), revisions={"p1": MANAGED_REVISION})
+        self.assertEqual(
+            len(prepare_final_delivery(self.root, "run", authorized=granted).artifacts), 3
+        )
+        for label, authorized in (
+            ("no grant at all", AUTHORIZED),
+            (
+                "another ref",
+                AuthorizedFulltext(refs=("paper:p2",), revisions={"p1": MANAGED_REVISION}),
+            ),
+            (
+                "another revision",
+                AuthorizedFulltext(refs=("paper:p1",), revisions={"p1": "sha256:" + "b" * 64}),
+            ),
+        ):
+            with self.subTest(case=label):
+                with self.assertRaisesRegex(ValueError, "fulltext_unverified"):
+                    prepare_final_delivery(self.root, "run", authorized=authorized)
 
     def test_round_and_paths_must_match(self) -> None:
         for path in ("../escape.json", "/tmp/escape.json"):
@@ -363,7 +740,7 @@ class LiteratureResultContract(unittest.TestCase):
 
         async def publish_artifact(path, role, **kwargs):
             publications.append((path, kwargs))
-            return {"artifact_id": "report", "path": path, "name": "report.md"}
+            return {"artifact_id": "report", "path": path, "name": Path(path).name}
 
         async def display_card(kind, content, **kwargs):
             publications.append(content.data)
@@ -381,6 +758,11 @@ class LiteratureResultContract(unittest.TestCase):
             publication_turn_id="t1",
             active_assistant_snapshot_id="snapshot-1",
             active_task_type="precise_search",
+            last_submission_id="client-t1",
+            interrupt_generation=0,
+            active_assistant_revision=None,
+            current_task=None,
+            ledger=SimpleNamespace(active_turn_id="t1"),
             runtime_workdir=self.root,
             publish_artifact=publish_artifact,
             display_card=display_card,
@@ -392,6 +774,7 @@ class LiteratureResultContract(unittest.TestCase):
                 authorization_type="precise_search_fulltext",
                 scope_digest="scope-digest",
                 question_id="precise-search-fulltext:opaque",
+                refs=("paper:p1",),
             )
         )
         app = FastAPI()
@@ -400,11 +783,14 @@ class LiteratureResultContract(unittest.TestCase):
             sessions,
             SimpleNamespace(),
             SimpleNamespace(),
-            authorizer=SimpleNamespace(
-                prepare=prepare_authorization,
-                granted=lambda _challenge: False,
-                granted_scope=lambda **_scope: False,
+            fulltext_gate=FulltextGate(
+                SimpleNamespace(
+                    prepare=prepare_authorization,
+                    turn_granted_refs=lambda **_scope: (),
+                ),
+                SimpleNamespace(),
             ),
+            authorizer=fake_authorizer(),
         )
         with TestClient(app) as client:
             self.assertEqual(
@@ -413,8 +799,20 @@ class LiteratureResultContract(unittest.TestCase):
             response = client.post(
                 LITERATURE_RESULT_ROUTE,
                 headers={BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"},
-                json={"run": "run"},
+                json={"run": "run", "checkpoint": "search"},
             )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["ok"])
+            self.assertEqual(response.json()["card_id"], "card")
+            self.assertEqual(
+                [publication[0] for publication in publications[:2]],
+                ["run/search/round-001/search_report.md", "run/search/round-001/metadata.json"],
+            )
+            self.assertEqual(publications[2]["report"]["name"], "search_report.md")
+            self.assertFalse((self.run / "selection.json").exists())
+            self.assertFalse((self.run / "downloads").exists())
+            self.assertEqual(product_questions, [])
+            prepare_authorization.assert_not_called()
             self.assertNotIn("authorization", response.json())
             self.state["paths"]["selection"] = None
             self.write(self.run / "state.json", self.state)
@@ -466,6 +864,7 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(authorization["authorization_type"], "precise_search_fulltext")
         self.assertEqual(authorization["sources"], [{"id": "p1", "title": "研究方法"}])
         self.assertEqual(authorization["disposition"], "rejected")
+        self.assertEqual(authorization["granted_refs"], [])
         self.assertNotIn("question", authorization)
         question, options = product_questions[0]
         self.assertEqual(question["header"], "精准检索授权")
@@ -477,8 +876,8 @@ class LiteratureResultContract(unittest.TestCase):
         self.assertEqual(prepare_authorization.call_count, 2)
         call = prepare_authorization.call_args.kwargs
         self.assertEqual(call["snapshot_id"], "snapshot-1")
-        self.assertEqual(call["refs"][0], "paper:p1")
-        self.assertTrue(call["refs"][1].startswith("artifact:"))
+        self.assertEqual(call["refs"], ("paper:p1",))
+        self.assertEqual(question["papers"][0]["id"], "paper:p1")
 
     def test_final_checkpoint_publishes_user_visible_artifacts_without_search_card(self) -> None:
         self.write_final_delivery()
@@ -501,13 +900,18 @@ class LiteratureResultContract(unittest.TestCase):
             bridge_token="private",
             publication_turn_id="t1",
             active_task_type="precise_search",
+            active_assistant_snapshot_id="snapshot",
+            active_product_turn_id="t1",
+            ledger=SimpleNamespace(active_turn_id="t1"),
             runtime_workdir=self.root,
             publish_artifact=publish_artifact,
             display_card=display_card,
         )
         sessions = SimpleNamespace(bridge_caller=lambda key: live if key == "s1" else None)
         app = FastAPI()
-        register_result_routes(app, sessions, SimpleNamespace(), SimpleNamespace())
+        register_result_routes(
+            app, sessions, SimpleNamespace(), SimpleNamespace(), authorizer=fake_authorizer()
+        )
 
         with TestClient(app) as client:
             response = client.post(
@@ -522,13 +926,13 @@ class LiteratureResultContract(unittest.TestCase):
             [
                 ("run/final_report.md", "final"),
                 ("run/paper_summary.md", "supporting"),
-                ("run/report.md", "supporting"),
+                ("run/read_report.md", "supporting"),
             ],
         )
         self.assertTrue(all(call[2]["expected_sha256"] for call in publications))
         self.assertEqual(
             [artifact["name"] for artifact in response.json()["artifacts"]],
-            ["final_report.md", "paper_summary.md", "report.md"],
+            ["final_report.md", "paper_summary.md", "read_report.md"],
         )
 
     def test_final_checkpoint_requires_precise_task_and_propagates_publication_failure(
@@ -690,6 +1094,11 @@ class LiteratureResultContract(unittest.TestCase):
             publication_turn_id="t1",
             active_assistant_snapshot_id="snapshot-1",
             active_task_type="research_idea",
+            last_submission_id="client-t1",
+            interrupt_generation=0,
+            active_assistant_revision=None,
+            current_task=None,
+            ledger=SimpleNamespace(active_turn_id="t1"),
             runtime_workdir=self.root,
             publish_artifact=publish_artifact,
             display_card=display_card,
@@ -701,6 +1110,7 @@ class LiteratureResultContract(unittest.TestCase):
                 authorization_type="research_idea_fulltext",
                 scope_digest="scope-digest",
                 question_id="research-idea-fulltext:opaque",
+                refs=("literature:r1",),
             )
         )
         app = FastAPI()
@@ -709,11 +1119,14 @@ class LiteratureResultContract(unittest.TestCase):
             sessions,
             SimpleNamespace(),
             SimpleNamespace(),
-            authorizer=SimpleNamespace(
-                prepare=prepare_authorization,
-                granted=lambda _challenge: False,
-                granted_scope=lambda **_scope: False,
+            fulltext_gate=FulltextGate(
+                SimpleNamespace(
+                    prepare=prepare_authorization,
+                    turn_granted_refs=lambda **_scope: (),
+                ),
+                SimpleNamespace(),
             ),
+            authorizer=fake_authorizer(),
         )
         headers = {BRIDGE_SESSION_HEADER: "s1", BRIDGE_TOKEN_HEADER: "private"}
         payload = {"run": "agentic-search-results/topic", "checkpoint": "candidates"}

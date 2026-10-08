@@ -8,7 +8,12 @@ import { filterProjects, projectFileLabel, projectSummary, projectTimeLabel } fr
 const localization = createInstance()
 await localization.init({ lng: 'zh', resources: { zh: { project: JSON.parse(readFileSync(new URL('../../localization/locales/zh/project.json', import.meta.url), 'utf8')) } } })
 const t = localization.getFixedT('zh', 'project')
-const format = { date: (value: Date | number) => new Date(value).toISOString(), number: String, relative: String }
+const format = {
+  date: (value: Date | number) => new Date(value).toISOString(),
+  number: (value: number) => String(value),
+  relative: (value: number) => String(value),
+  bytes: (value: number) => String(value)
+}
 
 const project = {
   id: '01m1grdrqwwcr7vh9tzh70r2bq',

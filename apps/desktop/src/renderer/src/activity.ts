@@ -1,9 +1,55 @@
-import type { ConvItem, TurnOutcome } from './model'
+import type { ConvItem, DisplayCardData, SubagentProgress, TurnOutcome } from './model'
 
-export type ActivityItem = Extract<ConvItem, {
-  kind: 'thinking' | 'tool' | 'web_search' | 'paper_search' | 'skill' | 'native_activity'
-}>
+export type ActivityItem = Extract<
+  ConvItem,
+  {
+    kind: 'thinking' | 'tool' | 'web_search' | 'paper_search' | 'skill' | 'native_activity'
+  }
+>
 export type ArtifactItem = Extract<ConvItem, { kind: 'artifact' }>
+
+export function subagentActivityItem(
+  progress: SubagentProgress,
+  parent: Extract<ConvItem, { kind: 'native_activity' }>
+): ActivityItem | null {
+  const completed = progress.phase === 'completed'
+  const settled = parent.status !== 'running'
+  const ownership = {
+    itemId: `${parent.activityId}:${progress.itemId}`,
+    turnId: parent.turnId,
+    startedAt: progress.startedAt ?? progress.observedAt,
+    completedAt: progress.completedAt ?? (settled ? parent.completedAt : undefined),
+    eventSeq: progress.eventSeq,
+  }
+  if (progress.activity === 'reasoning' && progress.summary) {
+    return {
+      ...ownership,
+      kind: 'thinking',
+      text: progress.summary,
+      completed: completed || settled,
+    }
+  }
+  if (!progress.tool) return null
+  const tool = progress.tool
+  const status = completed
+    ? tool.status === 'cancelled' || tool.status === 'interrupted'
+      ? 'cancelled'
+      : tool.ok === true
+        ? 'done'
+        : 'error'
+    : settled
+      ? 'cancelled'
+      : 'running'
+  return {
+    ...ownership,
+    kind: 'tool',
+    toolId: ownership.itemId,
+    name: tool.name,
+    input: tool.input,
+    result: tool.output,
+    status,
+  }
+}
 
 export type ActivityRow =
   | { kind: 'item'; item: ConvItem; key: string }
@@ -11,6 +57,28 @@ export type ActivityRow =
   | { kind: 'artifacts'; items: ArtifactItem[]; turnId?: string; key: string }
 
 export type ActivityRunState = 'running' | 'completed' | 'failed' | 'interrupted'
+
+export function cardArtifactIds(
+  items: readonly ConvItem[],
+  presentedArtifacts: (card: DisplayCardData) => readonly string[]
+): ReadonlySet<string> {
+  return new Set(
+    items.flatMap((item) => (item.kind === 'display_card' ? presentedArtifacts(item.card) : []))
+  )
+}
+
+export function visibleThinkingItem(
+  items: ActivityItem[],
+  running: boolean,
+  tail: boolean
+): Extract<ActivityItem, { kind: 'thinking' }> | undefined {
+  const latest = items.at(-1)
+  return running && tail && latest?.kind === 'thinking' ? latest : undefined
+}
+
+export function activityDisclosureOpen(userExpanded: boolean | null, autoExpand: boolean): boolean {
+  return userExpanded ?? autoExpand
+}
 
 const LEGACY_TURN_IDENTITY = 'legacy'
 
@@ -20,17 +88,15 @@ export interface AnswerInteractionCapabilities {
 }
 
 /**
- * Answer selection mutates durable annotations, so it stays limited to completed
- * or legacy turns. Citation navigation only reads an immutable evidence receipt;
- * keep it available for every settled answer, including partial answers from a
- * failed, interrupted, or outcome-unknown turn.
+ * Answer selection validates the chosen quote against the durable product text,
+ * including during a running turn. Citation navigation still needs settled evidence.
  */
 export function answerInteractionCapabilities(
   outcome: TurnOutcome | undefined
 ): AnswerInteractionCapabilities {
   return {
     citationEnabled: outcome !== 'running',
-    selectionEnabled: outcome === undefined || outcome === 'completed'
+    selectionEnabled: true,
   }
 }
 
@@ -66,7 +132,7 @@ export const ARTIFACT_CARD_SUFFIXES: ReadonlySet<string> = new Set([
   'txt',
   'webp',
   'xls',
-  'xlsx'
+  'xlsx',
 ])
 
 export function artifactCardVisible(artifact: ArtifactItem['artifact']): boolean {
@@ -103,27 +169,50 @@ export function activityRunState(
   return itemRunning ? 'running' : 'completed'
 }
 
+export function hasVisibleTurnProgress(rows: readonly ActivityRow[], turnId?: string): boolean {
+  if (!turnId) return false
+  if (
+    rows.some(
+      (row) =>
+        row.kind === 'activity' &&
+        row.turnId === turnId &&
+        (row.tail || row.items.some((item) => 'status' in item && item.status === 'running'))
+    )
+  )
+    return true
+  const tail = rows.filter((row) => row.kind !== 'artifacts' && rowTurnId(row) === turnId).at(-1)
+  return (
+    tail?.kind === 'item' &&
+    (tail.item.kind === 'agent' ||
+      (tail.item.kind === 'thinking' && tail.item.commentary === true)) &&
+    Boolean(tail.item.text.trim())
+  )
+}
+
 /** Admission and native execution share one user-facing working indicator. */
 export function workingIndicatorVisible(
   busy: boolean,
   admitting: boolean,
-  pendingHilCount: number
+  pendingHilCount: number,
+  hasVisibleProgress = false
 ): boolean {
-  return (busy || admitting) && pendingHilCount === 0
+  return (busy || admitting) && pendingHilCount === 0 && !hasVisibleProgress
 }
 
 function isGroupedActivity(item: ConvItem): item is ActivityItem {
-  return (item.kind === 'thinking' && item.commentary !== true)
-    || item.kind === 'tool'
-    || item.kind === 'web_search'
-    || item.kind === 'paper_search'
-    || item.kind === 'skill'
-    || item.kind === 'native_activity'
+  return (
+    (item.kind === 'thinking' && item.commentary !== true) ||
+    item.kind === 'tool' ||
+    item.kind === 'web_search' ||
+    item.kind === 'paper_search' ||
+    item.kind === 'skill' ||
+    item.kind === 'native_activity'
+  )
 }
 
-function activityIdentity(item: ActivityItem, fallback: number): string | number {
+export function activityIdentity(item: ActivityItem, fallback: number): string | number {
   if (item.itemId) return item.itemId
-  if (item.kind === 'thinking') return fallback
+  if (item.kind === 'thinking') return item.eventSeq ?? fallback
   if (item.kind === 'tool') return item.toolId
   if (item.kind === 'web_search' || item.kind === 'paper_search') return item.searchId
   if (item.kind === 'skill') return item.skillId
@@ -137,7 +226,10 @@ function rowTurnId(row: ActivityRow): string | undefined {
 
 function artifactDisplayIdentity(item: ArtifactItem): string {
   const path = item.artifact.saved_to || item.artifact.path
-  const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/{2,}/g, '/')
+  const normalized = path
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/{2,}/g, '/')
   return item.artifact.sha256
     ? `${normalized}\u0000${item.artifact.sha256}`
     : item.artifact.artifact_id
@@ -151,9 +243,8 @@ export function activityRows(
   items: ConvItem[],
   outcomes?: Record<string, TurnOutcome>
 ): ActivityRow[] {
-  const artifactDeferred = (item: ArtifactItem): boolean => Boolean(
-    item.turnId && outcomes?.[item.turnId] === 'running'
-  )
+  const artifactDeferred = (item: ArtifactItem): boolean =>
+    Boolean(item.turnId && outcomes?.[item.turnId] === 'running')
   const reviewPaths = new Map<string, Set<string>>()
   for (const item of items) {
     if (item.kind !== 'review' || !item.turnId) continue
@@ -161,19 +252,23 @@ export function activityRows(
     item.review.paths.forEach((path) => paths.add(path))
     reviewPaths.set(item.turnId, paths)
   }
-  const reviewedArtifact = (item: ArtifactItem): boolean => Boolean(
-    item.turnId
-    && (item.artifact.saved_to || item.artifact.path)
-    && reviewPaths.get(item.turnId)?.has(
-      item.artifact.saved_to || item.artifact.path
+  const reviewedArtifact = (item: ArtifactItem): boolean =>
+    Boolean(
+      item.turnId &&
+      (item.artifact.saved_to || item.artifact.path) &&
+      reviewPaths.get(item.turnId)?.has(item.artifact.saved_to || item.artifact.path)
     )
-  )
   const artifacts = new Map<string, Map<string, ArtifactItem>>()
   for (const item of items) {
-    if (item.kind === 'artifact' && !artifactDeferred(item)
-      && artifactCardVisible(item.artifact) && item.turnId
-      && !reviewedArtifact(item)
-      && item.artifact.status !== 'deleted' && item.artifact.change !== 'delete') {
+    if (
+      item.kind === 'artifact' &&
+      !artifactDeferred(item) &&
+      artifactCardVisible(item.artifact) &&
+      item.turnId &&
+      !reviewedArtifact(item) &&
+      item.artifact.status !== 'deleted' &&
+      item.artifact.change !== 'delete'
+    ) {
       const group = artifacts.get(item.turnId) ?? new Map<string, ArtifactItem>()
       const identity = artifactDisplayIdentity(item)
       const current = group.get(identity)
@@ -187,8 +282,13 @@ export function activityRows(
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index]
     if (item.kind === 'artifact' && artifactDeferred(item)) continue
-    if (item.kind === 'artifact' && (!artifactCardVisible(item.artifact) || reviewedArtifact(item))) continue
-    if (item.kind === 'artifact' && (item.artifact.status === 'deleted' || item.artifact.change === 'delete')) continue
+    if (item.kind === 'artifact' && (!artifactCardVisible(item.artifact) || reviewedArtifact(item)))
+      continue
+    if (
+      item.kind === 'artifact' &&
+      (item.artifact.status === 'deleted' || item.artifact.change === 'delete')
+    )
+      continue
     if (item.kind === 'artifact' && item.turnId) {
       if (emittedArtifacts.has(item.turnId)) continue
       emittedArtifacts.add(item.turnId)
@@ -196,7 +296,7 @@ export function activityRows(
         kind: 'artifacts',
         items: [...(artifacts.get(item.turnId)?.values() ?? [item])],
         turnId: item.turnId,
-        key: `artifacts-${item.turnId}`
+        key: `artifacts-${item.turnId}`,
       })
       continue
     }
@@ -207,9 +307,9 @@ export function activityRows(
 
     const segment: ActivityItem[] = [item]
     while (
-      index + 1 < items.length
-      && isGroupedActivity(items[index + 1])
-      && items[index + 1].turnId === item.turnId
+      index + 1 < items.length &&
+      isGroupedActivity(items[index + 1]) &&
+      items[index + 1].turnId === item.turnId
     ) {
       index += 1
       segment.push(items[index] as ActivityItem)
@@ -220,7 +320,7 @@ export function activityRows(
       items: segment,
       turnId: item.turnId,
       tail: false,
-      key: `activity-${item.turnId ?? LEGACY_TURN_IDENTITY}-${identity}`
+      key: `activity-${item.turnId ?? LEGACY_TURN_IDENTITY}-${identity}`,
     })
   }
   // Keep every turn's files after that turn's content, independent of outcome.
@@ -234,8 +334,10 @@ export function activityRows(
     let insertion = -1
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const candidate = rows[index]
-      if (rowTurnId(candidate) === turnId
-        && !(candidate.kind === 'item' && candidate.item.kind === 'review')) {
+      if (
+        rowTurnId(candidate) === turnId &&
+        !(candidate.kind === 'item' && candidate.item.kind === 'review')
+      ) {
         insertion = index
         break
       }
@@ -247,11 +349,9 @@ export function activityRows(
   // arrival order must not place the outcome above the work it summarizes.
   for (const [turnId, outcome] of Object.entries(outcomes ?? {})) {
     if (outcome !== 'failed' && outcome !== 'unknown') continue
-    const failures = rows.filter((row) => (
-      row.kind === 'item'
-      && row.item.kind === 'error'
-      && row.item.turnId === turnId
-    ))
+    const failures = rows.filter(
+      (row) => row.kind === 'item' && row.item.kind === 'error' && row.item.turnId === turnId
+    )
     if (failures.length === 0) continue
     const firstFailure = rows.findIndex((row) => failures.includes(row))
     const withoutFailures = rows.filter((row) => !failures.includes(row))

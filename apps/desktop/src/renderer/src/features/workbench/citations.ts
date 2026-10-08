@@ -1,40 +1,46 @@
-import { linkAttr } from '@milkdown/kit/preset/commonmark'
-import { $prose } from '@milkdown/kit/utils'
-import { Plugin } from '@milkdown/kit/prose/state'
+import { linkAttr, linkSchema } from '@milkdown/kit/preset/commonmark'
+import { editorViewCtx } from '@milkdown/kit/core'
+import { linkTooltipAPI } from '@milkdown/kit/component/link-tooltip'
 import type { Ctx } from '@milkdown/kit/ctx'
 
-import { isCitationUrl } from '../../contracts/citations'
+import { DOCUMENT_LINK_ATTRIBUTE } from './links.ts'
 
-const CITATION_ATTRIBUTE = 'data-saved-citation'
-const CITATION_SELECTOR = `a[${CITATION_ATTRIBUTE}]`
-const CITATION_PREFIX = 'scholarseed-cite:'
-export const DOCUMENT_FRAGMENT_ATTRIBUTE = 'data-document-fragment'
-
-/** Keep the editor's URL sanitizer; route citation marks exclusively inside the app. */
 export function configureCitationLinks(ctx: Ctx): void {
-  ctx.update(linkAttr.key, previous => mark => {
+  ctx.update(linkAttr.key, (previous) => (mark) => {
     const href = typeof mark.attrs.href === 'string' ? mark.attrs.href : ''
     return {
       ...previous(mark),
-      ...(isCitationUrl(href) ? { [CITATION_ATTRIBUTE]: href.slice(CITATION_PREFIX.length) } : {}),
-      ...(href.startsWith('#') && href.length > 1 ? { [DOCUMENT_FRAGMENT_ATTRIBUTE]: href } : {})
+      [DOCUMENT_LINK_ATTRIBUTE]: href,
+      contenteditable: 'false',
+      tabindex: 0,
     }
   })
 }
 
-export function savedCitationPlugin(open: (handle: string) => void) {
-  return $prose(() => new Plugin({
-    props: {
-      handleDOMEvents: {
-        click: (_view, event) => {
-          const link = event.target instanceof Element ? event.target.closest(CITATION_SELECTOR) : null
-          const handle = link?.getAttribute(CITATION_ATTRIBUTE)
-          if (!handle) return false
-          event.preventDefault()
-          open(handle)
-          return true
-        }
-      }
-    }
-  }))
+export function editDocumentLink(ctx: Ctx): void {
+  const view = ctx.get(editorViewCtx)
+  const { selection } = view.state
+  const parent = selection.$from.parent
+  const offset = selection.$from.parentOffset
+  const children = Array.from({ length: parent.childCount }, (_, index) => parent.child(index))
+  const after = parent.childAfter(offset)
+  const before = parent.childBefore(offset)
+  const type = linkSchema.type(ctx)
+  const afterMark = after.node && type.isInSet(after.node.marks)
+  const mark = afterMark || (before.node && type.isInSet(before.node.marks))
+  const selected = afterMark ? after.index : before.index
+  if (!mark) {
+    ctx.get(linkTooltipAPI.key).addLink(selection.from, selection.to)
+    return
+  }
+  let first = selected
+  let last = selected
+  while (first > 0 && mark.isInSet(children[first - 1].marks)) first -= 1
+  while (last + 1 < children.length && mark.isInSet(children[last + 1].marks)) last += 1
+  const from =
+    selection.$from.start() +
+    children.slice(0, first).reduce((total, node) => total + node.nodeSize, 0)
+  const to =
+    from + children.slice(first, last + 1).reduce((total, node) => total + node.nodeSize, 0)
+  ctx.get(linkTooltipAPI.key).editLink(mark, from, to)
 }

@@ -347,6 +347,7 @@ export type ResourceNoticeMessage = ResourceErrorMessage | {
   name: TaskTitle
   errorContent?: ReactNode
   detail?: string
+  openTaskCenter?: boolean
 } | {
   key: 'feedback.savedDestination'
   name: string
@@ -454,6 +455,8 @@ export interface WebSearchAttempt {
   invocationEvents: AgentInvocationEvent[]
   /** Renderer receipt time for each retained SSE event, keyed by Invocation sequence. */
   eventObservedAt: Record<number, number>
+  /** Final artifact path used by this provider phase, when it has one. */
+  artifactPath?: string
   resultText?: string
   status: WebSearchStatus
   error?: string
@@ -478,7 +481,7 @@ export interface ResourceWebSearch {
   startedAt: number
   /** Frozen when the complete automatic route becomes terminal. */
   completedAt?: number
-  /** Ordered, isolated evidence for each Skill attempted by the automatic route. */
+  /** Ordered provider phases from one automatic Invocation, sharing its invocation id. */
   attempts: WebSearchAttempt[]
   /** The executor whose verified output supplies the visible candidates. */
   resolvedMode?: WebSearchMode
@@ -583,10 +586,8 @@ export function resourceTreeIndicators(node: ResourceNode, project: string | nul
   const session = node.kind === 'file' ? sessions.find((item) => item.source.kind === 'project'
     && item.source.project === project && item.source.path === node.path) : undefined
   const version = node.kind === 'file' && node.version?.managementState !== 'git' ? node.version : undefined
-  const warnings: Array<'versionBadge.unavailable' | 'versionBadge.drifted' | 'treeStatus.saveError' | 'treeStatus.saveConflict'> = []
+  const warnings: Array<'versionBadge.unavailable' | 'versionBadge.drifted'> = []
   if (version?.managementState === 'unavailable') warnings.push('versionBadge.unavailable')
   if (version?.drifted) warnings.push('versionBadge.drifted')
-  if (session?.saveState === 'error') warnings.push('treeStatus.saveError')
-  if (session?.saveState === 'conflict') warnings.push('treeStatus.saveConflict')
   return { session, dirty: Boolean(session?.dirty), needsReview: Boolean(version?.needsReview), warnings }
 }

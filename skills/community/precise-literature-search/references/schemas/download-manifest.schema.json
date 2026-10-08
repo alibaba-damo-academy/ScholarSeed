@@ -96,6 +96,29 @@
               "open-download",
               "paid-download"
             ]
+          },
+          "storage": {
+            "enum": [
+              "managed",
+              "run",
+              null
+            ],
+            "description": "Where the acquired bytes live: product managed storage or the run directory (paid route only)."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^paper:.+",
+            "description": "Managed full-text reference authorized by the product."
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Content revision serve holds for the managed bytes."
           }
         }
       }

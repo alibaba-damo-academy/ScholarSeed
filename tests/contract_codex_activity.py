@@ -6,18 +6,25 @@ import asyncio
 import copy
 import unittest
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Any
 
 from scholarseed_codex.activity import (
     NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
     NATIVE_GOAL_GET_METHOD,
     NATIVE_QUEUE_LIST_METHOD,
+    NATIVE_THREAD_LIST_METHOD,
     NATIVE_THREAD_LOADED_LIST_METHOD,
     NATIVE_THREAD_READ_METHOD,
     NativeActivity,
     NativeActivityBlocker,
 )
 from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_codex.session import CodexRuntimeSession
+from scholarseed_runtime.contract.session import (
+    RuntimeActivitySnapshot,
+    RuntimeExecutionTreeBlocker,
+)
 
 ROOT_THREAD = "root"
 CHILD_THREAD = "child"
@@ -33,11 +40,19 @@ class ScriptedNativeHost:
 
     def __init__(self) -> None:
         self.process_generation = 1
+        self.activity_revision = 0
+        self.known_roots = (ROOT_THREAD,)
         self.threads = {ROOT_THREAD: idle_thread(ROOT_THREAD)}
         self.responses: dict[tuple[str, str, str], Any] = {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.counts: dict[str, int] = defaultdict(int)
         self.mutation: Any = None
+
+    def suspend_blockers(self, _thread_id: str) -> tuple[str, ...]:
+        return ()
+
+    def retain_loaded_roots(self, _loaded: tuple[str, ...]) -> None:
+        return None
 
     async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((method, copy.deepcopy(params)))
@@ -52,6 +67,19 @@ class ScriptedNativeHost:
             return copy.deepcopy(result)
         if method == NATIVE_THREAD_LOADED_LIST_METHOD:
             return {"data": list(self.threads), "nextCursor": None}
+        if method == NATIVE_THREAD_LIST_METHOD:
+            return {
+                "data": (
+                    [
+                        copy.deepcopy(thread)
+                        for thread in self.threads.values()
+                        if thread["id"] != ROOT_THREAD
+                    ]
+                    if not params["archived"]
+                    else []
+                ),
+                "nextCursor": None,
+            }
         if method == NATIVE_THREAD_READ_METHOD:
             return {"thread": copy.deepcopy(self.threads[params["threadId"]])}
         if method == NATIVE_GOAL_GET_METHOD:
@@ -65,6 +93,119 @@ class ScriptedNativeHost:
 
 
 class NativeActivityTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def runtime_session(host: ScriptedNativeHost) -> CodexRuntimeSession:
+        session = object.__new__(CodexRuntimeSession)
+        session._native = SimpleNamespace(host=host, session_id=ROOT_THREAD)
+        session._event_namespace = "fixture"
+        session._active_command_id = ""
+        session._tasks = set()
+        session._active_operations = 0
+        session._activity_revision = 0
+        session._watermark = 0
+        session._events = asyncio.Queue()
+        return session
+
+    async def test_missing_execution_tree_evidence_is_not_idle(self) -> None:
+        snapshot = RuntimeActivitySnapshot("fixture", 1, 1, True)
+        self.assertTrue(snapshot.idle)
+        self.assertFalse(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+
+    async def test_descendants_include_nested_unloaded_threads(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, ROOT_THREAD)
+        host.threads[SIBLING_THREAD] = idle_thread(SIBLING_THREAD, CHILD_THREAD)
+        result = await NativeActivity(host, ROOT_THREAD).descendants()
+        self.assertEqual(
+            [(node.thread_id, node.parent_thread_id) for node in result],
+            [(CHILD_THREAD, ROOT_THREAD), (SIBLING_THREAD, CHILD_THREAD)],
+        )
+        requests = [params for method, params in host.calls if method == NATIVE_THREAD_LIST_METHOD]
+        self.assertEqual([params["archived"] for params in requests], [False, True])
+        self.assertTrue(all(params["ancestorThreadId"] == ROOT_THREAD for params in requests))
+        self.assertTrue(all("subAgent" in params["sourceKinds"] for params in requests))
+
+    async def test_descendants_reject_unknown_parent(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, "another-root")
+        with self.assertRaises(ValueError):
+            await NativeActivity(host, ROOT_THREAD).descendants()
+
+    async def test_execution_tree_is_independent_of_goal_and_queue(self) -> None:
+        host = ScriptedNativeHost()
+        host.responses[(NATIVE_GOAL_GET_METHOD, ROOT_THREAD, "")] = {
+            "goal": {"threadId": ROOT_THREAD, "status": "active"}
+        }
+        host.responses[(NATIVE_QUEUE_LIST_METHOD, ROOT_THREAD, "")] = {
+            "data": [{"id": "queue-id", "clientUserMessageId": "message-id", "input": []}],
+            "nextCursor": None,
+        }
+        snapshot = await self.runtime_session(host).activity()
+        self.assertFalse(snapshot.idle)
+        self.assertTrue(snapshot.execution_tree_complete)
+        self.assertTrue(snapshot.execution_tree_idle)
+        self.assertEqual(snapshot.execution_tree_blockers, ())
+
+    async def test_active_descendant_blocks_execution_tree_after_root_turn_ends(self) -> None:
+        host = ScriptedNativeHost()
+        host.threads[CHILD_THREAD] = idle_thread(CHILD_THREAD, ROOT_THREAD)
+        host.threads[CHILD_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        snapshot = await self.runtime_session(host).activity()
+        self.assertTrue(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+        self.assertEqual(
+            snapshot.execution_tree_blockers,
+            (RuntimeExecutionTreeBlocker.TURN.value,),
+        )
+
+    async def test_background_terminal_blocks_execution_tree(self) -> None:
+        host = ScriptedNativeHost()
+        host.responses[(NATIVE_BACKGROUND_TERMINALS_LIST_METHOD, ROOT_THREAD, "")] = {
+            "data": [{"itemId": "exec-item", "processId": "42"}],
+            "nextCursor": None,
+        }
+        snapshot = await self.runtime_session(host).activity()
+        self.assertTrue(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+        self.assertEqual(
+            snapshot.execution_tree_blockers,
+            (RuntimeExecutionTreeBlocker.BACKGROUND_TASK.value,),
+        )
+
+    async def test_execution_tree_inspection_and_revision_changes_fail_closed(self) -> None:
+        host = ScriptedNativeHost()
+        host.responses[(NATIVE_GOAL_GET_METHOD, ROOT_THREAD, "")] = AppServerError("private")
+        snapshot = await self.runtime_session(host).activity()
+        self.assertFalse(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+
+        host = ScriptedNativeHost()
+        session = self.runtime_session(host)
+        session._active_command_id = "unsettled"
+        snapshot = await session.activity()
+        self.assertFalse(snapshot.idle)
+        self.assertTrue(snapshot.execution_tree_complete)
+        self.assertTrue(snapshot.execution_tree_idle)
+
+        host = ScriptedNativeHost()
+        host.threads[ROOT_THREAD]["status"] = {"type": "active", "activeFlags": []}
+        session = self.runtime_session(host)
+        session._active_command_id = "unsettled"
+        snapshot = await session.activity()
+        self.assertFalse(snapshot.execution_tree_idle)
+
+        host = ScriptedNativeHost()
+
+        def change_revision(method: str, _params: dict[str, Any], count: int) -> None:
+            if method == NATIVE_THREAD_READ_METHOD and count == 2:
+                host.activity_revision += 1
+
+        host.mutation = change_revision
+        snapshot = await self.runtime_session(host).activity()
+        self.assertFalse(snapshot.execution_tree_complete)
+        self.assertFalse(snapshot.execution_tree_idle)
+
     async def test_idle_tree_requires_every_dimension_and_keeps_requests_read_only(
         self,
     ) -> None:

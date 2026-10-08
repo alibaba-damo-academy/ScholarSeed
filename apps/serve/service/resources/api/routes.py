@@ -24,6 +24,7 @@ from service.content.service.tree import DEFAULT_MAX_DEPTH
 from service.platform.content import (
     AssetKind,
     AssetOrigin,
+    AssetPage,
     AssetTree,
     ExternalRootRef,
     RootKind,
@@ -366,6 +367,29 @@ def _in_resources_root(content, project: str, path: str) -> str:
     return content.within_root(project, RootKind.RESOURCES, path)
 
 
+def _scan_resource_tree(
+    content: ContentService,
+    project: str,
+    path: str,
+    depth: int,
+    offset: int,
+) -> tuple[AssetPage, str, tuple[ExternalRootRef, ...], dict[str, str | None]]:
+    page = (
+        content.subtree(
+            project,
+            _in_resources_root(content, project, path),
+            depth=depth,
+            offset=offset,
+        )
+        if path
+        else content.tree(project, depth=depth, offset=offset)
+    )
+    root = content.project(project).root
+    linked_roots = content.external_roots(project)
+    repositories = content.repository_roots(project, _tree_paths(page.children, files_only=False))
+    return page, root, linked_roots, repositories
+
+
 def register_resource_routes(app: FastAPI) -> None:
     """把资料库路由挂到应用上。"""
 
@@ -442,23 +466,16 @@ def register_resource_routes(app: FastAPI) -> None:
         try:
             if supervisor is not None:
                 await supervisor.activate_project(project or "")
-            page = (
-                content.subtree(
-                    project or "",
-                    _in_resources_root(content, project or "", path),
-                    depth=depth,
-                    offset=offset,
-                )
-                if path
-                else content.tree(project or "", depth=depth, offset=offset)
+            page, root, linked_roots, repositories = await asyncio.to_thread(
+                _scan_resource_tree,
+                content,
+                project or "",
+                path,
+                depth,
+                offset,
             )
-            root = content.project(project).root
-            linked_roots = content.external_roots(project or "")
         except ContentError as exc:
             raise _fail(exc) from exc
-        repositories = content.repository_roots(
-            project or "", _tree_paths(page.children, files_only=False)
-        )
         capability_paths = _tree_paths(page.children)
         capabilities = (
             supervisor.capability_states(
@@ -816,7 +833,7 @@ def register_resource_routes(app: FastAPI) -> None:
                 asset = content.move(project, path, target_dir or "")
                 _relocate_agent_imports(request, project, path, asset.path)
             elif action == "copy":
-                asset = content.copy(project, path, target_dir)
+                asset = await asyncio.to_thread(content.copy, project, path, target_dir)
             else:
                 raise HTTPException(status_code=INVALID_REQUEST_STATUS, detail="bad_action")
         except ContentError as exc:

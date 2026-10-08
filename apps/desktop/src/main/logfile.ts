@@ -7,7 +7,8 @@
 // gzipped generations, drop the oldest. Every filesystem failure is swallowed —
 // diagnostics must never break a launch.
 
-import { createReadStream, createWriteStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync, WriteStream } from 'fs'
+import type { WriteStream } from 'fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync, openSync, renameSync, rmSync, statSync } from 'fs'
 import { dirname } from 'path'
 import { pipeline } from 'stream/promises'
 import { createGzip } from 'zlib'

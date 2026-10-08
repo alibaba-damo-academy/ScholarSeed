@@ -471,6 +471,7 @@
 
     /* Spacing — space-N = (4 * N) px */
     --vds-space-0: 0px;
+    --vds-space-half: 2px;
     --vds-space-1: 4px;
     --vds-space-2: 8px;
     --vds-space-3: 12px;
@@ -519,6 +520,8 @@
     --vds-lh-subhead: 24px;
     --vds-font-body-lv2: 14px;
     --vds-lh-body-lv2: 22px;
+    --vds-resource-ai-line-height: 28px;
+    --vds-resource-ai-result-height: 200px;
     --vds-font-body-lv1: 12px;
     --vds-lh-body-lv1: 18px;
     --vds-font-caption: 10px;

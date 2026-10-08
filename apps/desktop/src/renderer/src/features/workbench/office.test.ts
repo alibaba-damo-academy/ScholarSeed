@@ -134,7 +134,7 @@ test('Impress selection extraction contains browser clipboard rejection and rest
 })
 
 test('Office runtime errors do not rewrite completed font warmup as a font failure', () => {
-  assert.match(source, /if\(!runtimeReadyAt\)warmup\('error'/)
+  assert.match(source, /if\(!runtimeReadyAt\|\|reason\.startsWith\('runtime-'\)\)warmup\('error'/)
   assert.doesNotMatch(source, /loading\.hidden=false;warmup\('error'/)
 })
 
@@ -166,7 +166,7 @@ test('Office document switches hide the previous canvas and correlate readiness 
   assert.match(runtimeSource, /data-testid="office-switch-mask"/)
   assert.match(workbenchStyles, /\.vds-office-switch-mask \{[\s\S]*backdrop-filter: blur\(var\(--vds-space-3\)\)/)
   assert.match(threadSource, /bindingId/)
-  assert.match(threadSource, /event\.EventName === 'OnLayoutFinished'/)
+  assert.match(threadSource, /DOCUMENT_READY_EVENTS\.has\(event\.EventName\)/)
   assert.match(threadSource, /cmd: 'layout_finished', bindingId/)
   assert.match(threadSource, /cmd: VIEWPORT_RESIZED_COMMAND,[\s\S]*bindingId: event\.data\.bindingId,[\s\S]*requestId: event\.data\.requestId/)
   assert.match(threadSource, /GlobalEventBroadcaster\.create/)

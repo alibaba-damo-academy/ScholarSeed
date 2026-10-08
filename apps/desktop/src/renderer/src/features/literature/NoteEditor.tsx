@@ -203,11 +203,7 @@ export function NoteEditor({
           </TabsList>
         </Tabs>
         <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
-          {error ? (
-            <span className="min-w-0 truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-error-text-primary)]">
-              {error}
-            </span>
-          ) : showStatus ? (
+          {showStatus ? (
             <span
               className={`text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] ${
                 status === 'saved'
@@ -234,6 +230,11 @@ export function NoteEditor({
           {actions}
         </div>
       </div>
+      {error ? (
+        <span role="alert" className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-error-text-primary)]">
+          {error}
+        </span>
+      ) : null}
       <Input
         aria-label={t('notes.title')}
         placeholder={titlePlaceholder}

@@ -197,6 +197,17 @@ class OAuthContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record.state, CredentialState.REAUTH_REQUIRED)
         self.assertIsNone(record.tokens)
 
+    async def test_unclassified_refresh_401_requires_reauthorization(self) -> None:
+        self.seed()
+        protocol = self.protocol(
+            lambda request: httpx.Response(401, json={"error": {"message": "secret old-refresh"}})
+        )
+        with self.assertRaisesRegex(OAuthFailure, "^oauth_reauth_required$"):
+            await OAuthCredentials(self.store, protocol).resolve(OWNER, CONNECTION)
+        record = self.store.read(OWNER, CONNECTION)
+        self.assertEqual(record.state, CredentialState.REAUTH_REQUIRED)
+        self.assertIsNone(record.tokens)
+
     async def test_region_error_is_actionable_and_logs_no_upstream_secrets(self) -> None:
         protocol = self.protocol(
             lambda request: httpx.Response(

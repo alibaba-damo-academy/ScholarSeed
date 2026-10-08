@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from service.chat.runtime import composition
 from service.cli import serve, skill_python
 from service.platform import executables
 from service.platform.bridge import BRIDGE_SESSION_ENV
@@ -120,7 +119,9 @@ class SkillPythonContracts(unittest.TestCase):
                 patch.object(serve, "probe_command", return_value=True) as probe,
             ):
                 serve._ensure_skill_python_path()
-                self.assertEqual(os.environ["PATH"].split(os.pathsep), [str(product), str(installed)])
+                self.assertEqual(
+                    os.environ["PATH"].split(os.pathsep), [str(product), str(installed)]
+                )
                 resolve.assert_called_once_with(executables.SKILL_PYTHON_COMMAND, product)
                 probe.assert_called_once_with(launcher, executables.SKILL_PYTHON_PROBE_ARGUMENTS)
 
@@ -136,33 +137,6 @@ class SkillPythonContracts(unittest.TestCase):
             ):
                 serve._ensure_skill_python_path()
                 self.assertEqual(os.environ["PATH"], original)
-
-    def test_bridge_falls_back_after_failed_probe(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            product, installed = root / "product bin", root / "Scripts"
-            candidates = (product / "scholarseed-bridge.cmd", installed / "scholarseed-bridge.exe")
-            with (
-                patch.object(composition, "command_directories", return_value=(product, installed)),
-                patch.object(composition, "resolve_command", side_effect=candidates),
-                patch.object(composition.LiveSessionService, "_probe_bridge", side_effect=(False, True)),
-            ):
-                self.assertEqual(
-                    composition.LiveSessionService._resolve_bridge_executable(), candidates[1]
-                )
-
-    def test_bridge_product_launcher_wins(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            product = Path(directory)
-            candidate = product / "scholarseed-bridge.cmd"
-            with (
-                patch.object(composition, "command_directories", return_value=(product,)),
-                patch.object(composition, "resolve_command", return_value=candidate),
-                patch.object(composition.LiveSessionService, "_probe_bridge", return_value=True),
-            ):
-                self.assertEqual(
-                    composition.LiveSessionService._resolve_bridge_executable(), candidate
-                )
 
 
 if __name__ == "__main__":

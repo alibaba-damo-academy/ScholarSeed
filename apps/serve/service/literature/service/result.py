@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, cast
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from service.literature.persistence.files import read_scoped_file, scoped_parent, scoped_relative
+from service.literature.service.fulltexts import PAPER_REF_PREFIX
 
 SEARCH_CARD = "literature-search"
 SEARCH_VERSION: Literal["1.0"] = "1.0"
@@ -21,6 +22,10 @@ LEGACY_LITERATURE_REVIEW_ORIGIN: Literal["slr-codex"] = "slr-codex"
 AGENTIC_SEARCH_ORIGIN: Literal["agentic-search"] = "agentic-search"
 LITERATURE_REVIEW_ORIGINS = frozenset({LITERATURE_REVIEW_ORIGIN, LEGACY_LITERATURE_REVIEW_ORIGIN})
 SEARCH_FILE_BYTES = 8 * 1024 * 1024
+DOWNLOAD_MANIFEST_FILE = "downloads/manifest.json"
+MANAGED_STORAGE = "managed"
+DOWNLOADED_STATUS = "downloaded"
+FULLTEXT_UNVERIFIED = "literature_result_fulltext_unverified"
 SEARCH_CARD_PAPERS = 3
 SEARCH_STATUS_PAPERS = 20
 SEARCH_MAX_PAPERS = 1000
@@ -231,12 +236,11 @@ class PreparedSearchResult:
 
     @property
     def authorization_refs(self) -> tuple[str, ...]:
+        # The challenge scope is exactly the shown candidate set: the selection digest
+        # travels in the decision values (subset derivation), never in the ledger scope.
         if not self.authorization_sources or not self.selection_sha256:
             return ()
-        return (
-            *(source.ref_id for source in self.authorization_sources),
-            f"{AUTHORIZATION_ARTIFACT_PREFIX}{self.selection_sha256}",
-        )
+        return tuple(source.ref_id for source in self.authorization_sources)
 
 
 @dataclass(frozen=True)
@@ -251,13 +255,60 @@ class PreparedFinalDelivery:
     artifacts: tuple[PreparedDeliveryArtifact, ...]
 
 
-def prepare_final_delivery(workdir: Path, run: str) -> PreparedFinalDelivery:
+@dataclass(frozen=True)
+class AuthorizedFulltext:
+    """What serve itself vouches for: the granted refs and the bytes it holds."""
+
+    refs: tuple[str, ...] = ()
+    revisions: Mapping[str, str] = field(default_factory=dict)
+
+
+def verify_download_manifest(workdir: Path, root: str, authorized: AuthorizedFulltext) -> None:
+    """Refuse delivery when a run claims full texts this turn never granted.
+
+    The manifest is shaped by the skill from host-relayed bridge responses and from
+    its own downloader, so it is input rather than evidence: every downloaded entry
+    must name a paper inside the granted scope whatever storage holds the bytes, and
+    managed entries must additionally match serve's own object map revision
+    (proposal 116 G1). Runs that never downloaded have no manifest.
+    """
+
+    try:
+        payload = read_scoped_file(
+            workdir, scoped_relative(root, DOWNLOAD_MANIFEST_FILE), SEARCH_FILE_BYTES
+        )
+    except OSError:
+        return
+    manifest = json.loads(payload)
+    papers = manifest.get("papers") if isinstance(manifest, dict) else None
+    if not isinstance(papers, list):
+        raise ValueError(FULLTEXT_UNVERIFIED)
+    for entry in papers:
+        if not isinstance(entry, dict) or entry.get("status") != DOWNLOADED_STATUS:
+            continue
+        paper_id = entry.get("paper_id")
+        if not isinstance(paper_id, str) or PAPER_REF_PREFIX + paper_id not in authorized.refs:
+            raise ValueError(FULLTEXT_UNVERIFIED)
+        if entry.get("storage") != MANAGED_STORAGE:
+            continue
+        if (
+            not isinstance(entry.get("ref"), str)
+            or entry["ref"] not in authorized.refs
+            or authorized.revisions.get(paper_id) != entry.get("revision")
+        ):
+            raise ValueError(FULLTEXT_UNVERIFIED)
+
+
+def prepare_final_delivery(
+    workdir: Path, run: str, *, authorized: AuthorizedFulltext
+) -> PreparedFinalDelivery:
     """Bind terminal skill outputs to immutable product publication inputs."""
 
     root = _relative(run)
     state = _object(workdir, scoped_relative(root, SEARCH_STATE_FILE))
     if state.get("status") != FINAL_DELIVERY_STATUS:
         raise ValueError("literature_result_run_incomplete")
+    verify_download_manifest(workdir, root, authorized)
     paths = state.get("paths")
     if not isinstance(paths, dict):
         raise ValueError("literature_result_paths_missing")

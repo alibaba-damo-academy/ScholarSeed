@@ -11,7 +11,7 @@ const papers = [
   { paper_id: 'two', title: 'Alpha', authors: ['C'], year: 2024, venue: '', abstract: '', citation_count: 20, doi: '', arxiv_id: '2401.1', tier: 1, reason: '', subtopics_covered: [], access: 'closed_or_unknown', source: 'paperhub' }
 ]
 
-test('review retrieval evidence stays inside its card rather than making file cards', () => {
+test('search report evidence stays inside its card rather than making file cards', () => {
   const result = {
     origin: 'literature-review',
     metadata: { artifact_id: 'metadata' },
@@ -20,7 +20,8 @@ test('review retrieval evidence stays inside its card rather than making file ca
     fulltext: { artifact_id: 'fulltext' }
   }
   assert.deepEqual(presentedSearchArtifacts(result), ['metadata', 'selection', 'fulltext', 'report'])
-  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'precise-search' }), ['metadata', 'selection', 'fulltext'])
+  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'precise-search' }), ['metadata', 'selection', 'fulltext', 'report'])
+  assert.deepEqual(presentedSearchArtifacts({ ...result, origin: 'agentic-search' }), ['metadata', 'selection', 'fulltext'])
 })
 
 test('literature search results filter and sort without mutating metadata order', () => {

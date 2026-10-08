@@ -19,9 +19,9 @@ import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from './ProjectMenu'
 import { TabBar } from './TabBar'
 
 const TOPBAR_LEFT_GROUP_CLASS_NAME =
-  'vds-topbar-left-group relative flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] [padding-left:var(--vds-window-controls-left-space)] pr-4'
+  'vds-topbar-left-group relative flex h-[var(--vds-workbench-header-height)] w-full flex-none items-center border-y border-l border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] [padding-left:var(--vds-window-controls-left-space)] pr-4'
 const TOPBAR_RIGHT_DIVIDER_CLASS_NAME =
-  ' after:pointer-events-none after:absolute after:right-0 after:top-0 after:h-full after:w-px after:bg-[var(--vds-border-default)] after:content-[""]'
+  ' after:pointer-events-none after:absolute after:right-0 after:top-0 after:h-full after:w-px after:bg-[var(--vds-divider-default)] after:content-[""]'
 const PROJECT_TRIGGER_CLASS_NAME =
   'flex h-8 w-[154px] min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[14px] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)] hover:bg-[var(--vds-bg-gray-hover-transparent)]'
 const TOPBAR_ICON_BUTTON_CLASS_NAME =
@@ -158,7 +158,7 @@ export function TopBarRight(): React.JSX.Element {
   return (
     <div ref={rootRef} className="vds-top-bar vds-top-bar-right relative !h-[var(--vds-workbench-header-height)]">
       <TabBar />
-      <div ref={actionsRef} className="vds-top-bar-actions no-drag z-[var(--vds-z-elevated)] bg-[var(--vds-bg-gray-default)]">
+      <div ref={actionsRef} className="vds-top-bar-actions no-drag absolute end-0 top-0 z-[var(--vds-z-elevated)] flex h-12 flex-none items-center gap-[var(--vds-space-3)] border-0 border-b border-solid border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] pe-[var(--vds-top-bar-inline-end)]">
         {!state.aiPanel.open && (
           compactAiEntry ? (
             <Tooltip content={t('chrome.aiAssistant')} side="bottom" portalled>

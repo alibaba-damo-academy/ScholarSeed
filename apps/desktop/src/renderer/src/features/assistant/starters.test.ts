@@ -88,3 +88,16 @@ test('task starter skill failures stay explicit', () => {
     { failure: 'path' }
   )
 })
+
+test('task starter interaction exposes progress and hands focus to the composer', () => {
+  const panel = readFileSync(new URL('./AiPanel.tsx', import.meta.url), 'utf8')
+
+  assert.match(panel, /setTaskStarterPending\(starter\.skillName\)/)
+  assert.match(panel, /loading=\{taskStarterPending === starter\.skillName\}/)
+  assert.match(panel, /aria-busy=\{taskStarterPending === starter\.skillName\}/)
+  assert.match(panel, /data-testid=\{`ai-task-starter-\$\{starter\.taskType\}`\}/)
+  assert.ok(
+    panel.indexOf('focusComposer({ selectionStart: 0, selectionEnd: 0 })')
+      > panel.indexOf('act.askAiFromPanel(')
+  )
+})

@@ -29,6 +29,7 @@ from service.workbench.service.selection import (
 )
 
 SELECTION_ACTION_ROUTE = "/api/workbench/selection/actions"
+SELECTION_SNAPSHOT_ROUTE = "/api/workbench/selection/snapshot"
 SELECTION_ACTIONS_STATE = "selection_actions"
 MAXIMUM_PROJECT_ID_CHARS = 256
 MAXIMUM_SOURCE_ID_CHARS = 2_048
@@ -162,6 +163,19 @@ def _selection_actions(request: Request) -> SelectionActionService:
 
 def register_selection_action_routes(app: FastAPI) -> None:
     """Mount selection actions without constructing runtime or evidence adapters."""
+
+    @app.post(SELECTION_SNAPSHOT_ROUTE)
+    def capture_selection_snapshot(request: Request, body: SelectionEvidenceRequest):
+        try:
+            evidence = _selection_actions(request).snapshot(body.as_reference())
+        except SelectionEvidenceError as exc:
+            raise HTTPException(
+                status_code=EVIDENCE_ERROR_STATUS.get(exc.code, 422), detail=exc.code
+            ) from exc
+        return {
+            "snapshot_text": evidence.selected_text,
+            "source_revision": evidence.evidence_revision,
+        }
 
     @app.post(SELECTION_ACTION_ROUTE, response_model=SelectionActionResponse)
     async def execute_selection_action(  # type: ignore[unused-ignore]

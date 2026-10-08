@@ -25,7 +25,13 @@ declare const __SCHOLARSEED_WEB_VERSION__: string
 /** 桌面独有能力不在浏览器实现，交回 renderer 既有的降级分支。 */
 type BrowserBridge = Omit<
   ScholarSeedBridge,
-  'writeClipboard' | 'writeClipboardContent' | 'pasteClipboard' | 'pickImport' | 'trashToken' | 'openTrash' | 'acquireOfficeImage'
+  | 'writeClipboard'
+  | 'writeClipboardContent'
+  | 'pasteClipboard'
+  | 'pickImport'
+  | 'trashToken'
+  | 'openTrash'
+  | 'acquireOfficeImage'
 >
 type UpdateState = Awaited<ReturnType<ScholarSeedBridge['getUpdateState']>>
 
@@ -57,7 +63,7 @@ function localeSignals(): LocaleSignals {
   const preferred = navigator.languages
   return {
     timeZone: readTimeZone(),
-    languages: preferred.length ? preferred : [navigator.language]
+    languages: preferred.length ? preferred : [navigator.language],
   }
 }
 
@@ -97,7 +103,10 @@ const bridge: BrowserBridge = {
   getApiBase: () => SAME_ORIGIN_API_BASE,
   deviceSkills: async (request) => {
     const { path, init } = skillRequest(request)
-    const response = await fetch(`${SAME_ORIGIN_API_BASE}${path}`, { ...init, credentials: 'include' })
+    const response = await fetch(`${SAME_ORIGIN_API_BASE}${path}`, {
+      ...init,
+      credentials: 'include',
+    })
     return { status: response.status, body: await response.text() }
   },
   platform: platform(),
@@ -115,7 +124,9 @@ const bridge: BrowserBridge = {
   reconcilePreferences: async () => {
     const raw = window.localStorage.getItem(PREFERENCES_STORAGE_KEY)
     const detected = detectPreferenceLanguage(localeSignals())
-    return raw === null ? defaultRendererPreferences(detected) : sanitizeRendererPreferences(JSON.parse(raw), detected)
+    return raw === null
+      ? defaultRendererPreferences(detected)
+      : sanitizeRendererPreferences(JSON.parse(raw), detected)
   },
   savePreferences: async (preferences) => {
     const sanitized = sanitizeRendererPreferences(preferences)
@@ -124,7 +135,7 @@ const bridge: BrowserBridge = {
   },
   systemPermissions: async () => ({
     platform: platform(),
-    permissions: unavailablePermissionRecords()
+    permissions: unavailablePermissionRecords(),
   }),
   openSystemPermission: async () => false,
   showNotification: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
@@ -140,8 +151,16 @@ const bridge: BrowserBridge = {
   openExternal: async (url) => {
     window.open(url, '_blank', 'noopener,noreferrer')
   },
-  openPath: async () => ({ ok: false, error: UNSUPPORTED_TEXT, applicationFailure: { code: 'desktop_bridge_unavailable' } }),
-  revealPath: async () => ({ ok: false, error: UNSUPPORTED_TEXT, applicationFailure: { code: 'desktop_bridge_unavailable' } }),
+  openPath: async () => ({
+    ok: false,
+    error: UNSUPPORTED_TEXT,
+    applicationFailure: { code: 'desktop_bridge_unavailable' },
+  }),
+  revealPath: async () => ({
+    ok: false,
+    error: UNSUPPORTED_TEXT,
+    applicationFailure: { code: 'desktop_bridge_unavailable' },
+  }),
   appsForFile: async () => [],
   openPathWith: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
   pickDir: async () => null,
@@ -171,7 +190,11 @@ const bridge: BrowserBridge = {
   getDeviceInfo: async () => deviceInfo(),
   // 桌面登录交接是主进程能力（深链回跳）：浏览器形态没有这条通路。
   // claimLanding 恒 false —— 桌面冷启动首页只属于桌面端。
-  desktopLoginStart: async () => ({ ok: false, error: UNSUPPORTED_TEXT, applicationFailure: { code: 'native_unavailable' } }),
+  desktopLoginStart: async () => ({
+    ok: false,
+    error: UNSUPPORTED_TEXT,
+    applicationFailure: { code: 'native_unavailable' },
+  }),
   desktopLoginCancel: async () => ({ ok: true }),
   desktopAuthState: async () => ({ phase: 'idle' as const }),
   desktopAuthAdoptedAck: async () => ({ ok: true }),
@@ -184,21 +207,29 @@ const bridge: BrowserBridge = {
   checkUpdate: async () => upToDate(),
   // 浏览器形态没有更新通路（恒 upToDate、从不带候选包），静默刷新如实无操作。
   refreshUpdate: async () => {},
-  // 浏览器形态没有组件 store（Windows 组件化载荷专属），如实返回 null。
-  runtimeStorePath: async () => null,
+  // 浏览器形态没有本机数据位置：home 未知、不可配置、不可提交。
+  storageConfig: async () => ({
+    home: '',
+    runtimeStore: null,
+    configured: false,
+    canChangeDataHome: false,
+    firstLaunchEligible: false,
+  }),
+  commitDataHome: async () => ({ ok: false as const, reason: 'unsupported' as const }),
   diagnoseUpdate: async () => ({
     url: '',
     releaseLane: 'local',
     policy: { productId: '', bundleId: '', expectedTeamId: '', channel: '' },
     server: null,
     mismatches: [],
-    error: UNSUPPORTED_TEXT
+    error: UNSUPPORTED_TEXT,
   }),
   startUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
   installUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
+  cancelUpdate: async () => ({ ok: false, error: UNSUPPORTED_TEXT }),
   // 浏览器形态恒 upToDate、从不带候选包，没有可确认的弹窗；false 是如实回答。
   acknowledgeUpdateAnnouncement: async () => false,
-  onUpdateState: unsubscribe
+  onUpdateState: unsubscribe,
 }
 
 if (!window.scholarseed) window.scholarseed = bridge as ScholarSeedBridge

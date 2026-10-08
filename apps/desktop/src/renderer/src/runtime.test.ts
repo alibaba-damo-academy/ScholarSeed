@@ -17,6 +17,7 @@ import {
   parseSessionCatalog,
   parseSessionCatalogResult,
   parseOpenSessionResponse,
+  sessionCatalogHttpFailure,
   serviceErrorDetail,
   type RuntimeIncidentData,
   type UncertainOperationSnapshot
@@ -24,11 +25,16 @@ import {
 import {
   applyRuntimeIncident,
   blocksRuntimePreflight,
+  catalogRunStateIsCurrent,
+  canOfferTurnRecovery,
+  canContinueFailedTurn,
   classifyReadiness,
   effectiveReadiness,
   formatRuntimeStatus,
   formatTurnUnknown,
   permissionModeFailure,
+  permissionModeNeedsConfirmation,
+  permissionModeShowsNextTurn,
   projectRuntimeIncidentReadiness,
   projectSessionRecovery,
   projectSessionState,
@@ -42,6 +48,65 @@ import {
   shouldRetrySessionResume
 } from './runtime.ts'
 import type { RuntimeStatusMessage, Thread } from './model.ts'
+
+test('turn recovery waits for the authoritative session to stop running', () => {
+  assert.equal(canOfferTurnRecovery({ running: true, status: 'failed' }), false)
+  assert.equal(canOfferTurnRecovery({ running: false, status: 'running' }), false)
+  assert.equal(canOfferTurnRecovery({ running: false, status: 'waiting' }), false)
+  assert.equal(canOfferTurnRecovery({ running: false, status: 'failed' }), true)
+  assert.equal(canOfferTurnRecovery({ running: false, status: 'done' }), true)
+})
+
+test('failed turn recovery expires after subsequent turns and blocks pending submissions', () => {
+  const failure = { ...describeTurnFailure({ retryable: true }), turnId: 'failed-turn' }
+  const current: Thread = { ...thread(), running: false, status: 'failed', conversation: [failure] }
+  assert.equal(canContinueFailedTurn(current, failure), true)
+  assert.equal(canContinueFailedTurn({ ...current, running: true }, failure), false)
+  assert.equal(canContinueFailedTurn(current, { ...failure, actionState: 'submitting' }), false)
+  assert.equal(canContinueFailedTurn(current, { ...failure, actionState: 'outcome_unknown' }), false)
+  const replayed: Thread = { ...current, status: 'done', conversation: [failure, { kind: 'user', text: '继续', turnId: 'next-turn' }] }
+  assert.equal(canContinueFailedTurn(replayed, failure), false)
+  assert.equal(canContinueFailedTurn({ ...current, conversation: replayed.conversation }, failure), false)
+  assert.equal(canContinueFailedTurn(current, { ...failure, turnId: undefined }), false)
+})
+
+test('catalog state cannot revive a turn after a newer terminal event', () => {
+  const completed = { lastSeq: 205, running: false }
+  assert.equal(catalogRunStateIsCurrent({ last_seq: 204, running: true }, completed), false)
+  assert.equal(catalogRunStateIsCurrent({ last_seq: 205, running: true }, completed), false)
+  assert.equal(catalogRunStateIsCurrent({ last_seq: 205, running: false }, completed), true)
+  assert.equal(catalogRunStateIsCurrent({ last_seq: 206, running: true }, completed), true)
+})
+
+test('session recovery restores running state while a child is still active', () => {
+  const initial: Thread = { ...thread(), running: false, status: 'failed' }
+  const recovered = {
+    ...initial,
+    ...projectSessionRecovery(initial, {
+      sessionId: 'session-1', running: true, activeTurnId: 'native-turn',
+      unknownOutcome: false, pendingHil: [], uncertainOperations: [], timestamp: 1
+    })
+  }
+  assert.equal(recovered.running, true)
+  assert.equal(recovered.status, 'running')
+  assert.equal(recovered.turnOutcomes?.['native-turn'], 'running')
+  assert.equal(canOfferTurnRecovery(recovered), false)
+})
+
+test('recovering product authorization does not revive its completed turn', () => {
+  const initial: Thread = { ...thread(), running: false, status: 'done', turnOutcomes: { turn: 'completed' } }
+  const snapshot = {
+    sessionId: 'session-1', running: false, activeTurnId: null, unknownOutcome: false,
+    pendingHil: [{ request_id: 'product', kind: 'question', lifetime: 'session' as const, turn_id: 'turn' }],
+    uncertainOperations: [], timestamp: 1_700_000_000_000
+  }
+  const once = { ...initial, ...projectSessionRecovery(initial, snapshot) }
+  const twice = { ...once, ...projectSessionRecovery(once, snapshot) }
+  assert.equal(twice.running, false)
+  assert.equal(twice.status, 'done')
+  assert.equal(twice.turnOutcomes?.turn, 'completed')
+  assert.equal(twice.conversation.filter(item => item.kind === 'hil').length, 1)
+})
 
 test('message snapshots remain cumulative exactly once through directive and transcript projection', () => {
   const stream = new DirectiveStreamHarness()
@@ -87,7 +152,7 @@ test('desktop accepts only complete ProductEvent v2 envelopes', () => {
 test('permission failures distinguish connection from runtime failures', () => {
   assert.match(permissionModeFailure({ ok: false, error: 'session_permission_switch_requires_hil_resolution' }), /处理当前审批/)
   assert.match(permissionModeFailure({ ok: false, error: 'permission_mode_connection_failed' }), /无法连接/)
-  assert.equal(permissionModeFailure({ ok: false, error: 'session_permission_switch_failed', detail: 'Codex 拒绝恢复会话。' }), 'Codex 拒绝恢复会话。')
+  assert.equal(permissionModeFailure({ ok: false, error: 'session_permission_switch_failed', detail: 'Codex 拒绝恢复会话。' }), '权限模式切换未成功，请检查运行时连接后重试。')
   assert.doesNotMatch(permissionModeFailure({ ok: false, error: 'session_permission_policy_immutable' }), /运行中/)
   assert.doesNotMatch(permissionModeFailure({ ok: false }), /运行中/)
 })
@@ -154,14 +219,35 @@ test('turn failures map stable provider codes to actionable product guidance', a
   assert.equal(exhausted.failure?.automaticRetryAttempts, 3)
   assert.equal(display(exhausted).message, '模型服务暂时不可用，已自动重试 3 次')
   assert.equal(exhausted.runtimeAction, 'continue_turn')
+  const overloaded = describeTurnFailure({
+    code: 'server_is_overloaded',
+    message: 'The model provider is temporarily unavailable.',
+    retryable: true
+  })
+  assert.equal(overloaded.failure?.kind, 'overloaded')
+  assert.equal(display(overloaded).message, '上游模型服务返回过载。')
+  assert.equal(display(overloaded).action, '请稍后重试；本轮问题与上下文已保留。')
+  assert.equal(overloaded.runtimeAction, 'continue_turn')
+  assert.equal(describeTurnFailure({ code: 'overloaded' }).failure?.kind, 'overloaded')
+  assert.equal(describeTurnFailure({ code: 'server_error' }).failure?.kind, 'unavailable')
+  assert.equal(describeTurnFailure({ message: 'server_is_overloaded' }).failure?.kind, 'unavailable')
+  const retriedOverload = describeTurnFailure({
+    code: 'server_is_overloaded', retryable: true, automatic_retry_attempts: 3
+  })
+  assert.equal(display(retriedOverload).message, '上游模型服务返回过载，自动尝试 3 次后仍未恢复。')
+  assert.equal(sameTurnFailureMessage(overloaded, retriedOverload), true)
+  assert.equal(sameTurnFailureMessage(overloaded, exhausted), false)
   await locale.changeLanguage('en')
   assert.equal(display(quota).title, 'Answer generation failed')
   assert.equal(display(quota).message, 'The allocated model quota has been exhausted.')
+  assert.equal(display(overloaded).message, 'The upstream model service reported overload.')
+  assert.equal(display(retriedOverload).message, 'The upstream model service reported overload and remains unavailable after 3 automatic attempts.')
   assert.equal(sameTurnFailureMessage(quota, allocationQuota), true)
   assert.equal(sameTurnFailureMessage(quota, rateLimit), false)
   assert.equal(sameTurnFailureMessage({ kind: 'error', title: '旧标题', action: '旧建议', message: '模型分配额度已用完。' }, quota), true)
   const raw = describeTurnFailure({ message: 'opaque diagnostic /user/file' })
-  assert.equal(display(raw).message, 'opaque diagnostic /user/file')
+  assert.equal(raw.message, 'opaque diagnostic /user/file')
+  assert.equal(display(raw).message, en.failure.unknown.message)
   const legacy = { kind: 'error' as const, title: '旧标题', message: '旧诊断', action: '旧建议' }
   assert.deepEqual(formatTurnFailure(legacy, locale.getFixedT(null, 'conversation')), legacy)
 })
@@ -209,14 +295,15 @@ test('classified turn failures keep a distinct reason for the card to surface', 
   assert.equal(display(rateLimit).message, '模型请求过于频繁，请稍后再试。')
   assert.notEqual(display(rateLimit).action, display(rateLimit).message)
 
-  // 未登记码仍落 unknown，但脱敏原文必须留在 message 里，不能只剩通用文案。
+  // 未登记码仍落 unknown，原始诊断留在事件中，但错误卡片只显示通用文案。
   const unregistered = describeTurnFailure({
     code: 'codex_provider_failed',
     message: 'The model provider rejected the request.',
     retryable: true
   })
   assert.equal(unregistered.failure?.kind, 'unknown')
-  assert.equal(display(unregistered).message, 'The model provider rejected the request.')
+  assert.equal(unregistered.message, 'The model provider rejected the request.')
+  assert.equal(display(unregistered).message, zh.failure.unknown.message)
   assert.equal(display(unregistered).action, '生成过程中发生异常，已保留本轮问题和上下文。')
 
   await locale.changeLanguage('en')
@@ -224,17 +311,14 @@ test('classified turn failures keep a distinct reason for the card to surface', 
   assert.equal(display(rateLimit).message, 'Too many model requests. Try again later.')
 })
 
-test('the turn failure card renders the reason ahead of the next step', () => {
+test('the turn failure card uses a compact description and retry action', () => {
   const stream = readFileSync(new URL('./components/business/Stream.tsx', import.meta.url), 'utf8')
   const anchor = stream.indexOf('data-testid="turn-failure-card"')
   assert.notEqual(anchor, -1)
   const card = stream.slice(anchor)
-  const body = card.slice(0, card.indexOf('{item.runtimeAction ==='))
-  assert.match(body, /data-testid="turn-failure-reason"[\s\S]*?\{failureText\.message\}/)
-  assert.match(body, /data-testid="turn-failure-action"[\s\S]*?\{failureText\.action\}/)
-  // 原因与下一步同源时 (content_policy 的 messageKey==actionKey) 只渲染一次。
-  assert.match(body, /failureText\.action && failureText\.action !== failureText\.message/)
-  assert.ok(body.indexOf('turn-failure-reason') < body.indexOf('turn-failure-action'))
+  assert.match(card, /data-testid="turn-failure-description"[\s\S]*?\{failureDescription\}/)
+  assert.match(card, /data-testid="turn-continue"[\s\S]*?t\('stream\.retry'\)/)
+  assert.doesNotMatch(card, /data-testid="turn-failure-(?:reason|action)"/)
 })
 
 test('exhausted automatic retries reuse the compact continuation notice', () => {
@@ -294,6 +378,19 @@ test('session catalog distinguishes a failed payload from an authoritative empty
   assert.deepEqual(parseSessionCatalogResult({ sessions: [] }), {
     sessions: [],
     total: 0
+  })
+})
+
+test('session catalog HTTP failures distinguish retryable service outages', () => {
+  assert.deepEqual(sessionCatalogHttpFailure(503), {
+    kind: 'http',
+    retryable: true,
+    status: 503
+  })
+  assert.deepEqual(sessionCatalogHttpFailure(401), {
+    kind: 'http',
+    retryable: false,
+    status: 401
   })
 })
 
@@ -599,6 +696,31 @@ test('a late typed running state restores the UI running projection', () => {
   assert.equal(running.runtimeId, 'codex')
   assert.equal(running.running, true)
   assert.equal(running.status, 'running')
+})
+
+test('native binding changes independently of the starting running flag', () => {
+  const starting = projectSessionState({ state: 'starting', runtime_id: 'codex' })
+  const bound = projectSessionState({ state: 'running', runtime_id: 'codex', active_turn_id: 'native-turn' })
+  assert.equal(starting.running, true)
+  assert.equal(bound.running, true)
+  assert.equal(starting.activeTurnId, null)
+  assert.equal(bound.activeTurnId, 'native-turn')
+  assert.equal(projectSessionState({ state: 'idle', runtime_id: 'codex' }).activeTurnId, null)
+})
+
+test('permission confirmation follows backend scope rather than hardcoded mode pairs', () => {
+  const mode = { mode: 'ask', modes: ['ask', 'safe_auto', 'bypassPermissions'], current_turn_modes: ['safe_auto'] }
+  assert.equal(permissionModeNeedsConfirmation(mode, 'safe_auto', true), false)
+  assert.equal(permissionModeNeedsConfirmation(mode, 'bypassPermissions', true), true)
+  assert.equal(permissionModeNeedsConfirmation(mode, 'bypassPermissions', false), false)
+  assert.equal(permissionModeNeedsConfirmation(null, 'safe_auto', true), true)
+})
+
+test('only an explicit next-turn choice displays deferred mode text', () => {
+  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: '', deferred: false }), false)
+  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'ask', deferred: true }), false)
+  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'ask', deferred: true, next_turn_selected: true }), true)
+  assert.equal(permissionModeShowsNextTurn({ mode: 'safe_auto', modes: [], active_mode: 'safe_auto', deferred: false, next_turn_selected: true }), false)
 })
 
 test('native start activates a thread that previously had only a resource wait', () => {
@@ -933,8 +1055,25 @@ test('the same runtime status redraws in either language without changing its di
   assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /Recovering/)
   assert.equal(JSON.stringify(status), before)
   for (const reason of ['Vendor 原始 diagnostic', '__proto__', 'toString']) {
-    assert.ok(formatRuntimeStatus({ key: 'runtime.failed', reason }, locale.getFixedT(null, 'conversation')).endsWith(reason))
+    assert.equal(formatRuntimeStatus({ key: 'runtime.failed', reason }, locale.getFixedT(null, 'conversation')), en.runtime.failed)
   }
+  assert.equal(formatRuntimeStatus({ key: 'runtime.recovered', reason: 'codex_provider_recovered' }, locale.getFixedT(null, 'conversation')), en.runtime.recovered)
+})
+
+test('repeated tool loop incident explains the stop in both languages', async () => {
+  const locale = createInstance()
+  await locale.init({ lng: 'zh', fallbackLng: false, defaultNS: 'conversation', resources: { zh: { conversation: zh }, en: { conversation: en } } })
+  const update = reportRuntimeIncident(thread(), {
+    ...incident('detected'),
+    scope: 'turn',
+    kind: 'repeated_tool_loop',
+    safe_error: 'codex_repeated_tool_loop'
+  }, 'turn-loop')
+  const status = update.conversation?.find((item) => item.kind === 'status')
+  assert.ok(status?.kind === 'status' && typeof status.text !== 'string')
+  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /重复|连续/)
+  await locale.changeLanguage('en')
+  assert.match(formatRuntimeStatus(status.text, locale.getFixedT(null, 'conversation')), /repeated/)
 })
 
 test('provider retries are not presented as agent connection recovery', async () => {
@@ -964,9 +1103,9 @@ test('resume status retains retry action ownership and renders parameters after 
   assert.equal(notice.runtimeAction, 'retry_session_resume')
   assert.equal(notice.actionSessionId, 'session-resume-i18n')
   assert.equal(notice.text, message)
-  assert.match(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), /Retrying \(2\/4\).*Vendor diagnostic/)
+  assert.equal(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), 'The session cannot be resumed yet. Retrying (2/4)')
   await locale.changeLanguage('zh')
-  assert.match(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), /正在重试（2\/4）.*Vendor diagnostic/)
+  assert.equal(formatRuntimeStatus(message, locale.getFixedT(null, 'conversation')), '会话暂时无法恢复，正在重试（2/4）')
   assert.equal(notice.text, message)
 })
 
@@ -1020,10 +1159,10 @@ test('ambiguous turn application text switches language while raw diagnostics an
     const reconciled = { ...updated, ...reportTurnReconciled(updated, 'turn') }
     assert.equal(reconciled.conversation.some(item => item.kind === 'error'), false)
   }
-  const diagnostic = '请求可能已经送达 Agent 运行时，但客户端没有收到确认。'
+  const diagnostic = 'vendor_outcome_unknown'
   const raw = reportTurnUnknown(thread(), { sessionId: 'session-1', turnId: 'raw', message: diagnostic }).conversation?.find(item => item.kind === 'error')
   assert.ok(raw?.kind === 'error')
-  assert.equal(formatTurnUnknown(raw, t).message, diagnostic)
+  assert.equal(formatTurnUnknown(raw, t).message, en.turnUnknown.reason.unconfirmed)
   assert.equal(formatRuntimeStatus({ key: 'runtime.closed' }, t), en.runtime.closed)
   assert.equal(t('hil.invalidRequest'), en.hil.invalidRequest)
 })

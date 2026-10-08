@@ -5,6 +5,7 @@ import type { TFunction } from 'i18next'
 import type {
   AspEnvelope,
   ModeChangeResult,
+  ModeInfo,
   OperationStateData,
   PendingHIL,
   RuntimeIncidentData,
@@ -18,6 +19,14 @@ import { insertTurnRuntimeItem } from './transcript.ts'
 
 const SERVICE_TRANSPORT_INCIDENT_ID = 'service-transport'
 const UNKNOWN_RESPONSE_RPC_METHODS = new Set(['server-response/hil', 'server-response/tool'])
+
+export function permissionModeNeedsConfirmation(info: ModeInfo | null, target: string, running: boolean): boolean {
+  return running && !info?.current_turn_modes?.includes(target)
+}
+
+export function permissionModeShowsNextTurn(info: ModeInfo | null): boolean {
+  return Boolean(info?.next_turn_selected && info.deferred && info.active_mode)
+}
 const TURN_UNKNOWN_MESSAGES: Record<string, string> = {
   runtime_rpc_timeout: '请求可能已经送达运行时，但客户端没有在时限内收到确认。',
   runtime_transport_lost: '请求提交期间与 Agent 运行时的本地连接断开，执行结果尚未确认。',
@@ -39,6 +48,8 @@ const INCIDENT_MESSAGE_KEYS = {
   codex_terminal_outcome_conflict: 'runtime.reason.codex_terminal_outcome_conflict',
   codex_thread_not_loaded: 'runtime.reason.codex_thread_not_loaded',
   codex_thread_closed: 'runtime.reason.codex_thread_closed',
+  codex_repeated_tool_loop: 'runtime.reason.codex_repeated_tool_loop',
+  codex_repeated_tool_interrupt_failed: 'runtime.reason.codex_repeated_tool_interrupt_failed',
   // 键是 codex 适配器 PROVIDER_CREDITS_MESSAGE 原文：事件条 reason 取 safe_error（文案而非
   // 码），产品级计费文案经此登记回本地化资源；适配器改文案须同步本条目。
   'The account credit balance is exhausted.': 'runtime.reason.credit_balance_exhausted',
@@ -52,7 +63,7 @@ const MODE_FAILURE_MESSAGES: Record<string, string> = {
 const MODE_FAILURE_FALLBACK = '权限模式切换未成功，请检查运行时连接后重试。'
 
 export function permissionModeFailure(result: ModeChangeResult): string {
-  return MODE_FAILURE_MESSAGES[result.error ?? ''] || result.detail || MODE_FAILURE_FALLBACK
+  return MODE_FAILURE_MESSAGES[result.error ?? ''] || MODE_FAILURE_FALLBACK
 }
 
 
@@ -96,7 +107,7 @@ export function sessionResumeStatusItem(
 
 export function projectSessionState(
   data: Extract<AspEnvelope, { type: 'session_state' }>['data']
-): Pick<Thread, 'runtimeId' | 'running' | 'status'> {
+): Pick<Thread, 'runtimeId' | 'running' | 'status' | 'activeTurnId'> {
   let status: SessionStatus = 'dormant'
   if (data.state === 'starting' || data.state === 'running') status = 'running'
   else if (data.state === 'waiting') status = 'waiting'
@@ -105,9 +116,31 @@ export function projectSessionState(
   else if (data.state === 'closed') status = 'done'
   return {
     runtimeId: data.runtime_id,
+    activeTurnId: data.active_turn_id ?? null,
     running: status === 'running' || status === 'waiting',
     status
   }
+}
+
+export function canOfferTurnRecovery(thread: Pick<Thread, 'running' | 'status'>): boolean {
+  return thread.running !== true && thread.status !== 'running' && thread.status !== 'waiting'
+}
+
+export function canContinueFailedTurn(thread: Thread, failure: Extract<ConvItem, { kind: 'error' }>): boolean {
+  if (!canOfferTurnRecovery(thread) || thread.recoveryPending || !failure.turnId || failure.runtimeAction !== 'continue_turn'
+    || failure.actionState === 'submitting' || failure.actionState === 'outcome_unknown'
+    || thread.queuedMessages?.some(message => message.state !== 'failed')) return false
+  const latest = [...thread.conversation].reverse().find(item => Boolean(item.turnId))
+  return latest?.turnId === failure.turnId && (thread.turnOutcomes?.[failure.turnId] ?? thread.status) === 'failed'
+}
+
+export function catalogRunStateIsCurrent(
+  catalog: { last_seq?: number; running?: boolean; waiting?: boolean },
+  thread: Pick<Thread, 'lastSeq' | 'running'>
+): boolean {
+  if (catalog.last_seq === undefined) return true
+  if (catalog.last_seq !== thread.lastSeq) return catalog.last_seq > thread.lastSeq
+  return !(thread.running === false && (catalog.running === true || catalog.waiting === true))
 }
 
 interface TurnUnknownProjection {
@@ -121,14 +154,12 @@ interface TurnUnknownProjection {
 /** Project an ambiguous terminal once; the only action is explicit user confirmation. */
 export function reportTurnUnknown(thread: Thread, data: TurnUnknownProjection): ThreadUpdate {
   const message = TURN_UNKNOWN_MESSAGES[data.message ?? '']
-    ?? data.message
     ?? '请求可能已经送达 Agent 运行时，但客户端没有收到确认。'
   const card: Extract<ConvItem, { kind: 'error' }> = {
     kind: 'error',
     title: '上次任务已中断',
-    turnUnknown: { reason: data.message == null ? 'unconfirmed'
-      : Object.prototype.hasOwnProperty.call(TURN_UNKNOWN_MESSAGE_KEYS, data.message)
-        ? TURN_UNKNOWN_MESSAGE_KEYS[data.message as keyof typeof TURN_UNKNOWN_MESSAGE_KEYS] : undefined },
+    turnUnknown: { reason: data.message && Object.prototype.hasOwnProperty.call(TURN_UNKNOWN_MESSAGE_KEYS, data.message)
+      ? TURN_UNKNOWN_MESSAGE_KEYS[data.message as keyof typeof TURN_UNKNOWN_MESSAGE_KEYS] : 'unconfirmed' },
     message,
     action: '是否继续对话？',
     incidentId: data.incidentId,
@@ -192,7 +223,9 @@ export function projectSessionRecovery(
   thread: Thread,
   snapshot: SessionRecoverySnapshot
 ): ThreadUpdate {
-  let projected: Thread = { ...thread }
+  let projected: Thread = snapshot.running && snapshot.activeTurnId
+    ? { ...thread, running: true, status: 'running', activeTurnId: snapshot.activeTurnId }
+    : { ...thread, activeTurnId: null }
   for (const pending of snapshot.pendingHil) {
     const { turn_id: turnId, item_id: itemId, ...hil } = pending
     if (!hil.request_id || projected.conversation.some((item) => (
@@ -200,9 +233,9 @@ export function projectSessionRecovery(
     ))) continue
     projected = {
       ...projected,
-      running: true,
-      status: 'waiting',
-      turnOutcomes: turnId
+      running: hil.lifetime === 'session' ? snapshot.running : true,
+      status: hil.lifetime === 'session' && !snapshot.running ? projected.status : 'waiting',
+      turnOutcomes: turnId && (hil.lifetime !== 'session' || snapshot.activeTurnId === turnId)
         ? { ...projected.turnOutcomes, [turnId]: 'running' }
         : projected.turnOutcomes,
       conversation: insertTurnRuntimeItem(
@@ -331,17 +364,16 @@ export function formatApplicationRequestFailure(
   message: ApplicationRequestFailure,
   t: (key: ApplicationRequestFailure['key'] | 'request.diagnostic', values: { status: number; detail: string; message: string }) => string
 ): string {
-  const text = message.key === 'request.httpFailure'
-    ? t('request.httpFailure', { status: message.status ?? 0, detail: message.statusText || t('request.failed', { status: 0, detail: '', message: '' }), message: '' })
+  return message.key === 'request.httpFailure'
+    ? t('request.httpFailure', { status: message.status ?? 0, detail: '', message: '' })
     : t(message.key, { status: 0, detail: '', message: '' })
-  return message.diagnostic ? t('request.diagnostic', { message: text, detail: message.diagnostic, status: 0 }) : text
 }
 
 export function formatRuntimeStatus(message: RuntimeStatusMessage, t: TFunction<'conversation'>): string {
   const reason = message.reason
-  const detail = reason && typeof reason !== 'string' ? formatApplicationRequestFailure(reason, t) : reason && Object.prototype.hasOwnProperty.call(INCIDENT_MESSAGE_KEYS, reason)
+  const detail = message.key === 'runtime.recovered' ? undefined : reason && typeof reason !== 'string' ? formatApplicationRequestFailure(reason, t) : reason && Object.prototype.hasOwnProperty.call(INCIDENT_MESSAGE_KEYS, reason)
     ? t(INCIDENT_MESSAGE_KEYS[reason as keyof typeof INCIDENT_MESSAGE_KEYS])
-    : reason
+    : undefined
   const text = message.key === 'runtime.retryingCount' ? t('runtime.retryingCount', message)
     : message.key === 'resume.retrying' ? t('resume.retrying', message) : t(message.key)
   return text + (detail ? t('runtime.detail', { detail }) : '')
@@ -537,7 +569,7 @@ export function permissionModeFeedback(result: ModeChangeResult): ForegroundMess
   if (result.error === 'permission_mode_connection_failed') return feedback('shell', 'foreground.permissionConnection')
   if (result.error === 'session_permission_switch_requires_hil_resolution') return feedback('shell', 'foreground.permissionRequiresApprovalResolution')
   if (result.error === 'session_permission_policy_immutable') return feedback('shell', 'foreground.permissionImmutable')
-  return result.detail || feedback('shell', 'foreground.permissionFailed')
+  return feedback('shell', 'foreground.permissionFailed')
 }
 
 

@@ -33,6 +33,8 @@ let writerAutoscrollCursor
 const OFFICE_IMAGE_FAILED = 'office_image_failed'
 const OFFICE_POLICY_FAILED = 'office_policy_failed'
 const OFFICE_FORMULA_POLICY_FAILED = 'office_formula_policy_failed'
+const OFFICE_DOCUMENT_UNAVAILABLE = 'office_document_unavailable'
+const DOCUMENT_READY_EVENTS = new Set(['OnLoadFinished', 'OnLayoutFinished'])
 const INSERT_IMAGE_COMMAND = '.uno:InsertGraphic'
 const PASTE_COMMAND = '.uno:Paste'
 const TEXT_CLIPBOARD_FLAVOR = 'text/plain;charset=utf-16'
@@ -544,7 +546,7 @@ function observeLayout(bindingId) {
   layoutListener = zetajs.unoObject([css.document.XDocumentEventListener], {
     documentEventOccured(event) {
       post({ cmd: 'document_event', bindingId, eventName: event.EventName })
-      if (event.EventName === 'OnLayoutFinished') post({ cmd: 'layout_finished', bindingId })
+      if (DOCUMENT_READY_EVENTS.has(event.EventName)) post({ cmd: 'layout_finished', bindingId })
     },
     disposing() {},
   })
@@ -670,7 +672,13 @@ function start() {
   desktop = css.frame.Desktop.create(zetajs.getUnoComponentContext())
   zetajs.mainPort.onmessage = function onMainMessage(event) {
     switch (event.data.cmd) {
-      case 'upload': loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.csvOptions, event.data.bindingId); break
+      case 'upload':
+        try {
+          loadFile(event.data.filename, event.data.processor, event.data.expectedDocumentKind, event.data.readOnly, event.data.csvOptions, event.data.bindingId)
+        } catch (error) {
+          post({ cmd: 'document_failed', bindingId: event.data.bindingId, message: OFFICE_DOCUMENT_UNAVAILABLE, detail: String(error) })
+        }
+        break
       case 'theme': applyPalette(event.data.palette); break
       case VIEWPORT_RESIZE_COMMAND:
         // Qt owns the transferred OffscreenCanvas and updates both screen geometry and backing pixels.

@@ -77,6 +77,7 @@ function LiteratureNotesPanelContent({
     return (
       <div className="p-[var(--vds-space-3)]">
         <Alert
+          layout="stacked"
           action={
             <Button
               size="sm"

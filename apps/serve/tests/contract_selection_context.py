@@ -133,6 +133,7 @@ class SelectionContextProviderContract(unittest.TestCase):
             anchor=SelectionAnchor(
                 selected_text_hash=_selection_hash(selected),
                 preview_text=preview,
+                snapshot_text=selected,
                 locator=locator,
             ),
         )
@@ -222,7 +223,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(evidence.selected_text, original_text)
         self.assertEqual(evidence.evidence_revision, revision)
 
-    def test_text_and_markdown_selection_use_source_coordinates_not_preview(self) -> None:
+    def test_text_and_markdown_snapshots_ignore_display_preview(self) -> None:
         text = "alpha\nβ😀gamma\nomega"
         self.content.write_text(self.project.id, "sample.py", text)
         text_item = self.resolve_selection(
@@ -301,7 +302,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.state, ContextResolutionState.READY)
         self.assertEqual(item.items[0].text, selected)
 
-    def test_markdown_selection_rejects_unordered_or_out_of_range_segments(self) -> None:
+    def test_markdown_snapshot_does_not_validate_source_segments(self) -> None:
         markdown = "**first second**"
         self.content.write_text(self.project.id, "invalid-segments.md", markdown)
         locator = {
@@ -314,7 +315,7 @@ class SelectionContextProviderContract(unittest.TestCase):
 
         item = self.resolve_selection("invalid-segments.md", locator, "second**")
 
-        self.assertEqual(item.state, ContextResolutionState.UNSUPPORTED)
+        self.assertEqual(item.state, ContextResolutionState.READY)
 
     def test_pdf_selection_resolves_normalized_page_quads(self) -> None:
         document = pdf_fixture.open()
@@ -335,6 +336,98 @@ class SelectionContextProviderContract(unittest.TestCase):
 
         self.assertEqual(item.state, ContextResolutionState.READY)
         self.assertEqual(item.items[0].text, selected)
+
+    def test_all_selection_snapshots_resolve_without_reading_or_revalidating_source(self) -> None:
+        class UnreadableContent:
+            def read_bytes(self, project_id: str, source_id: str):
+                raise AssertionError(f"content read attempted: {project_id}/{source_id}")
+
+        snapshot = "As scientific literature grows rapidly"
+        ref = ContextRef(
+            ref_id="pdf-snapshot",
+            kind=ContextRefKind.SELECTION,
+            source_id="changed.pdf",
+            label="changed.pdf · 划词",
+            source_revision="sha256:" + "0" * 64,
+            anchor=SelectionAnchor(
+                locator={"kind": "pdf", "page": 1, "quads": [[0.1, 0.1, 0.9, 0.2]]},
+                selected_text_hash="sha256:" + "f" * 64,
+                preview_text="display only",
+                snapshot_text=snapshot,
+            ),
+        )
+
+        for kind in ("pdf", "writer", "calc", "impress", "markdown", "text"):
+            with self.subTest(kind=kind):
+                candidate = replace(
+                    ref,
+                    anchor=replace(ref.anchor, locator={"kind": kind}),
+                )
+                result = SelectionContextProvider(UnreadableContent()).resolve(
+                    AssistantContextResolveRequest(
+                        requester_session_id=SESSION_ID,
+                        project_id="",
+                        question="这段话讲了什么？",
+                        ref=candidate,
+                        budget=AssistantContextBudget(max_chars=40000, max_items=1),
+                    )
+                )
+                self.assertEqual(result.state, ContextResolutionState.READY)
+                self.assertEqual(result.source_revision, ref.source_revision)
+                self.assertEqual(result.items[0].text, snapshot)
+                self.assertEqual(result.items[0].content_hash, _selection_hash(snapshot))
+
+    def test_missing_selection_snapshot_requires_readding_without_reading_source(self) -> None:
+        class UnreadableContent:
+            def read_bytes(self, project_id: str, source_id: str):
+                raise AssertionError("legacy selection must not read its source")
+
+        ref = ContextRef(
+            ref_id="legacy-selection",
+            kind=ContextRefKind.SELECTION,
+            source_id="missing.docx",
+            label="missing.docx",
+            anchor=SelectionAnchor(
+                locator={"kind": "writer"},
+                selected_text_hash=_selection_hash("display only"),
+                preview_text="display only",
+            ),
+        )
+        result = SelectionContextProvider(UnreadableContent()).resolve(
+            AssistantContextResolveRequest(
+                requester_session_id=SESSION_ID,
+                project_id=self.project.id,
+                question="",
+                ref=ref,
+                budget=AssistantContextBudget(max_chars=40000, max_items=1),
+            )
+        )
+        self.assertEqual(result.state, ContextResolutionState.UNAVAILABLE)
+        self.assertEqual(result.issues[0].code, "selection_snapshot_required")
+        self.assertFalse(result.items)
+
+    def test_markdown_snapshot_survives_source_deletion_and_hash_mismatch(self) -> None:
+        self.content.write_text(self.project.id, "source.md", "real selected source")
+        ref = self.selection_ref(
+            "source.md",
+            {"kind": "markdown", "start": 5, "end": 13, "source_map_version": "v1"},
+            "different",
+        )
+        ref = replace(ref, anchor=replace(ref.anchor, snapshot_text="selected snapshot"))
+        (Path(self.project.root) / "source.md").unlink()
+
+        result = self.selection_provider.resolve(
+            AssistantContextResolveRequest(
+                requester_session_id=SESSION_ID,
+                project_id=self.project.id,
+                question="",
+                ref=ref,
+                budget=AssistantContextBudget(max_chars=40000, max_items=1),
+            )
+        )
+
+        self.assertEqual(result.state, ContextResolutionState.READY)
+        self.assertEqual(result.items[0].text, "selected snapshot")
 
     def test_pdf_selection_uses_visual_lines_across_text_fragments(self) -> None:
         document = pdf_fixture.open()
@@ -392,7 +485,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.state, ContextResolutionState.READY)
         self.assertEqual(item.items[0].text, selected)
 
-    def test_pdf_selection_accepts_cjk_shape_but_keeps_authoritative_text(self) -> None:
+    def test_pdf_snapshot_keeps_browser_text_while_actions_verify_cjk_shape(self) -> None:
         document = pdf_fixture.open()
         page = document.new_page()
         authoritative = "人口老龄化 2026"
@@ -430,8 +523,8 @@ class SelectionContextProviderContract(unittest.TestCase):
         )
 
         self.assertEqual(item.state, ContextResolutionState.READY)
-        self.assertEqual(item.items[0].text, authoritative)
-        self.assertEqual(item.items[0].content_hash, _selection_hash(authoritative))
+        self.assertEqual(item.items[0].text, browser_aliases)
+        self.assertEqual(item.items[0].content_hash, _selection_hash(browser_aliases))
         self.assertEqual(direct.selected_text, authoritative)
 
     def test_docx_writer_selection_resolves_paragraph_and_utf16_offsets(self) -> None:
@@ -501,9 +594,9 @@ class SelectionContextProviderContract(unittest.TestCase):
 
         item = self.resolve_selection("legacy.doc", locator, "legacy")
 
-        self.assertEqual(item.state, ContextResolutionState.UNSUPPORTED)
+        self.assertEqual(item.state, ContextResolutionState.READY)
 
-    def test_writer_format_must_match_the_source_suffix(self) -> None:
+    def test_writer_snapshot_does_not_validate_source_format(self) -> None:
         document = Document()
         document.add_paragraph("selected")
         output = BytesIO()
@@ -522,7 +615,7 @@ class SelectionContextProviderContract(unittest.TestCase):
             "selected",
         )
 
-        self.assertEqual(item.state, ContextResolutionState.UNSUPPORTED)
+        self.assertEqual(item.state, ContextResolutionState.READY)
 
     def test_xlsx_calc_selection_resolves_sheet_range(self) -> None:
         workbook = Workbook()
@@ -582,15 +675,6 @@ class SelectionContextProviderContract(unittest.TestCase):
             "content_mode": "reference",
         }
         ref = self.selection_ref("large.xlsx", locator, reference_text)
-        result = self.selection_provider.resolve(
-            AssistantContextResolveRequest(
-                requester_session_id=SESSION_ID,
-                project_id=self.project.id,
-                question="",
-                ref=ref,
-                budget=AssistantContextBudget(max_chars=40000, max_items=1),
-            )
-        )
         evidence = self.selection_provider.resolve_action(
             SelectionEvidenceReference(
                 project_id=self.project.id,
@@ -602,21 +686,24 @@ class SelectionContextProviderContract(unittest.TestCase):
             )
         )
 
+        ref = replace(ref, anchor=replace(ref.anchor, snapshot_text=evidence.selected_text))
+        (Path(self.project.root) / "large.xlsx").unlink()
+        result = self.selection_provider.resolve(
+            AssistantContextResolveRequest(
+                requester_session_id=SESSION_ID,
+                project_id=self.project.id,
+                question="",
+                ref=ref,
+                budget=AssistantContextBudget(max_chars=40000, max_items=1),
+            )
+        )
+
         self.assertEqual(result.state, ContextResolutionState.READY)
         self.assertEqual(result.items[0].text, selected)
         self.assertEqual(result.items[0].content_hash, _selection_hash(selected))
         self.assertEqual(result.items[0].role.value, "material")
-        model_locator = json.loads(result.items[0].model_locator)
-        self.assertEqual(
-            model_locator,
-            {
-                "kind": "spreadsheet_range",
-                "source": "large.xlsx",
-                "sheet": "Evidence",
-                "range": "A1:A151",
-                "content_status": "resolved",
-            },
-        )
+        self.assertEqual(result.items[0].model_locator, "")
+        self.assertEqual(evidence.reference.locator["range"], "A1:A151")
         self.assertEqual(evidence.selected_text, selected)
         self.assertEqual(evidence.context_text, selected)
         self.assertEqual(evidence.mode.value, "persisted")
@@ -640,10 +727,6 @@ class SelectionContextProviderContract(unittest.TestCase):
         model_payload = json.loads(frozen.context.model_context.splitlines()[1])
         self.assertEqual(model_payload["scopes"] if "scopes" in model_payload else [], [])
         self.assertEqual(model_payload["evidence"][0]["content"], selected)
-        self.assertEqual(
-            json.loads(model_payload["evidence"][0]["locator"]),
-            model_locator,
-        )
         self.assertIn("selected_material_policy", model_payload)
 
     def test_large_csv_column_reference_clips_to_last_populated_cell(self) -> None:
@@ -743,6 +826,7 @@ class SelectionContextProviderContract(unittest.TestCase):
             "content_mode": "reference",
         }
         ref = self.selection_ref("oversized.csv", locator, reference_text)
+        ref = replace(ref, anchor=replace(ref.anchor, snapshot_text="\n".join(rows)))
 
         result = self.selection_provider.resolve(
             AssistantContextResolveRequest(
@@ -849,7 +933,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(item.state, ContextResolutionState.READY)
         self.assertEqual(item.items[0].text, "selected")
 
-    def test_ppt_impress_selection_requests_legacy_snapshot_after_revision_check(self) -> None:
+    def test_ppt_chat_uses_snapshot_while_actions_require_verified_evidence(self) -> None:
         payload = b"legacy-binary-ppt"
         source = Path(self.project.root) / "sample.ppt"
         source.write_bytes(payload)
@@ -875,7 +959,7 @@ class SelectionContextProviderContract(unittest.TestCase):
             selected,
             revision=reference.source_revision,
         )
-        self.assertEqual(item.state, ContextResolutionState.UNSUPPORTED)
+        self.assertEqual(item.state, ContextResolutionState.READY)
 
         with self.assertRaisesRegex(SelectionEvidenceError, "selection_snapshot_required"):
             self.selection_provider.resolve_action(reference)
@@ -884,7 +968,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         with self.assertRaisesRegex(SelectionEvidenceError, "selection_stale"):
             self.selection_provider.resolve_action(reference)
 
-    def test_selection_rebinds_only_when_the_authoritative_anchor_is_unchanged(self) -> None:
+    def test_selection_snapshot_preserves_original_revision_despite_source_changes(self) -> None:
         self.content.write_text(self.project.id, "stale.md", "real selected source")
         original_revision = self.content.snapshot(self.project.id, "stale.md").revision
         locator = {
@@ -922,15 +1006,13 @@ class SelectionContextProviderContract(unittest.TestCase):
         self.assertEqual(rebound.state, ContextResolutionState.READY)
         self.assertEqual(
             rebound.source_revision,
-            current_revision,
+            original_revision,
         )
         self.assertEqual(rebound.items[0].text, "selected")
-        self.assertEqual(stale_hash.state, ContextResolutionState.STALE)
-        self.assertEqual(stale_hash.issues[0].code, "selection_text_changed")
-        self.assertEqual(stale_hash.items, ())
-        self.assertEqual(shifted.state, ContextResolutionState.STALE)
-        self.assertEqual(shifted.issues[0].code, "selection_text_changed")
-        self.assertEqual(shifted.items, ())
+        self.assertEqual(stale_hash.state, ContextResolutionState.READY)
+        self.assertEqual(stale_hash.items[0].text, "different")
+        self.assertEqual(shifted.state, ContextResolutionState.READY)
+        self.assertEqual(shifted.items[0].text, "selected")
 
     def test_released_snapshot_cannot_replay_or_consume_new_quotes(self) -> None:
         self.content.write_text(self.project.id, "claim.md", "selected")
@@ -978,7 +1060,7 @@ class SelectionContextProviderContract(unittest.TestCase):
         )
         self.assertIsNotNone(replay.failure)
 
-    def test_assistant_freezes_verified_selection_without_using_preview(self) -> None:
+    def test_assistant_freezes_selection_snapshot_without_using_preview(self) -> None:
         source = "before verified evidence after"
         selected_text = "verified evidence"
         self.content.write_text(self.project.id, "selection.md", source)

@@ -47,8 +47,8 @@
   --radius: 6px;
   --radius-lg: 8px;
   --font:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text',
-    'Segoe UI', system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI',
+    system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   --font-sans: var(--font);
   --font-serif: var(--font);
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
@@ -66,20 +66,19 @@
   --bubble-assistant: transparent;
   --card-radius: 10px;
   --shadow-card: 0 1px 2px rgb(0 0 0 / 4%), 0 6px 20px rgb(0 0 0 / 5%);
-  --serif-display:
-    'Newsreader', 'Songti SC', 'STSong', 'Noto Serif CJK SC', serif;
+  --serif-display: 'Newsreader', 'Songti SC', 'STSong', 'Noto Serif CJK SC', serif;
   /* Auth (登录/注册) surface — a warm-paper welcome screen with forest-green
      accents. Kept as its own --auth-* scale (not overridden per theme) so the
      login line carries its own palette without touching the app-wide grey-blue
      --accent. */
   --auth-page-bg: #ece5d9;
-  --auth-window-bg: #faf8f4;
+  --auth-window-bg: var(--vds-bg-gray-default);
   --auth-card-bg: linear-gradient(157deg, #f7f2ea 0%, #eee7da 100%);
   --auth-card-border: #e4dccd;
-  --auth-login-card-border: #dfdfdf;
-  --auth-hero-copy: #4c4c4c;
-  --auth-carousel-idle: rgba(103, 73, 15, 14%);
-  --auth-illustration-border: #c8c8c8;
+  --auth-login-card-border: var(--vds-line-2);
+  --auth-hero-copy: var(--vds-text-secondary);
+  --auth-carousel-idle: var(--vds-other-overlay-3);
+  --auth-illustration-border: var(--vds-line-3);
   --auth-field-bg: #ece6da;
   --auth-field-border: #ddd5c5;
   --auth-track-bg: #e3dccc;
@@ -251,7 +250,6 @@ button:disabled {
 input,
 textarea {
   font-family: inherit;
-  font-weight: inherit;
 }
 
 /* Text never uses Chromium's blue link default or the visual accent color.

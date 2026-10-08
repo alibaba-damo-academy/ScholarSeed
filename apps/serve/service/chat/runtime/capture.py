@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from threading import local
+from typing import Any, Iterator, Mapping
 
 from damoatrace.data.store import TraceStore
 from damoatrace.recording.content import (
@@ -74,6 +76,7 @@ class SessionCapture:
         self.seen: set[tuple[str, str]] = set()
         self.fragments: dict[str, str] = {}
         self.fragment_overflow: set[str] = set()
+        self._batch = local()
         self.policies.bind(session_id, self.invalidate)
 
     def invalidate(self) -> None:
@@ -86,6 +89,9 @@ class SessionCapture:
         self.policies.unbind(self.session_id)
 
     def allowed(self) -> bool:
+        batched = getattr(self._batch, "permitted", None)
+        if batched is not None:
+            return bool(batched)
         current = self.policies.current(self.session_id)
         permitted = (
             self.frozen.active and current.active and current.revision == self.frozen.revision
@@ -94,6 +100,19 @@ class SessionCapture:
             self.fragments.clear()
             self.fragment_overflow.clear()
         return permitted
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Freeze one permission read while policy updates share the same guard."""
+        with self.policies.guard:
+            if getattr(self._batch, "permitted", None) is not None:
+                yield
+                return
+            self._batch.permitted = self.allowed()
+            try:
+                yield
+            finally:
+                self._batch.permitted = None
 
     def block(
         self,

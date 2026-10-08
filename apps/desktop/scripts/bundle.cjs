@@ -3,6 +3,7 @@ const crypto = require('node:crypto')
 const path = require('node:path')
 const { execFileSync, spawnSync } = require('node:child_process')
 const { PLATFORM_DIRECTORY, stageVerifiedTexlive } = require('../runtime/texlive.cjs')
+const { stageVerifiedPowerShell } = require('../runtime/powershell.cjs')
 const { SKILL_PYTHON_MODULE, skillPythonLauncherPath, writeSkillPythonLauncher } = require('../runtime/python.cjs')
 const { nativeTar, verifyPython } = require('../../../scripts/python.cjs')
 const { ensureRipgrep } = require('../../../scripts/ripgrep.cjs')
@@ -11,6 +12,9 @@ const {
   APP_COMPONENTS_FILENAME,
   COMPONENTS_DIRNAME,
   PYLIBS_DIRNAME,
+  POWERSHELL_ENTRY_RELATIVE,
+  POWERSHELL_KIND,
+  POWERSHELL_TREE_DIRNAME,
   PYTHON_ENTRY_RELATIVE,
   PYTHON_KIND,
   PYTHON_TREE_DIRNAME,
@@ -22,6 +26,7 @@ const {
   componentTarget,
   consoleScriptLauncherCommand,
   derivePythonContentId,
+  derivePowerShellContentId,
   deriveTexliveContentId,
   packComponentArchive,
   sha256FileSync,
@@ -155,6 +160,10 @@ async function bundle(context, target, environment) {
   context.texlive = await stageVerifiedTexlive(backend, path.resolve(__dirname, '..'),
     target.platform, target.arch)
   if (componentsEnabled) {
+    context.powershell = await stageVerifiedPowerShell(backend, path.resolve(__dirname, '..'),
+      target.platform, target.arch)
+  }
+  if (componentsEnabled) {
     // contentId 由决定组件内容的冻结输入派生（内容寻址，跨构建可复现）；packWindowsComponents
     // 在所有需要松散树的验证步骤之后才真正打包并删除它们。
     const componentTargetName = componentTarget('win32', process.arch)
@@ -172,7 +181,13 @@ async function bundle(context, target, environment) {
         archiveSha256: context.texlive.sha256,
         texlive: context.texlive.texlive
       }),
-      texliveExecutables: context.texlive.executables
+      texliveExecutables: context.texlive.executables,
+      powershellContentId: derivePowerShellContentId({
+        target: componentTargetName,
+        archiveSha256: context.powershell.sha256,
+        version: context.powershell.version
+      }),
+      powershellVersion: context.powershell.version
     }
   }
   if (process.platform === 'win32') {
@@ -195,7 +210,7 @@ async function bundle(context, target, environment) {
 }
 
 /**
- * win32 组件化收尾（build.cjs 在所有需要松散 python/texlive 树的验证步骤之后调用）：
+ * win32 组件化收尾（build.cjs 在所有需要松散 python/texlive/powershell 树的验证步骤之后调用）：
  * 冻结构建期运行证据 → 打组件 zip → 写 app-components.json → 删除松散树。包内从此只有
  * 组件载荷；安装后的运行期展开与命中判定归 Desktop 的组件存储（src/main/components.ts）。
  */
@@ -221,8 +236,11 @@ function packWindowsComponents(context, args, environment) {
   const tar = nativeTar()
   const pythonArchive = path.join(componentsDirectory, componentArchiveName(PYTHON_KIND, plan.pythonContentId))
   const texliveArchive = path.join(componentsDirectory, componentArchiveName(TEXLIVE_KIND, plan.texliveContentId))
+  const powershellArchive = path.join(componentsDirectory,
+    componentArchiveName(POWERSHELL_KIND, plan.powershellContentId))
   packComponentArchive(backend, PYTHON_TREE_DIRNAME, pythonArchive, tar)
   packComponentArchive(backend, TEXLIVE_TREE_DIRNAME, texliveArchive, tar)
+  packComponentArchive(backend, POWERSHELL_TREE_DIRNAME, powershellArchive, tar)
   const manifest = appComponentsManifest(plan.target, [
     {
       kind: PYTHON_KIND,
@@ -240,12 +258,22 @@ function packWindowsComponents(context, args, environment) {
       archiveBytes: fs.statSync(texliveArchive).size,
       entry: `${TEXLIVE_BIN_PARENT_RELATIVE}/bin/${PLATFORM_DIRECTORY.win32}`,
       executables: plan.texliveExecutables
+    },
+    {
+      kind: POWERSHELL_KIND,
+      contentId: plan.powershellContentId,
+      archive: path.basename(powershellArchive),
+      archiveSha256: sha256FileSync(powershellArchive),
+      archiveBytes: fs.statSync(powershellArchive).size,
+      entry: POWERSHELL_ENTRY_RELATIVE,
+      version: plan.powershellVersion
     }
   ])
   const manifestPath = path.join(componentsDirectory, APP_COMPONENTS_FILENAME)
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
   fs.rmSync(path.join(backend, PYTHON_TREE_DIRNAME), { recursive: true, force: true })
   fs.rmSync(path.join(backend, TEXLIVE_TREE_DIRNAME), { recursive: true, force: true })
+  fs.rmSync(path.join(backend, POWERSHELL_TREE_DIRNAME), { recursive: true, force: true })
   return {
     target: plan.target,
     appComponentsSha256: sha256FileSync(manifestPath),

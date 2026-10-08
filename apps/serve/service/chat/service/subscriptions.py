@@ -29,13 +29,20 @@ from service.settings.connections import (
     UnknownProfileError,
     is_oauth_connection,
 )
-from service.settings.credentials import CredentialState, ModelCredentialStore
+from service.settings.credentials import (
+    CredentialConflictError,
+    CredentialState,
+    ModelCredentialStore,
+)
 from service.settings.oauth import (
     OAUTH_HTTP_TIMEOUT_SECONDS,
     OAUTH_PROVIDERS,
+    REFRESH_AHEAD_SECONDS,
+    REAUTH_REQUIRED_CODE,
     OAuthCredentials,
     OAuthFailure,
     OAuthProtocol,
+    upstream_revocation_code,
 )
 
 SUBSCRIPTION_BILLING = "subscription"
@@ -51,6 +58,8 @@ SUBSCRIPTION_TRUST_ENV = True
 TRANSPORT_ERROR_DETAIL_LIMIT = 200
 #: 订阅模型目录本地缓存 TTL。renderer 高频重拉 catalog，每次都打上游既慢又易触发限流 500。
 SUBSCRIPTION_DIRECTORY_CACHE_SECONDS = 60.0
+#: 完整目录用于 Codex 的指令/工具等运行配置，独立于界面模型列表缓存。
+SUBSCRIPTION_RUNTIME_CATALOG_CACHE_SECONDS = 10800.0
 #: 上游目录拉取失败后的冷却：避免后台自愈反复锤一个正在 500 的端点（浪费且加剧限流）。
 SUBSCRIPTION_SYNC_FAILURE_COOLDOWN_SECONDS = 300.0
 #: 上游目录拉取的退避重试次数与初始退避秒数(指数翻倍)；覆盖 5xx(上游瞬时故障,
@@ -65,6 +74,18 @@ _SUBSCRIPTION_SECRET_PATTERN = re.compile(
 LOGGER = logging.getLogger(__name__)
 RESPONSE_ITEM_REFERENCE = "item_reference"
 RESPONSE_ITEM_ID = "id"
+
+
+def _upstream_error_code(response: httpx.Response) -> str:
+    """Read the upstream ``{"error": {"code": ...}}`` code; the body itself never gets logged."""
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    code = error.get("code") if isinstance(error, Mapping) else None
+    return code if isinstance(code, str) else ""
 
 
 class SubscriptionService:
@@ -126,6 +147,29 @@ class SubscriptionService:
             "account_label": record.tokens.account_label if record.tokens else "",
             "billing": SUBSCRIPTION_BILLING,
         }
+
+    async def refresh_expiring(self, owner_id: str, connection_id: str) -> None:
+        """Refresh only credentials that can no longer substantiate a selectable model."""
+
+        try:
+            profile = self.profile(owner_id, connection_id)
+        except UnknownProfileError:
+            return
+        record = self.credentials.read(owner_id, connection_id)
+        if (
+            record.state != CredentialState.CONNECTED
+            or record.tokens is None
+            or record.tokens.expires_at > time.time() + REFRESH_AHEAD_SECONDS
+        ):
+            return
+        try:
+            await self.resolvers[profile[OAUTH_PROVIDER_KEY]].resolve(owner_id, connection_id)
+        except OAuthFailure as error:
+            LOGGER.warning(
+                "subscription_credential_refresh_failed connection=%s code=%s",
+                connection_id,
+                error.code,
+            )
 
     async def login(
         self, owner_id: str, connection_id: str, *, user_id: str = ""
@@ -215,6 +259,43 @@ class SubscriptionService:
         except UnknownProfileError:
             raise CompletionCredentialError("oauth_connection_unavailable") from None
 
+    def _mark_reauth_required(self, owner_id: str, connection_id: str) -> bool:
+        """上游确认令牌吊销后，generation-fenced 地把凭证回写为 REAUTH_REQUIRED。
+
+        幂等且防竞态：并发 refresh/login 已推进 generation 时让位（CredentialConflictError →
+        no-op），一个迟到的 401 不能把刚轮转好的凭证打掉。返回是否真由本次调用完成状态翻转。
+        """
+
+        record = self.credentials.read(owner_id, connection_id)
+        if record.state != CredentialState.CONNECTED:
+            return False
+        try:
+            self.credentials.revoke(
+                owner_id,
+                connection_id,
+                state=CredentialState.REAUTH_REQUIRED,
+                expected_generation=record.generation,
+            )
+        except CredentialConflictError:
+            return False
+        LOGGER.info("subscription_credential_marked_reauth connection=%s", connection_id)
+        return True
+
+    def _handle_upstream_revocation(
+        self, owner_id: str, connection_id: str, status_code: int, error_code: str
+    ) -> str:
+        """推理端上游拒绝的凭证回写钩子：吊销则回写并返回 reauth 码，否则返回空串。
+
+        与目录路径共用同一判定（``upstream_revocation_code``）与回写，使「首个看到 401 的
+        端点」无论是 models 还是 responses 都一致地把订阅标成需重新登录；5xx、传输抖动与普通
+        4xx 返回空串，调用方维持既有通用语义，绝不误判为登录失效。
+        """
+
+        if not upstream_revocation_code(status_code, error_code):
+            return ""
+        self._mark_reauth_required(owner_id, connection_id)
+        return REAUTH_REQUIRED_CODE
+
     def _cancel_directories(self, owner_id: str, connection_id: str = "") -> None:
         for task, scope in tuple(self._directories.items()):
             if scope[0] == owner_id and (not connection_id or scope[1] == connection_id):
@@ -225,7 +306,14 @@ class SubscriptionService:
         return await self._directory(owner_id, connection_id, complete=False, fresh=fresh)
 
     async def catalog(self, owner_id: str, connection_id: str) -> dict[str, Any]:
-        return await self._directory(owner_id, connection_id, complete=True)
+        try:
+            return await self._directory(owner_id, connection_id, complete=True)
+        except OAuthFailure as error:
+            # 令牌被上游吊销是凭据终态：包成 CompletionCredentialError，让模型桥透出可操作的
+            # reauth 码（401）而不是把它塌进通用 502，前端才拿得到「请重新登录」。
+            if error.code == REAUTH_REQUIRED_CODE:
+                raise CompletionCredentialError(error.code) from None
+            raise
 
     async def sync_directory(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         """配置时拉取上游目录并落快照；读路径（catalog）不再打上游。
@@ -237,6 +325,7 @@ class SubscriptionService:
         directory = await self._fetch_models(owner_id, connection_id, complete=False)
         snapshot = {"models": directory.get("models") or [], "fetched_at": time.time()}
         self.profiles.set_directory(connection_id, snapshot, owner_id=owner_id)
+        self._directory_cache.pop((owner_id, connection_id, True), None)
         self._directory_cache[(owner_id, connection_id, False)] = (
             time.monotonic(),
             self._owner_epochs.get(owner_id, 0),
@@ -289,6 +378,11 @@ class SubscriptionService:
 
         scope = (owner_id, connection_id)
         cache_key = (owner_id, connection_id, complete)
+        cache_seconds = (
+            SUBSCRIPTION_RUNTIME_CATALOG_CACHE_SECONDS
+            if complete
+            else SUBSCRIPTION_DIRECTORY_CACHE_SECONDS
+        )
         cached = None if fresh else self._directory_cache.get(cache_key)
         owner_epoch = self._owner_epochs.get(owner_id, 0)
         connection_epoch = self._connection_epochs.get(scope, 0)
@@ -297,7 +391,7 @@ class SubscriptionService:
             if (
                 cached_owner == owner_epoch
                 and cached_connection == connection_epoch
-                and time.monotonic() - stamp < SUBSCRIPTION_DIRECTORY_CACHE_SECONDS
+                and time.monotonic() - stamp < cache_seconds
             ):
                 return payload
         if fresh:
@@ -327,8 +421,15 @@ class SubscriptionService:
             inflight.add_done_callback(_settle)
         try:
             payload = await inflight
-        except OAuthFailure:
-            if cached is not None and cached[1] == owner_epoch and cached[2] == connection_epoch:
+        except OAuthFailure as error:
+            # 令牌被上游吊销是终态，不能用旧目录缓存掩盖：必须让 reauth 信号上抛，否则会拿陈旧
+            # 目录继续，把「需重新登录」推迟成推理期的通用失败。瞬态失败仍回落最近一次成功结果。
+            if (
+                error.code != REAUTH_REQUIRED_CODE
+                and cached is not None
+                and cached[1] == owner_epoch
+                and cached[2] == connection_epoch
+            ):
                 LOGGER.warning(
                     "oauth_directory_serving_cached connection=%s complete=%s",
                     connection_id,
@@ -405,6 +506,20 @@ class SubscriptionService:
             if response.status_code >= 500 and attempt + 1 < SUBSCRIPTION_MODELS_RETRY_ATTEMPTS:
                 await asyncio.sleep(SUBSCRIPTION_MODELS_RETRY_BACKOFF_SECONDS * (2**attempt))
                 continue
+            revoked = upstream_revocation_code(response.status_code, _upstream_error_code(response))
+            if revoked:
+                # 上游明确吊销了这份令牌（用户在官网登出/改密码/换登录方式）：回写凭证为
+                # REAUTH_REQUIRED，使 Settings 与后续对话一致地要求重新登录，并抛可区分的
+                # reauth 失败而非通用 oauth_models_rejected。这不是瞬态，重试无意义。
+                self._mark_reauth_required(owner_id, connection_id)
+                LOGGER.warning(
+                    "oauth_models_token_revoked endpoint=%s http_status=%s code=%s",
+                    policy.models_endpoint,
+                    response.status_code,
+                    revoked,
+                )
+                self._sync_failed_at[(owner_id, connection_id)] = time.monotonic()
+                raise OAuthFailure(REAUTH_REQUIRED_CODE)
             LOGGER.warning(
                 "oauth_models_rejected endpoint=%s http_status=%s detail=%s",
                 policy.models_endpoint,
@@ -497,7 +612,7 @@ class SubscriptionService:
         }:
             raise OAuthFailure("oauth_model_unavailable")
         if self.credentials.read(owner_id, connection_id).state != CredentialState.CONNECTED:
-            raise OAuthFailure("oauth_reauth_required")
+            raise OAuthFailure(REAUTH_REQUIRED_CODE)
         policy = OAUTH_PROVIDERS[profile[OAUTH_PROVIDER_KEY]]
 
         def request_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -526,6 +641,7 @@ class SubscriptionService:
             session_id=session_id,
             credential_resolver=self.resolve,
             catalog_resolver=self.catalog,
+            credential_revocation_handler=self._handle_upstream_revocation,
             request_policy=request_policy,
             model_routes=model_routes,
             trust_env=SUBSCRIPTION_TRUST_ENV,

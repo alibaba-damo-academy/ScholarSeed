@@ -68,6 +68,9 @@ declare module 'i18next' {
                 "gatewayCredentialRequired": "登录后可使用内置模型",
                 "subscriptionConnectionRequired": "请在模型服务中连接 ChatGPT"
             },
+            "disabledTags": {
+                "gatewayCredentialRequired": "登录可用"
+            },
             "capabilitiesTitle": "模型能力管理",
             "capabilitiesDescription": "在右侧按模型管理思考档位、上下文窗口和输入模态；厂商口径仅作默认建议，保存后的模型声明优先用于会话。",
             "contextWindowHint": "留空表示使用厂商默认值",
@@ -176,6 +179,7 @@ declare module 'i18next' {
             "local_logout_failed": "本地登录凭据未能清除，请重试",
             "logout_revocation_failed": "本机执行凭据清理失败，请重试退出登录。",
             "http_failure": "请求失败（{{status}}）",
+            "unknown": "操作未完成，请重试。",
             "diagnostic": "{{message}}\n{{detail}}"
         },
         "modelSettings": {
@@ -337,7 +341,8 @@ declare module 'i18next' {
             "linksFailed": "导入已提交，但关联查询失败，请重试查询。",
             "collectionsFailed": "文献分类查询失败，请重新打开导入窗口。",
             "unlinked": "未关联项目",
-            "import": "导入到资料库",
+            "import": "导入资料库",
+            "importShort": "导入",
             "open": "打开",
             "openWith": "打开方式",
             "loadingApps": "正在读取应用…",
@@ -376,6 +381,17 @@ declare module 'i18next' {
             "unfiled": "未整理"
         },
         "citations": {
+            "searchSources": "候选来源（未逐项关联）",
+            "toolDeclared": "工具声明的候选，尚未关联到正文证据",
+            "unresolved": "未能关联证据的内容",
+            "coverage": {
+                "pending": "待检查来源关联",
+                "reviewing": "正在检查来源关联…",
+                "reviewed": "已自动关联检索证据，关键事实请核对原文",
+                "partial": "来源核验有限，部分内容或网页未能核对",
+                "unavailable": "无法完成逐项来源核验，请核对原文",
+                "interrupted": "来源核验已中断，部分内容可能没有引用"
+            },
             "displayUnavailable": "该片段暂无法正常展示，请查看原文。",
             "manualCheck": "供人工核对",
             "pageOnly": "暂无法精确定位，当前展示对应页面缩略图。",
@@ -386,6 +402,8 @@ declare module 'i18next' {
             "preview": "PDF 引用预览",
             "webPreview": "网页来源预览",
             "webSearchSource": "网页搜索来源",
+            "pageEvidenceSource": "已读取网页并关联证据",
+            "declaredSource": "回答声明的网页来源",
             "paperSearchSource": "论文搜索来源",
             "stalePreview": "暂时无法更新来源状态，以下保留上次信息。",
             "previewFailed": "引用信息暂时无法加载，点击重试。",
@@ -498,6 +516,14 @@ declare module 'i18next' {
             "reference": "引用",
             "retry": "读取失败，点击重试",
             "more": "加载更多"
+        },
+        "referencePicker": {
+            "select": "选择 {{name}}",
+            "selected": "已选择 {{count}} 项",
+            "add": "添加引用",
+            "file": "文件",
+            "folderItems_one": "文件夹 · {{count}}项",
+            "folderItems_other": "文件夹 · {{count}}项"
         },
         "sources": {
             "resources": "资料库",
@@ -613,7 +639,6 @@ declare module 'i18next' {
             "effortHint": "强度越高回答越透彻，但耗时更久、消耗积分更快。",
             "personal": "个人 API",
             "builtin": "内置",
-            "effect": "切换后，当前会话的下一条消息即使用新模型；正在生成的回复不受影响。",
             "empty": "后端未返回模型。",
             "unavailable": "{{model}}（不可用）",
             "switchingTo": "正在切换至 {{model}}",
@@ -675,6 +700,7 @@ declare module 'i18next' {
             "exportDescription": "仅保存当前会话的脱敏运行记录，不含完整对话或文件正文，不会自动上传。",
             "copied": "已复制",
             "copy": "复制",
+            "copyTicket": "复制编号",
             "submitting": "提交中…",
             "submit": "提交",
             "contact": "我们可能通过 {{phone}} 与你联系",
@@ -756,7 +782,7 @@ declare module 'i18next' {
                 "requests": "接口记录",
                 "linkedScreenshots": "关联截图",
                 "unlinkedScreenshots": "未关联截图",
-                "summary": "问题总结",
+                "summary": "问题补充",
                 "page": "页面：{{value}}",
                 "sourcePage": "在「{{value}}」页面",
                 "sourceDialog": "在「{{page}}」页面的「{{dialog}}」弹窗中",
@@ -777,9 +803,9 @@ declare module 'i18next' {
                 "addStepNote": "补充说明",
                 "editStepNote": "编辑说明",
                 "stepNote": "说明：{{value}}",
-                "final": "问题总结",
-                "summaryHint": "请用一段话说明四个维度：问题是什么、实际发生了什么、期望结果是什么，以及其他必要补充。",
-                "summaryPlaceholder": "例如：在什么场景遇到什么问题；实际结果；期望结果；其他补充信息。",
+                "final": "问题补充",
+                "summaryHint": "可选填写问题现象、实际结果、预期结果或其他有助于排查的信息。",
+                "summaryPlaceholder": "例如：问题现象、实际结果、预期结果或其他补充信息（选填）。",
                 "actual": "实际现象",
                 "expected": "预期结果",
                 "additional": "其他补充",
@@ -904,23 +930,27 @@ declare module 'i18next' {
             "summary": {
                 "allDone": "全部完成",
                 "need": "等待你的确认",
+                "unrequested": "尚未发起确认，无需操作",
                 "applying": "正在应用你的选择",
                 "preparing": "正在准备执行计划",
                 "runningWithIssues": "{{activity}} · {{count}} 项降级",
-                "completedPartial": "部分完成 · {{count}} 项需关注",
-                "partialFailure": "部分步骤失败，等待计划更新",
+                "completedPartial": "{{count}} 项需关注",
+                "partialFailure": "有步骤失败",
                 "partial": "部分完成，保留已有结果",
-                "blocked": "当前阶段受阻，等待恢复条件",
-                "failed": "执行失败或授权被拒绝，计划未完成",
+                "blocked": "执行受阻",
+                "failed": "执行失败",
+                "failedSteps": "{{count}} 步失败",
                 "waiting": "等待下一步计划更新",
-                "interrupted": "执行已停止，保留当前进度",
-                "ended": "本轮已结束，计划尚未全部完成",
+                "interrupted": "已暂停",
+                "ended": "{{count}} 步未完成",
                 "previous": "上次计划，执行状态待确认"
             },
             "status": {
                 "done": "已完成",
                 "running": "进行中",
                 "need": "待确认",
+                "unrequestedBadge": "待发起确认",
+                "unrequested": "尚未发起确认，无需操作",
                 "todo": "待执行",
                 "partial": "部分完成",
                 "blocked": "受阻",
@@ -928,12 +958,15 @@ declare module 'i18next' {
                 "stopped": "未完成"
             },
             "title": "执行计划",
+            "totalElapsed": "总用时：{{duration}}",
+            "stepElapsed": "步骤用时：{{duration}}",
+            "continue": "继续",
             "waitingFor": "等待：{{dependencies}}",
             "elapsedSeconds": "{{seconds}} 秒",
             "elapsedMinutes": "{{minutes}} 分 {{seconds}} 秒",
             "estimate": {
-                "total": "预计 {{lower}}–{{upper}} 分钟",
-                "remaining": "预计还需 {{lower}}–{{upper}} 分钟",
+                "total": "预计 {{lower}}–{{upper}}m",
+                "remaining": "剩 {{lower}}–{{upper}}m",
                 "overrun": "已超出历史区间，仍在执行",
                 "basis": "估算依据：{{source}} · {{confidence}}置信度 · {{model}} / {{effort}}",
                 "source": {
@@ -1072,8 +1105,17 @@ declare module 'i18next' {
             "askHint": "编辑外部文件和使用互联网时始终询问",
             "autoPermission": "帮我批准",
             "autoHint": "仅对检测到的风险操作请求批准",
-            "fullPermission": "完全访问权限",
+            "fullPermission": "完全访问",
             "modeMenuTitle": "应如何批准 AI 执行",
+            "modeDeferred": "{{active}} · 下一轮：{{selected}}",
+            "modeNextTurnShort": "下一轮生效",
+            "modeLiveBoundary": "切换不改变已挂起的审批、已开始的步骤或子会话。",
+            "modeUnconfirmed": "当前轮更新未确认；任务不会自动中断，可选择生效时机。",
+            "modePendingConfirmation": "切换未确认",
+            "modeInterruptContinue": "立即中断并生效",
+            "modeNextTurnAction": "下一轮生效",
+            "modeSwitchTitle": "何时切换为“{{mode}}”？",
+            "modeSwitchBody": "当前任务正在进行，此变更不能热切。立即生效会中断当前轮，保留同一对话并按新模式继续；下一轮生效不会打断当前任务。",
             "fullHint": "可不受限制地访问互联网和您电脑上的任何文件",
             "fullConfirm": "确认开启完全访问权限？",
             "fullBody": "开启后，任务后续动作可访问互联网和您电脑上的任何文件。已执行动作不会回溯。",
@@ -1095,14 +1137,12 @@ declare module 'i18next' {
             "modeControlWaiting": "权限模式：{{mode}}；请先处理当前审批",
             "modeSelected": "已选择「{{mode}}」，将在下一轮对话生效。",
             "referenceMessage": "引用消息",
-            "submitting": "正在提交",
             "unknownOutcome": "结果未知",
-            "submitFailed": "提交失败",
+            "answerFailed": "回答生成失败",
             "queued": "排队中",
             "checking": "正在检查",
             "checkOutcome": "检查发送结果",
             "resend": "重新发送",
-            "sendDirect": "直接发送",
             "delete": "删除",
             "unconfirmed": "发送结果尚未确认",
             "unconfirmedHint": "可能由网络中断、刷新或响应超时造成。为避免重复执行，核对完成前不能重新发送或删除。",
@@ -1191,6 +1231,7 @@ declare module 'i18next' {
             "workspaceFailed": "新对话工作空间授权失败，请检查文件夹权限后重试。",
             "contextNotSaved": "新会话上下文没有保存，消息未发送。",
             "selectionContextChanged": "资料“{{name}}”的选区内容已变化，请重新选择后再发送。",
+            "selectionSnapshotRequired": "资料“{{name}}”的选区缺少完整文字快照，请重新选择并添加到对话。",
             "sourceContextChanged": "资料“{{name}}”已更新，请重新加入对话后再发送。",
             "sourceContextMissing": "资料“{{name}}”已不存在，请移除该引用后再发送。",
             "contextUnavailable": "资料“{{name}}”当前不可用，请检查引用后再发送。",
@@ -1222,10 +1263,13 @@ declare module 'i18next' {
             "itemNamed": "{{kind}}：{{name}}",
             "unknownError": "未知错误",
             "queueCheckUnknown": "消息入队结果暂时无法确认，请在待处理消息中检查发送结果。",
-            "cancelWait": "取消等待",
-            "waitingResources": "等待运行资源",
-            "resourceWaitHint": "资源可用后会自动继续。取消等待不会停止其他正在运行的任务。",
             "resourceWaitTimeout": "等待运行资源超时，消息已保留，请重新发送。",
+            "resourceWaitBlocked": "上一轮仍有后台任务运行，消息已保留。请先终止后台任务或重启会话后再发送。",
+            "resourceWaitPendingHil": "上一轮仍有待回答的问题，消息已保留。请先处理问题卡，再重新发送。",
+            "resourceWaitActivityUnavailable": "暂时无法确认上一轮后台工作是否结束，消息已保留。请稍后重新发送。",
+            "previousTurnPendingHil": "上一轮仍有待回答的问题，请先处理问题卡。本条消息尚未提交。",
+            "previousTurnBackgroundActive": "上一轮仍有后台工作未结束，请先等待或终止后台任务。本条消息尚未提交。",
+            "previousTurnActivityUnavailable": "暂时无法确认上一轮后台工作是否结束，请稍后重试。本条消息尚未提交。",
             "resourceWaitInterrupted": "应用重启中断了资源等待，消息已保留，请重新发送。",
             "resourceQueueFull": "等待运行资源的任务较多，请稍后重新发送。",
             "resourceCancelled": "资源等待已取消。",
@@ -1235,14 +1279,20 @@ declare module 'i18next' {
             "task": "本 session 任务",
             "continue": "继续上次",
             "continueInterrupted": "继续",
+            "confirmUnknown": "确认不自动重发",
+            "recoveryBlocked": "恢复受阻，旧任务结果尚未确认",
+            "recoveryBlockedDetail": "已保留历史记录并暂停发送。不会自动重放旧任务；请重新检查原生执行状态，确认安全后再自行发送新消息。",
+            "recoveryCheckFailed": "暂时无法证明旧任务已结束。历史可读，但发送仍被阻止；请稍后重新检查。",
+            "recoveryCheck": "重新检查",
             "continuePending": "待确认继续结果",
             "steer": "插话",
+            "stopped": "用户主动停止了该任务",
             "rewindHere": "回退到这里",
             "fragment": "片段",
             "collapseReference": "收起引用片段",
             "unavailableFragment": "发送时的片段暂不可用",
             "copied": "已复制",
-            "copyMessage": "复制本条消息",
+            "copyMessage": "复制消息",
             "confirmRewind": "确认回退",
             "rewindTitle": "回退到这里？",
             "rewindDescription": "Agent 和文件将尝试回退到这里。若存在版本冲突，回退可能失败。",
@@ -1250,7 +1300,7 @@ declare module 'i18next' {
             "rewinding": "回退中…",
             "retry": "重试",
             "rewind": "回退",
-            "copyReply": "复制本条回复",
+            "copyReply": "复制消息",
             "reconnect": "重新连接",
             "continueUnconfirmed": "Service 未确认继续操作。",
             "regenerated": "已重新生成",
@@ -1291,6 +1341,7 @@ declare module 'i18next' {
                     "paper": "检索了论文",
                     "collaboration": "完成了代理协作",
                     "wait": "等待结束",
+                    "approval": "完成了权限复核",
                     "other": "完成了操作"
                 },
                 "error": {
@@ -1304,6 +1355,7 @@ declare module 'i18next' {
                     "paper": "检索论文失败",
                     "collaboration": "代理协作失败",
                     "wait": "等待未完成",
+                    "approval": "权限复核未通过",
                     "other": "操作未完成"
                 },
                 "running": {
@@ -1317,17 +1369,21 @@ declare module 'i18next' {
                     "paper": "正在检索论文",
                     "collaboration": "正在进行代理协作",
                     "wait": "正在等待",
+                    "approval": "正在复核权限",
                     "other": "正在执行操作"
                 }
             },
             "processing": "处理中",
             "processed": "已处理",
+            "turnCompletedAnnouncement": "助手回复已完成",
+            "turnFailedAnnouncement": "助手回复失败",
+            "turnInterruptedAnnouncement": "助手回复已中断",
             "images_other": "已查看 {{count}} 张图像",
             "commands_other": "运行了 {{count}} 条命令",
             "tools_other": "加载了 {{count}} 个工具",
             "executing": "执行中",
-            "elapsedState": "{{state}} · 已用时 {{duration}}",
-            "durationState": "{{state}} · 任务用时 {{duration}}",
+            "durationOnly": "用时{{duration}}",
+            "durationState": "{{state}} · 用时{{duration}}",
             "followupIncomplete": "{{label}} · 后续执行未完成",
             "interruptedLabel": "{{label}} · 已中断",
             "activityLabel": "{{label}}，{{state}}",
@@ -1353,6 +1409,7 @@ declare module 'i18next' {
                 "wait": "等待",
                 "imageGeneration": "生成图片",
                 "approvalReview": "自动审批复核",
+                "approvalStrictReview": "升级为严格复核",
                 "reviewEntered": "进入审查模式",
                 "reviewExited": "退出审查模式",
                 "runtimeActivity": "Codex 活动",
@@ -1432,8 +1489,8 @@ declare module 'i18next' {
                 "allowSiteCaption": "以后不再询问访问 “{{host}}”",
                 "allowThisSiteCaption": "以后不再询问此站点",
                 "alwaysAllow": "始终允许",
-                "allowSession": "本会话始终允许",
-                "allowSessionCaption": "本会话内不再询问 {{tool}}",
+                "allowSession": "会话内允许匹配操作",
+                "allowSessionCaption": "仅在本会话复用 {{tool}} 的匹配授权，不是全部命令免审批",
                 "acceptEdits": "接受所有编辑",
                 "acceptEditsCaption": "本会话内自动接受所有文件编辑",
                 "summary": {
@@ -1512,6 +1569,7 @@ declare module 'i18next' {
                 "skills": "技能",
                 "developer": "开发者",
                 "files": "资料库文件",
+                "storage": "数据存储",
                 "archives": "归档管理",
                 "about": "关于书深",
                 "prompts": "AI 提示词"
@@ -1526,7 +1584,13 @@ declare module 'i18next' {
                 "deleteDescription": "此操作会从本机移除该项目，之后不能从书深恢复。",
                 "deleteFilesNote": "项目目录与文件会保留在本机原位置。",
                 "cancel": "取消",
-                "removed": "已永久移除该项目登记"
+                "removed": "已永久移除该项目登记",
+                "selectAll": "全选",
+                "selectedCount": "已选 {{total}} 项",
+                "batchUnarchive": "批量取消归档",
+                "batchDelete": "批量永久删除",
+                "batchDeleteTitle": "永久删除选中的 {{total}} 个项目？",
+                "batchSummary": "成功 {{ok}} 项，失败 {{fail}} 项"
             },
             "common": {
                 "close": "关闭",
@@ -1584,12 +1648,32 @@ declare module 'i18next' {
                 "currentPhone": "当前手机号",
                 "phonePlaceholder": "请输入手机号"
             },
+            "storage": {
+                "title": "数据存储",
+                "description": "全局文献库、凭证、记忆、技能、日志与运行组件等数据的存放位置。",
+                "dataHomeTitle": "数据位置",
+                "dataHomeDescription": "全局文献库、登录凭证、记忆、技能、日志与运行组件均存放在该目录。该位置安装期选定，运行期只读。",
+                "dataHomeUnavailable": "无法读取当前数据位置",
+                "installTimeNoteWin": "Windows：数据位置由安装向导选定，运行期不可更改。",
+                "installTimeNoteMac": "macOS：数据位置在首次启动时一次性选定（未选则默认用户目录下的 .scholarseed），之后运行期不可更改。",
+                "containerRootTitle": "项目根路径",
+                "containerRootDescription": "新建项目的落地根。已登记项目按各自目录继续、不被搬动；更改需重启应用后生效，且仅新项目跟随。",
+                "containerRootUnavailable": "无法读取当前项目根路径",
+                "changeContainerRoot": "更改…",
+                "containerRootRestart": "已记录新的项目根路径，重启应用后对新项目生效。",
+                "containerRootFailed": "更改失败：所选目录无效或不可用。",
+                "firstLaunchTitle": "选择数据存放位置",
+                "firstLaunchDescription": "书深会把全局文献库、凭证、记忆、技能、日志与运行组件放在该位置（数 GB）。默认使用用户目录下的 .scholarseed；如需放到其他位置，可现在一次性选定，之后运行期不可更改。",
+                "firstLaunchDefault": "使用默认位置",
+                "firstLaunchAdvanced": "高级…",
+                "firstLaunchRestart": "已记录新的数据位置，重启应用后生效。",
+                "firstLaunchFailed": "所选目录无效或不可写，请重新选择或改用默认位置。",
+                "firstLaunchClose": "完成"
+            },
             "about": {
                 "title": "关于书深",
                 "description": "版本、官方入口与新手引导。",
                 "site": "官方网站",
-                "runtimeStore": "组件仓库位置",
-                "runtimeStoreUnavailable": "不可用（环境变量 SCHOLARSEED_RUNTIME_STORE 形状非法）",
                 "mail": "联系邮箱",
                 "copied": "已复制",
                 "community": "官方社群",
@@ -1646,7 +1730,6 @@ declare module 'i18next' {
                 "unverified": "未验证",
                 "selectionSimple": "已选 {{selected}} / {{total}}",
                 "selectionHintChat": "勾选要在聊天模型列表中显示的模型。",
-                "apiKeyRequired": "请填写此模型服务提供的 API Key。",
                 "enabledCount": "{{enabled}} / {{total}} 已启用",
                 "none": "未添加",
                 "search": "搜索连接…",
@@ -1674,7 +1757,7 @@ declare module 'i18next' {
                 "smallHint": "用于标题生成一类的低成本调用（可留空）",
                 "capability": "文献输入能力",
                 "capabilityHint": "仅在供应商确认所选模型和端点支持时开启；PDF 使用原始文件输入。",
-                "connectHint": "输入 API Key 后点击连接，自动读取模型列表；连接后按需勾选，默认不选中任何模型。",
+                "connectHint": "填写 API Key 后，点击「测试连接」。连接成功后，下方将显示模型列表，请勾选需要使用的模型。",
                 "models": "模型",
                 "refresh": "刷新",
                 "manual": "端点没有列表接口时，手填模型 ID",
@@ -1693,7 +1776,28 @@ declare module 'i18next' {
                 "connecting": "连接中…",
                 "connect": "连接",
                 "save": "保存",
-                "retry": "重试"
+                "retry": "重试",
+                "probeFailed": "连接失败",
+                "probeResultTitle": "连接测试结果",
+                "connectionFailTitle": "无法连接模型服务",
+                "probeReasonMissingKey": "未检测到 API Key",
+                "probeSuggestionMissingKey": "请检查是否已填写，然后重新测试连接。",
+                "probeReasonAuth": "API Key 缺失或无效",
+                "probeSuggestionAuth": "请检查 API Key 是否填写正确，然后重新测试连接。",
+                "probeReasonNotFound": "服务地址不正确或该端点不支持模型列表",
+                "probeSuggestionNotFound": "请检查 Base URL 是否填写完整（例如到版本号为止），然后重新测试连接。",
+                "probeReasonStatus": "端点返回错误状态 {{status}}",
+                "probeSuggestionStatus": "请检查服务地址与 API Key，或稍后重试。",
+                "probeReasonNetwork": "无法连接到该服务地址",
+                "probeSuggestionNetwork": "请检查网络与 Base URL 后重试。",
+                "probeReasonProtocol": "该连接声明的接口协议不受支持",
+                "probeSuggestionProtocol": "请在接口协议中改用 responses 或 chat_completions，然后重新测试连接。",
+                "probeReasonBaseUrl": "尚未填写服务地址",
+                "probeSuggestionBaseUrl": "请先填写 Base URL，然后重新测试连接。",
+                "probeReasonNoModels": "该端点没有返回模型列表",
+                "probeSuggestionNoModels": "请手动填写模型名，或确认服务地址支持模型列表接口。",
+                "probeReasonGeneric": "连接测试未通过",
+                "probeSuggestionGeneric": "请检查服务地址与 API Key 后重试。"
             },
             "permissions": {
                 "fullDisk": "项目文件访问",
@@ -1768,6 +1872,7 @@ declare module 'i18next' {
             "recentLiterature": "近7天添加",
             "recentOpened": "最近打开",
             "recentOpenedEmpty": "暂无最近打开文献",
+            "recentOpenFailed": "文献或附件暂不可打开，请在文献库中检查。",
             "myProjects": "我的项目",
             "newProject": "新建项目",
             "emptyProjects": "建立你的第一个项目吧",
@@ -1776,6 +1881,9 @@ declare module 'i18next' {
             "menu": {
                 "label": "{{name}} 的操作",
                 "rename": "重命名",
+                "revealDarwin": "在访达中显示",
+                "revealWin32": "在资源管理器中显示",
+                "revealFallback": "在文件管理器中显示",
                 "archive": "归档"
             },
             "rename": {
@@ -1938,7 +2046,7 @@ declare module 'i18next' {
             "failedSub": "下载失败：{{error}}",
             "failedRetained": "已下载的部分已保留，恢复后从断点继续",
             "failedDiscarded": "已下载的内容未能保留，重试将重新开始",
-            "installing": "正在安装更新，请稍候…",
+            "installing": "正在安装更新",
             "preparingApp": "正在准备新版本…",
             "restarting": "正在重启到新版本…",
             "manual": "已打开安装包",
@@ -1965,8 +2073,7 @@ declare module 'i18next' {
             "viewMoreNotes": "查看更多更新内容",
             "versionLine": "v{{version}} · {{size}}",
             "versionOnly": "v{{version}}",
-            "installDescription": "书深即将关闭并在后台安装新版本。",
-            "installHint": "安装期间没有窗口属于正常，可能需要几分钟；完成后书深会自动重启，无需手动打开。",
+            "installDescription": "应用即将退出并在后台完成更新，完成后会自动启动，请稍候",
             "titleAvailable": "发现新版本",
             "titleDownloading": "正在下载更新…",
             "titleReady": "新版本已就绪",
@@ -1979,7 +2086,27 @@ declare module 'i18next' {
             "installAlreadyRunning": "上一轮更新的安装程序仍在运行，请先等待它完成，或关闭该安装窗口后重试；安装包已就绪，不需要重新下载。",
             "checkFailedSub": "检查更新失败：{{error}}",
             "installRetryHint": "安装包已就绪，重试的是安装这一步，不需要重新下载。",
-            "summaryHint": "本次更新内容如下，欢迎体验新版本。"
+            "summaryHint": "本次更新内容如下，欢迎体验新版本。",
+            "cancelInstall": "取消安装",
+            "stepPackage": "正在校验已下载的安装包…",
+            "stepImage": "正在校验安装镜像…",
+            "stepMounts": "正在检查并清理旧挂载…",
+            "stepMounting": "正在打开安装镜像…",
+            "stepIdentity": "正在校验应用版本与兼容性…",
+            "stepSignature": "正在校验应用签名…",
+            "stepGatekeeper": "正在进行 macOS 安全检查…",
+            "stepNotarization": "正在校验公证凭据…",
+            "stepPublisher": "正在核对发布者身份…",
+            "stepStagingCleanup": "正在清理上次准备的文件…",
+            "stepCopying": "正在复制新版本应用…",
+            "stepCleanup": "正在卸载安装镜像…",
+            "stagedStep": "复验已复制的应用：{{step}}",
+            "preparingDescription": "正在准备更新，应用尚未退出。安全检查和复制可能需要几分钟，准备完成后将自动退出并重启。",
+            "cancelling": "正在取消安装…",
+            "cancellingDescription": "正在停止当前步骤并清理安装镜像。清理完成后可重新安装，当前应用不会退出。",
+            "cleanupDescription": "正在清理安装镜像，完成后将显示本次安装结果。",
+            "installElapsed": "本步骤已用 {{step}} · 总计已用 {{total}}",
+            "installLimit": "本步骤超时上限 {{limit}}，不代表剩余时间。"
         },
         "context": {
             "loading": "正在读取文件夹…",
@@ -2019,8 +2146,41 @@ declare module 'i18next' {
         }
     },
     "conversation": {
+        "toolOutcome": {
+            "noMatches": "未找到匹配内容",
+            "noMatchesHelp": "搜索没有找到匹配内容，这不表示任务失败。AI 可以继续处理。",
+            "commandNotFound": "命令中的程序或语句不存在。",
+            "permissionDenied": "当前步骤没有执行权限。",
+            "fileMissing": "要查找的文件或目录不存在。",
+            "nonzero": "命令未成功完成（退出码 {{code}}）。",
+            "unknown": "命令未成功完成，原因尚不明确。",
+            "toolFailed": "此工具步骤未成功完成。",
+            "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",
+            "technicalDetails": "技术详情",
+            "exitCode": "退出码：{{code}}"
+        },
+        "queue": {
+            "permissionDenied": "系统拒绝读取项目文件「{{path}}」，本条消息尚未提交。请检查该文件及所在目录的访问权限；如果是云盘文件，请确认已下载到本地。处理后再重新发送。",
+            "projectFile": "访问受限的文件",
+            "baselineFailed": "项目文件检查失败，本条消息尚未提交。请检查项目文件是否可访问，并查看诊断日志了解具体原因。处理后再重新发送。"
+        },
         "turn": {
             "duration": "本轮用时 {{duration}}"
+        },
+        "subagent": {
+            "waiting": "等待回应",
+            "elapsed": "已等待 {{duration}}",
+            "lastObserved": "最近确认：{{activity}} · {{age}}前",
+            "action": {
+                "message": "生成回复",
+                "reasoning": "思考",
+                "search": "检索",
+                "command": "执行命令",
+                "tool": "调用工具",
+                "edit": "编辑文件",
+                "plan": "更新计划",
+                "work": "子代理活动"
+            }
         },
         "header": {
             "recent": "最近",
@@ -2071,6 +2231,8 @@ declare module 'i18next' {
                 "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
                 "codex_thread_not_loaded": "Agent 会话已脱离当前进程",
                 "codex_thread_closed": "Agent 会话连接已关闭",
+                "codex_repeated_tool_loop": "本轮连续执行相同工具并得到相同结果，已自动停止。可更换模型或补充资料后重试",
+                "codex_repeated_tool_interrupt_failed": "检测到重复工具调用，但自动停止失败。请手动停止本轮并重试",
                 "credit_balance_exhausted": "积分余额已用尽，本次生成已停止"
             },
             "closed": "✓ 已终止整个会话，历史已保留；此会话不能继续发送。",
@@ -2113,6 +2275,7 @@ declare module 'i18next' {
             "continueUnconfirmed": "Service 未确认继续操作。"
         },
         "reply": {
+            "title": "明确研究关键问题",
             "skipped": "已跳过",
             "answerLabel": "对“{{question}}”的回答：{{answer}}"
         },
@@ -2149,6 +2312,11 @@ declare module 'i18next' {
                 "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
                 "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
             },
+            "overloaded": {
+                "message": "上游模型服务返回过载。",
+                "exhausted": "上游模型服务返回过载，自动尝试 {{count}} 次后仍未恢复。",
+                "action": "请稍后重试；本轮问题与上下文已保留。"
+            },
             "request": {
                 "message": "当前请求未被模型服务接受。",
                 "action": "请检查模型、权限与输入。"
@@ -2158,6 +2326,7 @@ declare module 'i18next' {
                 "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
             },
             "unknown": {
+                "message": "本次生成未完成。",
                 "action": "生成过程中发生异常，已保留本轮问题和上下文。"
             }
         },
@@ -2174,7 +2343,7 @@ declare module 'i18next' {
             "failed": "请求失败",
             "authentication": "请先登录",
             "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
-            "httpFailure": "请求失败（{{status}}）：{{detail}}",
+            "httpFailure": "请求失败（{{status}}），请稍后重试。",
             "diagnostic": "{{message}}\n{{detail}}"
         },
         "toolActions": {
@@ -2200,7 +2369,7 @@ declare module 'i18next' {
         },
         "turnUnknown": {
             "title": "上次任务已中断",
-            "action": "是否继续对话？",
+            "action": "确认后不会自动重发旧任务；恢复检查通过后，请自行输入新消息。",
             "reason": {
                 "timeout": "等待任务结果超时，部分操作可能已完成。",
                 "transportLost": "任务执行期间连接中断，部分操作可能已完成。",
@@ -2874,6 +3043,28 @@ declare module 'i18next' {
         }
     },
     "literature": {
+        "batchSync": {
+            "title": "同步元数据",
+            "progressTitle": "同步进度",
+            "resultTitle": "同步结果",
+            "description": "按 DOI 或 arXiv 编号自动同步；仅标题、无标识或正在单篇同步的文献将跳过，可在详情页同步并确认。关闭此面板不会中断任务；退出应用后任务不保留。",
+            "progress": "已处理 {{completed}} / {{total}} 篇",
+            "completed": "同步结束，已处理 {{completed}} / {{total}} 篇",
+            "cancelling": "正在停止，当前文献完成后不再启动下一篇…",
+            "pending": "等待中",
+            "running": "同步中",
+            "success": "成功",
+            "missing": "未命中",
+            "failed": "失败",
+            "quota": "限流",
+            "skipped": "跳过",
+            "deferred": "限流暂缓",
+            "cancelled": "已取消",
+            "cancel": "停止同步",
+            "retry": "重试失败和未完成项",
+            "startSelected": "同步所选 {{count}} 篇",
+            "close": "关闭"
+        },
         "navigation": {
             "overview": "文献全览",
             "project": "文献库",
@@ -3000,7 +3191,6 @@ declare module 'i18next' {
             "projects": "项目归属"
         },
         "list": {
-            "noProject": "未关联项目",
             "moreProjects_other": "另有 {{count}} 个项目：{{names}}",
             "moreTags_other": "另有 {{count}} 个标签：{{names}}",
             "newImport": "本次新导入",
@@ -3022,7 +3212,15 @@ declare module 'i18next' {
             "searchPlaceholder": "标题、作者、年份",
             "import": "导入",
             "page_other": "第 {{page}}/{{pageCount}} 页 · 共 {{count}} 篇",
-            "importTask": "导入任务"
+            "importTask": "导入任务",
+            "rowMenu": {
+                "viewPdf": "查看 PDF",
+                "viewInfo": "查看基本信息",
+                "addNote": "添加笔记",
+                "addAttachment": "添加附件",
+                "removeDescription": "确定将“{{title}}”移出当前项目吗？文献仍保留在文献全览中。",
+                "deleteDescription": "确定要删除“{{title}}”吗？此操作无法撤销。"
+            }
         },
         "zotero": {
             "title": "从 Zotero Desktop 导入",
@@ -3353,6 +3551,9 @@ declare module 'i18next' {
             "loadFailed": "加载详情失败",
             "saveFailed": "保存失败",
             "fulltextFailed": "获取全文失败",
+            "fulltextNotFound": "未找到全文",
+            "fulltextNoAccess": "无法访问",
+            "fulltextRateLimited": "请求被限流",
             "uploadFailed": "上传失败",
             "deleteAttachmentFailed": "删除附件失败",
             "sync": {
@@ -3588,6 +3789,23 @@ declare module 'i18next' {
             "issueAffected": "受影响内容：{{content}}",
             "interactionTitle": "综述输出设置",
             "authorizationTitle": "确认检索结果",
+            "authorizationReplyTitle": "用户授权读取文献",
+            "authorizationReplyGranted": "用户已授权 AI 读取本次检索到的文献全文，用于继续生成文献综述",
+            "authorizationReplyRejected": "暂不授权阅读文献全文。",
+            "authorization": {
+                "authorize": "一键授权",
+                "reject": "拒绝",
+                "authorizeDescription": "允许在本次任务和已展示文献范围内读取全文。",
+                "subsetHint": "将下载并阅读以下文献的全文：",
+                "subsetSelectAll": "全选",
+                "rejectDescription": "不读取全文，并停止本次全文处理。",
+                "preciseHeader": "精准检索授权",
+                "preciseQuestion": "是否允许下载、读取并使用已展示文献的全文作为证据？",
+                "reviewHeader": "综述检索授权",
+                "reviewQuestion": "是否允许读取已展示文献的全文，用于继续生成文献综述？",
+                "ideaHeader": "想法原文授权",
+                "ideaQuestion": "是否允许读取已展示文献的全文，用于生成有原文依据的研究想法？"
+            },
             "authorizationRejected": "已拒绝全文授权。本次任务已停止，未读取任何文献全文。",
             "interactionDefault": "采用默认设置：Markdown + 通用数字顺序制",
             "interactionDefaultLabel": "采用默认设置 · Markdown · 通用数字顺序制"
@@ -3838,7 +4056,7 @@ declare module 'i18next' {
         "reading": {
             "actions": {
                 "document_translation": "全文翻译",
-                "interpretation": "AI 解读",
+                "interpretation": "AI 解释",
                 "selection_translation": "翻译",
                 "selection_explanation": "AI 解释",
                 "figure_explanation": "图表解释"
@@ -3952,6 +4170,7 @@ declare module 'i18next' {
                 "source_changed_during_generation": "生成期间源 PDF 已变化，旧结果保留，请重新打开文献。",
                 "execution_failed": "生成失败，旧结果已保留，请重试。",
                 "preparation_failed": "无法准备阅读任务，请检查文献和模型设置后重试。",
+                "model_unavailable": "当前模型不可用。请登录，或在设置 → 模型服务中配置并选择可用模型。",
                 "operation_busy": "当前操作已有生成任务；其他 AI 操作仍可使用。",
                 "figure_stream_required": "图表解释需要使用流式接口，请更新客户端后重试。",
                 "source_invalid": "请选择有效的项目 PDF 文件进行图表解释。"
@@ -4191,14 +4410,13 @@ declare module 'i18next' {
             "too_many_entries": "项目根下条目过多，请先自行整理",
             "cannot_forget_current_project": "这是当前项目，请先切换到其他项目",
             "cannot_archive_current_project": "这是当前项目，请先切换到其他项目再归档",
+            "reveal_unavailable": "无法显示项目目录：{{path}}（目录可能不存在或无法访问）",
             "name_too_long": "项目名称最长 {{max}} 个字符"
         },
         "notices": {
             "renamed": "已改名（本地目录名不变）",
             "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",
             "unarchived": "已取消归档，项目回到默认列表",
-            "savedRestart": "已保存，重启书深后新建的项目落到新根",
-            "saved": "已保存",
             "linked": "已关联，Agent 在下一轮对话获得写权限",
             "planFailed": "读取迁移清单失败",
             "managed": "迁移完成，项目已使用内置双库",
@@ -4218,12 +4436,9 @@ declare module 'i18next' {
             "link": "关联本地目录",
             "revoke": "撤销",
             "interrupt": "撤销时立即中断正在运行的任务（否则该任务到下一轮才收回写权限）",
-            "root": "新建项目的落地根",
-            "fromStartup": "（来自启动参数，未显式设置）",
             "openTrash": "在废纸篓中查看",
             "trashHint": "删除走的是系统废纸篓，在那里「放回原处」即可恢复到下面列出的原位置。",
-            "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}",
-            "effectiveRoot": "当前生效：{{path}}"
+            "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}"
         },
         "cards": {
             "title": "项目",
@@ -4781,6 +4996,8 @@ declare module 'i18next' {
             "promptGuideSuffix": "中调整",
             "promptSettings": "AI 提示词设置",
             "original": "原文",
+            "expandOriginal": "展开",
+            "collapseOriginal": "收起",
             "translation": "译文",
             "close": "关闭",
             "stop": "停止生成",
@@ -4837,7 +5054,25 @@ declare module 'i18next' {
             "content": "文件审阅内容",
             "failed": "审阅操作未完成",
             "changed": "文件在 Agent 完成后又发生了变化",
-            "changedDetail": "下方展示的是当前磁盘实际内容；接受或修订会以你现在看到的内容创建版本。",
+            "changedBadge": "外部修改",
+            "agentPreview": "Agent 版本",
+            "basePreview": "Agent 前版本",
+            "draftPreview": "修订草稿",
+            "diskPreview": "当前磁盘",
+            "changedDetail": "下方展示的是当前磁盘实际内容；接受会恢复并采纳 Agent 改动，修订会保留当前内容。",
+            "undoTitle": "撤销所选文件的修订",
+            "undoDescription": "将恢复 {{count}} 个文件为 Agent 版本；其中 {{backups}} 个文件的当前内容会先存为可恢复版本，{{drafts}} 个页内草稿将被舍弃。",
+            "undoConfirm": "确认撤销",
+            "undoCancel": "取消",
+            "undoResult": "撤销结果",
+            "undoSucceeded": "已恢复",
+            "undoRetry": "未恢复，请重试",
+            "partialResult": "部分文件未提交",
+            "submitFailedFile": "未提交",
+            "retryFailed": "重试失败文件",
+            "submitDraftTitle": "仍有未提交的页内草稿",
+            "submitDraftDescription": "接受或拒绝会写入所选版本；页内草稿不会被采纳，仍保留在编辑器供你处理。若要采纳草稿，请改选“修订”。",
+            "submitDraftConfirm": "按当前决定提交",
             "processed": "本批次已处理",
             "decided": "所有文件都已有明确决定。",
             "submitted": "这个文件已提交",
@@ -4846,20 +5081,26 @@ declare module 'i18next' {
             "unsupported": "该格式暂不支持内置审阅",
             "wholeSnapshot": "仍可接受或拒绝这个完整文件快照。",
             "count": "{{total}} 个文件 · 已决定 {{decided}}",
-            "outcomeProgress": "已处理 {{reviewed}} · 待处理 {{pending}} · 失败 {{failed}}",
+            "outcomeProgress": "已决定 {{reviewed}} · 待决定 {{pending}} · 失败 {{failed}}",
             "loadFailed": "无法读取这个审阅批次。",
             "contentFailed": "无法读取文件审阅内容。",
             "prepareFailed": "无法准备文件审阅。",
             "refreshFailed": "无法刷新审阅批次。",
             "stale": "文件内容已变化，请重新确认未决定的文件。",
             "submitFailed": "批次提交未完成，请按当前决定重试。",
-            "undoFailed": "“{{path}}”的内存编辑无法撤销。",
+            "undoFailed": "“{{path}}”未能恢复为 Agent 版本。",
             "diskFailed": "无法读取“{{path}}”的当前磁盘内容。",
-            "saveFailed": "“{{path}}”的修订内容未能保存，批次仍保持待审阅。"
+            "saveFailed": "无法读取“{{path}}”的修订草稿，批次仍保持待审阅。",
+            "syncFailed": "提交已完成，但编辑器未能同步磁盘内容，请手动重新加载。"
         },
         "reviewOrigin": {
             "agent": "Agent 改动",
             "external": "外部改动"
+        },
+        "reviewAdmission": {
+            "pending": "还有未提交的文件审阅。请先处理审阅，再继续对话。",
+            "open": "前往审阅",
+            "cancel": "取消"
         },
         "admissionFailure": {
             "undoFailed": "无法撤销“{{path}}”的内存编辑，请前往审阅处理。",
@@ -4914,7 +5155,19 @@ declare module 'i18next' {
     "shell": {
         "navigation": {
             "projects": "首页",
-            "returnHome": "返回首页"
+            "returnHome": "返回首页",
+            "skipToContent": "跳转到主要内容"
+        },
+        "errorBoundary": {
+            "title": "页面遇到了一些问题",
+            "description": "书深没有正常完成页面渲染，但你的项目和本地文件不会因此丢失。",
+            "notice": "应用暂时无法继续显示",
+            "guidance": "请重新加载页面，或发送错误反馈。反馈会包含本次错误详情和本机诊断日志，帮助我们定位问题。",
+            "reload": "重新加载",
+            "feedback": "反馈错误",
+            "feedbackSubmitted": "反馈已发送",
+            "feedbackFailedTitle": "反馈发送失败",
+            "feedbackFailed": "暂时无法发送错误信息，请检查网络后重试。"
         },
         "chrome": {
             "projectOverview": "首页",
@@ -4957,6 +5210,10 @@ declare module 'i18next' {
             "hint": "请根据以下提示处理：",
             "runtimeNotReady": "Codex Runtime 尚未就绪。",
             "submitNotReady": "真实消息提交入口尚未就绪。",
+            "harnessLanding": "无头 harness 前提未满足：首启首页尚未关闭。先走完首启链（跳过首页、创建项目、跳过新手引导），或按隔离实例 + CDP 配方驱动，再重试。",
+            "harnessLogin": "无头 harness 前提未满足：登录 dialog 尚未关闭。先登录或选择「暂不登录」关闭它，再重试。",
+            "harnessGuide": "无头 harness 前提未满足：新手引导尚未跳过。先跳过引导，再重试。",
+            "harnessNoProject": "无头 harness 前提未满足：尚无任何项目，消息输入框只挂在项目的 AI 面板内。先创建至少一个项目，再重试。",
             "reviewUnknown": "无法确认待审阅状态，请稍后重试。",
             "reviewUnsaved": "待审阅文件仍有未保存编辑，请先保存或放弃编辑后再继续对话。",
             "effortFailed": "思考深度切换失败，请重试。",
@@ -5006,6 +5263,8 @@ declare module 'i18next' {
             "reproduceHint": "调用论文复现技能：拆算法、落代码、跑 demo 验证"
         },
         "workspaceLoading": {
+            "retrying": "会话目录暂时不可用，当前工作台保持可用，正在自动恢复。",
+            "unavailable": "会话目录返回了不可识别的数据，当前工作台保持可用，请稍后重新加载。",
             "signInTitle": "登录后继续",
             "failedTitle": "对话暂时没有加载完成",
             "loadingTitle": "正在加载工作台",
@@ -5383,7 +5642,10 @@ declare module 'i18next' {
         "feedback": {
             "completed": "{{name}}已完成",
             "cancelled": "{{name}}已取消",
-            "incomplete": "{{name}}未全部完成"
+            "incomplete": "{{name}}：部分或全部来源未成功。",
+            "reasonUnavailable": "任务结果未提供失败原因。请在任务中心重试；如仍失败，请保留日志。",
+            "moreFailures_other": "另有 {{count}} 项失败，请在任务中心查看。",
+            "viewTaskCenter": "查看任务中心"
         },
         "center": {
             "title": "任务中心",
@@ -5429,11 +5691,11 @@ declare module 'i18next' {
                 "sourceNotFound": "选中的本地文件或文件夹已不存在。",
                 "parentNotWritable": "目标目录不可写，请修复权限或选择其他目录。",
                 "targetNotFound": "目标目录不存在。",
-                "nameExists": "该位置已有同名项。",
+                "nameExists": "该位置已有同名项，请改名或选择其他位置后重试。",
                 "importFailed": "导入失败，请检查源文件和目录权限。",
                 "copyFailed": "复制失败，请检查目录权限。",
-                "rootExists": "同名关联来源已经存在。",
-                "sourceOverlap": "该目录已被父级关联覆盖。",
+                "rootExists": "同名关联来源已经存在，请先检查现有关联或选择其他目录。",
+                "sourceOverlap": "该目录已被父级关联覆盖，请使用现有关联或先解除父级关联。",
                 "sourceCoversLinks": "它的子目录已单独关联，可取代子关联后挂载这个父目录。",
                 "diskFull": "磁盘空间不足，请清理空间后重试。",
                 "storageIoFailed": "本地存储读写失败，请检查磁盘状态后重试。",
@@ -5564,8 +5826,9 @@ declare module 'i18next' {
         "review": {
             "toolbar": "审阅处理",
             "progress": "已决定 {{decided}}/{{total}} · 剩余 {{remaining}}",
-            "outcomeProgress": "已处理 {{reviewed}} · 待处理 {{pending}} · 失败 {{failed}}",
+            "outcomeProgress": "已决定 {{reviewed}} · 待决定 {{pending}} · 失败 {{failed}}",
             "undoAll": "撤销全部",
+            "undo": "撤销",
             "acceptAll": "接受全部",
             "rejectAll": "拒绝全部",
             "submit": "提交",
@@ -5698,6 +5961,7 @@ declare module 'i18next' {
             "loadFailed": "无法打开 {{title}}。",
             "loadFailureDetail": "{{message}}（{{code}}）",
             "loadFailureUnknown": "文档加载失败，请重试。",
+            "artifactTooLarge": "文件超过内置预览上限，请在系统中打开，或从对话产物卡片下载。",
             "missingTitle": "{{title}} 已不存在或已被移动。",
             "missingDescription": "文件可能已在书深之外被删除或重命名。",
             "conflictTitle": "磁盘文件已在外部变化",
@@ -5723,6 +5987,8 @@ declare module 'i18next' {
             "desktopUnavailable": "系统打开不可用：桌面连接未就绪。"
         },
         "history": {
+            "pendingReview": "待审阅",
+            "reviewBackup": "审阅前备份",
             "origin": {
                 "initial": "初始版本",
                 "user": "用户保存",
@@ -5896,6 +6162,7 @@ declare module 'i18next' {
             "slow": "当前设备初始化时间较长，Office 仍在后台继续准备。",
             "recoveringTitle": "正在恢复 Office 预热",
             "recovering": "运行资源加载中断，正在进行第 {{attempt}} 次自动重试。",
+            "retryCountdown": "{{seconds}} 秒后进行第 {{attempt}} 次自动重试。",
             "errorTitle": "Office 预热未完成",
             "failures": {
                 "fontPermission": "无法获得系统字体访问权限，请检查系统设置后重试。",
@@ -5903,9 +6170,10 @@ declare module 'i18next' {
                 "fontRead": "系统字体读取未完成，请重试。",
                 "runtimeAssets": "Office 运行资源未能完整加载，请重试。",
                 "runtimeInitialization": "Office 引擎初始化失败，请重试。",
-                "runtimeExecution": "Office 运行时发生错误，请重试。"
+                "runtimeExecution": "Office 运行时发生错误，请重试。",
+                "warmupTimeout": "Office 后台预热超过 10 分钟仍未完成，请重试。"
             },
-            "retry": "重试"
+            "retry": "立即重试"
         },
         "markdown": {
             "saved": "已保存",
@@ -5944,6 +6212,10 @@ declare module 'i18next' {
             "inlineMath": "行内公式",
             "link": "链接",
             "linkAddress": "链接地址",
+            "linkOpenExternal": "{{url}} — 单击在默认浏览器中打开",
+            "linkOpenInternal": "{{url}} — 单击跳转到引用位置",
+            "linkUnavailable": "{{url}} — 此链接暂不支持跳转",
+            "linkFailed": "无法打开链接 {{url}}，目标不可用或打开失败。",
             "imageFailed": "图片保存失败，请重试",
             "placeholder": "输入 / 唤起操作",
             "format": "格式",

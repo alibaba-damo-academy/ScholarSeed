@@ -6,19 +6,21 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import { createPortal } from 'react-dom'
-import { Copy } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
+import { streamingTextClassName } from '../../design/motion'
 import aiThinking from '../../assets/ai-thinking.gif'
 import { createFollowScroll } from './scroll'
-import { activeThread, useApp } from '../../store'
-import {
+import { commandOutcome } from './command'
+import { activeThread, useApp, type ComposerReference } from '../../store'
+import type {
   ConvCard,
   ConvItem,
   DeliveryCardMember,
-  SessionArtifact,
+  MessageReference,
   TurnOutcome,
   TurnTiming,
-  type HilResolvedMessage
 } from '../../model'
+import { SessionArtifact, type HilResolvedMessage } from '../../model'
 import { Icon, type IconName } from '../../icons'
 import { TONE } from '../../tone'
 import { openByDefault } from '../../fileOpen'
@@ -27,57 +29,61 @@ import {
   formatHilResolution,
   formatHilSubmissionError,
   hilEventResolution,
+  hilResolvedRunState,
   hilPermissionScope,
   hilSubmissionFailure,
   isQuestionHil,
   pendingHilItems,
   permissionDecisionOptions,
-  transcriptPresentationItems
+  transcriptPresentationItems,
 } from '../../hil'
 import { Markdown, visibleMarkdownText } from '../primitive/Markdown'
 import { sourceOffsetRect } from '../markdown/source'
 import { IconFont } from '../primitive/Iconfont'
 import {
+  checkSessionRecovery,
   confirmUnknownTurn,
   getHistoryWithTodos,
   interruptSession,
   postTurn,
   respondHil,
-  rewindToPrompt
+  rewindToPrompt,
 } from '../../api'
-import { projectHistory, projectHistorySnapshot } from '../../transcript'
+import { projectHistory, projectHistorySnapshot, resolveHilItem } from '../../transcript'
+import { projectPlanSnapshots } from '../../todo'
 import {
   answerInteractionCapabilities,
+  subagentActivityItem,
+  visibleThinkingItem,
+  activityDisclosureOpen,
+  activityIdentity,
   activityRunState,
   activityRows,
+  hasVisibleTurnProgress,
   type ActivityItem,
   type ArtifactItem,
-  workingIndicatorVisible
+  workingIndicatorVisible,
 } from '../../activity'
 import {
+  canOfferTurnRecovery,
+  canContinueFailedTurn,
   formatApplicationRequestFailure,
   formatRuntimeStatus,
   formatTurnUnknown,
-  requestSessionResume
+  requestSessionResume,
 } from '../../runtime'
 import { SentAttachments } from '../../features/assistant/Attachments'
 import { AnnotatedAnswer } from '../../features/assistant/Annotations'
 import { ArtifactCard } from '../../features/assistant/Artifacts'
-import {
-  AnnotationSummary,
-  annotationDisplay
-} from '../../features/assistant/Notes'
+import { AnnotationSummary, annotationDisplay } from '../../features/assistant/Notes'
 import { SessionReference } from '../../features/assistant/SessionReference'
-import {
-  DisplayCardView,
-  useCardArtifacts,
-  useLatestDisplayCards
-} from './Cards'
+import { DisplayCardView, useCardArtifacts, useLatestDisplayCards } from './Cards'
 import { useInteractionPolicies } from './Interactions'
 import {
   activityDurationLabel,
+  activitySummaryState,
   elapsedLabel,
-  turnDurationLabel
+  turnDurationLabel,
 } from './duration'
 import { Finalizations } from '../../features/resources/Finalizations'
 import { ReviewCard } from '../../features/resources/ReviewCard'
@@ -87,7 +93,7 @@ import {
   buildTurnInput,
   composerSubmissionOutcome,
   isComposerSubmissionAccepted,
-  turnAdmissionFeedback
+  turnAdmissionFeedback,
 } from '../../input'
 import {
   hasQueuedMessageAwaitingRuntime,
@@ -95,7 +101,7 @@ import {
   optimisticQueuedMessage,
   rejectOptimisticQueuedMessage,
   settleOptimisticQueuedMessage,
-  upsertQueuedMessage
+  upsertQueuedMessage,
 } from '../../queue'
 import { releaseQueuedOutbox, retainQueuedOutbox } from '../../outbox'
 import {
@@ -104,6 +110,7 @@ import {
   AlertTitle,
   Badge,
   Button,
+  Checkbox,
   Card,
   CardContent,
   Collapsible,
@@ -112,14 +119,25 @@ import {
   CopyButton,
   EllipsisText,
   IconButton,
+  Radio,
   ScrollArea,
   Spinner,
   Textarea,
-  Tooltip
+  Tooltip,
 } from '../ui'
 
 const HIL_WAIT_TICK_MS = 1000
 const ACTIVITY_ELAPSED_TICK_MS = 1000
+const SUBAGENT_ACTION_KEYS = {
+  message: 'subagent.action.message',
+  reasoning: 'subagent.action.reasoning',
+  search: 'subagent.action.search',
+  command: 'subagent.action.command',
+  tool: 'subagent.action.tool',
+  edit: 'subagent.action.edit',
+  plan: 'subagent.action.plan',
+  work: 'subagent.action.work',
+} as const
 const EXTERNAL_RESULT_PROTOCOLS = new Set(['http:', 'https:'])
 const HIL_OUTCOME_UNKNOWN_MESSAGE = 'stream.hil.outcomeUnknown'
 const SHOW_SCROLL_TO_BOTTOM_DISTANCE_PX = 140
@@ -153,18 +171,14 @@ function cx(...classes: Array<string | false | null | undefined>): string {
 
 const OUTLINE_HOVER_BUTTON_CLASS =
   '[transition:background_0.12s,color_0.12s,border-color_0.12s] hover:bg-[var(--hover-bg)] hover:text-[var(--text)]'
-const ACCENT_HOVER_BUTTON_CLASS =
-  '[transition:filter_0.12s] hover:brightness-[1.06]'
+const ACCENT_HOVER_BUTTON_CLASS = '[transition:filter_0.12s] hover:brightness-[1.06]'
 const CHIP_BUTTON_CLASS =
   'rounded-[5px] border border-transparent bg-transparent px-[var(--vds-space-2)] py-[3px] text-[10px] text-[var(--text-3)] [transition:border-color_0.12s,color_0.12s] hover:bg-[var(--hover-bg)] hover:text-[var(--text-2)]'
 const FLAT_BUTTON_CLASS =
   'min-h-[30px] appearance-none rounded-[5px] border border-transparent bg-[var(--bg-3)] px-[11px] py-[6px] text-[11px] leading-[1.25] text-[var(--text-2)] [transition:background_0.16s_ease,border-color_0.16s_ease,box-shadow_0.16s_ease,color_0.16s_ease,filter_0.16s_ease,transform_0.16s_cubic-bezier(0.2,0.8,0.2,1)] hover:enabled:-translate-y-px hover:enabled:bg-[var(--hover-bg)] hover:enabled:text-[var(--text)] active:enabled:scale-[0.982] active:enabled:translate-y-0 active:enabled:bg-[var(--active-bg)] active:enabled:text-[var(--active-text)] active:enabled:shadow-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color-mix(in_oklch,var(--accent)_50%,transparent)] disabled:opacity-55'
 const READING_COLUMN_CLASS =
   'box-border w-full max-w-[var(--vds-conversation-content-width)] min-w-0 mx-auto'
-const QUESTION_OPTION_MARK_CLASS =
-  'h-[var(--vds-checkbox-mark-height)] w-[var(--vds-checkbox-mark-width)] rotate-[-45deg] translate-y-[var(--vds-checkbox-mark-offset-y)] border-solid border-current border-t-0 border-r-0 border-b-[length:var(--vds-checkbox-mark-border)] border-l-[length:var(--vds-checkbox-mark-border)]'
-const MESSAGE_ACTIONS_CLASS =
-  'mt-[7px] flex items-center gap-[var(--vds-space-1)]'
+const MESSAGE_ACTIONS_CLASS = 'mt-[7px] flex items-center gap-[var(--vds-space-1)]'
 const TOOL_RUN_CLASS =
   'my-[10px] mb-[var(--vds-space-4)] overflow-clip rounded-[9px] bg-[color-mix(in_oklch,var(--bg-3)_56%,var(--bg-2))] shadow-[inset_0_0_0_1px_var(--border-soft)] [animation:tool-run-enter_240ms_cubic-bezier(0.2,0.8,0.2,1)_both] motion-reduce:animate-none'
 const TOOL_RUN_TRIGGER_CLASS =
@@ -184,7 +198,7 @@ const TOOL_RUN_STATUS_TONE_CLASS: Record<string, string> = {
   'is-running': 'text-[var(--c-fact)]',
   'is-done': 'text-[var(--c-experience)]',
   'is-error': 'text-[var(--c-tension)]',
-  'is-cancelled': 'text-[var(--text-3)]'
+  'is-cancelled': 'text-[var(--text-3)]',
 }
 const TOOL_RUN_PULSE_CLASS =
   'size-[6px] flex-none rounded-full bg-current [animation:tool-run-pulse_1.2s_ease-in-out_infinite] motion-reduce:animate-none'
@@ -195,16 +209,15 @@ const TOOL_RUN_CONTENT_CLASS =
 const TOOL_RUN_CONTENT_INNER_CLASS = 'min-h-0 overflow-hidden'
 const TOOL_RUN_STEPS_CLASS =
   'mb-[var(--vds-space-3)] min-w-0 border-l border-[var(--vds-border-default)] pl-[var(--vds-space-2)]'
-const TOOL_RUN_STEP_CLASS =
-  'group/step min-w-0 !gap-0 !border-0 !bg-transparent'
+const TOOL_RUN_STEP_CLASS = 'group/step min-w-0 !gap-0 !border-0 !bg-transparent'
 const TOOL_RUN_STEP_TRIGGER_CLASS =
-  '!flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
+  'group/trigger !flex min-h-[var(--vds-control-height-md)] w-full cursor-pointer items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-2)] !border-0 !bg-transparent px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-left text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)] transition-colors duration-[var(--vds-duration-fast)] hover:!bg-[var(--vds-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--vds-brand-text-primary)]'
 const TOOL_RUN_STEP_NAME_CLASS =
   'shrink-0 font-normal text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]'
 const TOOL_RUN_STEP_CARET_CLASS =
-  'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]/step:rotate-90 group-[.is-open]/step:text-[var(--text-2)]'
+  'inline-flex items-center text-[var(--text-3)] transition-[transform,color] duration-200 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-aria-expanded/trigger:rotate-90 group-aria-expanded/trigger:text-[var(--text-2)]'
 const TOOL_RUN_STEP_CONTENT_CLASS =
-  'grid min-h-0 grid-rows-[0fr] opacity-0 pointer-events-none transition-[grid-template-rows,opacity] duration-[260ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none group-[.is-open]/step:grid-rows-[1fr] group-[.is-open]/step:opacity-100 group-[.is-open]/step:pointer-events-auto'
+  'grid min-h-0 grid-rows-[0fr] opacity-0 pointer-events-none transition-[grid-template-rows,opacity] duration-[260ms] ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none aria-[hidden=false]:grid-rows-[1fr] aria-[hidden=false]:opacity-[var(--vds-opacity-full)] aria-[hidden=false]:pointer-events-auto'
 const TOOL_RUN_IO_STACK_CLASS =
   'ml-[calc(var(--vds-space-4)*2)] mr-[var(--vds-space-2)] mb-[var(--vds-space-3)] flex flex-col gap-[var(--vds-space-3)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)]'
 const TOOL_RUN_MARKDOWN_CLASS =
@@ -215,6 +228,7 @@ const TOOL_RUN_IO_CLASS =
   'm-[var(--vds-space-0)] max-h-[240px] overflow-auto rounded-[var(--vds-radius-3)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-surface-muted)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] font-mono text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)] whitespace-pre-wrap break-words [overflow-wrap:anywhere]'
 const ACTIVITY_LINE_CLASS =
   'group/activity m-0 !flex !min-h-[28px] w-fit max-w-full cursor-pointer items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !p-0 text-left text-[12.5px] !font-normal leading-[1.45] !text-[var(--vds-text-tertiary)] shadow-none transition-colors duration-150 hover:!bg-transparent hover:!text-[var(--vds-text-primary)]'
+const LEGACY_USER_STOPPED_STATUS = '已停止'
 
 type ToolItem = Extract<ConvItem, { kind: 'tool' }>
 type WebSearchItem = Extract<ConvItem, { kind: 'web_search' }>
@@ -228,7 +242,7 @@ const TOOL_STATUS_KEYS = {
   running: { messageKey: 'stream.toolStatus.running' },
   done: { messageKey: 'stream.toolStatus.done' },
   error: { messageKey: 'stream.toolStatus.error' },
-  cancelled: { messageKey: 'stream.toolStatus.cancelled' }
+  cancelled: { messageKey: 'stream.toolStatus.cancelled' },
 } as const
 
 const NATIVE_ACTIVITY_LABELS = {
@@ -240,19 +254,19 @@ const NATIVE_ACTIVITY_LABELS = {
   wait: 'stream.native.wait',
   image_generation: 'stream.native.imageGeneration',
   approval_review: 'stream.native.approvalReview',
+  approval_strict_review: 'stream.native.approvalStrictReview',
   review_entered: 'stream.native.reviewEntered',
   review_exited: 'stream.native.reviewExited',
-  runtime_activity: 'stream.native.runtimeActivity'
+  runtime_activity: 'stream.native.runtimeActivity',
 } as const
 const USER_REFERENCE_TYPE_LABELS = {
   skill: 'stream.referenceType.skill',
-  assistant_context: 'stream.referenceType.assistantContext'
+  assistant_context: 'stream.referenceType.assistantContext',
 } as const
 
 function userMessageRefType(type: string, t: TFunction<'components'>): string {
   if (type === 'skill') return t(USER_REFERENCE_TYPE_LABELS.skill)
-  if (type === 'assistant_context')
-    return t(USER_REFERENCE_TYPE_LABELS.assistant_context)
+  if (type === 'assistant_context') return t(USER_REFERENCE_TYPE_LABELS.assistant_context)
   return type
 }
 
@@ -264,9 +278,7 @@ function compactDurationLabel(
   if (startedAt === undefined || endedAt === undefined) return null
   const milliseconds = Math.max(0, endedAt - startedAt)
   const seconds =
-    completed && milliseconds > 0
-      ? Math.ceil(milliseconds / 1000)
-      : Math.floor(milliseconds / 1000)
+    completed && milliseconds > 0 ? Math.ceil(milliseconds / 1000) : Math.floor(milliseconds / 1000)
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   const rest = seconds % 60
@@ -279,7 +291,7 @@ function Btn({
   children,
   tone,
   ghost,
-  onClick
+  onClick,
 }: {
   children: React.ReactNode
   tone?: string
@@ -310,7 +322,7 @@ const cardBox = (color: string): React.CSSProperties => ({
   marginTop: 18,
   paddingLeft: 20,
   borderLeft: `2px solid ${color}`,
-  animation: 'cardIn .5s ease both'
+  animation: 'cardIn .5s ease both',
 })
 
 const rewindOverlayStyle: React.CSSProperties = {
@@ -322,7 +334,7 @@ const rewindOverlayStyle: React.CSSProperties = {
   padding: 20,
   background: 'color-mix(in srgb, var(--text) 18%, transparent)',
   backdropFilter: 'saturate(0.9)',
-  WebkitBackdropFilter: 'saturate(0.9)'
+  WebkitBackdropFilter: 'saturate(0.9)',
 }
 
 const rewindDialogStyle: React.CSSProperties = {
@@ -332,12 +344,12 @@ const rewindDialogStyle: React.CSSProperties = {
   borderRadius: 16,
   padding: '22px 22px 20px',
   background: 'var(--bg-2)',
-  boxShadow: 'var(--shadow)'
+  boxShadow: 'var(--shadow)',
 }
 
 export function Stream({
   home = false,
-  onOpenDelivery
+  onOpenDelivery,
 }: {
   home?: boolean
   onOpenDelivery?: (member: DeliveryCardMember) => void
@@ -345,9 +357,9 @@ export function Stream({
   const { t } = useTranslation('components')
   const { state, set, patchThread } = useApp()
   const thread = activeThread(state)
-  const resourceProject = state.projects.find(
-    (project) => project.path === thread.projectPath
-  )
+  const [recoveryChecking, setRecoveryChecking] = useState(false)
+  const [recoveryError, setRecoveryError] = useState(false)
+  const resourceProject = state.projects.find((project) => project.path === thread.projectPath)
   const conv =
     state.activeSession === null && state.turnLaunch
       ? [state.turnLaunch.optimisticUserMessage]
@@ -358,30 +370,48 @@ export function Stream({
   const columnRef = useRef<HTMLDivElement>(null)
   const focusSpacerRef = useRef<HTMLDivElement>(null)
   const focusedSessionRef = useRef<string | null>(null)
+  const continuingTurnsRef = useRef(new Set<string>())
   const endRef = useRef<HTMLDivElement>(null)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const showScrollToBottomRef = useRef(false)
   const resumeFollowOnScroll = useRef(false)
   // Turn 终态事件是停止工作态的唯一依据。中途 assistant 文本之后仍可能继续执行
   // 不需要单独展示的活动（例如 web_fetch），因此不能根据最后一条文本隐藏运行标签。
-  const busy =
-    thread.running === true ||
-    thread.status === 'running' ||
-    thread.status === 'waiting'
+  const busy = thread.running === true || thread.status === 'running' || thread.status === 'waiting'
   const admitting =
-    state.turnLaunch !== null ||
-    hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
+    state.turnLaunch !== null || hasQueuedMessageAwaitingRuntime(thread.queuedMessages ?? [])
+  const cardArtifacts = useCardArtifacts(conv)
+  const presented = transcriptPresentationItems(currentConv).filter(
+    (item) => item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id)
+  )
+  const activeTurnId = Object.entries(thread.turnOutcomes ?? {})
+    .filter(([, outcome]) => outcome === 'running')
+    .at(-1)?.[0]
+  const rows = activityRows(presented, thread.turnOutcomes)
+  const hasVisibleProgress = hasVisibleTurnProgress(rows, activeTurnId)
   const showWorking = workingIndicatorVisible(
     busy,
     admitting,
-    pendingHil.length
+    pendingHil.length,
+    hasVisibleProgress
   )
-  const cardArtifacts = useCardArtifacts(currentConv)
-  const presented = transcriptPresentationItems(currentConv).filter(
-    (item) =>
-      item.kind !== 'artifact' || !cardArtifacts.has(item.artifact.artifact_id)
-  )
-  const rows = activityRows(presented, thread.turnOutcomes)
+  // Track the latest terminal turn outcome for screen reader announcements.
+  const lastAnnouncedRef = useRef<string | null>(null)
+  const [turnAnnouncement, setTurnAnnouncement] = useState<string | null>(null)
+  useEffect(() => {
+    if (!thread.turnOutcomes) return
+    const entries = Object.entries(thread.turnOutcomes)
+    if (entries.length === 0) return
+    const [, latestOutcome] = entries[entries.length - 1]
+    if (latestOutcome === 'running' || latestOutcome === 'unknown') return
+    const key = `${thread.sessionId}:${entries.length}:${latestOutcome}`
+    if (key === lastAnnouncedRef.current) return
+    lastAnnouncedRef.current = key
+    if (latestOutcome === 'completed') setTurnAnnouncement(t('stream.turnCompletedAnnouncement'))
+    else if (latestOutcome === 'failed') setTurnAnnouncement(t('stream.turnFailedAnnouncement'))
+    else if (latestOutcome === 'interrupted')
+      setTurnAnnouncement(t('stream.turnInterruptedAnnouncement'))
+  }, [thread.turnOutcomes, thread.sessionId, t])
   const finalAgentRows = new Set<number>()
   const turnsWithFinalAgent = new Set<string>()
   for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -391,7 +421,8 @@ export function Stream({
       row.item.kind !== 'agent' ||
       !row.item.turnId ||
       turnsWithFinalAgent.has(row.item.turnId)
-    ) continue
+    )
+      continue
     turnsWithFinalAgent.add(row.item.turnId)
     finalAgentRows.add(index)
   }
@@ -414,21 +445,24 @@ export function Stream({
       setShowScrollToBottom(false)
       return
     }
-    const distance =
-      stream.scrollHeight - stream.scrollTop - stream.clientHeight
+    const distance = stream.scrollHeight - stream.scrollTop - stream.clientHeight
     const visible = distance > SHOW_SCROLL_TO_BOTTOM_DISTANCE_PX
     showScrollToBottomRef.current = visible
     setShowScrollToBottom(visible)
   }, [home])
 
-  const followScroll = React.useMemo(() => createFollowScroll(
-    () => {
-      scrollToBottom('auto')
-      updateScrollToBottomVisibility()
-    },
-    (callback) => requestAnimationFrame(callback),
-    (frame) => cancelAnimationFrame(frame)
-  ), [scrollToBottom, updateScrollToBottomVisibility])
+  const followScroll = React.useMemo(
+    () =>
+      createFollowScroll(
+        () => {
+          scrollToBottom('auto')
+          updateScrollToBottomVisibility()
+        },
+        (callback) => requestAnimationFrame(callback),
+        (frame) => cancelAnimationFrame(frame)
+      ),
+    [scrollToBottom, updateScrollToBottomVisibility]
+  )
 
   useEffect(() => () => followScroll.cancel(), [followScroll])
 
@@ -437,14 +471,24 @@ export function Stream({
     resumeFollowOnScroll.current = false
   }, [followScroll, thread.sessionId])
 
-  const continueTurn = async (
-    failure: Extract<ConvItem, { kind: 'error' }>
-  ): Promise<void> => {
+  const continueTurn = async (failure: Extract<ConvItem, { kind: 'error' }>): Promise<void> => {
     const sessionId = thread.sessionId
-    if (!sessionId || busy) return
-    const patchFailure = (
-      patch: Partial<Extract<ConvItem, { kind: 'error' }>>
-    ): void =>
+    if (!sessionId || !canContinueFailedTurn(thread, failure)) return
+    const recoveryKey = `${sessionId}:${failure.turnId}`
+    if (continuingTurnsRef.current.has(recoveryKey)) return
+    continuingTurnsRef.current.add(recoveryKey)
+    try {
+      await submitFailedTurn(failure, sessionId)
+    } finally {
+      continuingTurnsRef.current.delete(recoveryKey)
+    }
+  }
+
+  const submitFailedTurn = async (
+    failure: Extract<ConvItem, { kind: 'error' }>,
+    sessionId: string
+  ): Promise<void> => {
+    const patchFailure = (patch: Partial<Extract<ConvItem, { kind: 'error' }>>): void =>
       patchThread(thread.id, (current) => ({
         conversation: current.conversation.map((item) =>
           item.kind === 'error' &&
@@ -452,32 +496,25 @@ export function Stream({
           item.turnId === failure.turnId
             ? { ...item, ...patch }
             : item
-        )
+        ),
       }))
-    if (
-      state.aiPanel.sessionId !== sessionId ||
-      state.aiPanel.contextState !== 'ready'
-    ) {
+    patchFailure({ actionState: 'submitting', actionError: undefined })
+    if (state.aiPanel.sessionId !== sessionId || state.aiPanel.contextState !== 'ready') {
       patchFailure({
         actionState: 'failed',
-        actionError: feedback('conversation', 'retry.contextNotReady')
+        actionError: feedback('conversation', 'retry.contextNotReady'),
       })
       return
     }
-    const reviewProject =
-      thread.projectPath ?? thread.workdir ?? state.resource.root
+    const reviewProject = thread.projectPath ?? thread.workdir ?? state.resource.root
     if (
       resourceProject &&
       reviewProject &&
-      (await hasDirtyReviewEditor(
-        resourceProject.id,
-        reviewProject,
-        resourceEditorHasChanges
-      ))
+      (await hasDirtyReviewEditor(resourceProject.id, reviewProject, resourceEditorHasChanges))
     ) {
       patchFailure({
         actionState: 'failed',
-        actionError: feedback('shell', 'foreground.reviewUnsaved')
+        actionError: feedback('shell', 'foreground.reviewUnsaved'),
       })
       return
     }
@@ -487,11 +524,10 @@ export function Stream({
     } catch (error) {
       patchFailure({
         actionState: 'failed',
-        actionError: error instanceof Error ? error.message : String(error)
+        actionError: error instanceof Error ? error.message : String(error),
       })
       return
     }
-    patchFailure({ actionState: 'submitting', actionError: undefined })
     const clientUserMessageId = crypto.randomUUID()
     const optimistic = optimisticQueuedMessage(
       thread.queuedMessages ?? [],
@@ -502,20 +538,13 @@ export function Stream({
     )
     retainQueuedOutbox(sessionId, optimistic)
     patchThread(thread.id, (current) => ({
-      queuedMessages: upsertQueuedMessage(
-        current.queuedMessages ?? [],
-        optimistic
-      )
+      queuedMessages: upsertQueuedMessage(current.queuedMessages ?? [], optimistic),
     }))
-    const delivered = await postTurn(
-      sessionId,
-      input,
-      state.collaborationMode,
-      {
-        clientUserMessageId,
-        assistantContextRevision: state.aiPanel.revision
-      }
-    )
+    const delivered = await postTurn(sessionId, input, state.collaborationMode, {
+      clientUserMessageId,
+      assistantContextRevision: state.aiPanel.revision,
+      continueTurnId: failure.turnId,
+    })
     const submissionOutcome = composerSubmissionOutcome(delivered)
     if (submissionOutcome === 'rejected') {
       releaseQueuedOutbox(sessionId, clientUserMessageId)
@@ -523,13 +552,13 @@ export function Stream({
         queuedMessages: rejectOptimisticQueuedMessage(
           current.queuedMessages ?? [],
           clientUserMessageId
-        )
+        ),
       }))
       patchFailure({
         actionState: 'failed',
         actionError: delivered
           ? turnAdmissionFeedback(delivered)
-          : feedback('components', 'composer.messageFailed')
+          : feedback('components', 'composer.messageFailed'),
       })
       return
     }
@@ -538,25 +567,29 @@ export function Stream({
         queuedMessages: markOptimisticQueueOutcomeUnknown(
           current.queuedMessages ?? [],
           clientUserMessageId
-        )
+        ),
       }))
       patchFailure({
         actionState: 'outcome_unknown',
-        actionError: feedback('conversation', 'retry.continueUnknown')
+        actionError: feedback('conversation', 'retry.continueUnknown'),
       })
       return
     }
     releaseQueuedOutbox(sessionId, clientUserMessageId)
     patchThread(thread.id, (current) => ({
-      conversation: current.conversation.filter((item) => !(
-        item.kind === 'error'
-        && item.runtimeAction === 'continue_turn'
-        && item.turnId === failure.turnId
-      )),
+      conversation: current.conversation.filter(
+        (item) =>
+          !(
+            item.kind === 'error' &&
+            item.runtimeAction === 'continue_turn' &&
+            item.turnId === failure.turnId
+          )
+      ),
       queuedMessages: settleOptimisticQueuedMessage(
         current.queuedMessages ?? [],
-        clientUserMessageId
-      )
+        clientUserMessageId,
+        delivered?.disposition
+      ),
     }))
   }
 
@@ -565,10 +598,8 @@ export function Stream({
   }, [busy])
 
   useLayoutEffect(() => {
-    if (
-      !state.aiPanel.messageFocus &&
-      focusedSessionRef.current !== thread.sessionId
-    ) followScroll.request()
+    if (!state.aiPanel.messageFocus && focusedSessionRef.current !== thread.sessionId)
+      followScroll.request()
   }, [busy, conv, showWorking, followScroll, state.aiPanel.messageFocus, thread.sessionId])
 
   useLayoutEffect(() => {
@@ -589,26 +620,23 @@ export function Stream({
     )
     const target =
       candidates.find(
-        (element) =>
-          Boolean(focus.itemId) &&
-          element.dataset.messageItemId === focus.itemId
+        (element) => Boolean(focus.itemId) && element.dataset.messageItemId === focus.itemId
       ) ??
       candidates.find(
-        (element) =>
-          Boolean(focus.turnId) &&
-          element.dataset.messageTurnId === focus.turnId
+        (element) => Boolean(focus.turnId) && element.dataset.messageTurnId === focus.turnId
       )
     if (!target) return
     const scrollTarget =
-      target.firstElementChild instanceof HTMLElement
-        ? target.firstElementChild
-        : target
+      target.firstElementChild instanceof HTMLElement ? target.firstElementChild : target
     const stream = streamRef.current
     const sourceRange = focus.sourceRange
-    const bounds = sourceRange?.unit === ANSWER_SOURCE_RANGE_UNIT
-      ? sourceOffsetRect(scrollTarget, sourceRange.start) ?? scrollTarget.getBoundingClientRect()
-      : scrollTarget.getBoundingClientRect()
-    const top = stream.scrollTop + bounds.top - stream.getBoundingClientRect().top - stream.clientTop
+    const bounds =
+      sourceRange?.unit === ANSWER_SOURCE_RANGE_UNIT
+        ? (sourceOffsetRect(scrollTarget, sourceRange.start) ??
+          scrollTarget.getBoundingClientRect())
+        : scrollTarget.getBoundingClientRect()
+    const top =
+      stream.scrollTop + bounds.top - stream.getBoundingClientRect().top - stream.clientTop
     const spacer = focusSpacerRef.current
     if (spacer) {
       const contentHeight = stream.scrollHeight - spacer.offsetHeight
@@ -620,9 +648,18 @@ export function Stream({
     stream.scrollTo({ top, behavior: 'instant' })
     updateScrollToBottomVisibility()
     set((current) => ({
-      aiPanel: { ...current.aiPanel, messageFocus: null }
+      aiPanel: { ...current.aiPanel, messageFocus: null },
     }))
-  }, [conv, followScroll, home, set, state.aiPanel, thread.resumeState, thread.sessionId, updateScrollToBottomVisibility])
+  }, [
+    conv,
+    followScroll,
+    home,
+    set,
+    state.aiPanel,
+    thread.resumeState,
+    thread.sessionId,
+    updateScrollToBottomVisibility,
+  ])
 
   useEffect(() => {
     if (home || !columnRef.current) return () => undefined
@@ -642,7 +679,7 @@ export function Stream({
       if (resumeFollowOnScroll.current && !showScrollToBottomRef.current) followScroll.resume()
     }
     stream.addEventListener('scroll', onScroll, {
-      passive: true
+      passive: true,
     })
     window.addEventListener('resize', updateScrollToBottomVisibility)
     return () => {
@@ -664,7 +701,8 @@ export function Stream({
       patchThread(thread.id, (active) =>
         active.sessionId === sessionId
           ? {
-              conversation: projectHistorySnapshot(history, active.conversation)
+              conversation: projectHistorySnapshot(history, active.conversation),
+              planSnapshots: projectPlanSnapshots(history.activity_events, active.planSnapshots),
             }
           : {}
       )
@@ -694,11 +732,12 @@ export function Stream({
             recallQuery: null,
             todos: [],
             todoTurnId: null,
+            planSnapshots: [],
             turnOutcomes: {},
             turnTimings: {},
             backgroundTasks: {},
             running: false,
-            status: 'done'
+            status: 'done',
           }
         : {}
     )
@@ -707,6 +746,20 @@ export function Stream({
 
   // 切到新会话 (如创建资源开的新 session) → 整列以 key 重挂 + 入场动效, 平滑滑入而非生硬切换。
   const threadKey = thread.id
+  const checkRecovery = async (): Promise<void> => {
+    if (!thread.sessionId || recoveryChecking) return
+    setRecoveryChecking(true)
+    const result = await checkSessionRecovery(thread.sessionId)
+    setRecoveryChecking(false)
+    setRecoveryError(!result.ok)
+    patchThread(thread.id, {
+      recoveryBlocked: result.recovery_blocked,
+      recoveryPending: result.recovery_pending,
+      running: result.activity_active === true && result.recovery_pending,
+      status: result.activity_active === true && result.recovery_pending ? 'running' : 'done',
+    })
+    if (result.ok && thread.resumeState === 'failed') requestSessionResume(thread.sessionId)
+  }
   return (
     <div
       ref={streamRef}
@@ -738,9 +791,14 @@ export function Stream({
         paddingBottom: home ? '8px' : '10px',
         userSelect: 'text',
         WebkitUserSelect: 'text',
-        cursor: 'auto'
+        cursor: 'auto',
       }}
     >
+      {turnAnnouncement && (
+        <div role="status" aria-live="polite" className="sr-only">
+          {turnAnnouncement}
+        </div>
+      )}
       <div
         ref={columnRef}
         key={threadKey}
@@ -748,6 +806,30 @@ export function Stream({
         data-testid="conversation-content"
         style={{ animation: 'overlayIn .32s cubic-bezier(.4,0,.2,1) both' }}
       >
+        {thread.recoveryBlocked && !home && (
+          <Alert
+            layout="stacked"
+            data-testid="session-recovery-blocked"
+            tone="warning"
+            className="mb-[var(--vds-space-4)]"
+            title={t('stream.recoveryBlocked')}
+            description={t(
+              recoveryError ? 'stream.recoveryCheckFailed' : 'stream.recoveryBlockedDetail'
+            )}
+            action={
+              <Button
+                data-testid="session-recovery-check"
+                size="sm"
+                variant="outline"
+                disabled={recoveryChecking}
+                loading={recoveryChecking}
+                onClick={() => void checkRecovery()}
+              >
+                {t('stream.recoveryCheck')}
+              </Button>
+            }
+          />
+        )}
         {conv.length === 0 && <Empty home={home} />}
         {rows.map((row, index) => {
           const previous = rows[index - 1]
@@ -773,22 +855,12 @@ export function Stream({
                 items={row.items}
                 turnId={row.turnId}
                 tail={row.tail}
-                outcome={
-                  row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined
-                }
-                timing={
-                  row.turnId ? thread.turnTimings?.[row.turnId] : undefined
-                }
+                outcome={row.turnId ? thread.turnOutcomes?.[row.turnId] : undefined}
+                timing={row.turnId ? thread.turnTimings?.[row.turnId] : undefined}
               />
             )
           if (row.kind === 'artifacts')
-            return (
-              <ArtifactCard
-                key={row.key}
-                items={row.items}
-                turnId={row.turnId}
-              />
-            )
+            return <ArtifactCard key={row.key} items={row.items} turnId={row.turnId} />
           return (
             <div
               key={row.key}
@@ -807,11 +879,7 @@ export function Stream({
                   ) : undefined
                 }
                 running={busy}
-                turnOutcome={
-                  row.item.turnId
-                    ? thread.turnOutcomes?.[row.item.turnId]
-                    : undefined
-                }
+                turnOutcome={row.item.turnId ? thread.turnOutcomes?.[row.item.turnId] : undefined}
                 turnTiming={
                   finalAgentRows.has(index) && row.item.turnId
                     ? thread.turnTimings?.[row.item.turnId]
@@ -850,10 +918,7 @@ export function Stream({
             scrollToBottom(window.matchMedia(REDUCED_MOTION_QUERY).matches ? 'auto' : 'smooth')
           }}
         >
-          <span
-            aria-hidden
-            style={{ transform: 'rotate(180deg)', display: 'inline-grid' }}
-          >
+          <span aria-hidden style={{ transform: 'rotate(180deg)', display: 'inline-grid' }}>
             <Icon name="send" size={18} sw={1.9} />
           </span>
         </Button>
@@ -886,7 +951,7 @@ export function PendingHilDock(): React.JSX.Element | null {
 }
 
 export function ConversationControls({
-  children
+  children,
 }: {
   children: React.ReactNode
 }): React.JSX.Element {
@@ -926,7 +991,7 @@ function Empty({ home = false }: { home?: boolean }): React.JSX.Element {
       style={{
         marginTop: home ? 0 : 84,
         textAlign: 'center',
-        color: 'var(--text-3)'
+        color: 'var(--text-3)',
       }}
     >
       <div
@@ -937,7 +1002,7 @@ function Empty({ home = false }: { home?: boolean }): React.JSX.Element {
           border: '1px solid var(--border)',
           borderRadius: 999,
           padding: '4px 12px',
-          marginBottom: 14
+          marginBottom: 14,
         }}
       >
         <span
@@ -945,26 +1010,22 @@ function Empty({ home = false }: { home?: boolean }): React.JSX.Element {
             width: 6,
             height: 6,
             borderRadius: '50%',
-            background: 'var(--accent)'
+            background: 'var(--accent)',
           }}
         />
-        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
-          {t('stream.newWorkspace')}
-        </span>
+        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>{t('stream.newWorkspace')}</span>
       </div>
       <div
         style={{
           fontFamily: 'var(--font-serif)',
           fontSize: 18,
           color: 'var(--text-2)',
-          marginBottom: 6
+          marginBottom: 6,
         }}
       >
         {t('stream.start')}
       </div>
-      <div style={{ fontSize: 12, lineHeight: 1.7 }}>
-        {t('stream.startHint')}
-      </div>
+      <div style={{ fontSize: 12, lineHeight: 1.7 }}>{t('stream.startHint')}</div>
     </div>
   )
 }
@@ -977,7 +1038,7 @@ function Item({
   turnTiming,
   onRewind,
   onContinue,
-  onOpenDelivery
+  onOpenDelivery,
 }: {
   item: ConvItem
   trailingContent?: React.ReactNode
@@ -988,6 +1049,7 @@ function Item({
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
   onOpenDelivery?: (member: DeliveryCardMember) => void
 }): React.JSX.Element | null {
+  const interactions = answerInteractionCapabilities(turnOutcome)
   switch (item.kind) {
     case 'day':
       return <Day text={item.text} />
@@ -999,19 +1061,17 @@ function Item({
       return <UserBubble item={item} running={running} onRewind={onRewind} />
     case 'interaction_reply':
       return <InteractionReply item={item} />
-    case 'agent': {
-      const interactions = answerInteractionCapabilities(turnOutcome)
+    case 'agent':
       return (
         <AgentMsg
           citationEnabled={interactions.citationEnabled}
           copyEnabled={turnOutcome !== 'running'}
           item={item}
           trailingContent={trailingContent}
-          selectionEnabled={turnOutcome !== 'running'}
+          selectionEnabled={interactions.selectionEnabled}
           timing={turnTiming}
         />
       )
-    }
     case 'delivery':
       return <DeliveryCard item={item} onOpen={onOpenDelivery} />
     case 'artifact':
@@ -1025,18 +1085,14 @@ function Item({
         <Thinking
           text={item.text}
           itemId={item.itemId}
-          selectionEnabled={turnOutcome !== 'running'}
+          selectionEnabled={interactions.selectionEnabled}
         />
       )
     case 'status':
       return <StatusLine item={item} />
     case 'notice':
       return (
-        <NoticeLine
-          text={item.text}
-          message={item.message}
-          displayMessage={item.displayMessage}
-        />
+        <NoticeLine text={item.text} message={item.message} displayMessage={item.displayMessage} />
       )
     case 'error':
       return <ErrorCard item={item} onContinue={onContinue} />
@@ -1061,7 +1117,7 @@ function Item({
 
 function DeliveryCard({
   item,
-  onOpen
+  onOpen,
 }: {
   item: Extract<ConvItem, { kind: 'delivery' }>
   onOpen?: (member: DeliveryCardMember) => void
@@ -1069,23 +1125,15 @@ function DeliveryCard({
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
   const { delivery } = item
-  const primary =
-    delivery.members.find((member) => member.primary) ?? delivery.members[0]
+  const primary = delivery.members.find((member) => member.primary) ?? delivery.members[0]
   const label = deliveryLabel(delivery, conversation)
   const previewTarget =
-    delivery.members.find(
-      (member) => member.primary && member.previewAvailable
-    ) ?? delivery.members.find((member) => member.previewAvailable)
+    delivery.members.find((member) => member.primary && member.previewAvailable) ??
+    delivery.members.find((member) => member.previewAvailable)
   const revision = primary?.revision.replace('sha256:', '').slice(0, 9) ?? ''
-  const meta = primary
-    ? `${primary.workspacePath} · ${revision}`
-    : t('stream.noArtifacts')
+  const meta = primary ? `${primary.workspacePath} · ${revision}` : t('stream.noArtifacts')
   const open = (): void => {
-    if (
-      !previewTarget ||
-      (!previewTarget.materialId && !previewTarget.workspacePath)
-    )
-      return
+    if (!previewTarget || (!previewTarget.materialId && !previewTarget.workspacePath)) return
     onOpen?.(previewTarget)
   }
   return (
@@ -1151,37 +1199,27 @@ function toolPreview(item: ToolItem): string {
 }
 
 function loadedSkillName(item: ToolItem): string | null {
-  if (item.name !== 'Skill' || !item.input || typeof item.input !== 'object')
-    return null
+  if (item.name !== 'Skill' || !item.input || typeof item.input !== 'object') return null
   const skillName = (item.input as { skill?: unknown }).skill
-  return typeof skillName === 'string' && skillName.trim()
-    ? skillName.trim()
-    : null
+  return typeof skillName === 'string' && skillName.trim() ? skillName.trim() : null
 }
 
 function toolLabel(item: ToolItem, t: TFunction<'conversation'>): string {
   const skillName = loadedSkillName(item)
   const key = TOOL_ACTION_LABELS[activityAction(item)]
-  return skillName
-    ? t('toolActions.skill', { name: skillName })
-    : key
-      ? t(key)
-      : item.name
+  return skillName ? t('toolActions.skill', { name: skillName }) : key ? t(key) : item.name
 }
 
 const TOOL_ACTION_LABELS: Partial<
   Record<
     ActivityAction,
-    | 'toolActions.command'
-    | 'toolActions.read'
-    | 'toolActions.edit'
-    | 'toolActions.image'
+    'toolActions.command' | 'toolActions.read' | 'toolActions.edit' | 'toolActions.image'
   >
 > = {
   command: 'toolActions.command',
   read: 'toolActions.read',
   edit: 'toolActions.edit',
-  image: 'toolActions.image'
+  image: 'toolActions.image',
 }
 
 const ACTIVITY_ERROR_STATUS: ToolItem['status'] = 'error'
@@ -1189,16 +1227,19 @@ const ACTIVITY_STATUS_ICONS: Record<ToolItem['status'], string> = {
   done: 'a-line-status-success',
   [ACTIVITY_ERROR_STATUS]: 'a-line-status-error',
   cancelled: 'a-line-status-notfull',
-  running: 'fill-status-loading'
+  running: 'fill-status-loading',
 }
 
-function ActivityStatusIcon({
-  status
-}: {
-  status: ToolItem['status']
-}): React.JSX.Element {
+function ActivityStatusIcon({ status }: { status: ToolItem['status'] }): React.JSX.Element {
   if (status === 'running') {
-    return <Spinner imageSrc={aiThinking} size="sm" className="!size-[var(--vds-icon-7)] shrink-0" aria-hidden="true" />
+    return (
+      <Spinner
+        imageSrc={aiThinking}
+        size="sm"
+        className="!size-[var(--vds-icon-7)] shrink-0"
+        aria-hidden="true"
+      />
+    )
   }
   return (
     <IconFont
@@ -1211,13 +1252,7 @@ function ActivityStatusIcon({
   )
 }
 
-const TOOL_SUMMARY_FIELDS = [
-  'command',
-  'cmd',
-  'file_path',
-  'path',
-  'filename'
-] as const
+const TOOL_SUMMARY_FIELDS = ['command', 'cmd', 'file_path', 'path', 'filename'] as const
 
 function toolInputSummary(item: ToolItem): string {
   if (typeof item.input === 'string') return item.input
@@ -1236,57 +1271,42 @@ function latestRunningTool(items: ToolItem[]): ToolItem | undefined {
   return undefined
 }
 
-function latestRunningSearch(
-  items: WebSearchItem[]
-): WebSearchItem | undefined {
+function latestRunningSearch(items: WebSearchItem[]): WebSearchItem | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (items[index].status === 'running') return items[index]
   }
   return undefined
 }
 
-function latestRunningPaperSearch(
-  items: PaperSearchItem[]
-): PaperSearchItem | undefined {
+function latestRunningPaperSearch(items: PaperSearchItem[]): PaperSearchItem | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (items[index].status === 'running') return items[index]
   }
   return undefined
 }
 
-function latestRunningNativeActivity(
-  items: NativeActivityItem[]
-): NativeActivityItem | undefined {
+function latestRunningNativeActivity(items: NativeActivityItem[]): NativeActivityItem | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     if (items[index].status === 'running') return items[index]
   }
   return undefined
 }
 
-function nativeActivityLabel(
-  item: NativeActivityItem,
-  t: TFunction<'components'>
-): string {
-  if (item.activityType === 'hook_prompt')
-    return t(NATIVE_ACTIVITY_LABELS.hook_prompt)
+function nativeActivityLabel(item: NativeActivityItem, t: TFunction<'components'>): string {
+  if (item.activityType === 'hook_prompt') return t(NATIVE_ACTIVITY_LABELS.hook_prompt)
   if (item.activityType === 'plan') return t(NATIVE_ACTIVITY_LABELS.plan)
   if (item.activityType === 'agent_collaboration')
     return t(NATIVE_ACTIVITY_LABELS.agent_collaboration)
-  if (item.activityType === 'subagent_activity')
-    return t(NATIVE_ACTIVITY_LABELS.subagent_activity)
-  if (item.activityType === 'image_view')
-    return t(NATIVE_ACTIVITY_LABELS.image_view)
+  if (item.activityType === 'subagent_activity') return t(NATIVE_ACTIVITY_LABELS.subagent_activity)
+  if (item.activityType === 'image_view') return t(NATIVE_ACTIVITY_LABELS.image_view)
   if (item.activityType === 'wait') return t(NATIVE_ACTIVITY_LABELS.wait)
-  if (item.activityType === 'image_generation')
-    return t(NATIVE_ACTIVITY_LABELS.image_generation)
-  if (item.activityType === 'approval_review')
-    return t(NATIVE_ACTIVITY_LABELS.approval_review)
-  if (item.activityType === 'review_entered')
-    return t(NATIVE_ACTIVITY_LABELS.review_entered)
-  if (item.activityType === 'review_exited')
-    return t(NATIVE_ACTIVITY_LABELS.review_exited)
-  if (item.activityType === 'runtime_activity')
-    return t(NATIVE_ACTIVITY_LABELS.runtime_activity)
+  if (item.activityType === 'image_generation') return t(NATIVE_ACTIVITY_LABELS.image_generation)
+  if (item.activityType === 'approval_review') return t(NATIVE_ACTIVITY_LABELS.approval_review)
+  if (item.activityType === 'approval_strict_review')
+    return t(NATIVE_ACTIVITY_LABELS.approval_strict_review)
+  if (item.activityType === 'review_entered') return t(NATIVE_ACTIVITY_LABELS.review_entered)
+  if (item.activityType === 'review_exited') return t(NATIVE_ACTIVITY_LABELS.review_exited)
+  if (item.activityType === 'runtime_activity') return t(NATIVE_ACTIVITY_LABELS.runtime_activity)
   return t('stream.native.fallback', { type: item.activityType })
 }
 
@@ -1301,7 +1321,12 @@ type ActivityAction =
   | 'paper'
   | 'collaboration'
   | 'wait'
+  | 'approval'
   | 'other'
+
+// 机器自动审批（含升级成严格复核）与普通工具活动混在 category=mode 里，靠活动类型区分，
+// 否则折叠行全部退化成同一个齿轮图标，用户看不出这一行是权限裁决。
+const APPROVAL_ACTIVITY_TYPES = new Set(['approval_review', 'approval_strict_review'])
 
 const ACTIVITY_ACTION_ICONS: Record<ActivityAction, IconName> = {
   thinking: 'sparkle',
@@ -1314,7 +1339,8 @@ const ACTIVITY_ACTION_ICONS: Record<ActivityAction, IconName> = {
   paper: 'books',
   collaboration: 'agents',
   wait: 'schedule',
-  other: 'gear'
+  approval: 'shield',
+  other: 'gear',
 }
 
 function activityAction(item: ActivityItem): ActivityAction {
@@ -1323,8 +1349,8 @@ function activityAction(item: ActivityItem): ActivityAction {
   if (item.kind === 'paper_search') return 'paper'
   if (item.kind === 'skill') return 'skill'
   if (item.kind === 'native_activity') {
-    if (item.activityType === 'image_view' || item.category === 'media')
-      return 'image'
+    if (APPROVAL_ACTIVITY_TYPES.has(item.activityType)) return 'approval'
+    if (item.activityType === 'image_view' || item.category === 'media') return 'image'
     if (item.category === 'collaboration') return 'collaboration'
     if (item.category === 'wait') return 'wait'
     return 'other'
@@ -1333,8 +1359,7 @@ function activityAction(item: ActivityItem): ActivityAction {
   if (name === 'file_change' || name.includes('apply_patch')) return 'edit'
   if (name === 'read') return 'read'
   if (name.includes('view_image') || name.includes('image')) return 'image'
-  if (name === 'bash' || name === 'shell' || name.includes('exec_command'))
-    return 'command'
+  if (name === 'bash' || name === 'shell' || name.includes('exec_command')) return 'command'
   return 'other'
 }
 
@@ -1358,7 +1383,8 @@ function activityActionLabel(
           paper: 'stream.action.running.paper',
           collaboration: 'stream.action.running.collaboration',
           wait: 'stream.action.running.wait',
-          other: 'stream.action.running.other'
+          approval: 'stream.action.running.approval',
+          other: 'stream.action.running.other',
         } as const
       )[action]
     )
@@ -1377,7 +1403,8 @@ function activityActionLabel(
           paper: 'stream.action.error.paper',
           collaboration: 'stream.action.error.collaboration',
           wait: 'stream.action.error.wait',
-          other: 'stream.action.error.other'
+          approval: 'stream.action.error.approval',
+          other: 'stream.action.error.other',
         } as const
       )[action]
     )
@@ -1398,7 +1425,8 @@ function activityActionLabel(
         paper: 'stream.action.done.paper',
         collaboration: 'stream.action.done.collaboration',
         wait: 'stream.action.done.wait',
-        other: 'stream.action.done.other'
+        approval: 'stream.action.done.approval',
+        other: 'stream.action.done.other',
       } as const
     )[action]
   )
@@ -1421,9 +1449,7 @@ function activityLinePresentation(
     else groups.set(action, [item])
   }
   const labels = Array.from(groups, ([action, group]) => {
-    const status = group.some(
-      (item) => 'status' in item && item.status === 'running'
-    )
+    const status = group.some((item) => 'status' in item && item.status === 'running')
       ? 'running'
       : group.some((item) => 'status' in item && item.status === 'error')
         ? 'error'
@@ -1434,17 +1460,12 @@ function activityLinePresentation(
   return {
     icon: ACTIVITY_ACTION_ICONS[firstAction],
     label: labels.join(' · '),
-    running: items.some(
-      (item) => 'status' in item && item.status === 'running'
-    ),
-    failed: items.some((item) => 'status' in item && item.status === 'error')
+    running: items.some((item) => 'status' in item && item.status === 'running'),
+    failed: items.some((item) => 'status' in item && item.status === 'error'),
   }
 }
 
-function webSearchActionLabel(
-  item: WebSearchItem,
-  t: TFunction<'components'>
-): string {
+function webSearchActionLabel(item: WebSearchItem, t: TFunction<'components'>): string {
   if (item.action.type === 'openPage') return t('stream.web.openPage')
   if (item.action.type === 'findInPage') return t('stream.web.findInPage')
   return t('stream.web.search')
@@ -1476,7 +1497,7 @@ function ActivityRun({
   turnId,
   tail = true,
   outcome,
-  timing
+  timing,
 }: {
   items: ActivityItem[]
   turnId?: string
@@ -1488,15 +1509,11 @@ function ActivityRun({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
   const [now, setNow] = useState(Date.now())
   const tools = items.filter((item): item is ToolItem => item.kind === 'tool')
-  const searches = items.filter(
-    (item): item is WebSearchItem => item.kind === 'web_search'
-  )
+  const searches = items.filter((item): item is WebSearchItem => item.kind === 'web_search')
   const paperSearches = items.filter(
     (item): item is PaperSearchItem => item.kind === 'paper_search'
   )
-  const skills = items.filter(
-    (item): item is SkillActivityItem => item.kind === 'skill'
-  )
+  const skills = items.filter((item): item is SkillActivityItem => item.kind === 'skill')
   const nativeActivities = items.filter(
     (item): item is NativeActivityItem => item.kind === 'native_activity'
   )
@@ -1506,25 +1523,17 @@ function ActivityRun({
   const runningSkill = skills.find((item) => item.status === 'running')
   const runningNative = latestRunningNativeActivity(nativeActivities)
   const itemRunning = Boolean(
-    runningTool ||
-    runningSearch ||
-    runningPaperSearch ||
-    runningSkill ||
-    runningNative
+    runningTool || runningSearch || runningPaperSearch || runningSkill || runningNative
   )
-  const itemCompleted = items.some(
-    (item) => 'status' in item && item.status === 'done'
-  )
+  const itemCompleted = items.some((item) => 'status' in item && item.status === 'done')
   const runState = activityRunState(outcome, itemRunning, itemCompleted, tail)
   const running = runState === 'running'
-  const expanded = userExpanded ?? running
+  const expanded = activityDisclosureOpen(userExpanded, running)
+  const visibleThinking = visibleThinkingItem(items, running, tail)
   useEffect(() => {
     if (!running) return () => undefined
     setNow(Date.now())
-    const timer = window.setInterval(
-      () => setNow(Date.now()),
-      ACTIVITY_ELAPSED_TICK_MS
-    )
+    const timer = window.setInterval(() => setNow(Date.now()), ACTIVITY_ELAPSED_TICK_MS)
     return () => window.clearInterval(timer)
   }, [running])
   // A failed tool is a normal result the agent may recover from. Only the
@@ -1545,16 +1554,16 @@ function ActivityRun({
         : Math.max(latest ?? item.completedAt, item.completedAt),
     undefined
   )
+  const toolCount = tools.length + searches.length + paperSearches.length + skills.length
   // The group's own item timing is the truth for its duration. Turn timing only
-  // fills a live group whose items carry no wall clock yet; reusing it for
-  // every historical group makes each one appear to have taken the whole turn.
-  const startedAt = itemStartedAt ?? (running ? timing?.startedAt : undefined)
-  const completedAt =
-    itemCompletedAt ?? (running ? timing?.completedAt : undefined)
+  // fills the live group or the final group without tools.
+  const useTurnTiming = running || (!toolCount && tail)
+  const startedAt = itemStartedAt ?? (useTurnTiming ? timing?.startedAt : undefined)
+  const completedAt = itemCompletedAt ?? (useTurnTiming ? timing?.completedAt : undefined)
   const durationEnd = running ? now : completedAt
   const taskDuration =
     startedAt !== undefined && durationEnd !== undefined
-      ? activityDurationLabel(startedAt, durationEnd, t)
+      ? activityDurationLabel(startedAt, durationEnd)
       : null
   const stateLabel = running
     ? t('stream.executing')
@@ -1563,19 +1572,16 @@ function ActivityRun({
       : interrupted
         ? t(TOOL_STATUS_KEYS.cancelled.messageKey)
         : t(TOOL_STATUS_KEYS.done.messageKey)
-  const state = taskDuration
-    ? running
-      ? t('stream.elapsedState', { state: stateLabel, duration: taskDuration })
-      : t('stream.durationState', { state: stateLabel, duration: taskDuration })
-    : stateLabel
+  const state = activitySummaryState(runState, stateLabel, taskDuration, t)
   const presentation = activityLinePresentation(items, t)
-  const toolCount =
-    tools.length + searches.length + paperSearches.length + skills.length
   const lineLabel = toolCount
-    ? t('stream.toolsExecuted', { count: toolCount })
+    ? running
+      ? t('stream.executing')
+      : t('stream.toolsExecuted', { count: toolCount })
     : running
       ? t('stream.processing')
       : t('stream.processed')
+  const accessibleState = state || (running && !toolCount ? stateLabel : '')
   return (
     <Collapsible
       animated
@@ -1599,65 +1605,57 @@ function ActivityRun({
             (running || presentation.running) && '!text-[var(--c-fact)]'
           )}
           data-testid="turn-activity-trigger"
-          aria-label={t('stream.activityLabel', { label: lineLabel, state })}
-          title={`${presentation.label} · ${state}`}
+          aria-label={
+            accessibleState
+              ? t('stream.activityLabel', { label: lineLabel, state: accessibleState })
+              : lineLabel
+          }
+          title={state ? `${presentation.label} · ${state}` : presentation.label}
         >
           <Badge
             size="sm"
             tone="neutral"
             className="!inline-flex !size-6 shrink-0 !justify-center !rounded-[var(--vds-radius-3)] !border !border-solid !border-[var(--vds-border-default)] !bg-[var(--vds-bg-white-default)] !p-0"
           >
-            {toolCount}
+            {expanded ? (
+              <ChevronDown size={13} strokeWidth={1.8} />
+            ) : (
+              <ChevronRight size={13} strokeWidth={1.8} />
+            )}
           </Badge>
           <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
             {lineLabel}
           </span>
           {/* 与 label 同款收缩约束：w-fit 触发按钮的 min-content 否则被 nowrap 状态文案撑宽，
               窄对话区会出现横向滚动条。 */}
-          <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{state}</span>
-          <span className="inline-flex flex-none opacity-0 transition-opacity duration-150 group-hover/activity:opacity-100 group-focus-visible/activity:opacity-100">
-            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={13} sw={1.8} />
-          </span>
+          {state && (
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+              · {state}
+            </span>
+          )}
         </Button>
       </CollapsibleTrigger>
       <CollapsibleContent className="ml-[var(--vds-space-3)] !rounded-none !border-0 !bg-transparent !p-0">
         <div className={TOOL_RUN_STEPS_CLASS}>
-          {items.map((item) => {
+          {items.map((item, index) => {
             if (item.kind === 'thinking') {
               return (
                 <ThinkingActivityStep
-                  key={item.itemId ?? item.text}
+                  key={activityIdentity(item, index)}
                   item={item}
                   groupOpen={expanded}
+                  autoExpand={item === visibleThinking}
                 />
               )
             }
             if (item.kind === 'web_search') {
-              return (
-                <WebSearchStep
-                  key={item.searchId}
-                  item={item}
-                  groupOpen={expanded}
-                />
-              )
+              return <WebSearchStep key={item.searchId} item={item} groupOpen={expanded} />
             }
             if (item.kind === 'paper_search') {
-              return (
-                <PaperSearchStep
-                  key={item.searchId}
-                  item={item}
-                  groupOpen={expanded}
-                />
-              )
+              return <PaperSearchStep key={item.searchId} item={item} groupOpen={expanded} />
             }
             if (item.kind === 'skill') {
-              return (
-                <SkillActivityStep
-                  key={item.skillId}
-                  item={item}
-                  groupOpen={expanded}
-                />
-              )
+              return <SkillActivityStep key={item.skillId} item={item} groupOpen={expanded} />
             }
             if (item.kind === 'native_activity') {
               return (
@@ -1665,17 +1663,11 @@ function ActivityRun({
                   key={item.activityId}
                   item={item}
                   groupOpen={expanded}
+                  now={now}
                 />
               )
             }
-            return (
-              <ToolStep
-                key={item.toolId}
-                item={item}
-                groupOpen={expanded}
-                now={now}
-              />
-            )
+            return <ToolStep key={item.toolId} item={item} groupOpen={expanded} now={now} />
           })}
         </div>
       </CollapsibleContent>
@@ -1685,23 +1677,25 @@ function ActivityRun({
 
 function ThinkingActivityStep({
   item,
-  groupOpen
+  groupOpen,
+  autoExpand,
+  selectionEnabled = true,
 }: {
   item: ThinkingActivityItem
   groupOpen: boolean
+  autoExpand: boolean
+  selectionEnabled?: boolean
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const [open, setOpen] = useState(false)
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
+  const open = activityDisclosureOpen(userExpanded, autoExpand)
+  const active = autoExpand && !item.completed
   return (
     <Collapsible
       animated
       open={open}
-      onOpenChange={setOpen}
-      className={cx(
-        TOOL_RUN_STEP_CLASS,
-        'grid-cols-[minmax(0,1fr)]',
-        open && 'is-open'
-      )}
+      onOpenChange={setUserExpanded}
+      className={cx(TOOL_RUN_STEP_CLASS, 'grid-cols-[minmax(0,1fr)]', open && 'is-open')}
       data-testid="thinking-activity-step"
     >
       <CollapsibleTrigger asChild>
@@ -1715,9 +1709,9 @@ function ThinkingActivityStep({
           aria-label={t('stream.thinkingContent')}
           tabIndex={groupOpen ? 0 : -1}
         >
-          <ActivityStatusIcon status="done" />
+          <ActivityStatusIcon status={active ? 'running' : 'done'} />
           <span className={TOOL_RUN_STEP_NAME_CLASS}>
-            {t('stream.thought')}
+            {t(active ? 'stream.thinking' : 'stream.thought')}
           </span>
           <span aria-hidden="true">·</span>
           <span className="min-w-0 flex-1 truncate text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
@@ -1735,7 +1729,7 @@ function ThinkingActivityStep({
         )}
         data-testid="thinking-activity-content"
       >
-        {item.itemId ? (
+        {item.itemId && selectionEnabled ? (
           <AnnotatedAnswer
             citationEnabled={false}
             markdownClassName={TOOL_RUN_MARKDOWN_CLASS}
@@ -1744,7 +1738,7 @@ function ThinkingActivityStep({
             messageId={`item:${item.itemId}`}
           />
         ) : (
-          <Markdown text={item.text} className={TOOL_RUN_MARKDOWN_CLASS} />
+          <Markdown text={item.text} math className={TOOL_RUN_MARKDOWN_CLASS} />
         )}
       </CollapsibleContent>
     </Collapsible>
@@ -1753,7 +1747,7 @@ function ThinkingActivityStep({
 
 function SkillActivityStep({
   item,
-  groupOpen
+  groupOpen,
 }: {
   item: SkillActivityItem
   groupOpen: boolean
@@ -1763,16 +1757,9 @@ function SkillActivityStep({
   const [open, setOpen] = useState(false)
   const hasBody = Boolean(item.path)
   const stateTone =
-    item.status === 'error'
-      ? 'is-error'
-      : item.status === 'done'
-        ? 'is-done'
-        : 'is-running'
+    item.status === 'error' ? 'is-error' : item.status === 'done' ? 'is-done' : 'is-running'
   return (
-    <div
-      className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')}
-      data-testid="skill-activity-step"
-    >
+    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="skill-activity-step">
       <Button
         unstyled
         type="button"
@@ -1785,15 +1772,8 @@ function SkillActivityStep({
         <span className={TOOL_RUN_STEP_NAME_CLASS}>
           {t('stream.skill.load', { name: item.name })}
         </span>
-        <span
-          className={cx(
-            TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[stateTone]
-          )}
-        >
-          {item.status === 'running' && (
-            <span className={TOOL_RUN_PULSE_CLASS} />
-          )}
+        <span className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}>
+          {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
           {t(TOOL_STATUS_KEYS[item.status].messageKey)}
         </span>
         {hasBody && (
@@ -1832,22 +1812,32 @@ function SkillActivityStep({
 
 function NativeActivityStep({
   item,
-  groupOpen
+  groupOpen,
+  now,
 }: {
   item: NativeActivityItem
   groupOpen: boolean
+  now: number
 }): React.JSX.Element {
   const { t } = useTranslation('components')
-  const [open, setOpen] = useState(false)
-  const details = Object.keys(item.details).length
-    ? toolValue(item.details)
-    : ''
+  const { t: conversation } = useTranslation('conversation')
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null)
+  const details = Object.keys(item.details).length ? toolValue(item.details) : ''
+  const subagentRunning = item.activityType === 'subagent_activity' && item.status === 'running'
+  const progress = item.activityType === 'subagent_activity' ? (item.progress ?? []) : []
+  const hasDetails = Boolean(details || progress.length)
+  const open = activityDisclosureOpen(userExpanded, subagentRunning && groupOpen)
+  const observedAt =
+    typeof item.details.last_observed_at === 'number'
+      ? item.details.last_observed_at
+      : item.startedAt
+  const activity =
+    typeof item.details.recent_activity === 'string' ? item.details.recent_activity : ''
+  const activityKey =
+    activity in SUBAGENT_ACTION_KEYS ? (activity as keyof typeof SUBAGENT_ACTION_KEYS) : 'work'
+  const recentActivityLabel = conversation(SUBAGENT_ACTION_KEYS[activityKey])
   const stateTone =
-    item.status === 'error'
-      ? 'is-error'
-      : item.status === 'done'
-        ? 'is-done'
-        : 'is-running'
+    item.status === 'error' ? 'is-error' : item.status === 'done' ? 'is-done' : 'is-running'
   return (
     <div
       className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')}
@@ -1856,42 +1846,99 @@ function NativeActivityStep({
       <Button
         unstyled
         type="button"
-        className={TOOL_RUN_STEP_TRIGGER_CLASS}
-        aria-expanded={details ? open : undefined}
+        className={cx(TOOL_RUN_STEP_TRIGGER_CLASS, '!flex-col !items-stretch')}
+        aria-expanded={hasDetails ? open : undefined}
         tabIndex={groupOpen ? 0 : -1}
-        onClick={() => details && setOpen((value) => !value)}
+        onClick={() => hasDetails && setUserExpanded(!open)}
       >
-        <ActivityStatusIcon status={item.status} />
-        <span className={TOOL_RUN_STEP_NAME_CLASS}>
-          {nativeActivityLabel(item, t)}
-        </span>
-        <span
-          className={cx(
-            TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[stateTone]
+        <span className="flex w-full min-w-0 items-center gap-[var(--vds-space-2)]">
+          <ActivityStatusIcon status={item.status} />
+          <span className={TOOL_RUN_STEP_NAME_CLASS}>{nativeActivityLabel(item, t)}</span>
+          <span className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}>
+            {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
+            {subagentRunning
+              ? conversation('subagent.waiting')
+              : t(TOOL_STATUS_KEYS[item.status].messageKey)}
+          </span>
+          {hasDetails && (
+            <span className={TOOL_RUN_STEP_CARET_CLASS}>
+              <Icon name="chevron-right" size={12} sw={1.8} />
+            </span>
           )}
-        >
-          {item.status === 'running' && (
-            <span className={TOOL_RUN_PULSE_CLASS} />
-          )}
-          {t(TOOL_STATUS_KEYS[item.status].messageKey)}
         </span>
-        {details && (
-          <span className={TOOL_RUN_STEP_CARET_CLASS}>
-            <Icon name="chevron-right" size={12} sw={1.8} />
+        {subagentRunning && (
+          <span className="flex w-full min-w-0 flex-wrap gap-x-[var(--vds-space-3)] gap-y-[var(--vds-space-1)] pl-[var(--vds-space-4)] text-[var(--vds-text-tertiary)]">
+            {item.startedAt !== undefined && (
+              <span data-testid="subagent-elapsed">
+                {conversation('subagent.elapsed', {
+                  duration: elapsedLabel(item.startedAt, now, t),
+                })}
+              </span>
+            )}
+            {observedAt !== undefined && (
+              <span data-testid="subagent-last-observed">
+                {conversation('subagent.lastObserved', {
+                  activity: recentActivityLabel,
+                  age: elapsedLabel(observedAt, now, t),
+                })}
+              </span>
+            )}
           </span>
         )}
       </Button>
-      {details && (
+      {hasDetails && (
         <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
           <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
-            <div className={TOOL_RUN_IO_STACK_CLASS}>
-              <IoBlock
-                label={t('stream.details')}
-                text={details}
-                err={item.status === 'error'}
-              />
-            </div>
+            {progress.length ? (
+              <div className={TOOL_RUN_IO_STACK_CLASS} data-testid="subagent-progress">
+                {progress.map((step, index) => {
+                  const activityItem = subagentActivityItem(step, item)
+                  if (activityItem?.kind === 'thinking') {
+                    return (
+                      <ThinkingActivityStep
+                        key={step.itemId}
+                        item={activityItem}
+                        groupOpen={open}
+                        autoExpand={subagentRunning && index === progress.length - 1}
+                        selectionEnabled={false}
+                      />
+                    )
+                  }
+                  if (activityItem?.kind === 'tool') {
+                    return (
+                      <ToolStep key={step.itemId} item={activityItem} groupOpen={open} now={now} />
+                    )
+                  }
+                  if (
+                    !step.summary &&
+                    (step.activity === 'message' || step.activity === 'reasoning')
+                  )
+                    return null
+                  const key =
+                    step.activity in SUBAGENT_ACTION_KEYS
+                      ? (step.activity as keyof typeof SUBAGENT_ACTION_KEYS)
+                      : 'work'
+                  if (!step.summary) {
+                    return (
+                      <div key={step.itemId} className={TOOL_RUN_IO_LABEL_CLASS}>
+                        {conversation(SUBAGENT_ACTION_KEYS[key])}
+                      </div>
+                    )
+                  }
+                  return (
+                    <IoBlock
+                      key={step.itemId}
+                      label={conversation(SUBAGENT_ACTION_KEYS[key])}
+                      text={step.summary}
+                    />
+                  )
+                })}
+              </div>
+            ) : (
+              <div className={TOOL_RUN_IO_STACK_CLASS}>
+                <IoBlock label={t('stream.details')} text={details} err={item.status === 'error'} />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1901,7 +1948,7 @@ function NativeActivityStep({
 
 function WebSearchStep({
   item,
-  groupOpen
+  groupOpen,
 }: {
   item: WebSearchItem
   groupOpen: boolean
@@ -1910,12 +1957,11 @@ function WebSearchStep({
   const [open, setOpen] = useState(false)
   const query = webSearchQuery(item)
   const url = typeof item.action.url === 'string' ? item.action.url : ''
-  const pattern =
-    typeof item.action.pattern === 'string' ? item.action.pattern : ''
+  const pattern = typeof item.action.pattern === 'string' ? item.action.pattern : ''
   const results = item.results
     .map((result) => ({
       ...result,
-      externalUrl: externalResultUrl(result.url)
+      externalUrl: externalResultUrl(result.url),
     }))
     .filter((result) => Boolean(result.title || result.url))
   const hasBody = Boolean(query || url || pattern || results.length)
@@ -1926,10 +1972,7 @@ function WebSearchStep({
         ? t('stream.search.results', { count: results.length })
         : t(TOOL_STATUS_KEYS.done.messageKey)
   return (
-    <div
-      className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')}
-      data-testid="web-search-step"
-    >
+    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="web-search-step">
       <Button
         unstyled
         type="button"
@@ -1950,14 +1993,10 @@ function WebSearchStep({
         <span
           className={cx(
             TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[
-              item.status === 'running' ? 'is-running' : 'is-done'
-            ]
+            TOOL_RUN_STATUS_TONE_CLASS[item.status === 'running' ? 'is-running' : 'is-done']
           )}
         >
-          {item.status === 'running' && (
-            <span className={TOOL_RUN_PULSE_CLASS} />
-          )}
+          {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
           {status}
         </span>
         {hasBody && (
@@ -1975,20 +2014,11 @@ function WebSearchStep({
                 'bg-[color-mix(in_oklch,var(--c-fact)_5%,var(--bg-2))]'
               )}
             >
-              {query && (
-                <IoBlock label={t('stream.search.query')} text={query} />
-              )}
-              {url && url !== query && (
-                <IoBlock label={t('stream.search.page')} text={url} />
-              )}
-              {pattern && (
-                <IoBlock label={t('stream.search.pattern')} text={pattern} />
-              )}
+              {query && <IoBlock label={t('stream.search.query')} text={query} />}
+              {url && url !== query && <IoBlock label={t('stream.search.page')} text={url} />}
+              {pattern && <IoBlock label={t('stream.search.pattern')} text={pattern} />}
               {results.length > 0 && (
-                <div
-                  className="grid gap-[var(--vds-space-2)]"
-                  data-testid="web-search-results"
-                >
+                <div className="grid gap-[var(--vds-space-2)]" data-testid="web-search-results">
                   {results.map((result, index) => (
                     <div
                       className="grid min-w-0 gap-[2px] rounded-md border border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)]"
@@ -1998,9 +2028,7 @@ function WebSearchStep({
                         {result.title || result.url}
                       </span>
                       {result.url && (
-                        <span className="break-all text-[var(--text-3)]">
-                          {result.url}
-                        </span>
+                        <span className="break-all text-[var(--text-3)]">{result.url}</span>
                       )}
                       {result.externalUrl && (
                         <Button
@@ -2008,9 +2036,7 @@ function WebSearchStep({
                           type="button"
                           className="justify-self-start text-[var(--accent-ink)] hover:underline"
                           onClick={() =>
-                            void window.scholarseed.openExternal(
-                              result.externalUrl as string
-                            )
+                            void window.scholarseed.openExternal(result.externalUrl as string)
                           }
                         >
                           {t('stream.search.openOriginal')}
@@ -2028,16 +2054,10 @@ function WebSearchStep({
   )
 }
 
-function SearchActivityCard({
-  item
-}: {
-  item: SearchActivityItem
-}): React.JSX.Element {
+function SearchActivityCard({ item }: { item: SearchActivityItem }): React.JSX.Element {
   const { t } = useTranslation('components')
   const paper = item.kind === 'paper_search'
-  const target = paper
-    ? t('stream.search.paperTarget')
-    : t('stream.search.webTarget')
+  const target = paper ? t('stream.search.paperTarget') : t('stream.search.webTarget')
   const query = paper ? item.query : webSearchQuery(item)
   const running = item.status === 'running'
   return (
@@ -2052,13 +2072,9 @@ function SearchActivityCard({
         </span>
         <span className={TOOL_RUN_COPY_CLASS}>
           <span className={TOOL_RUN_TITLE_CLASS}>
-            {running
-              ? t('stream.search.runningTitle')
-              : t('stream.search.doneTitle')}
+            {running ? t('stream.search.runningTitle') : t('stream.search.doneTitle')}
           </span>
-          <span className={TOOL_RUN_SUMMARY_CLASS}>
-            {query ? `${target} · ${query}` : target}
-          </span>
+          <span className={TOOL_RUN_SUMMARY_CLASS}>{query ? `${target} · ${query}` : target}</span>
         </span>
         <span
           className={cx(
@@ -2067,9 +2083,7 @@ function SearchActivityCard({
           )}
         >
           {running && <span className={TOOL_RUN_PULSE_CLASS} />}
-          {running
-            ? t('stream.search.searching')
-            : t(TOOL_STATUS_KEYS.done.messageKey)}
+          {running ? t('stream.search.searching') : t(TOOL_STATUS_KEYS.done.messageKey)}
         </span>
       </div>
     </section>
@@ -2078,7 +2092,7 @@ function SearchActivityCard({
 
 function PaperSearchStep({
   item,
-  groupOpen
+  groupOpen,
 }: {
   item: PaperSearchItem
   groupOpen: boolean
@@ -2087,10 +2101,7 @@ function PaperSearchStep({
   const [open, setOpen] = useState(false)
   const hasBody = Boolean(item.query)
   return (
-    <div
-      className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')}
-      data-testid="paper-search-step"
-    >
+    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="paper-search-step">
       <Button
         unstyled
         type="button"
@@ -2111,14 +2122,10 @@ function PaperSearchStep({
         <span
           className={cx(
             TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[
-              item.status === 'running' ? 'is-running' : 'is-done'
-            ]
+            TOOL_RUN_STATUS_TONE_CLASS[item.status === 'running' ? 'is-running' : 'is-done']
           )}
         >
-          {item.status === 'running' && (
-            <span className={TOOL_RUN_PULSE_CLASS} />
-          )}
+          {item.status === 'running' && <span className={TOOL_RUN_PULSE_CLASS} />}
           {item.status === 'running'
             ? t('stream.search.searching')
             : t(TOOL_STATUS_KEYS.done.messageKey)}
@@ -2133,10 +2140,7 @@ function PaperSearchStep({
         <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
           <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
             <div className={TOOL_RUN_IO_STACK_CLASS}>
-              <IoBlock
-                label={t('stream.search.paperQuery')}
-                text={item.query}
-              />
+              <IoBlock label={t('stream.search.paperQuery')} text={item.query} />
             </div>
           </div>
         </div>
@@ -2148,7 +2152,7 @@ function PaperSearchStep({
 function ToolStep({
   item,
   groupOpen,
-  now
+  now,
 }: {
   item: ToolItem
   groupOpen: boolean
@@ -2158,15 +2162,30 @@ function ToolStep({
   const { t: conversation } = useTranslation('conversation')
   const { act } = useApp()
   const [open, setOpen] = useState(false)
+  const [technicalOpen, setTechnicalOpen] = useState(false)
   const skillName = loadedSkillName(item)
-  const hasBody =
-    item.input != null || (item.result != null && item.result !== '')
+  const outcome = commandOutcome(item)
+  const neutralSearch = outcome === 'noMatches'
+  const displayStatus = neutralSearch ? 'done' : item.status
+  const hasBody = item.status === 'error' || item.input != null || (item.result != null && item.result !== '')
+  const outcomeKey = {
+    commandNotFound: 'toolOutcome.commandNotFound',
+    permissionDenied: 'toolOutcome.permissionDenied',
+    fileMissing: 'toolOutcome.fileMissing',
+    nonzero: 'toolOutcome.nonzero',
+    unknown: 'toolOutcome.unknown',
+    none: 'toolOutcome.toolFailed',
+    noMatches: 'toolOutcome.noMatches',
+  } as const
+  const outcomeText = item.status === 'error'
+    ? conversation(outcomeKey[outcome], { code: item.exitCode ?? 0 })
+    : ''
   const stateTone =
-    item.status === 'error'
+    displayStatus === 'error'
       ? 'is-error'
-      : item.status === 'done'
+      : displayStatus === 'done'
         ? 'is-done'
-        : item.status === 'cancelled'
+        : displayStatus === 'cancelled'
           ? 'is-cancelled'
           : 'is-running'
   const resultPreview = toolPreview(item)
@@ -2176,10 +2195,7 @@ function ToolStep({
     item.status !== 'running'
   )
   return (
-    <div
-      className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')}
-      data-testid="tool-run-step"
-    >
+    <div className={cx(TOOL_RUN_STEP_CLASS, open && 'is-open')} data-testid="tool-run-step">
       <Button
         unstyled
         type="button"
@@ -2188,24 +2204,23 @@ function ToolStep({
         tabIndex={groupOpen ? 0 : -1}
         onClick={() => hasBody && setOpen((value) => !value)}
       >
-        <ActivityStatusIcon status={item.status} />
+        <ActivityStatusIcon status={displayStatus} />
         <span className={TOOL_RUN_STEP_NAME_CLASS} title={item.name}>
           {toolLabel(item, conversation)}
         </span>
-        <span
-          className={cx(
-            TOOL_RUN_STEP_STATUS_CLASS,
-            TOOL_RUN_STATUS_TONE_CLASS[stateTone]
-          )}
-        >
+        <span className={cx(TOOL_RUN_STEP_STATUS_CLASS, TOOL_RUN_STATUS_TONE_CLASS[stateTone])}>
           <span className="shrink-0">
-            {item.status === 'done'
-              ? t('stream.ran')
-              : t(TOOL_STATUS_KEYS[item.status].messageKey)}
+            {neutralSearch
+              ? outcomeText
+              : item.status === 'done'
+                ? t('stream.ran')
+                : t(TOOL_STATUS_KEYS[item.status].messageKey)}
           </span>
-          {toolInputSummary(item) &&
-            (activityAction(item) === 'read' ||
-            activityAction(item) === 'edit' ? (
+          {item.status === 'error' && !neutralSearch && (
+            <span className="min-w-0 truncate" title={outcomeText}>· {outcomeText}</span>
+          )}
+          {item.status !== 'error' && toolInputSummary(item) &&
+            (activityAction(item) === 'read' || activityAction(item) === 'edit' ? (
               <Badge
                 size="sm"
                 tone="neutral"
@@ -2249,19 +2264,30 @@ function ToolStep({
         <div className={TOOL_RUN_STEP_CONTENT_CLASS} aria-hidden={!open}>
           <div className={TOOL_RUN_CONTENT_INNER_CLASS}>
             <div className={TOOL_RUN_IO_STACK_CLASS}>
-              <div className={TOOL_RUN_IO_LABEL_CLASS}>{item.name}</div>
-              {item.input != null && (
-                <IoBlock
-                  label={t('stream.input')}
-                  text={toolValue(item.input)}
-                />
+              {item.status === 'error' && (
+                <div>{neutralSearch
+                  ? conversation('toolOutcome.noMatchesHelp')
+                  : conversation('toolOutcome.failedHelp')}</div>
               )}
-              {item.result != null && item.result !== '' && (
-                <IoBlock
-                  label={t('stream.output')}
-                  text={item.result}
-                  err={item.status === 'error'}
-                />
+              {item.status === 'error' && (
+                <Button unstyled type="button" onClick={() => setTechnicalOpen((value) => !value)}
+                  aria-expanded={technicalOpen}>
+                  {conversation('toolOutcome.technicalDetails')}
+                </Button>
+              )}
+              {(item.status !== 'error' || technicalOpen) && (
+                <>
+                  <div className={TOOL_RUN_IO_LABEL_CLASS}>{item.name}</div>
+                  {typeof item.exitCode === 'number' && (
+                    <div>{conversation('toolOutcome.exitCode', { code: item.exitCode })}</div>
+                  )}
+                  {item.input != null && (
+                    <IoBlock label={t('stream.input')} text={toolValue(item.input)} />
+                  )}
+                  {item.result != null && item.result !== '' && (
+                    <IoBlock label={t('stream.output')} text={item.result} />
+                  )}
+                </>
               )}
               {skillName && item.status === 'done' && (
                 <Button
@@ -2285,7 +2311,7 @@ function ToolStep({
 function IoBlock({
   label,
   text,
-  err
+  err,
 }: {
   label: string
   text: string
@@ -2297,8 +2323,7 @@ function IoBlock({
       <pre
         className={cx(
           TOOL_RUN_IO_CLASS,
-          err &&
-            'shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--c-tension)_72%,var(--border))]'
+          err && 'shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--c-tension)_72%,var(--border))]'
         )}
       >
         {text}
@@ -2326,20 +2351,20 @@ const PERM_TITLES = {
   WebFetch: 'stream.hil.title.webFetch',
   WebSearch: 'stream.hil.title.webSearch',
   Glob: 'stream.hil.title.glob',
-  Grep: 'stream.hil.title.grep'
+  Grep: 'stream.hil.title.grep',
 } as const
 // safety tag → 中文 chip 文案 / 语气色 (PolicyRequest.safety_tags)。
 const TAG_LABEL = {
   read_only: 'stream.hil.tag.readOnly',
   writes: 'stream.hil.tag.writes',
   destructive: 'stream.hil.tag.destructive',
-  network: 'stream.hil.tag.network'
+  network: 'stream.hil.tag.network',
 } as const
 const TAG_TONE: Record<string, string> = {
   destructive: 'var(--c-tension)',
   network: 'var(--c-opinion)',
   writes: 'var(--accent-ink)',
-  read_only: 'var(--c-experience)'
+  read_only: 'var(--c-experience)',
 }
 
 // 无 toolName 的审批卡统一用本地化标题, 不回显 vendor 文案 (elicitation 等输入请求仍走 fallback)。
@@ -2414,10 +2439,7 @@ function scopeInfo(
   item: HilItem,
   t: TFunction<'components'>
 ): { short: string; caption: string } {
-  const short = formatHilPermissionScope(
-    hilPermissionScope(o, item.prefixKind),
-    t
-  )
+  const short = formatHilPermissionScope(hilPermissionScope(o, item.prefixKind), t)
   const px = item.suggestedPrefix || ''
   const tool = item.toolName || t('stream.hil.thisTool')
   switch (o.id) {
@@ -2430,21 +2452,21 @@ function scopeInfo(
           short,
           caption: px
             ? t('stream.hil.allowCommandPrefixCaption', { prefix: px })
-            : t('stream.hil.allowCommandClassCaption')
+            : t('stream.hil.allowCommandClassCaption'),
         }
       if (item.prefixKind === 'file_dir')
         return {
           short,
           caption: px
             ? t('stream.hil.allowDirectoryCaption', { prefix: px })
-            : t('stream.hil.allowThisDirectoryCaption')
+            : t('stream.hil.allowThisDirectoryCaption'),
         }
       if (item.prefixKind === 'web_host')
         return {
           short,
           caption: px
             ? t('stream.hil.allowSiteCaption', { host: px })
-            : t('stream.hil.allowThisSiteCaption')
+            : t('stream.hil.allowThisSiteCaption'),
         }
       return { short, caption: o.label }
     case 't':
@@ -2457,13 +2479,7 @@ function scopeInfo(
   }
 }
 
-function Chip({
-  label,
-  tone
-}: {
-  label: string
-  tone?: string
-}): React.JSX.Element {
+function Chip({ label, tone }: { label: string; tone?: string }): React.JSX.Element {
   return (
     <span
       style={{
@@ -2473,7 +2489,7 @@ function Chip({
         borderRadius: 6,
         padding: '1.5px 7px',
         opacity: tone ? 0.92 : 1,
-        whiteSpace: 'nowrap'
+        whiteSpace: 'nowrap',
       }}
     >
       {label}
@@ -2489,7 +2505,7 @@ function permissionSummary(item: HilItem, t: TFunction<'components'>): string {
   if (item.path) return t('stream.hil.summary.file', { path: item.path })
   if (item.networkTarget)
     return t('stream.hil.summary.network', {
-      target: fmtVal(item.networkTarget, t)
+      target: fmtVal(item.networkTarget, t),
     })
   const body = item.body?.trim()
   return body || t('stream.hil.summary.default')
@@ -2498,20 +2514,22 @@ function permissionSummary(item: HilItem, t: TFunction<'components'>): string {
 function HilCard({
   item,
   presentation = 'history',
-  queueCount = 1
+  queueCount = 1,
 }: {
   item: HilItem
   presentation?: 'history' | 'dock'
   queueCount?: number
 }): React.JSX.Element {
-  const { t } = useTranslation('components')
+  const { t, i18n: localization } = useTranslation('components')
   const { t: hilT } = useTranslation('conversation')
   const { state, patchThread } = useApp()
   const sid = activeThread(state).sessionId
   const tid = state.activeSession
   const [picks, setPicks] = useState<Record<number, string[]>>({})
+  const [subsetPicks, setSubsetPicks] = useState<Record<number, string[]>>({})
   const [texts, setTexts] = useState<Record<number, string>>({})
   const [codeOpen, setCodeOpen] = useState(false)
+  const [questionOpen, setQuestionOpen] = useState(true)
   const [lastAction, setLastAction] = useState<HilAction | null>(null)
   const [now, setNow] = useState(Date.now())
   const submissionInFlight = useRef(false)
@@ -2542,14 +2560,13 @@ function HilCard({
     item.hilState === 'cancelled' && questionPolicy?.cancelledLabel && questions[0]
       ? questionPolicy.cancelledLabel(questions[0])
       : undefined
-  const resolutionItem =
-    cancelledLabel
-      ? {
-          ...item,
-          resolved: cancelledLabel,
-          resolvedMessage: undefined
-        }
-      : item
+  const resolutionItem = cancelledLabel
+    ? {
+        ...item,
+        resolved: cancelledLabel,
+        resolvedMessage: undefined,
+      }
+    : item
 
   useEffect(() => {
     if (done) return () => undefined
@@ -2560,10 +2577,8 @@ function HilCard({
   const patchHil = (patch: Partial<HilItem>): void =>
     patchThread(tid, (t) => ({
       conversation: t.conversation.map((it) =>
-        it.kind === 'hil' && it.requestId === item.requestId
-          ? { ...it, ...patch }
-          : it
-      )
+        it.kind === 'hil' && it.requestId === item.requestId ? { ...it, ...patch } : it
+      ),
     }))
 
   const markResolved = (
@@ -2576,29 +2591,21 @@ function HilCard({
         (it) =>
           it.kind === 'hil' &&
           it.requestId === item.requestId &&
-          (it.hilState === 'stale' ||
-            it.hilState === 'cancelled' ||
-            it.hilState === 'unknown')
+          (it.hilState === 'stale' || it.hilState === 'cancelled' || it.hilState === 'unknown')
       )
       if (alreadyTerminal) return {}
       return {
-        running: true,
-        status: 'running',
-        conversation: t.conversation.map((it) =>
-          it.kind === 'hil' && it.requestId === item.requestId
-            ? {
-                ...it,
-                // Preserve the existing canonical label: denial styling still inspects it.
-                resolved: label,
-                resolvedMessage,
-                hilState: 'resolved',
-                submissionError: undefined,
-                submissionErrorMessage: undefined,
-                submissionRequestFailure: undefined,
-                ...(answers ? { answers } : {})
-              }
-            : it
-        )
+        ...hilResolvedRunState(t, item.turnId),
+        conversation: resolveHilItem(t.conversation, item.requestId, {
+          // Preserve the existing canonical label: denial styling still inspects it.
+          resolved: label,
+          resolvedMessage,
+          hilState: 'resolved',
+          submissionError: undefined,
+          submissionErrorMessage: undefined,
+          submissionRequestFailure: undefined,
+          ...(answers ? { answers } : {}),
+        }),
       }
     })
 
@@ -2628,7 +2635,7 @@ function HilCard({
           it.kind === 'hil' && it.requestId === item.requestId
             ? { ...it, hilState: 'failed', ...failure }
             : it
-        )
+        ),
       }
     })
   }
@@ -2641,7 +2648,7 @@ function HilCard({
       hilState: 'submitting',
       submissionError: undefined,
       submissionErrorMessage: undefined,
-      submissionRequestFailure: undefined
+      submissionRequestFailure: undefined,
     })
     if (action.kind === 'cancel') {
       const response = await interruptSession(sid)
@@ -2657,15 +2664,15 @@ function HilCard({
                   hilState: 'cancelled',
                   submissionError: undefined,
                   submissionErrorMessage: undefined,
-                  submissionRequestFailure: undefined
+                  submissionRequestFailure: undefined,
                 }
               : it
-          )
+          ),
         }))
       } else {
         markSubmissionFailed({
           ...hilSubmissionFailure('cancelUnconfirmed', response.error),
-          submissionRequestFailure: response.applicationFailure
+          submissionRequestFailure: response.applicationFailure,
         })
       }
       return
@@ -2677,7 +2684,7 @@ function HilCard({
         patchHil({
           hilState: 'unknown',
           ...hilSubmissionFailure('outcomeUnknown'),
-          submissionRequestFailure: undefined
+          submissionRequestFailure: undefined,
         })
         return
       }
@@ -2689,13 +2696,13 @@ function HilCard({
           resolved: t('stream.hil.stale'),
           submissionError: undefined,
           submissionErrorMessage: undefined,
-          submissionRequestFailure: undefined
+          submissionRequestFailure: undefined,
         })
         return
       }
       markSubmissionFailed({
         ...hilSubmissionFailure('answerUnconfirmed', response.error),
-        submissionRequestFailure: response.applicationFailure
+        submissionRequestFailure: response.applicationFailure,
       })
       return
     }
@@ -2712,7 +2719,7 @@ function HilCard({
       kind: 'respond',
       body: { option_id: optId },
       label,
-      resolvedMessage
+      resolvedMessage,
     })
   }
   const submitQuestion = (): void => {
@@ -2734,10 +2741,8 @@ function HilCard({
       kind: 'respond',
       body: { answers },
       label: Object.values(answers).join(' · ') || t('stream.hil.answered'),
-      resolvedMessage: Object.values(answers).join(' · ')
-        ? undefined
-        : { kind: 'answered' },
-      answers
+      resolvedMessage: Object.values(answers).join(' · ') ? undefined : { kind: 'answered' },
+      answers,
     })
   }
   const toggle = (qi: number, label: string, multi: boolean): void =>
@@ -2746,14 +2751,15 @@ function HilCard({
       if (!multi) return { ...p, [qi]: [label] }
       return {
         ...p,
-        [qi]: cur.includes(label)
-          ? cur.filter((x) => x !== label)
-          : [...cur, label]
+        [qi]: cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label],
       }
     })
+  const subsetIdsFor = (qi: number, question: (typeof questions)[number]): string[] =>
+    subsetPicks[qi] ?? question.papers?.map((paper) => paper.id) ?? []
   const decideQuestion = (
     question: (typeof questions)[number],
-    option: (typeof question.options)[number]
+    option: (typeof question.options)[number],
+    subsetIds?: readonly string[]
   ): void => {
     const decision = questionPolicy?.directDecision?.(question, option)
     const label = questionPolicy?.optionLabel?.(option) ?? option.label
@@ -2764,15 +2770,21 @@ function HilCard({
     if (decision === 'respond') {
       const key = question.id || question.header || question.question
       const answers = { [key]: label }
+      const body: HilResponseBody = { answers }
+      // 子集只经决策值回传：账本行保持候选全集，serve 侧现算派生 scope。
+      if (question.papers?.length) body.values = { selected_paper_ids: [...(subsetIds ?? [])] }
       void submitAction({
         kind: 'respond',
-        body: { answers },
+        body,
         label,
-        answers
+        answers,
       })
     }
   }
   const qs = item.questions ?? []
+  const presentedQuestions = qs.map((question) =>
+    questionPolicy?.presentQuestion?.(question, localization)
+  )
 
   // permission: 作用域选项平铺成一列, 点击即刻生效 (无下拉); 推荐档排最前 ——
   // 「允许此工具」(t) 优先, 其次前缀级 (p), 最后仅一次 (y), 减少反复弹卡。
@@ -2781,13 +2793,13 @@ function HilCard({
       ? item.options
       : [
           { id: 'y', label: t('stream.hil.allow') },
-          { id: 'n', label: t('stream.hil.deny') }
+          { id: 'n', label: t('stream.hil.deny') },
         ]
   const dockOptions = permissionDecisionOptions(item)
   const allowOpts = rawOpts.filter((o) => !isDenyOpt(o))
   const denyOpt = rawOpts.find((o) => isDenyOpt(o)) ?? {
     id: 'n',
-    label: t('stream.hil.denyAndStop')
+    label: t('stream.hil.denyAndStop'),
   }
   const preferred =
     allowOpts.find((o) => o.id === 'acceptForSession') ??
@@ -2798,8 +2810,7 @@ function HilCard({
     ? [preferred, ...allowOpts.filter((o) => o !== preferred)]
     : allowOpts
   const stale = item.hilState === 'stale'
-  const denied =
-    stale || /拒|deny|decline|reject|cancel|^n$|^no$/i.test(item.resolved || '')
+  const denied = stale || /拒|deny|decline|reject|cancel|^n$|^no$/i.test(item.resolved || '')
 
   // 命令块: 优先真实命令 → 其它工具展开参数字段 → external_cli 回退到 body。
   const codeText = item.command?.trim()
@@ -2826,7 +2837,7 @@ function HilCard({
         fontSize: 11.5,
         lineHeight: 1.5,
         color: 'var(--c-tension)',
-        overflowWrap: 'anywhere'
+        overflowWrap: 'anywhere',
       }}
     >
       {(item.submissionRequestFailure
@@ -2846,7 +2857,7 @@ function HilCard({
         lineHeight: 1.5,
         color: denied ? 'var(--text-3)' : 'var(--c-experience)',
         overflowWrap: 'anywhere',
-        marginTop: 3
+        marginTop: 3,
       }}
     >
       <span>{stale ? '⌛' : denied ? '⊘' : '✓'}</span>
@@ -2863,47 +2874,45 @@ function HilCard({
         fontSize: 11.5,
         lineHeight: 1.5,
         color: 'var(--c-tension)',
-        overflowWrap: 'anywhere'
+        overflowWrap: 'anywhere',
       }}
     >
       {t('stream.hil.submitFailed', {
         message:
           (item.submissionRequestFailure
-            ? formatApplicationRequestFailure(
-                item.submissionRequestFailure,
-                hilT
-              )
-            : formatHilSubmissionError(item, t)) || t('stream.hil.notConfirmed')
+            ? formatApplicationRequestFailure(item.submissionRequestFailure, hilT)
+            : formatHilSubmissionError(item, t)) || t('stream.hil.notConfirmed'),
       })}
     </span>
   ) : (
     <span
+      className={isQuestion ? streamingTextClassName : undefined}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         gap: 7,
-        fontSize: 11.5,
-        color: 'var(--text-3)',
+        fontSize: isQuestion ? 'var(--vds-font-body-lv2)' : 'var(--vds-font-body-lv1)',
+        color: isQuestion ? undefined : 'var(--text-3)',
         whiteSpace: 'nowrap',
-        marginTop: 4
+        marginTop: isQuestion ? 0 : 4,
       }}
     >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: 'var(--c-experience)',
-          animation: 'softPulse 1.4s ease-in-out infinite'
-        }}
-      />
+      {!isQuestion && (
+        <span
+          style={{
+            width: 7,
+            height: 7,
+            borderRadius: '50%',
+            background: 'var(--c-experience)',
+            animation: 'softPulse 1.4s ease-in-out infinite',
+          }}
+        />
+      )}
       {submitting
         ? t('stream.hil.submittingWait')
         : t('stream.hil.waitingElapsed', {
-            label: isQuestion
-              ? t('stream.hil.waitingAnswer')
-              : t('stream.hil.waitingPermission'),
-            duration: elapsedLabel(requestedAt, now, t)
+            label: isQuestion ? t('stream.hil.waitingAnswer') : t('stream.hil.waitingPermission'),
+            duration: elapsedLabel(requestedAt, now, t),
           })}
     </span>
   )
@@ -2911,13 +2920,15 @@ function HilCard({
   const title = isQuestion
     ? item.title || t('stream.hil.needAnswer')
     : permTitle(item.toolName, item.hilKind, item.title, t)
-  const answerOnce = (): void =>
+  const answerOnce = (): void => {
+    if (!dockOptions.allowOnce) return
     answerPermission(dockOptions.allowOnce.id, t('stream.hil.allowedOnce'), {
-      kind: 'allowedOnce'
+      kind: 'allowedOnce',
     })
+  }
   const deny = (): void =>
     answerPermission(dockOptions.deny.id, t('stream.hil.denied'), {
-      kind: 'denied'
+      kind: 'denied',
     })
 
   useEffect(() => {
@@ -2928,14 +2939,7 @@ function HilCard({
   useEffect(() => {
     if (presentation !== 'dock' || done || isQuestion || submitting) return
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (
-        event.repeat ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.shiftKey
-      )
-        return
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
       const target = event.target instanceof Element ? event.target : null
       if (target?.closest('button, a, select, option, [role="button"]')) return
       if (event.key === 'Escape') {
@@ -2949,17 +2953,16 @@ function HilCard({
       }
     }
     window.addEventListener('keydown', onKeyDown, { capture: true })
-    return () =>
-      window.removeEventListener('keydown', onKeyDown, { capture: true })
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [
     answerPermission,
-    dockOptions.allowOnce.id,
+    dockOptions.allowOnce?.id,
     dockOptions.deny.id,
     done,
     isQuestion,
     item.requestId,
     presentation,
-    submitting
+    submitting,
   ])
 
   if (presentation === 'dock' && !isQuestion && !done) {
@@ -2989,12 +2992,12 @@ function HilCard({
         }}
       >
         <span
-          className="grid size-[var(--vds-icon-8)] place-items-center text-[var(--vds-text-secondary)]"
+          className="grid size-[42px] flex-none place-items-center rounded-[var(--vds-radius-5)] bg-[var(--vds-warning-2)] text-[var(--vds-warning-bg-default)]"
           aria-hidden
         >
           <IconFont
             type="icon-wanquanfangwen"
-            className="text-[20px] leading-none"
+            className="text-[length:var(--vds-icon-8)] leading-none"
           />
         </span>
         <span className="flex min-w-0 flex-col gap-[3px]">
@@ -3021,17 +3024,38 @@ function HilCard({
               {t('stream.hil.submitFailed', {
                 message:
                   (item.submissionRequestFailure
-                    ? formatApplicationRequestFailure(
-                        item.submissionRequestFailure,
-                        hilT
-                      )
-                    : formatHilSubmissionError(item, t)) ||
-                  t('stream.hil.notConfirmedRetry')
+                    ? formatApplicationRequestFailure(item.submissionRequestFailure, hilT)
+                    : formatHilSubmissionError(item, t)) || t('stream.hil.notConfirmedRetry'),
               })}
             </span>
           )}
         </span>
-        <span className="inline-flex flex-none items-center gap-[var(--vds-space-2)] @max-[340px]:col-span-2 @max-[340px]:justify-self-end">
+        <span className="col-span-full inline-flex flex-wrap items-center justify-end gap-[var(--vds-space-2)]">
+          {dockOptions.allowed
+            .filter((option) => option.id !== dockOptions.allowOnce?.id)
+            .map((option) => {
+              const info = scopeInfo(option, item, t)
+              return (
+                <Button
+                  key={option.id}
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  data-testid={`hil-permission-${option.id}`}
+                  data-hil-decision={option.id}
+                  title={info.caption}
+                  disabled={submitting}
+                  onClick={() =>
+                    answerPermission(option.id, info.short, {
+                      kind: 'allowedScope',
+                      scope: hilPermissionScope(option, item.prefixKind),
+                    })
+                  }
+                >
+                  {info.short}
+                </Button>
+              )
+            })}
           <Button
             variant="outline"
             size="sm"
@@ -3044,20 +3068,20 @@ function HilCard({
           >
             {t('stream.hil.deny')}
           </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            type="button"
-            data-testid={`hil-permission-${dockOptions.allowOnce.id}`}
-            data-hil-decision="allow-once"
-            className="whitespace-nowrap"
-            disabled={submitting}
-            onClick={answerOnce}
-          >
-            {submitting
-              ? t('stream.hil.submitting')
-              : t('stream.hil.allowOnce')}
-          </Button>
+          {dockOptions.allowOnce && (
+            <Button
+              variant="primary"
+              size="sm"
+              type="button"
+              data-testid={`hil-permission-${dockOptions.allowOnce.id}`}
+              data-hil-decision="allow-once"
+              className="whitespace-nowrap"
+              disabled={submitting}
+              onClick={answerOnce}
+            >
+              {submitting ? t('stream.hil.submitting') : t('stream.hil.allowOnce')}
+            </Button>
+          )}
         </span>
       </div>
     )
@@ -3066,7 +3090,9 @@ function HilCard({
   const scrollableQuestion = presentation === 'dock' && isQuestion && !done
 
   return (
-    <div
+    <Collapsible
+      open={!isQuestion || questionOpen}
+      onOpenChange={setQuestionOpen}
       data-testid="hil-card"
       data-hil-kind={isQuestion ? 'question' : 'permission'}
       data-hil-resolved={done ? 'true' : 'false'}
@@ -3076,15 +3102,36 @@ function HilCard({
           ? 'mb-0 min-w-0 p-[var(--vds-space-4)]'
           : 'mb-[var(--vds-space-4)] min-w-0 p-[var(--vds-space-4)]',
         'border border-solid border-[var(--vds-border-default)]',
-        /* 权限卡与执行计划卡片一致: 12px 圆角 + raised 背景; 问句卡保持原样。 */
+        /* 权限卡保持 raised 表面；问句卡标题行按执行计划卡片的紧凑间距组合。 */
         isQuestion
-          ? 'rounded-[var(--vds-radius-4)] bg-[var(--vds-bg-white-default)]'
+          ? 'rounded-[var(--vds-radius-6)] bg-[var(--vds-bg-white-default)] !p-0'
           : 'rounded-[var(--vds-radius-6)] bg-[var(--vds-surface-raised)]',
-        scrollableQuestion && 'flex min-h-0 flex-1 flex-col overflow-hidden'
+        scrollableQuestion && '!flex min-h-0 flex-1 flex-col overflow-hidden'
       )}
     >
-      <div>
-        {(!isQuestion || questionPolicy) && (
+      {isQuestion ? (
+        <CollapsibleTrigger asChild>
+          <Button
+            unstyled
+            className="group flex w-full min-w-0 items-center gap-[var(--vds-space-2)] !border-0 !bg-transparent !px-[var(--vds-space-3)] !py-[var(--vds-space-2)] text-left !shadow-none"
+            data-testid="hil-question-toggle"
+          >
+            <ChevronDown
+              aria-hidden="true"
+              className="size-[var(--vds-icon-7)] shrink-0 text-[var(--vds-text-tertiary)] transition-transform duration-[var(--vds-duration-fast)] group-data-[state=closed]:-rotate-90"
+            />
+            <span className="min-w-0 flex-1">
+              {questionPolicy ? (
+                <span className="block min-w-0 font-serif text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-subhead)] text-[var(--text)] [overflow-wrap:anywhere]">
+                  {questionPolicy.title}
+                </span>
+              ) : null}
+              {pill}
+            </span>
+          </Button>
+        </CollapsibleTrigger>
+      ) : (
+        <div>
           <div
             style={{
               minWidth: 0,
@@ -3093,242 +3140,293 @@ function HilCard({
               fontWeight: 600,
               color: 'var(--text)',
               lineHeight: 1.35,
-              overflowWrap: 'anywhere'
+              overflowWrap: 'anywhere',
             }}
           >
-            {isQuestion ? questionPolicy?.title : title}
+            {title}
           </div>
-        )}
-        {pill}
-      </div>
+          {pill}
+        </div>
+      )}
 
       {isQuestion ? (
-        <div
+        <CollapsibleContent
           className={cx(
-            'mt-[var(--vds-space-3)]',
+            'mx-[var(--vds-space-4)] mb-[var(--vds-space-4)] mt-[var(--vds-space-1)] !rounded-none !border-0 !bg-transparent !p-0',
             scrollableQuestion && 'flex min-h-0 flex-1 flex-col'
           )}
         >
           <ScrollArea
             className={cx(scrollableQuestion && 'min-h-0 flex-1')}
-            viewportClassName={cx(
-              scrollableQuestion &&
-                'h-full min-h-0 pr-[var(--vds-space-2)]'
-            )}
+            viewportClassName={cx(scrollableQuestion && 'h-full min-h-0')}
             viewportProps={{
-              'data-testid': 'hil-question-scroll-area'
+              'data-testid': 'hil-question-scroll-area',
             }}
           >
-          {questionPolicy?.directDecision &&
-          questionPolicy.directPresentation === 'primary-secondary' ? (
-            <div className="grid gap-[var(--vds-space-4)]">
-              {qs.map((q, qi) => (
-                <div className="grid gap-[var(--vds-space-3)]" key={qi}>
-                  <div className="min-w-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-                    {q.question}
-                  </div>
-                  {!done && (
-                    <div
-                      aria-label={q.header || q.question}
-                      className="flex min-w-0 items-center gap-[var(--vds-space-3)] border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-3)]"
-                      role="group"
-                    >
-                      {q.options.map((option, optionIndex) => {
-                        const decision = questionPolicy.directDecision?.(
-                          q,
-                          option
-                        )
-                        const primary = decision === 'respond'
-                        return (
-                          <Button
-                            className={
-                              primary
-                                ? 'min-w-0 flex-1'
-                                : 'flex-none text-[var(--vds-text-secondary)]'
-                            }
-                            data-hil-decision={decision}
-                            data-testid={`hil-question-option-${qi}-${optionIndex}`}
+            {questionPolicy?.directDecision &&
+            questionPolicy.directPresentation === 'primary-secondary' ? (
+              <div className="grid gap-[var(--vds-space-4)]">
+                {qs.map((q, qi) => {
+                  const subsetIds = subsetIdsFor(qi, q)
+                  const selectedCount =
+                    q.papers?.filter((paper) => subsetIds.includes(paper.id)).length ?? 0
+                  const selectAllState: boolean | 'mixed' =
+                    selectedCount === 0
+                      ? false
+                      : selectedCount === (q.papers?.length ?? 0)
+                        ? true
+                        : 'mixed'
+                  return (
+                    <div className="grid gap-[var(--vds-space-3)]" key={qi}>
+                      <div className="min-w-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                        {presentedQuestions[qi]?.question ?? q.question}
+                      </div>
+                      {!done && q.papers && q.papers.length > 0 && (
+                        <div
+                          aria-label={localization.t('review.authorization.subsetHint', {
+                            ns: 'literature',
+                          })}
+                          className="flex flex-col gap-[var(--vds-space-2)]"
+                          role="group"
+                        >
+                          <div className="min-w-0 whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]">
+                            {localization.t('review.authorization.subsetHint', {
+                              ns: 'literature',
+                            })}
+                          </div>
+                          <Checkbox
+                            checked={selectAllState}
+                            className="min-w-0"
+                            data-testid={`hil-subset-all-${qi}`}
                             disabled={submitting}
-                            key={optionIndex}
-                            onClick={() => decideQuestion(q, option)}
-                            size={primary ? 'md' : 'sm'}
+                            label={localization.t('review.authorization.subsetSelectAll', {
+                              ns: 'literature',
+                            })}
+                            onCheckedChange={(checked) =>
+                              setSubsetPicks((prev) => ({
+                                ...prev,
+                                [qi]: checked ? (q.papers?.map((item) => item.id) ?? []) : [],
+                              }))
+                            }
                             type="button"
-                            variant={primary ? 'primary' : 'ghost'}
-                          >
-                            {questionPolicy.optionLabel?.(option) ??
-                              option.label}
-                          </Button>
-                        )
-                      })}
+                          />
+                          {q.papers.map((paper) => {
+                            const selected = subsetIds.includes(paper.id)
+                            return (
+                              <Checkbox
+                                align="first-line"
+                                aria-label={`${paper.label}${paper.description ? ` ${paper.description}` : ''}`}
+                                checked={selected}
+                                className="min-w-0"
+                                data-testid={`hil-subset-paper-${qi}-${paper.id}`}
+                                disabled={submitting}
+                                key={paper.id}
+                                onCheckedChange={() =>
+                                  setSubsetPicks((prev) => {
+                                    const current =
+                                      prev[qi] ?? q.papers?.map((item) => item.id) ?? []
+                                    const next = current.includes(paper.id)
+                                      ? current.filter((id) => id !== paper.id)
+                                      : [...current, paper.id]
+                                    return { ...prev, [qi]: next }
+                                  })
+                                }
+                                type="button"
+                              >
+                                {paper.label}
+                              </Checkbox>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {!done && (
+                        <div
+                          aria-label={presentedQuestions[qi]?.header || q.header || q.question}
+                          className="flex min-w-0 items-center gap-[var(--vds-space-3)] border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-3)]"
+                          role="group"
+                        >
+                          {q.options.map((option, optionIndex) => {
+                            const decision = questionPolicy.directDecision?.(q, option)
+                            const primary = decision === 'respond'
+                            const subset = q.papers?.length ? subsetIds : undefined
+                            return (
+                              <Button
+                                className={
+                                  primary
+                                    ? 'min-w-0 flex-1'
+                                    : 'flex-none text-[var(--vds-text-secondary)]'
+                                }
+                                data-hil-decision={decision}
+                                data-testid={`hil-question-option-${qi}-${optionIndex}`}
+                                disabled={submitting || (primary === true && subset?.length === 0)}
+                                key={optionIndex}
+                                onClick={() => decideQuestion(q, option, subset)}
+                                size={primary ? 'md' : 'sm'}
+                                type="button"
+                                variant={primary ? 'primary' : 'ghost'}
+                              >
+                                {presentedQuestions[qi]?.options[optionIndex]?.label ??
+                                  questionPolicy.optionLabel?.(option) ??
+                                  option.label}
+                              </Button>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            qs.map((q, qi) => (
-              <div
-                key={qi}
-                style={{ marginBottom: qi < qs.length - 1 ? 16 : 0 }}
-              >
-                {q.header && (
+                  )
+                })}
+              </div>
+            ) : (
+              qs.map((q, qi) => (
+                <div key={qi} style={{ marginBottom: qi < qs.length - 1 ? 16 : 0 }}>
                   <div
                     style={{
-                      fontSize: 10,
-                      color: 'var(--text-3)',
-                      marginBottom: 5,
-                      letterSpacing: '.02em'
+                      minWidth: 0,
+                      fontFamily: 'var(--font-serif)',
+                      fontSize: 14.5,
+                      color: 'var(--text)',
+                      marginBottom: 'var(--vds-space-3)',
+                      lineHeight: 1.5,
+                      overflowWrap: 'anywhere',
                     }}
                   >
-                    {q.header}
-                    {q.multiSelect ? t('stream.hil.multiSelectSuffix') : ''}
+                    {presentedQuestions[qi]?.question ?? q.question}
                   </div>
-                )}
-                <div
-                  style={{
-                    minWidth: 0,
-                    fontFamily: 'var(--font-serif)',
-                    fontSize: 14.5,
-                    color: 'var(--text)',
-                    marginBottom: 8,
-                    lineHeight: 1.5,
-                    overflowWrap: 'anywhere'
-                  }}
-                >
-                  {q.question}
-                </div>
-                {q.options.length > 0 ? (
-                  <div
-                    style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
-                  >
-                    {q.options.map((o, i) => {
-                      // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
-                      // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
-                      const answered = done
-                        ? String(
-                            (item.answers ?? {})[
-                              q.id || q.header || q.question
-                            ] ?? ''
-                          )
-                        : ''
-                      const on = done
-                        ? answered
-                            .split('\n')[0]
-                            .split(', ')
-                            .includes(
-                              questionPolicy?.optionLabel?.(o) ?? o.label
-                            )
-                        : (picks[qi] || []).includes(o.label)
-                      return (
-                        <Button
-                          unstyled
-                          type="button"
-                          key={i}
-                          data-testid={`hil-question-option-${qi}-${i}`}
-                          disabled={done || submitting}
-                          onClick={() => {
-                            if (questionPolicy?.directDecision) {
-                              decideQuestion(q, o)
-                              return
-                            }
-                            if (!q.multiSelect)
-                              setTexts((t) => ({ ...t, [qi]: '' }))
-                            toggle(qi, o.label, !!q.multiSelect)
-                          }}
-                          aria-pressed={on}
-                          className={cx(
-                            'flex items-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border border-solid px-[var(--vds-space-3)] py-[var(--vds-space-3)] text-left disabled:cursor-default',
-                            on
-                              ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
-                              : 'border-[var(--border)] bg-transparent'
-                          )}
-                        >
-                          <span
+                  {q.options.length > 0 ? (
+                    <div
+                      aria-label={presentedQuestions[qi]?.header || q.header || q.question}
+                      className="flex flex-col gap-[var(--vds-space-3)]"
+                      role={q.multiSelect ? 'group' : 'radiogroup'}
+                    >
+                      {q.options.map((o, i) => {
+                        // 已答态按会话项里的 answers 回显勾选 (多选按 ', ' 拆回 label 列表);
+                        // 未答态才用组件本地 picks —— 否则 resolved 后勾选被清空, 卡片像没答过。
+                        const answered = done
+                          ? String((item.answers ?? {})[q.id || q.header || q.question] ?? '')
+                          : ''
+                        const on = done
+                          ? answered
+                              .split('\n')[0]
+                              .split(', ')
+                              .includes(questionPolicy?.optionLabel?.(o) ?? o.label)
+                          : (picks[qi] || []).includes(o.label)
+                        const OptionControl = q.multiSelect ? Checkbox : Radio
+                        return (
+                          <OptionControl
+                            align="first-line"
+                            type="button"
+                            key={i}
+                            data-testid={`hil-question-option-${qi}-${i}`}
+                            disabled={done || submitting}
+                            onCheckedChange={() => {
+                              if (questionPolicy?.directDecision) {
+                                decideQuestion(q, o)
+                                return
+                              }
+                              if (!q.multiSelect) setTexts((t) => ({ ...t, [qi]: '' }))
+                              toggle(qi, o.label, !!q.multiSelect)
+                            }}
+                            checked={on}
+                            aria-label={`${presentedQuestions[qi]?.options[i]?.label ?? questionPolicy?.optionLabel?.(o) ?? o.label}${o.description ? ` ${presentedQuestions[qi]?.options[i]?.description ?? o.description}` : ''}`}
                             className={cx(
-                              'mt-px grid size-[14px] flex-none place-items-center rounded border text-[10px] text-[var(--on-accent)]',
+                              'flex w-full gap-[var(--vds-space-2)] rounded-[var(--vds-radius-6)] border border-solid text-left disabled:cursor-default',
                               on
-                                ? 'border-[var(--accent)] bg-[var(--accent)]'
+                                ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
                                 : 'border-[var(--border)] bg-transparent'
                             )}
                           >
-                            {on ? (
-                              <span
-                                aria-hidden="true"
-                                className={QUESTION_OPTION_MARK_CLASS}
-                              />
-                            ) : null}
-                          </span>
-                          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
-                            <span className="mr-[var(--vds-space-2)] font-medium text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
-                              {questionPolicy?.optionLabel?.(o) ?? o.label}
-                            </span>
-                            {o.description && (
-                              <span className="text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]">
-                                {o.description}
+                            <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
+                              <span className="mr-[var(--vds-space-2)] font-medium text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+                                {presentedQuestions[qi]?.options[i]?.label ??
+                                  questionPolicy?.optionLabel?.(o) ??
+                                  o.label}
                               </span>
-                            )}
-                          </span>
-                        </Button>
-                      )
-                    })}
-                    {done ? (
-                      item.answers?.[q.id || q.header || q.question] && (
-                        <p className="m-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
-                          {t('stream.submittedAnswer')}
-                          {item.answers[q.id || q.header || q.question]}
-                        </p>
-                      )
-                    ) : questionPolicy?.directDecision ? null : (
-                      <Textarea
-                        data-testid={`hil-question-other-${qi}`}
-                        aria-label={t('stream.otherAnswer')}
-                        placeholder={t('stream.otherAnswerPlaceholder')}
-                        rows={2}
-                        disabled={submitting}
-                        value={texts[qi] || ''}
-                        onChange={(event) => {
-                          const value = event.target.value
-                          setTexts((t) => ({ ...t, [qi]: value }))
-                          if (!q.multiSelect && value.trim())
-                            setPicks((p) => ({ ...p, [qi]: [] }))
-                        }}
-                        className="mt-[var(--vds-space-1)] w-full resize-y"
-                      />
-                    )}
-                  </div>
-                ) : (
-                  <Textarea
-                    unstyled
-                    data-testid={`hil-question-text-${qi}`}
-                    disabled={done || submitting}
-                    rows={2}
-                    placeholder={t('stream.hil.answerPlaceholder')}
-                    value={
-                      done
-                        ? String(
-                            (item.answers ?? {})[
-                              q.id || q.header || q.question
-                            ] ??
-                              texts[qi] ??
-                              ''
-                          )
-                        : texts[qi] || ''
-                    }
-                    onChange={(e) =>
-                      setTexts((t) => ({ ...t, [qi]: e.target.value }))
-                    }
-                    className="box-border w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-[10px] py-[var(--vds-space-2)] text-[13px] text-[var(--text)] [font:inherit]"
-                  />
-                )}
-              </div>
-            ))
-          )}
+                              {o.description && (
+                                <span className="text-[var(--vds-text-secondary)] [overflow-wrap:anywhere]">
+                                  {presentedQuestions[qi]?.options[i]?.description ?? o.description}
+                                </span>
+                              )}
+                            </span>
+                          </OptionControl>
+                        )
+                      })}
+                      {done ? (
+                        item.answers?.[q.id || q.header || q.question] && (
+                          <p className="m-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]">
+                            {t('stream.submittedAnswer')}
+                            {questionPolicy?.presentAnswer?.(
+                              q,
+                              item.answers[q.id || q.header || q.question],
+                              localization
+                            ) ?? item.answers[q.id || q.header || q.question]}
+                          </p>
+                        )
+                      ) : questionPolicy?.directDecision ? null : (
+                        <Textarea
+                          data-testid={`hil-question-other-${qi}`}
+                          aria-label={t('stream.otherAnswer')}
+                          placeholder={t('stream.otherAnswerPlaceholder')}
+                          rows={2}
+                          disabled={submitting}
+                          value={texts[qi] || ''}
+                          onChange={(event) => {
+                            const value = event.target.value
+                            setTexts((t) => ({ ...t, [qi]: value }))
+                            if (!q.multiSelect && value.trim())
+                              setPicks((p) => ({ ...p, [qi]: [] }))
+                          }}
+                          className="mt-[var(--vds-space-1)] w-full resize-y"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <Textarea
+                      unstyled
+                      data-testid={`hil-question-text-${qi}`}
+                      disabled={done || submitting}
+                      rows={2}
+                      placeholder={t('stream.hil.answerPlaceholder')}
+                      value={
+                        done
+                          ? String(
+                              (item.answers ?? {})[q.id || q.header || q.question] ??
+                                texts[qi] ??
+                                ''
+                            )
+                          : texts[qi] || ''
+                      }
+                      onChange={(e) => setTexts((t) => ({ ...t, [qi]: e.target.value }))}
+                      className="box-border w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg)] px-[10px] py-[var(--vds-space-2)] text-[13px] text-[var(--text)] [font:inherit]"
+                    />
+                  )}
+                </div>
+              ))
+            )}
           </ScrollArea>
           {!done && !questionPolicy?.directDecision && (
             <div
-              className="mt-[var(--vds-space-4)] flex flex-none gap-[var(--vds-space-2)] border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-3)]"
+              className="mt-[var(--vds-space-4)] flex flex-none items-center justify-end gap-[var(--vds-space-2)]"
               data-testid="hil-question-actions"
             >
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                data-testid="hil-question-skip"
+                disabled={submitting}
+                onClick={() => {
+                  const answers = questionPolicy?.defaults?.(qs) ?? {}
+                  void submitAction({
+                    kind: 'respond',
+                    body: { answers },
+                    label: questionPolicy?.defaultLabel ?? t('stream.hil.skipped'),
+                    answers,
+                  })
+                }}
+              >
+                {t('stream.hil.skip')}
+              </Button>
               <Button
                 variant="primary"
                 size="sm"
@@ -3339,28 +3437,9 @@ function HilCard({
               >
                 {t('stream.hil.confirm')}
               </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                type="button"
-                data-testid="hil-question-skip"
-                disabled={submitting}
-                onClick={() => {
-                  const answers = questionPolicy?.defaults?.(qs) ?? {}
-                  void submitAction({
-                    kind: 'respond',
-                    body: { answers },
-                    label:
-                      questionPolicy?.defaultLabel ?? t('stream.hil.skipped'),
-                    answers
-                  })
-                }}
-              >
-                {t('stream.hil.skip')}
-              </Button>
             </div>
           )}
-        </div>
+        </CollapsibleContent>
       ) : (
         <>
           {(item.toolName || item.workdir || item.safetyTags) && (
@@ -3370,7 +3449,7 @@ function HilCard({
                 alignItems: 'center',
                 gap: 8,
                 flexWrap: 'wrap',
-                marginTop: 7
+                marginTop: 7,
               }}
             >
               {item.toolName && (
@@ -3378,7 +3457,7 @@ function HilCard({
                   style={{
                     fontFamily: 'var(--font-mono)',
                     fontSize: 12,
-                    color: 'var(--text-3)'
+                    color: 'var(--text-3)',
                   }}
                 >
                   {item.toolName.toLowerCase()}
@@ -3386,11 +3465,7 @@ function HilCard({
               )}
               {item.workdir && <Chip label={shortPath(item.workdir)} />}
               {(item.safetyTags ?? []).map((tag) => (
-                <Chip
-                  key={tag}
-                  label={safetyTagLabel(tag, t)}
-                  tone={TAG_TONE[tag]}
-                />
+                <Chip key={tag} label={safetyTagLabel(tag, t)} tone={TAG_TONE[tag]} />
               ))}
             </div>
           )}
@@ -3408,7 +3483,7 @@ function HilCard({
                     fontSize: 9,
                     color: 'var(--text-3)',
                     transform: codeOpen ? 'rotate(90deg)' : 'none',
-                    transition: 'transform .15s'
+                    transition: 'transform .15s',
                   }}
                 >
                   ▶
@@ -3430,7 +3505,7 @@ function HilCard({
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
                     maxHeight: 220,
-                    overflow: 'auto'
+                    overflow: 'auto',
                   }}
                 >
                   {codeText}
@@ -3445,7 +3520,7 @@ function HilCard({
                 marginTop: 12,
                 fontSize: 12,
                 color: 'var(--text-3)',
-                lineHeight: 1.6
+                lineHeight: 1.6,
               }}
             >
               {descText}
@@ -3463,23 +3538,19 @@ function HilCard({
                 background: 'var(--bg-3)',
                 fontSize: 11,
                 lineHeight: 1.55,
-                color: 'var(--text-2)'
+                color: 'var(--text-2)',
               }}
             >
               {item.path && (
                 <div>
                   <b>{t('stream.hil.pathLabel')}</b>
-                  <span style={{ fontFamily: 'var(--font-mono)' }}>
-                    {item.path}
-                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{item.path}</span>
                 </div>
               )}
               {item.networkTarget && (
                 <div>
                   <b>{t('stream.hil.networkTargetLabel')}</b>
-                  <span style={{ fontFamily: 'var(--font-mono)' }}>
-                    {item.networkTarget}
-                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{item.networkTarget}</span>
                 </div>
               )}
               {item.permissions && (
@@ -3508,7 +3579,7 @@ function HilCard({
                 fontSize: 10.5,
                 lineHeight: 1.5,
                 whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word'
+                wordBreak: 'break-word',
               }}
             >
               {item.diff}
@@ -3541,14 +3612,10 @@ function HilCard({
                     )}
                     title={oi.caption !== oi.short ? oi.caption : undefined}
                     onClick={() =>
-                      answerPermission(
-                        o.id,
-                        t('stream.hil.allowedScope', { scope: oi.short }),
-                        {
-                          kind: 'allowedScope',
-                          scope: hilPermissionScope(o, item.prefixKind)
-                        }
-                      )
+                      answerPermission(o.id, t('stream.hil.allowedScope', { scope: oi.short }), {
+                        kind: 'allowedScope',
+                        scope: hilPermissionScope(o, item.prefixKind),
+                      })
                     }
                   >
                     {oi.short}
@@ -3566,7 +3633,7 @@ function HilCard({
                 disabled={submitting}
                 onClick={() =>
                   answerPermission(denyOpt.id, t('stream.hil.denied'), {
-                    kind: 'denied'
+                    kind: 'denied',
                   })
                 }
               >
@@ -3594,7 +3661,7 @@ function HilCard({
           )}
         </div>
       )}
-    </div>
+    </Collapsible>
   )
 }
 
@@ -3608,7 +3675,7 @@ function PromptCard({ text }: { text: string }): React.JSX.Element {
         border: '1px solid var(--border)',
         borderRadius: 12,
         padding: '13px 16px',
-        marginBottom: 30
+        marginBottom: 30,
       }}
     >
       <div
@@ -3617,7 +3684,7 @@ function PromptCard({ text }: { text: string }): React.JSX.Element {
           letterSpacing: '0.16em',
           textTransform: 'uppercase',
           color: 'var(--text-3)',
-          marginBottom: 7
+          marginBottom: 7,
         }}
       >
         {t('stream.task')}
@@ -3627,7 +3694,7 @@ function PromptCard({ text }: { text: string }): React.JSX.Element {
           fontFamily: 'var(--font-serif)',
           fontSize: 15,
           color: 'var(--text-2)',
-          lineHeight: 1.55
+          lineHeight: 1.55,
         }}
       >
         {text}
@@ -3639,7 +3706,7 @@ function PromptCard({ text }: { text: string }): React.JSX.Element {
 function Thinking({
   text,
   itemId,
-  selectionEnabled = true
+  selectionEnabled = true,
 }: {
   text: string
   itemId?: string
@@ -3649,10 +3716,7 @@ function Thinking({
   const markdownClassName =
     '!text-[length:var(--vds-font-body-lv2)] leading-[1.65] text-[var(--text-2)] [&>*:last-child]:mb-0'
   return (
-    <div
-      className="min-w-0"
-      data-testid="turn-commentary"
-    >
+    <div className="min-w-0" data-testid="turn-commentary">
       {messageId ? (
         <AnnotatedAnswer
           citationEnabled={false}
@@ -3662,7 +3726,7 @@ function Thinking({
           markdownClassName={markdownClassName}
         />
       ) : (
-        <Markdown text={text} className={markdownClassName} />
+        <Markdown text={text} math className={markdownClassName} />
       )}
     </div>
   )
@@ -3675,24 +3739,16 @@ function Day({ text }: { text: string }): React.JSX.Element {
         display: 'flex',
         alignItems: 'center',
         gap: 12,
-        margin: '4px 0 26px'
+        margin: '4px 0 26px',
       }}
     >
-      <span
-        style={{ fontSize: 10, letterSpacing: '0.2em', color: 'var(--text-3)' }}
-      >
-        {text}
-      </span>
+      <span style={{ fontSize: 10, letterSpacing: '0.2em', color: 'var(--text-3)' }}>{text}</span>
       <span style={{ flex: 1, height: 1, background: 'var(--border-soft)' }} />
     </div>
   )
 }
 
-function Reentry({
-  item
-}: {
-  item: Extract<ConvItem, { kind: 'reentry' }>
-}): React.JSX.Element {
+function Reentry({ item }: { item: Extract<ConvItem, { kind: 'reentry' }> }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { set, act } = useApp()
   return (
@@ -3701,7 +3757,7 @@ function Reentry({
         borderLeft: '2px solid var(--accent)',
         padding: '2px 0 2px 22px',
         marginBottom: 48,
-        animation: 'cardIn .5s ease both'
+        animation: 'cardIn .5s ease both',
       }}
     >
       <div
@@ -3709,7 +3765,7 @@ function Reentry({
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          marginBottom: 14
+          marginBottom: 14,
         }}
       >
         <span
@@ -3717,33 +3773,29 @@ function Reentry({
             fontSize: 10.5,
             textTransform: 'uppercase',
             letterSpacing: '0.06em',
-            color: 'var(--accent-ink)'
+            color: 'var(--accent-ink)',
           }}
         >
           {item.topic}
         </span>
-        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-          {item.sub}
-        </span>
+        <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>{item.sub}</span>
       </div>
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'auto 1fr',
           gap: '14px 20px',
-          alignItems: 'baseline'
+          alignItems: 'baseline',
         }}
       >
         {item.rows.map(([label, value, tone], i) => (
           <React.Fragment key={i}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              {label}
-            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{label}</span>
             <span
               style={{
                 fontFamily: 'var(--font-serif)',
                 fontSize: 16,
-                color: tone ? TONE[tone] : 'var(--text)'
+                color: tone ? TONE[tone] : 'var(--text)',
               }}
             >
               {value}
@@ -3766,13 +3818,7 @@ function Reentry({
   )
 }
 
-function Avatar({
-  kind,
-  who
-}: {
-  kind: 'user' | 'agent'
-  who?: string
-}): React.JSX.Element {
+function Avatar({ kind, who }: { kind: 'user' | 'agent'; who?: string }): React.JSX.Element {
   const user = kind === 'user'
   // team 成员: 用名字首字母的彩色头像区分说话人 (群聊感)
   if (who) {
@@ -3790,7 +3836,7 @@ function Avatar({
           color: 'var(--accent-ink)',
           fontSize: 12,
           fontWeight: 600,
-          textTransform: 'uppercase'
+          textTransform: 'uppercase',
         }}
       >
         {who.replace(/[^a-z0-9]/gi, '').slice(0, 1) || '@'}
@@ -3808,7 +3854,7 @@ function Avatar({
         placeItems: 'center',
         background: user ? 'var(--accent-soft)' : 'var(--bg-3)',
         border: `1px solid ${user ? 'var(--accent)' : 'var(--border)'}`,
-        color: user ? 'var(--accent-ink)' : 'var(--text-2)'
+        color: user ? 'var(--accent-ink)' : 'var(--text-2)',
       }}
     >
       <Icon name={kind} size={16} />
@@ -3819,7 +3865,7 @@ function Avatar({
 function UserBubble({
   item,
   running,
-  onRewind
+  onRewind,
 }: {
   item: Extract<ConvItem, { kind: 'user' }>
   running: boolean
@@ -3832,14 +3878,11 @@ function UserBubble({
   const [confirming, setConfirming] = useState(false)
   const [restoring, setRestoring] = useState(false)
   const [error, setError] = useState('')
-  const [expandedReferenceId, setExpandedReferenceId] = useState<string | null>(
-    null
-  )
+  const [expandedReferenceId, setExpandedReferenceId] = useState<string | null>(null)
   const canRewind = !steer && !running && item.rewindAnchor !== undefined
   const annotationRefs =
     item.refs?.filter(
-      (reference) =>
-        reference.type === 'assistant_context' && reference.kind === 'note'
+      (reference) => reference.type === 'assistant_context' && reference.kind === 'note'
     ) ?? []
   const annotations = annotationRefs.flatMap((reference) => {
     const annotation = state.aiPanel.annotations.find(
@@ -3849,22 +3892,23 @@ function UserBubble({
   })
   const contextRefs =
     item.refs?.filter(
-      (reference) =>
-        reference.type === 'assistant_context' && reference.kind !== 'note'
+      (reference) => reference.type === 'assistant_context' && reference.kind !== 'note'
     ) ?? []
   const project = state.projects.find(
     (candidate) => candidate.path === activeThread(state).projectPath
   )
   const openContextSource = (reference: MessageReference): void => {
-    if (!reference.sourceId || !project) return
+    if (!reference.sourceId) return
     if (reference.kind === LITERATURE_CONTEXT_KIND) {
       if (reference.anchor) {
-        void act.openLiteratureAttachment(reference.sourceId)
+        void act.openLiteratureAttachment(reference.sourceId, reference.anchor.documentId)
         return
       }
+      if (!project) return
       void act.openLiteratureItem(reference.sourceId, project.id)
       return
     }
+    if (!project) return
     if (
       reference.kind === SELECTION_CONTEXT_KIND ||
       OPENABLE_RESOURCE_CONTEXT_KINDS.has(reference.kind ?? '')
@@ -3889,293 +3933,349 @@ function UserBubble({
     }
   }
   return (
-    <div className="mb-[22px] flex justify-end">
-      <div className="relative grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] justify-items-end">
-        {steer && (
-          <div className="mx-[var(--vds-space-1)] mb-[6px] flex items-center justify-end gap-[7px] text-[9px] font-[650] uppercase tracking-[0.08em] text-[var(--text-3)]">
-            <span>{item.steerLabel}</span>
-            <span className="rounded-[5px] border border-[var(--accent)] px-[6px] py-px text-[9px] text-[var(--accent-ink)]">
-              {t('stream.steer')}
-            </span>
-          </div>
-        )}
-        <div
-          className={cx(
-            'relative box-border w-auto max-w-full overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] pb-[12px] pt-[11px]',
-            steer && 'border-dashed border-[var(--accent)]'
+    <>
+      <div className="mb-[22px] flex justify-end">
+        <div className="relative grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] justify-items-end">
+          {steer && (
+            <div className="mx-[var(--vds-space-1)] mb-[6px] flex items-center justify-end gap-[7px] text-[9px] font-[650] uppercase tracking-[0.08em] text-[var(--text-3)]">
+              <span>{item.steerLabel}</span>
+              <span className="rounded-[5px] border border-[var(--accent)] px-[6px] py-px text-[9px] text-[var(--accent-ink)]">
+                {t('stream.steer')}
+              </span>
+            </div>
           )}
-          data-testid="user-bubble"
-        >
-          {canRewind && !confirming && (
-            <Button
-              unstyled
-              type="button"
-              className={cx(
-                OUTLINE_HOVER_BUTTON_CLASS,
-                'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
-              )}
-              onClick={() => setConfirming(true)}
-              data-testid="rewind-prompt"
-              title={t('stream.rewindHere')}
-              aria-label={t('stream.rewindHere')}
-            >
-              <Icon name="rewind" size={13} />
-            </Button>
-          )}
-          {contextRefs.length > 0 ? (
-            <div
-              className="mb-[var(--vds-space-2)] flex flex-wrap justify-end gap-[var(--vds-space-1)]"
-              data-testid="sent-context-references"
-            >
-              {contextRefs.map((reference) => {
-                const selection = Boolean(reference.anchor)
-                const canOpen = Boolean(reference.sourceId && project)
-                const expanded = expandedReferenceId === reference.id
-                if (reference.kind === SESSION_CONTEXT_KIND) {
-                  return (
-                    <SessionReference
-                      currentSessionId={activeThread(state).sessionId}
-                      key={reference.id}
-                      reference={reference}
-                    />
+          <div
+            className={cx(
+              'relative box-border w-auto max-w-full overflow-hidden rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] pb-[12px] pt-[11px]',
+              steer && 'border-dashed border-[var(--accent)]'
+            )}
+            data-testid="user-bubble"
+          >
+            {canRewind && !confirming && (
+              <Button
+                unstyled
+                type="button"
+                className={cx(
+                  OUTLINE_HOVER_BUTTON_CLASS,
+                  'absolute right-[10px] top-[-10px] grid size-[24px] place-items-center rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] p-[var(--vds-space-0)] text-[var(--text-3)]'
+                )}
+                onClick={() => setConfirming(true)}
+                data-testid="rewind-prompt"
+                title={t('stream.rewindHere')}
+                aria-label={t('stream.rewindHere')}
+              >
+                <Icon name="rewind" size={13} />
+              </Button>
+            )}
+            {contextRefs.length > 0 ? (
+              <div
+                className="mb-[var(--vds-space-2)] flex flex-wrap justify-end gap-[var(--vds-space-1)]"
+                data-testid="sent-context-references"
+              >
+                {contextRefs.map((reference) => {
+                  const selection = Boolean(reference.anchor)
+                  const canOpen = Boolean(
+                    reference.sourceId &&
+                    (project || (reference.kind === LITERATURE_CONTEXT_KIND && reference.anchor))
                   )
-                }
-                return selection ? (
-                  <div
-                    className="grid w-full justify-items-end gap-[var(--vds-space-1)]"
-                    key={reference.id}
-                  >
-                    <Button
-                      unstyled
-                      variant="ghost"
-                      size="content"
-                      className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-brand-text-primary)]"
-                      aria-expanded={expanded}
-                      onClick={() =>
-                        setExpandedReferenceId(expanded ? null : reference.id)
-                      }
+                  const expanded = expandedReferenceId === reference.id
+                  if (reference.kind === SESSION_CONTEXT_KIND) {
+                    return (
+                      <SessionReference
+                        currentSessionId={activeThread(state).sessionId}
+                        key={reference.id}
+                        reference={reference}
+                      />
+                    )
+                  }
+                  return selection ? (
+                    <div
+                      className="grid w-full justify-items-end gap-[var(--vds-space-1)]"
+                      key={reference.id}
                     >
-                      <Icon name="quote" size={12} />
+                      <Button
+                        unstyled
+                        variant="ghost"
+                        size="content"
+                        className="inline-flex max-w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] border border-[var(--vds-brand-light-border)] bg-[var(--vds-brand-light-bg-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-brand-text-primary)]"
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedReferenceId(expanded ? null : reference.id)}
+                      >
+                        <Icon name="quote" size={12} />
+                        <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
+                          {contextSourceLabel(reference)}
+                        </span>
+                        <span className="border-l border-[var(--vds-brand-light-border)] pl-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
+                          {t('stream.fragment')}
+                        </span>
+                      </Button>
+                      {expanded ? (
+                        <Card
+                          className="w-full text-left"
+                          padding="sm"
+                          data-testid="sent-selection-reference"
+                        >
+                          <CardContent className="grid gap-[var(--vds-space-2)]">
+                            <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
+                              <Icon name="quote" size={13} />
+                              <Button
+                                unstyled
+                                variant="link"
+                                size="content"
+                                disabled={!canOpen}
+                                className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-[var(--vds-text-primary)]"
+                                onClick={() => openContextSource(reference)}
+                              >
+                                {contextSourceLabel(reference)}
+                              </Button>
+                              <IconButton
+                                label={t('stream.collapseReference')}
+                                icon={<Icon name="close" size={12} />}
+                                size="sm"
+                                variant="ghostIcon"
+                                onClick={() => setExpandedReferenceId(null)}
+                              />
+                            </div>
+                            <ScrollArea
+                              className="max-h-[120px]"
+                              viewportClassName="max-h-[120px] whitespace-pre-wrap break-words border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]"
+                            >
+                              {reference.anchor?.previewText || t('stream.unavailableFragment')}
+                            </ScrollArea>
+                          </CardContent>
+                        </Card>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <Button
+                      key={reference.id}
+                      unstyled
+                      variant="outline"
+                      size="content"
+                      disabled={!canOpen}
+                      className="inline-flex max-w-full items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+                      onClick={() => openContextSource(reference)}
+                    >
+                      <Icon
+                        name={reference.kind === LITERATURE_CONTEXT_KIND ? 'books' : 'doc'}
+                        size={12}
+                      />
                       <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
                         {contextSourceLabel(reference)}
                       </span>
-                      <span className="border-l border-[var(--vds-brand-light-border)] pl-[var(--vds-space-2)] text-[var(--vds-text-tertiary)]">
-                        {t('stream.fragment')}
-                      </span>
                     </Button>
-                    {expanded ? (
-                      <Card
-                        className="w-full text-left"
-                        padding="sm"
-                        data-testid="sent-selection-reference"
-                      >
-                        <CardContent className="grid gap-[var(--vds-space-2)]">
-                          <div className="flex min-w-0 items-center gap-[var(--vds-space-2)]">
-                            <Icon name="quote" size={13} />
-                            <Button
-                              unstyled
-                              variant="link"
-                              size="content"
-                              disabled={!canOpen}
-                              className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left font-medium text-[var(--vds-text-primary)]"
-                              onClick={() => openContextSource(reference)}
-                            >
-                              {contextSourceLabel(reference)}
-                            </Button>
-                            <IconButton
-                              label={t('stream.collapseReference')}
-                              icon={<Icon name="close" size={12} />}
-                              size="sm"
-                              variant="ghostIcon"
-                              onClick={() => setExpandedReferenceId(null)}
-                            />
-                          </div>
-                          <ScrollArea
-                            className="max-h-[120px]"
-                            viewportClassName="max-h-[120px] whitespace-pre-wrap break-words border-t border-[var(--vds-divider-default)] pt-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]"
-                          >
-                            {reference.anchor?.previewText ||
-                              t('stream.unavailableFragment')}
-                          </ScrollArea>
-                        </CardContent>
-                      </Card>
-                    ) : null}
-                  </div>
-                ) : (
-                  <Button
-                    key={reference.id}
-                    unstyled
-                    variant="outline"
-                    size="content"
-                    disabled={!canOpen}
-                    className="inline-flex max-w-full items-center gap-[var(--vds-space-1)] rounded-[var(--vds-radius-4)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
-                    onClick={() => openContextSource(reference)}
-                  >
-                    <Icon
-                      name={
-                        reference.kind === LITERATURE_CONTEXT_KIND
-                          ? 'books'
-                          : 'doc'
-                      }
-                      size={12}
-                    />
-                    <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap">
-                      {contextSourceLabel(reference)}
-                    </span>
-                  </Button>
-                )
-              })}
-            </div>
-          ) : null}
-          {item.refs?.some(
-            (reference) =>
-              ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
-              reference.type !== 'assistant_context'
-          ) && (
-            <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
-              {item
-                .refs!.filter(
-                  (reference) =>
-                    ((reference.type !== 'file' && reference.type !== 'directory') || !reference.path) &&
-                    reference.type !== 'assistant_context'
-                )
-                .map((reference) => (
-                  <span
-                    key={reference.type + reference.id}
-                    className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
-                    title={t('stream.referenceSent', {
-                      type: reference.type,
-                      id: reference.id
-                    })}
-                  >
-                    <span className="flex-none font-semibold text-[var(--accent-ink)]">
-                      {userMessageRefType(reference.type, t)}
-                    </span>
-                    <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
-                      {reference.title}
-                    </span>
-                    {reference.status && (
-                      <span className="flex-none text-[9px] text-[var(--text-3)]">
-                        {reference.status}
-                      </span>
-                    )}
-                  </span>
-                ))}
-            </div>
-          )}
-          <div className="whitespace-pre-wrap font-serif text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
-            {item.text}
-          </div>
-          <AnnotationSummary
-            annotations={annotations}
-            className="mt-[var(--vds-space-1)]"
-            location={state.aiPanel.answerAnnotationFocus}
-            numberForAnnotation={(annotationId, index) => {
-              const raw = state.aiPanel.annotations.find(item => item.annotation_id === annotationId)
-              if (!raw) return index + 1
-              return state.aiPanel.annotations.filter(item => item.source_item_id === raw.source_item_id)
-                .findIndex(item => item.annotation_id === annotationId) + 1
-            }}
-            onEdit={(annotationId, comment) => act.updateAnswerAnnotation(annotationId, comment)}
-            onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
-            onRemove={(annotationId) => void act.deleteAnswerAnnotation(annotationId)}
-            testId="user-message-annotations"
-          />
-          {item.refs?.some(
-            (reference) => (reference.type === 'file' || reference.type === 'directory') && reference.path
-          ) && (
-            <div className="mb-[6px] flex w-min max-w-full flex-nowrap justify-start gap-[2px] overflow-x-auto overflow-y-hidden py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[2px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <SentAttachments
-                key={activeThread(state).sessionId}
-                refs={item.refs.flatMap((reference) => {
-                  if (!reference.path) return []
-                  if (reference.type === 'directory') return [{
-                    type: 'directory' as const,
-                    id: reference.id,
-                    title: reference.title,
-                    status: reference.status,
-                    path: reference.path
-                  }]
-                  if (reference.type === 'file') return [{
-                    type: 'file' as const,
-                    id: reference.id,
-                    title: reference.title,
-                    status: reference.status,
-                    path: reference.path,
-                    mediaType: reference.mediaType,
-                    sha256: reference.sha256,
-                    size: reference.size
-                  }]
-                  return []
+                  )
                 })}
-              />
+              </div>
+            ) : null}
+            {item.refs?.some(
+              (reference) =>
+                ((reference.type !== 'file' && reference.type !== 'directory') ||
+                  !reference.path) &&
+                reference.type !== 'assistant_context'
+            ) && (
+              <div className="mb-[var(--vds-space-2)] flex flex-wrap gap-[6px]">
+                {item
+                  .refs!.filter(
+                    (reference) =>
+                      ((reference.type !== 'file' && reference.type !== 'directory') ||
+                        !reference.path) &&
+                      reference.type !== 'assistant_context'
+                  )
+                  .map((reference) => (
+                    <span
+                      key={reference.type + reference.id}
+                      className="inline-flex max-w-full items-center gap-[6px] rounded-lg border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-2)] py-[2px] text-[10.5px]"
+                      title={t('stream.referenceSent', {
+                        type: reference.type,
+                        id: reference.id,
+                      })}
+                    >
+                      <span className="flex-none font-semibold text-[var(--accent-ink)]">
+                        {userMessageRefType(reference.type, t)}
+                      </span>
+                      <span className="max-w-[180px] overflow-hidden text-ellipsis whitespace-nowrap text-[var(--text-2)]">
+                        {reference.title}
+                      </span>
+                      {reference.status && (
+                        <span className="flex-none text-[9px] text-[var(--text-3)]">
+                          {reference.status}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+              </div>
+            )}
+            <div className="whitespace-pre-wrap font-serif font-normal text-[length:var(--vds-font-body-lv2)] leading-[1.62] text-[var(--text)] [overflow-wrap:anywhere]">
+              {item.text}
+            </div>
+            <AnnotationSummary
+              annotations={annotations}
+              className="mt-[var(--vds-space-1)]"
+              location={state.aiPanel.answerAnnotationFocus}
+              numberForAnnotation={(annotationId, index) => {
+                const raw = state.aiPanel.annotations.find(
+                  (item) => item.annotation_id === annotationId
+                )
+                if (!raw) return index + 1
+                return (
+                  state.aiPanel.annotations
+                    .filter((item) => item.source_item_id === raw.source_item_id)
+                    .findIndex((item) => item.annotation_id === annotationId) + 1
+                )
+              }}
+              onOpenOriginal={(annotationId) => void act.focusAnswerAnnotation(annotationId)}
+              testId="user-message-annotations"
+            />
+            {item.refs?.some(
+              (reference) =>
+                (reference.type === 'file' || reference.type === 'directory') && reference.path
+            ) && (
+              <div className="mb-[6px] flex w-min max-w-full flex-nowrap justify-start gap-[2px] overflow-x-auto overflow-y-hidden py-[var(--vds-space-1)] pl-[var(--vds-space-0)] pr-[2px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <SentAttachments
+                  key={activeThread(state).sessionId}
+                  refs={item.refs.flatMap<ComposerReference>((reference): ComposerReference[] => {
+                    if (!reference.path) return []
+                    if (reference.type === 'directory')
+                      return [
+                        {
+                          type: 'directory' as const,
+                          id: reference.id,
+                          title: reference.title,
+                          status: reference.status,
+                          path: reference.path,
+                        },
+                      ]
+                    if (reference.type === 'file')
+                      return [
+                        {
+                          type: 'file' as const,
+                          id: reference.id,
+                          title: reference.title,
+                          status: reference.status,
+                          path: reference.path,
+                          mediaType: reference.mediaType,
+                          sha256: reference.sha256,
+                          size: reference.size,
+                        },
+                      ]
+                    return []
+                  })}
+                />
+              </div>
+            )}
+            {confirming &&
+              createPortal(
+                <RewindConfirmation
+                  error={error}
+                  restoring={restoring}
+                  onCancel={() => setConfirming(false)}
+                  onConfirm={confirmRewind}
+                />,
+                document.body
+              )}
+          </div>
+          {item.text && (
+            <div className={cx(MESSAGE_ACTIONS_CLASS, 'justify-end')}>
+              <CopyButton
+                type="button"
+                size="xs"
+                variant="ghostIcon"
+                value={item.text}
+                writeText={writeDesktopClipboard}
+                idleLabel={t('stream.copyMessage')}
+                copiedLabel={t('stream.copied')}
+                copiedIcon={<Check size={14} />}
+                showLoading={false}
+                statusStyle={false}
+                tooltip
+              >
+                <Copy size={14} />
+              </CopyButton>
             </div>
           )}
-          {confirming &&
-            createPortal(
-              <RewindConfirmation
-                error={error}
-                restoring={restoring}
-                onCancel={() => setConfirming(false)}
-                onConfirm={confirmRewind}
-              />,
-              document.body
-            )}
         </div>
-        {item.text && (
-          <div className={cx(MESSAGE_ACTIONS_CLASS, 'justify-end')}>
-            <CopyButton
-              type="button"
-              size="xs"
-              variant="ghostIcon"
-              value={item.text}
-              writeText={writeDesktopClipboard}
-              idleLabel={t('stream.copyMessage')}
-              copiedLabel={t('stream.copied')}
-            >
-              <Copy size={14} />
-            </CopyButton>
-          </div>
-        )}
       </div>
-    </div>
+      {item.cancelled && (
+        <StatusLine item={{ kind: 'status', text: t('stream.stopped') }} showIcon={false} />
+      )}
+    </>
   )
 }
 
 function InteractionReply({
-  item
+  item,
 }: {
   item: Extract<ConvItem, { kind: 'interaction_reply' }>
 }): React.JSX.Element {
-  const { t } = useTranslation('components')
+  const { i18n: localization } = useTranslation('literature')
   const { t: conversation } = useTranslation('conversation')
+  const interactionPolicies = useInteractionPolicies()
+  const questionPolicy = interactionPolicies.find((policy) => policy.matches(item.questions))
+  const question = item.questions[0]
+  const answer = question && item.answers[question.id || question.header || question.question]
+  const replyText =
+    question && answer ? questionPolicy?.replyText?.(question, answer, localization) : undefined
+  const replyTitle =
+    question && answer ? questionPolicy?.replyTitle?.(question, answer, localization) : undefined
+  const title = replyTitle ?? questionPolicy?.title ?? conversation('reply.title')
+  if (replyText) {
+    return (
+      <div
+        className="mt-[var(--vds-space-2)] mb-[var(--vds-space-5)] flex justify-start"
+        data-testid="interaction-reply"
+        data-interaction-request-id={item.requestId}
+      >
+        <div className="box-border w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
+          <div className="mb-[var(--vds-space-3)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-normal text-[var(--vds-text-secondary)]">
+            <IconFont
+              type="line-tool-batch-follow-up"
+              className="shrink-0 text-[length:var(--vds-icon-6)]"
+            />
+            <span>{title}</span>
+          </div>
+          <div className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
+            {replyText}
+          </div>
+        </div>
+      </div>
+    )
+  }
   const rows = item.questions.map((question) => {
     const key = question.id || question.header || question.question
+    const answer = item.answers[key]
     return {
-      question: question.question,
-      answer: item.answers[key] || conversation('reply.skipped')
+      question:
+        questionPolicy?.presentQuestion?.(question, localization).question ?? question.question,
+      answer: answer
+        ? (questionPolicy?.presentAnswer?.(question, answer, localization) ?? answer)
+        : conversation('reply.skipped'),
     }
   })
   return (
     <div
-      className="mt-[var(--vds-space-2)] mb-[22px] flex justify-end"
+      className="mt-[var(--vds-space-2)] mb-[var(--vds-space-5)] flex justify-start"
       data-testid="interaction-reply"
       data-interaction-request-id={item.requestId}
     >
-      <div className="grid w-max min-w-0 max-w-[var(--conversation-user-message-max)] gap-[10px] rounded-[var(--vds-radius-4)] border border-[var(--border-soft)] bg-[var(--vds-other-overlay-2)] px-[15px] py-[12px]">
+      <div className="grid w-full min-w-0 max-w-[var(--vds-conversation-interaction-reply-max-width)] gap-[var(--vds-space-3)] rounded-[var(--vds-radius-6)] border border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-4)]">
+        <div className="flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] font-normal text-[var(--vds-text-secondary)]">
+          <IconFont
+            type="line-tool-batch-follow-up"
+            className="shrink-0 text-[length:var(--vds-icon-6)]"
+          />
+          <span>{title}</span>
+        </div>
         {rows.map((row, index) => (
           <div
             key={`${row.question}:${index}`}
-            className="grid min-w-0 gap-[3px] border-t border-[var(--border-soft)] pt-[10px] first:border-t-0 first:pt-0"
-            aria-label={conversation('reply.answerLabel', {
-              question: row.question,
-              answer: row.answer
-            })}
+            className="grid min-w-0 gap-[var(--vds-space-1)]"
+            aria-label={conversation('reply.answerLabel', row)}
           >
-            <span className="font-serif text-[12px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]">
-              {row.question}
+            <span className="text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] [overflow-wrap:anywhere]">
+              {index + 1}. {row.question}
             </span>
-            <span className="font-serif text-[15px] font-medium leading-[1.55] text-[var(--text)] [overflow-wrap:anywhere]">
+            <span className="whitespace-pre-wrap text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]">
               {row.answer}
             </span>
           </div>
@@ -4189,7 +4289,7 @@ function RewindConfirmation({
   error,
   restoring,
   onCancel,
-  onConfirm
+  onConfirm,
 }: {
   error: string
   restoring: boolean
@@ -4207,10 +4307,7 @@ function RewindConfirmation({
         if (!restoring) onCancel()
       }}
     >
-      <div
-        style={rewindDialogStyle}
-        onClick={(event) => event.stopPropagation()}
-      >
+      <div style={rewindDialogStyle} onClick={(event) => event.stopPropagation()}>
         <div
           style={{
             width: 38,
@@ -4220,7 +4317,7 @@ function RewindConfirmation({
             placeItems: 'center',
             borderRadius: 12,
             background: 'var(--accent-soft)',
-            color: 'var(--accent-ink)'
+            color: 'var(--accent-ink)',
           }}
         >
           <Icon name="rewind" size={19} />
@@ -4232,7 +4329,7 @@ function RewindConfirmation({
             fontSize: 18,
             fontWeight: 600,
             lineHeight: 1.35,
-            textAlign: 'center'
+            textAlign: 'center',
           }}
         >
           {t('stream.rewindTitle')}
@@ -4243,7 +4340,7 @@ function RewindConfirmation({
             color: 'var(--text-2)',
             fontSize: 13,
             lineHeight: 1.55,
-            textAlign: 'center'
+            textAlign: 'center',
           }}
         >
           {t('stream.rewindDescription')}
@@ -4256,7 +4353,7 @@ function RewindConfirmation({
               color: 'var(--c-tension)',
               fontSize: 12,
               lineHeight: 1.45,
-              textAlign: 'center'
+              textAlign: 'center',
             }}
           >
             {error}
@@ -4280,11 +4377,7 @@ function RewindConfirmation({
             disabled={restoring}
             className="h-9 flex-1 rounded-[9px] border-0 bg-[var(--accent)] text-[12.5px] font-semibold text-[var(--on-accent)] disabled:cursor-default disabled:opacity-[0.65]"
           >
-            {restoring
-              ? t('stream.rewinding')
-              : error
-                ? t('stream.retry')
-                : t('stream.rewind')}
+            {restoring ? t('stream.rewinding') : error ? t('stream.retry') : t('stream.rewind')}
           </Button>
         </div>
       </div>
@@ -4308,7 +4401,7 @@ function AgentMsg({
   item,
   trailingContent,
   selectionEnabled,
-  timing
+  timing,
 }: {
   citationEnabled: boolean
   copyEnabled: boolean
@@ -4319,13 +4412,14 @@ function AgentMsg({
 }): React.JSX.Element {
   const { t } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
-  const duration = timing?.completedAt === undefined
-    ? null
-    : turnDurationLabel(timing.startedAt, timing.completedAt)
+  const duration =
+    timing?.completedAt === undefined
+      ? null
+      : turnDurationLabel(timing.startedAt, timing.completedAt)
   return (
     <div style={{ display: 'flex', gap: 11, marginBottom: 28 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        {item.text && (
+        {item.text ? (
           <div className="motion-safe:animate-[vds-answer-in_var(--vds-duration-fast)_var(--vds-ease-standard)_both]">
             <AnnotatedAnswer
               citationEnabled={citationEnabled}
@@ -4336,11 +4430,15 @@ function AgentMsg({
               turnId={item.turnId}
               messageId={item.itemId ? `item:${item.itemId}` : null}
               answerSources={item.answerSources}
+              answerCoverage={item.answerCoverage}
+              citationPending={!citationEnabled}
               markdownClassName="!text-[length:var(--vds-font-body-lv2)]"
             />
+            {trailingContent}
           </div>
+        ) : (
+          trailingContent
         )}
-        {trailingContent}
         {item.text && copyEnabled && (
           <div className={MESSAGE_ACTIONS_CLASS}>
             <CopyButton
@@ -4351,14 +4449,15 @@ function AgentMsg({
               writeText={writeDesktopClipboard}
               idleLabel={t('stream.copyReply')}
               copiedLabel={t('stream.copied')}
+              copiedIcon={<Check size={14} />}
+              showLoading={false}
+              statusStyle={false}
+              tooltip
             >
               <Copy size={14} />
             </CopyButton>
             {duration ? (
-              <Tooltip
-                content={conversation('turn.duration', { duration })}
-                portalled
-              >
+              <Tooltip content={conversation('turn.duration', { duration })} portalled>
                 <span
                   aria-label={conversation('turn.duration', { duration })}
                   className="text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]"
@@ -4377,9 +4476,7 @@ function AgentMsg({
           </div>
         ) : null}
         {item.evidenceNotice ? (
-          <div
-            style={{ marginTop: 8, color: 'var(--c-opinion)', fontSize: 10.5 }}
-          >
+          <div style={{ marginTop: 8, color: 'var(--c-opinion)', fontSize: 10.5 }}>
             {item.evidenceNotice}
           </div>
         ) : null}
@@ -4390,30 +4487,40 @@ function AgentMsg({
 }
 
 function StatusLine({
-  item
+  item,
+  showIcon = true,
 }: {
   item: Extract<ConvItem, { kind: 'status' }>
+  showIcon?: boolean
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { t: conversation } = useTranslation('conversation')
+  const userStopped = item.hideIcon || item.text === LEGACY_USER_STOPPED_STATUS
   return (
     <div
       className="mb-[var(--vds-space-5)] flex flex-wrap items-start gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]"
       role="status"
     >
-      <IconFont type="fill-status-tips" className="shrink-0 leading-[22px]" />
-      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-        {item.displayMessage
-          ? renderFeedback(i18n, item.displayMessage)
-          : item.runtimeNotice
-            ? conversation('runtime.legacyNotice', {
-                detail:
-                  item.runtimeNotice.diagnostic ||
-                  conversation('runtime.nonterminal')
-              })
-            : typeof item.text === 'string'
-              ? item.text
-              : formatRuntimeStatus(item.text, conversation)}
+      {showIcon && !userStopped ? (
+        <IconFont type="fill-status-tips" className="shrink-0 leading-[22px]" />
+      ) : null}
+      <span
+        className={cx(
+          'min-w-0 flex-1 [overflow-wrap:anywhere]',
+          userStopped && 'text-[length:var(--vds-font-body-lv2)]'
+        )}
+      >
+        {userStopped
+          ? t('stream.stopped')
+          : item.displayMessage
+            ? renderFeedback(i18n, item.displayMessage)
+            : item.runtimeNotice
+              ? conversation('runtime.legacyNotice', {
+                  detail: conversation('runtime.nonterminal'),
+                })
+              : typeof item.text === 'string'
+                ? item.text
+                : formatRuntimeStatus(item.text, conversation)}
       </span>
       {item.runtimeAction === 'retry_session_resume' && item.actionSessionId ? (
         <Button
@@ -4433,7 +4540,7 @@ function StatusLine({
 function NoticeLine({
   text,
   message,
-  displayMessage
+  displayMessage,
 }: Pick<
   Extract<ConvItem, { kind: 'notice' }>,
   'text' | 'message' | 'displayMessage'
@@ -4447,11 +4554,7 @@ function NoticeLine({
     >
       <IconFont type="fill-status-tips" className="shrink-0" />
       <span className="min-w-0 break-words">
-        {displayMessage
-          ? renderFeedback(i18n, displayMessage)
-          : message
-            ? t(message.key)
-            : text}
+        {displayMessage ? renderFeedback(i18n, displayMessage) : message ? t(message.key) : text}
       </span>
     </div>
   )
@@ -4459,25 +4562,24 @@ function NoticeLine({
 
 function ErrorCard({
   item,
-  onContinue
+  onContinue,
 }: {
   item: Extract<ConvItem, { kind: 'error' }>
   onContinue: (item: Extract<ConvItem, { kind: 'error' }>) => Promise<void>
 }): React.JSX.Element {
   const { t, i18n } = useTranslation('components')
   const { state, patchThread } = useApp()
+  const recoveryThread = activeThread(state)
+  const recoveryAvailable =
+    item.runtimeAction === 'continue_turn'
+      ? canContinueFailedTurn(recoveryThread, { ...item, actionState: 'idle' })
+      : canOfferTurnRecovery(recoveryThread)
   const { t: conversation } = useTranslation('conversation')
   const failureText = item.applicationFailure
     ? {
         title: conversation('failure.title'),
-        message: formatApplicationRequestFailure(
-          item.applicationFailure,
-          conversation
-        ),
-        action: formatApplicationRequestFailure(
-          item.applicationFailure,
-          conversation
-        )
+        message: formatApplicationRequestFailure(item.applicationFailure, conversation),
+        action: formatApplicationRequestFailure(item.applicationFailure, conversation),
       }
     : item.turnUnknown
       ? formatTurnUnknown(item, conversation)
@@ -4489,10 +4591,8 @@ function ErrorCard({
     const threadId = Object.entries(state.threads).find(
       ([, thread]) => thread.sessionId === sessionId
     )?.[0]
-    if (!sessionId || !turnId || !threadId || confirming) return
-    const patchAction = (
-      patch: Partial<Extract<ConvItem, { kind: 'error' }>>
-    ): void => {
+    if (!sessionId || !turnId || !threadId || confirming || !recoveryAvailable) return
+    const patchAction = (patch: Partial<Extract<ConvItem, { kind: 'error' }>>): void => {
       patchThread(threadId, (thread) => ({
         conversation: thread.conversation.map((candidate) =>
           candidate.kind === 'error' &&
@@ -4500,115 +4600,81 @@ function ErrorCard({
           candidate.actionTurnId === turnId
             ? { ...candidate, ...patch }
             : candidate
-        )
+        ),
       }))
     }
     patchAction({
       actionState: 'submitting',
       actionError: undefined,
-      actionErrorMessage: undefined
+      actionErrorMessage: undefined,
     })
     const result = await confirmUnknownTurn(sessionId, turnId)
     if (!result.ok) {
       patchAction({
         actionState: 'failed',
-        actionError:
-          result.error || feedback('conversation', 'retry.continueUnconfirmed'),
-        actionErrorMessage: result.applicationFailure
+        actionError: result.error || feedback('conversation', 'retry.continueUnconfirmed'),
+        actionErrorMessage: result.applicationFailure,
       })
       return
     }
-    const continuationInput = buildTurnInput(
-      t('stream.continueInterrupted'),
-      []
-    )
-    const clientUserMessageId = crypto.randomUUID()
-    const currentThread = state.threads[threadId]
-    const optimistic = optimisticQueuedMessage(
-      currentThread?.queuedMessages ?? [],
-      clientUserMessageId,
-      continuationInput,
-      [],
-      state.aiPanel.revision
-    )
-    retainQueuedOutbox(sessionId, optimistic)
     patchThread(threadId, (thread) => ({
-      conversation: thread.conversation.filter((candidate) => !(
-        candidate.kind === 'error'
-        && candidate.runtimeAction === 'confirm_turn_unknown'
-        && candidate.actionTurnId === turnId
-      )),
-      queuedMessages: upsertQueuedMessage(
-        thread.queuedMessages ?? [],
-        optimistic
-      )
-    }))
-    const delivered = await postTurn(
-      sessionId,
-      continuationInput,
-      state.collaborationMode,
-      {
-        clientUserMessageId,
-        assistantContextRevision: state.aiPanel.revision
-      }
-    )
-    if (!isComposerSubmissionAccepted(delivered)) {
-      patchThread(threadId, (thread) => ({
-        queuedMessages: markOptimisticQueueOutcomeUnknown(
-          thread.queuedMessages ?? [],
-          clientUserMessageId
-        )
-      }))
-      return
-    }
-    releaseQueuedOutbox(sessionId, clientUserMessageId)
-    patchThread(threadId, (thread) => ({
-      queuedMessages: settleOptimisticQueuedMessage(
-        thread.queuedMessages ?? [],
-        clientUserMessageId
-      )
+      conversation: thread.conversation.filter(
+        (candidate) =>
+          !(
+            candidate.kind === 'error' &&
+            candidate.runtimeAction === 'confirm_turn_unknown' &&
+            candidate.actionTurnId === turnId
+          )
+      ),
     }))
   }
-  const continuing =
-    item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
+  const continuing = item.runtimeAction === 'continue_turn' && item.actionState === 'submitting'
   const continueUnknown =
-    item.runtimeAction === 'continue_turn' &&
-    item.actionState === 'outcome_unknown'
+    item.runtimeAction === 'continue_turn' && item.actionState === 'outcome_unknown'
   const turnUnknown = item.runtimeAction === 'confirm_turn_unknown'
-  const retryExhausted = item.runtimeAction === 'continue_turn' &&
+  const retryExhausted =
+    item.runtimeAction === 'continue_turn' &&
     item.failure?.kind === 'unavailable' &&
     Boolean(item.failure.automaticRetryAttempts)
+  const failureDescription =
+    item.failure?.kind === 'unknown'
+      ? failureText.action
+      : failureText.action && failureText.action !== failureText.message
+        ? `${failureText.message} ${failureText.action}`
+        : failureText.message || failureText.action
   if (turnUnknown) {
     return (
-      <div
-        className="mb-[var(--vds-space-5)] flex items-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+      <Alert
+        action={
+          recoveryAvailable ? (
+            <Button
+              data-testid="turn-unknown-continue"
+              disabled={confirming}
+              loading={confirming}
+              loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+              onClick={() => void continueInterruptedTurn()}
+              size="sm"
+              variant="outline"
+            >
+              {t('stream.confirmUnknown')}
+            </Button>
+          ) : null
+        }
+        className="mb-[var(--vds-space-3)] w-full !gap-[var(--vds-space-half)] !rounded-[var(--vds-radius-6)] px-[var(--vds-space-3)] py-[var(--vds-space-3)]"
         data-testid="turn-interrupted-notice"
-        role="status"
+        layout="stacked"
+        title={failureText.title}
+        tone="warning"
       >
-        <IconFont type="fill-status-tips" className="shrink-0" />
-        <span>{failureText.title}</span>
-        <Button
-          data-testid="turn-unknown-continue"
-          disabled={confirming}
-          loading={confirming}
-          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-          onClick={() => void continueInterruptedTurn()}
-          size="sm"
-          variant="outline"
-        >
-          {t('stream.continueInterrupted')}
-        </Button>
+        <AlertDescription truncate={false}>{failureDescription}</AlertDescription>
         {item.actionError ? (
           <span className="text-[var(--vds-error-text-primary)]">
             {item.actionErrorMessage
-              ? formatApplicationRequestFailure(
-                  item.actionErrorMessage,
-                  conversation
-                )
+              ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
               : renderFeedback(i18n, item.actionError)}
           </span>
         ) : null}
-      </div>
+      </Alert>
     )
   }
   if (retryExhausted) {
@@ -4620,19 +4686,19 @@ function ErrorCard({
       >
         <IconFont type="fill-status-tips" className="shrink-0" />
         <span>{failureText.message}</span>
-        <Button
-          data-testid="turn-continue"
-          disabled={continuing || continueUnknown}
-          loading={continuing}
-          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-          onClick={() => void onContinue(item)}
-          size="sm"
-          variant="outline"
-        >
-          {continueUnknown
-            ? t('stream.continuePending')
-            : t('stream.continueInterrupted')}
-        </Button>
+        {recoveryAvailable ? (
+          <Button
+            data-testid="turn-continue"
+            disabled={continuing || continueUnknown}
+            loading={continuing}
+            loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+            onClick={() => void onContinue(item)}
+            size="sm"
+            variant="outline"
+          >
+            {continueUnknown ? t('stream.continuePending') : t('stream.continueInterrupted')}
+          </Button>
+        ) : null}
         {item.actionError ? (
           <span className="text-[var(--vds-error-text-primary)]" data-testid="turn-continue-error">
             {item.actionErrorMessage
@@ -4644,69 +4710,59 @@ function ErrorCard({
     )
   }
   return (
-    <Alert
-      className="mb-[var(--vds-space-5)] rounded-[var(--vds-radius-4)] px-[var(--vds-space-3)] py-[var(--vds-space-3)]"
+    <Card
+      className="mb-[var(--vds-space-5)] grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-x-[var(--vds-space-2)] gap-y-[var(--vds-space-2)] border border-solid border-[var(--vds-error-light-border)] !bg-[var(--vds-error-light-bg-default)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] [--vds-card-radius:var(--vds-radius-6)]"
       data-testid="turn-failure-card"
-      tone="error"
+      padding="none"
+      role="alert"
+      variant="tinted"
     >
-      <div className="grid w-full min-w-0 gap-[var(--vds-space-3)]">
-        <AlertTitle className="text-[length:var(--vds-font-body-lv2)] font-medium">
+      <div className="flex min-w-0 items-center gap-[var(--vds-space-1)]">
+        <IconFont
+          type="fill-status-error"
+          aria-hidden="true"
+          className="shrink-0 text-[length:var(--vds-icon-8)] text-[var(--vds-error-bg-default)]"
+        />
+        <h5 className="m-0 text-[length:var(--vds-font-body-lv2)] font-medium leading-[var(--vds-lh-body-lv2)] text-[var(--vds-error-bg-default)]">
           {failureText.title}
-        </AlertTitle>
-        {failureText.message ? (
-          <AlertDescription
-            truncate={false}
-            data-testid="turn-failure-reason"
-            className="whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
-          >
-            {failureText.message}
-          </AlertDescription>
-        ) : null}
-        {/* 原因与下一步同源时 (content_policy 的 messageKey==actionKey、applicationFailure 分支) 只渲染一次。 */}
-        {failureText.action && failureText.action !== failureText.message ? (
-          <AlertDescription
-            truncate={false}
-            data-testid="turn-failure-action"
-            className="whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-secondary)]"
-          >
-            {failureText.action}
-          </AlertDescription>
-        ) : null}
-        {item.runtimeAction === 'continue_turn' ? (
-          <div>
-            <Button
-              data-testid="turn-continue"
-              disabled={continuing || continueUnknown}
-              loading={continuing}
-              loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
-              onClick={() => void onContinue(item)}
-              variant="outline"
-            >
-              {continueUnknown
-                ? t('stream.continuePending')
-                : t('stream.continueInterrupted')}
-            </Button>
-          </div>
-        ) : null}
-        {item.actionError ? (
-          <div
-            className="text-[length:var(--vds-font-body-lv1)] text-[var(--vds-error-text-primary)]"
-            data-testid={
-              item.runtimeAction === 'continue_turn'
-                ? 'turn-continue-error'
-                : 'turn-unknown-confirm-error'
-            }
-          >
-            {item.actionErrorMessage
-              ? formatApplicationRequestFailure(
-                  item.actionErrorMessage,
-                  conversation
-                )
-              : renderFeedback(i18n, item.actionError)}
-          </div>
-        ) : null}
+        </h5>
       </div>
-    </Alert>
+      {item.runtimeAction === 'continue_turn' && recoveryAvailable ? (
+        <Button
+          data-testid="turn-continue"
+          disabled={continuing || continueUnknown}
+          loading={continuing}
+          loadingIcon={<Spinner imageSrc={aiThinking} size="sm" aria-hidden="true" />}
+          onClick={() => void onContinue(item)}
+          size="sm"
+          variant="outline"
+        >
+          {continueUnknown ? t('stream.continuePending') : t('stream.retry')}
+        </Button>
+      ) : null}
+      {failureDescription ? (
+        <p
+          data-testid="turn-failure-description"
+          className="col-span-2 m-0 min-w-0 whitespace-pre-wrap break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-secondary)]"
+        >
+          {failureDescription}
+        </p>
+      ) : null}
+      {item.actionError ? (
+        <div
+          className="col-span-2 text-[length:var(--vds-font-body-lv1)] text-[var(--vds-error-text-primary)]"
+          data-testid={
+            item.runtimeAction === 'continue_turn'
+              ? 'turn-continue-error'
+              : 'turn-unknown-confirm-error'
+          }
+        >
+          {item.actionErrorMessage
+            ? formatApplicationRequestFailure(item.actionErrorMessage, conversation)
+            : renderFeedback(i18n, item.actionError)}
+        </div>
+      ) : null}
+    </Card>
   )
 }
 
@@ -4734,7 +4790,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
                   borderRadius: '50%',
                   background: TONE[e.cls],
                   marginTop: 7,
-                  flex: 'none'
+                  flex: 'none',
                 }}
               />
               <span
@@ -4742,7 +4798,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
                   fontFamily: 'var(--font-serif)',
                   fontSize: 14.5,
                   color: 'var(--text)',
-                  lineHeight: 1.55
+                  lineHeight: 1.55,
                 }}
               >
                 {e.text}
@@ -4753,7 +4809,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
                 fontSize: 9.5,
                 color: 'var(--text-3)',
                 marginLeft: 14,
-                marginTop: 2
+                marginTop: 2,
               }}
             >
               {e.provenance}
@@ -4781,7 +4837,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
             textTransform: 'uppercase',
             letterSpacing: '0.06em',
             color: 'var(--c-tension)',
-            marginBottom: 8
+            marginBottom: 8,
           }}
         >
           {card.label}
@@ -4791,17 +4847,14 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
             fontFamily: 'var(--font-serif)',
             fontSize: 16.5,
             color: 'var(--text)',
-            lineHeight: 1.6
+            lineHeight: 1.6,
           }}
         >
           {card.text}
         </div>
         {state.tension === 'open' && (
           <div style={{ display: 'flex', gap: 9, marginTop: 14 }}>
-            <Btn
-              tone="var(--c-tension)"
-              onClick={() => set({ tension: 'hypothesis' })}
-            >
+            <Btn tone="var(--c-tension)" onClick={() => set({ tension: 'hypothesis' })}>
               {t('stream.card.setHypothesis')}
             </Btn>
             <Btn ghost onClick={() => set({ tension: 'ignored' })}>
@@ -4810,9 +4863,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
           </div>
         )}
         {state.tension === 'hypothesis' && (
-          <Note color="var(--c-experience)">
-            {t('stream.card.hypothesisSet')}
-          </Note>
+          <Note color="var(--c-experience)">{t('stream.card.hypothesisSet')}</Note>
         )}
         {state.tension === 'ignored' && (
           <Note color="var(--text-3)">{t('stream.card.ignored')}</Note>
@@ -4825,35 +4876,25 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
     return (
       <div style={cardBox('var(--accent)')}>
         <Head>
-          <span style={{ color: 'var(--accent-ink)' }}>
-            {t('stream.card.judgmentCaptured')}
-          </span>
-          <span style={{ color: 'var(--text-3)' }}>
-            {t('stream.card.lowConfidence')}
-          </span>
+          <span style={{ color: 'var(--accent-ink)' }}>{t('stream.card.judgmentCaptured')}</span>
+          <span style={{ color: 'var(--text-3)' }}>{t('stream.card.lowConfidence')}</span>
         </Head>
         <div
           style={{
             display: 'grid',
             gridTemplateColumns: 'auto 1fr',
             gap: '10px 16px',
-            alignItems: 'baseline'
+            alignItems: 'baseline',
           }}
         >
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-            {t('stream.card.action')}
-          </span>
-          <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>
-            {card.action}
-          </span>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
-            {t('stream.card.judgment')}
-          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{t('stream.card.action')}</span>
+          <span style={{ fontSize: 13.5, color: 'var(--text-2)' }}>{card.action}</span>
+          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{t('stream.card.judgment')}</span>
           <span
             style={{
               fontFamily: 'var(--font-serif)',
               fontSize: 15,
-              color: 'var(--text)'
+              color: 'var(--text)',
             }}
           >
             {card.judgment}
@@ -4865,13 +4906,10 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
               display: 'flex',
               gap: 9,
               marginTop: 14,
-              alignItems: 'center'
+              alignItems: 'center',
             }}
           >
-            <Btn
-              tone="var(--accent)"
-              onClick={() => set({ judgment: 'confirmed' })}
-            >
+            <Btn tone="var(--accent)" onClick={() => set({ judgment: 'confirmed' })}>
               {t('stream.hil.confirm')}
             </Btn>
             <Btn ghost>{t('stream.card.rewrite')}</Btn>
@@ -4882,9 +4920,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
             </span>
           </div>
         ) : (
-          <Note color="var(--c-experience)">
-            {t('stream.card.judgmentAnchored')}
-          </Note>
+          <Note color="var(--c-experience)">{t('stream.card.judgmentAnchored')}</Note>
         )}
       </div>
     )
@@ -4902,7 +4938,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
           fontFamily: 'var(--font-serif)',
           fontSize: 15.5,
           color: 'var(--text)',
-          lineHeight: 1.6
+          lineHeight: 1.6,
         }}
       >
         {card.text}
@@ -4914,10 +4950,7 @@ function CardView({ card }: { card: ConvCard }): React.JSX.Element {
       </div>
       {state.thread === 'open' ? (
         <div style={{ display: 'flex', gap: 9, marginTop: 14 }}>
-          <Btn
-            tone="var(--c-experience)"
-            onClick={() => set({ thread: 'folded' })}
-          >
+          <Btn tone="var(--c-experience)" onClick={() => set({ thread: 'folded' })}>
             {conversation('card.foldAction')}
           </Btn>
           <Btn ghost>{conversation('card.keepAction')}</Btn>
@@ -4942,7 +4975,7 @@ function Head({ children }: { children: React.ReactNode }): React.JSX.Element {
         fontSize: 10,
         textTransform: 'uppercase',
         letterSpacing: '0.05em',
-        marginBottom: 10
+        marginBottom: 10,
       }}
     >
       {children}
@@ -4951,7 +4984,7 @@ function Head({ children }: { children: React.ReactNode }): React.JSX.Element {
 }
 function Note({
   children,
-  color
+  color,
 }: {
   children: React.ReactNode
   color: string

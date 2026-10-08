@@ -149,6 +149,13 @@ def create_chat_app(
         if live is not None:
             live.trace_completion(fields)
 
+    async def observe_sources(
+        session_id: str, client_turn_id: str, fields: Mapping[str, Any]
+    ) -> None:
+        live = sessions.get(session_id)
+        if live is not None:
+            await live.observe_sources(client_turn_id, fields)
+
     def source_text(session_id: str, client_turn_id: str) -> str | None:
         live = sessions.get(session_id)
         return live.source_text(client_turn_id) if live is not None else None
@@ -157,6 +164,7 @@ def create_chat_app(
         os.environ.get(INTERNAL_BASE_URL_ENV, ""),
         on_model=observe_model,
         on_diagnostic=observe_completion,
+        on_sources=observe_sources,
         turn_ids=session_turn_id,
         source_text=source_text,
         source_endpoints=(DEEPRD_GATEWAY_BASE_URL,),
@@ -238,6 +246,7 @@ def create_chat_app(
     )
     session_service.bind_turn_confirmation(turn_service.confirm_queued_unknown)
     session_service.bind_queue_cancellation(turn_service.cancel_pending_locked)
+    session_service.bind_settlement_resume(turn_service.resume_pending_settlement)
     event_service = EventService(sessions, event_store, _log)
     feedback_service = FeedbackService()
 
@@ -282,7 +291,11 @@ def create_chat_app(
     )
     mount_skill_routes(app, skills=skill_service, credentials=skill_credentials)
     mount_feedback_routes(
-        app, feedback=feedback_service, catalog=access_store, credentials=skill_credentials
+        app,
+        feedback=feedback_service,
+        catalog=access_store,
+        credentials=skill_credentials,
+        runtime=runtime_service,
     )
     diagnostics = DiagnosticService(runtime_service.recording)
     mount_diagnostic_routes(app, diagnostics)

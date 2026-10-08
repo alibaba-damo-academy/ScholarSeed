@@ -13,6 +13,8 @@ from pydantic import ValidationError
 
 from service.platform.bridge import (
     ANNOTATIONS_OPERATION,
+    BLOCKING_CHECKPOINTS,
+    BLOCKING_OPERATIONS,
     BRIDGE_COMMAND,
     BRIDGE_MAX_REQUEST_BYTES,
     BRIDGE_MAX_RESPONSE_BYTES,
@@ -37,11 +39,6 @@ EXIT_FAILURE = 1
 JSON_ENCODING = "utf-8"
 LOOPBACK_NAMES = frozenset(("localhost", "127.0.0.1", "::1"))
 LOCAL_SOCKET_BASE_URL = "http://localhost"
-# Product-owned authorization checkpoints wait for a user decision without a read deadline.
-BLOCKING_CHECKPOINTS = {
-    ("literature", "review"): frozenset(("retrieval",)),
-    ("literature", "result"): frozenset(("selection", "candidates")),
-}
 
 
 class BridgeResponseError(ValueError):
@@ -123,6 +120,17 @@ def parser() -> argparse.ArgumentParser:
             "为当前研究想法任务登记明确的全文候选集合，并返回原生一键授权问题。"
             '示例：--json \'{"authorization_type":"research_idea_fulltext","refs":["literature:<id>"]}\'。'
         ),
+        "acquire": (
+            "在全文授权通过后由 serve 侧下载指定论文的开放获取全文并托管，"
+            "返回可读取的 paper: 引用与逐篇成败证据。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>","papers":[{"paper_id":"<id>",'
+            '"identifier":"2502.12110","identifier_kind":"arxiv"}]}\'。'
+        ),
+        "receipt": (
+            "查询本回合全文授权的实际生效范围与已托管的论文全文；"
+            "run 目录不是真源，阅读前必须以本命令的返回为准。"
+            '示例：--json \'{"run":"<run 相对会话工作目录>"}\'。'
+        ),
         ANNOTATIONS_OPERATION: (
             "分页读取当前项目或全局文献中的用户标注和阅读笔记；这些内容不是 PDF 引用证据。"
             '示例：--json \'{"ref_id":"literature:<id>","limit":10}\'。'
@@ -146,13 +154,17 @@ def parser() -> argparse.ArgumentParser:
             help="请求 JSON；凭证和当前项目由产品会话提供，不放入参数",
         )
         command.epilog = json.dumps(literature_request.model_json_schema(), ensure_ascii=False)
-    resource = groups.add_parser("resource", help="列出当前项目资料库文件")
+    resource = groups.add_parser("resource", help="访问当前项目资料库文件")
     resource_verbs = resource.add_subparsers(dest="operation")
     for name, resource_request in RESOURCE_REQUESTS.items():
+        description = {
+            "list": "列出当前会话项目的资料库文件；返回 cursor 可用于续页。",
+            "read": "读取当前会话项目资料库或关联根中的一段文件内容。",
+        }[name]
         command = resource_verbs.add_parser(
             name,
-            help="按项目相对路径列出资料库文件",
-            description="列出当前会话项目的资料库文件；返回 cursor 可用于续页。",
+            help=description,
+            description=description,
         )
         command.add_argument(
             "--json",
@@ -214,7 +226,8 @@ def execute(capability: str, operation: str, raw: str) -> dict:
     transport = httpx.HTTPTransport(uds=local_socket) if local_socket else None
     timeout = (
         httpx.Timeout(BRIDGE_TIMEOUT_SECONDS, read=None)
-        if payload.get("checkpoint") in BLOCKING_CHECKPOINTS.get((capability, operation), ())
+        if (capability, operation) in BLOCKING_OPERATIONS
+        or payload.get("checkpoint") in BLOCKING_CHECKPOINTS.get((capability, operation), ())
         else httpx.Timeout(BRIDGE_TIMEOUT_SECONDS)
     )
     with httpx.Client(timeout=timeout, trust_env=False, transport=transport) as client:

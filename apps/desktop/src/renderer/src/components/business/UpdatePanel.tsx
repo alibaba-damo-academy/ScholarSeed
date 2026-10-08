@@ -17,7 +17,7 @@ import {
   visibleReleaseNotes
 } from '../../features/updates/state'
 import { IconFont } from '../primitive'
-import { Button, Divider, IconButton, ProgressBar, Tag } from '../ui'
+import { Button, DialogFooter, DialogHeader, DialogTitle, Divider, IconButton, ProgressBar, Tag } from '../ui'
 import { cx } from '../ui/utils'
 import { UpdateMetadata } from './UpdateMetadata'
 
@@ -140,13 +140,23 @@ const PANEL_ACTIONS_CLASS_NAME = 'flex flex-row gap-[var(--vds-space-3)]'
 const PANEL_ACTIONS_NOTES_CLASS_NAME =
   'flex flex-row justify-end gap-[var(--vds-space-3)]'
 const PANEL_ACTION_CLASS_NAME = 'flex-1'
+const DIALOG_PANEL_CLASS_NAME = 'grid max-h-[var(--vds-update-dialog-max-height)] grid-rows-[auto_auto_minmax(0,1fr)_auto_auto]'
+const DIALOG_HEADER_CLASS_NAME = '!flex flex-row items-center justify-between gap-[var(--vds-space-3)] px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_BODY_CLASS_NAME = 'grid min-h-0 gap-[var(--vds-space-4)] overflow-y-auto px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_FOOTER_CLASS_NAME = '!justify-start gap-[var(--vds-space-3)] px-[var(--vds-space-6)] py-[var(--vds-space-4)]'
+const DIALOG_VERSION_CLASS_NAME = 'text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-semibold)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-brand-text-primary)]'
+const DIALOG_DIVIDER_CLASS_NAME = '[--vds-divider-margin-horizontal:0]'
+const DIALOG_ITEM_CLASS_NAME = '!text-[length:var(--vds-font-body-lv1)] !leading-[var(--vds-lh-body-lv1)]'
+const DIALOG_MARKER_CLASS_NAME = '!h-[var(--vds-lh-body-lv1)]'
 
 export interface UpdatePanelProps {
   /** 收起浮窗。只收浮窗本身，不取消更新提示、下载任务或已完成的下载（PRD 第 2 条）。 */
   onDismiss: () => void
+  onAction?: () => void
+  presentation?: 'popover' | 'dialog'
 }
 
-export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element {
+export function UpdatePanel({ onDismiss, onAction, presentation = 'popover' }: UpdatePanelProps): React.JSX.Element {
   const { t: accountUpdateText } = useTranslation('account')
   const { t } = useTranslation('components')
   const { t: uiText } = useTranslation('ui')
@@ -181,9 +191,10 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
   const failure = updateFailureOf(state)
   const failed = failure !== null
   const notes = releaseNoteLines(candidate?.release_notes)
-  const showMore = hasMoreReleaseNotes(notes) && !expanded
+  const showAllNotes = presentation === 'dialog' || expanded
+  const showMore = hasMoreReleaseNotes(notes) && !showAllNotes
   // 失败态优先于展开态：失败信息不该被藏在更宽的说明版式后面。
-  const view: PanelView = failed ? 'failed' : expanded ? 'notes' : 'summary'
+  const view: PanelView = failed ? 'failed' : showAllNotes ? 'notes' : 'summary'
 
   let title: string = t('update.titleAvailable')
   if (view === 'notes') title = t('update.notesTitle')
@@ -212,26 +223,97 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
   let status: string | null = null
   if (phase === 'verifying') status = t('update.verifying')
   else if (phase === 'manual') status = t('update.manualHint')
+  else if (presentation === 'dialog' && stage === 'ready' && !failed) status = t('update.titleReady')
 
   const runPrimary = (): void => {
     // 下载留在浮窗里看进度（分割线换进度条）。安装期间全屏遮罩（z-loading 9000）盖住
     // 浮窗，所以不收起也没有视觉差别；而一旦安装失败，相位会带着 error 回到 ready，
     // 遮罩消失时浮窗还在原地，失败原因就地可见。发起动作前先收起浮窗，等于把唯一的
     // 结果表面在结果出来之前丢掉（bug 86968393）。
+    onAction?.()
     runUpdateAction(state)
   }
 
   const noteItems = (
-    visibleReleaseNotes(notes, expanded).map((note, index) => (
+    visibleReleaseNotes(notes, showAllNotes).map((note, index) => (
       // 要点是服务端自由文本，可能整行重复，所以按位置而不是按文本做 key。
-      <span className={PANEL_ITEM_CLASS_NAME} key={index}>
-        <span aria-hidden className={PANEL_MARKER_CLASS_NAME}>
+      <span className={cx(PANEL_ITEM_CLASS_NAME, presentation === 'dialog' && DIALOG_ITEM_CLASS_NAME)} key={index}>
+        <span aria-hidden className={cx(PANEL_MARKER_CLASS_NAME, presentation === 'dialog' && DIALOG_MARKER_CLASS_NAME)}>
           <span className={PANEL_DOT_CLASS_NAME} />
         </span>
         <span>{note}</span>
       </span>
     ))
   )
+
+  const actionClassName = presentation === 'popover' && view !== 'notes' ? PANEL_ACTION_CLASS_NAME : undefined
+  const actions = (
+    <>
+      <Button
+        className={actionClassName}
+        data-testid="update-panel-dismiss"
+        disabled={!failed && downloading}
+        onClick={onDismiss}
+        variant="outline"
+      >
+        {secondaryLabel}
+      </Button>
+      {showPrimary && (
+        <Button
+          className={actionClassName}
+          data-testid="update-panel-action"
+          disabled={!failed && downloading}
+          onClick={runPrimary}
+          variant={failed ? 'danger' : 'primary'}
+        >
+          {primaryLabel}
+        </Button>
+      )}
+    </>
+  )
+  const failureDetails = failed && (
+    <span className={PANEL_ERROR_CLASS_NAME}>
+      <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
+        {updateFailureText(failure, t, accountUpdateText)}
+      </span>
+      {candidate && phase === 'failed' && (
+        <span data-testid="update-panel-resumable">
+          {state?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
+        </span>
+      )}
+      {stage === 'ready' && <span data-testid="update-panel-retry-hint">{t('update.installRetryHint')}</span>}
+    </span>
+  )
+
+  if (presentation === 'dialog') {
+    return (
+      <div className={DIALOG_PANEL_CLASS_NAME} data-testid="update-panel" data-presentation={presentation} data-view={view}>
+        <DialogHeader className={DIALOG_HEADER_CLASS_NAME}>
+          <DialogTitle className={PANEL_TITLE_CLASS_NAME} data-testid="update-panel-title" id={titleId}>
+            {t('update.notesTitle')}
+          </DialogTitle>
+          <IconButton data-testid="update-panel-close" icon={<X />} label={uiText('close')} onClick={onDismiss} size="md" variant="ghostIcon" />
+        </DialogHeader>
+        <Divider className={DIALOG_DIVIDER_CLASS_NAME} />
+        <div className={DIALOG_BODY_CLASS_NAME}>
+          {candidate && (
+            <span className={DIALOG_VERSION_CLASS_NAME} data-testid="update-panel-version">
+              {t('update.notesVersion', { version: candidate.version })} {t('update.notesNewTag')}
+            </span>
+          )}
+          <div className={PANEL_LIST_CLASS_NAME} data-testid="update-panel-list">
+            {notes.length > 0 ? noteItems : <span className={PANEL_EMPTY_CLASS_NAME}>{t('update.notesEmpty')}</span>}
+          </div>
+          {failureDetails}
+          {status && <span className={PANEL_STATUS_CLASS_NAME} data-testid="update-panel-hint">{status}</span>}
+        </div>
+        {downloading ? (
+          <ProgressBar className={PANEL_PROGRESS_CLASS_NAME} data-testid="update-panel-progress" value={state?.percent ?? 0} />
+        ) : <Divider className={DIALOG_DIVIDER_CLASS_NAME} data-testid="update-panel-divider" />}
+        <DialogFooter className={DIALOG_FOOTER_CLASS_NAME}>{actions}</DialogFooter>
+      </div>
+    )
+  }
 
   return (
     <div
@@ -242,6 +324,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
         view !== 'summary' && PANEL_BORDERED_CLASS_NAME
       )}
       data-testid="update-panel"
+      data-presentation={presentation}
       data-view={view}
       role="group"
     >
@@ -306,46 +389,8 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
 
       {view === 'failed' && (
         <div className={PANEL_BODY_FAILED_CLASS_NAME}>
-          <span className={PANEL_ERROR_CLASS_NAME}>
-            <span className={PANEL_ERROR_TEXT_CLASS_NAME} data-testid="update-panel-error">
-              {failure && updateFailureText(failure, t, accountUpdateText)}
-            </span>
-            {candidate && phase === 'failed' && (
-              <span data-testid="update-panel-resumable">
-                {state?.resumable === false
-                  ? t('update.failedDiscarded')
-                  : t('update.failedRetained')}
-              </span>
-            )}
-            {/* 安装失败但暂存包还在（相位停在 ready）：把「包还在、重试的是安装」补回来，
-                否则用户以为要重新下载几百 MB。 */}
-            {stage === 'ready' && (
-              <span data-testid="update-panel-retry-hint">
-                {t('update.installRetryHint')}
-              </span>
-            )}
-          </span>
-
-          <div className={PANEL_ACTIONS_CLASS_NAME}>
-            <Button
-              className={PANEL_ACTION_CLASS_NAME}
-              data-testid="update-panel-dismiss"
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                className={PANEL_ACTION_CLASS_NAME}
-                data-testid="update-panel-action"
-                onClick={runPrimary}
-                variant="danger"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          {failureDetails}
+          <div className={PANEL_ACTIONS_CLASS_NAME}>{actions}</div>
         </div>
       )}
 
@@ -379,26 +424,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             </span>
           )}
 
-          <div className={PANEL_ACTIONS_NOTES_CLASS_NAME}>
-            <Button
-              data-testid="update-panel-dismiss"
-              disabled={downloading}
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                data-testid="update-panel-action"
-                disabled={downloading}
-                onClick={runPrimary}
-                variant="primary"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          <div className={PANEL_ACTIONS_NOTES_CLASS_NAME}>{actions}</div>
         </div>
       )}
 
@@ -431,28 +457,7 @@ export function UpdatePanel({ onDismiss }: UpdatePanelProps): React.JSX.Element 
             )}
           </div>
 
-          <div className={PANEL_ACTIONS_CLASS_NAME}>
-            <Button
-              className={PANEL_ACTION_CLASS_NAME}
-              data-testid="update-panel-dismiss"
-              disabled={downloading}
-              onClick={onDismiss}
-              variant="outline"
-            >
-              {secondaryLabel}
-            </Button>
-            {showPrimary && (
-              <Button
-                className={PANEL_ACTION_CLASS_NAME}
-                data-testid="update-panel-action"
-                disabled={downloading}
-                onClick={runPrimary}
-                variant="primary"
-              >
-                {primaryLabel}
-              </Button>
-            )}
-          </div>
+          <div className={PANEL_ACTIONS_CLASS_NAME}>{actions}</div>
         </div>
       )}
     </div>

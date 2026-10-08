@@ -23,6 +23,12 @@ SKILL_ADMISSION_ROUTE = BRIDGE_ROUTE_PREFIX + "skill/admit"
 SKILL_CAPABILITY = "skill"
 SKILL_ADMISSION_OPERATION = "admit"
 BRIDGE_TIMEOUT_SECONDS = 30
+# Acquisition waits for backend-owned downloads, which can outlast a normal RPC.
+BLOCKING_OPERATIONS = frozenset({("literature", "acquire"), ("search", "run")})
+BLOCKING_CHECKPOINTS = {
+    ("literature", "review"): frozenset(("retrieval", "outline")),
+    ("literature", "result"): frozenset(("selection", "candidates")),
+}
 BRIDGE_TOKEN_BYTES = 32
 BRIDGE_MAX_REQUEST_BYTES = 16_384
 BRIDGE_MAX_RESPONSE_BYTES = 65_536
@@ -48,6 +54,21 @@ RESOURCE_MAX_LIMIT = 50
 RESOURCE_CURSOR_CHARS = ARTIFACT_PATH_CHARS
 RESOURCE_SCOPE: Literal["project_resources"] = "project_resources"
 RESOURCE_UNAVAILABLE_WARNING: Literal["authorized_root_unavailable"] = "authorized_root_unavailable"
+RESOURCE_READ_DEFAULT_LIMIT = 8_192
+RESOURCE_READ_MAX_LIMIT = 32_768
+RESOURCE_READ_ENCODING_TEXT: Literal["text"] = "text"
+RESOURCE_READ_ENCODING_BASE64: Literal["base64"] = "base64"
+SEARCH_ROUTE = BRIDGE_ROUTE_PREFIX + "search/run"
+SEARCH_QUERY_CHARS = 512
+SEARCH_RESULT_LIMIT = 20
+
+
+class WebSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    query: str = Field(min_length=1, max_length=SEARCH_QUERY_CHARS)
+    profile: str = "official"
+    limit: int = Field(default=SEARCH_RESULT_LIMIT, ge=1, le=SEARCH_RESULT_LIMIT)
 
 
 class HistorySearch(BaseModel):
@@ -109,6 +130,30 @@ class ResourceListResult(BaseModel):
     warnings: list[ResourceListWarning] = Field(default_factory=list)
 
 
+class ResourceRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=RESOURCE_READ_DEFAULT_LIMIT, ge=1, le=RESOURCE_READ_MAX_LIMIT)
+    encoding: Literal["text", "base64"] = RESOURCE_READ_ENCODING_TEXT
+
+
+class ResourceReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    ok: Literal[True] = True
+    scope: Literal["project_resources"] = RESOURCE_SCOPE
+    path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    offset: int = Field(ge=0)
+    size: int = Field(ge=0)
+    media_type: str = Field(min_length=1)
+    revision: str = Field(min_length=1)
+    encoding: Literal["text", "base64"]
+    content: str
+    eof: bool
+
+
 class ArtifactPublish(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -164,7 +209,7 @@ class TaskActivate(BaseModel):
     skill_version: str = Field(min_length=1, max_length=TASK_NAME_CHARS)
     skill_path: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
     workspace: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
-    run_id: str = Field(min_length=1, max_length=RUN_ID_CHARS)
+    run_id: str | None = Field(default=None, min_length=1, max_length=RUN_ID_CHARS)
 
 
 PDF_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "pdf/"
@@ -240,6 +285,7 @@ class LiteratureRead(BaseModel):
         max_length=HISTORY_LABEL_CHARS,
         pattern=LITERATURE_REF_PATTERN,
     )
+    attachment_id: str | None = Field(default=None, min_length=1, max_length=HISTORY_LABEL_CHARS)
     start_page: int = Field(ge=1)
     end_page: int = Field(ge=1)
 
@@ -322,12 +368,16 @@ HISTORY_REQUESTS: dict[str, type[HistoryList | HistorySearch | HistoryRead]] = {
     "search": HistorySearch,
     "read": HistoryRead,
 }
-RESOURCE_REQUESTS: dict[str, type[ResourceList]] = {"list": ResourceList}
+RESOURCE_REQUESTS: dict[str, type[BaseModel]] = {
+    "list": ResourceList,
+    "read": ResourceRead,
+}
 BRIDGE_REQUESTS: dict[tuple[str, str], tuple[type[BaseModel], str]] = {
     ("history", operation): (request, HISTORY_ROUTE_PREFIX + operation)
     for operation, request in HISTORY_REQUESTS.items()
 }
 BRIDGE_REQUESTS[("artifact", "publish")] = (ArtifactPublish, ARTIFACT_PUBLISH_ROUTE)
+BRIDGE_REQUESTS[("search", "run")] = (WebSearchRequest, SEARCH_ROUTE)
 BRIDGE_REQUESTS[("display-card", "publish")] = (DisplayCard, DISPLAY_CARD_ROUTE)
 BRIDGE_REQUESTS[("task", "activate")] = (TaskActivate, TASK_ACTIVATE_ROUTE)
 BRIDGE_REQUESTS[(SKILL_CAPABILITY, SKILL_ADMISSION_OPERATION)] = (
@@ -352,6 +402,12 @@ BRIDGE_REQUESTS.update(
 LITERATURE_ROUTE_PREFIX = BRIDGE_ROUTE_PREFIX + "literature/"
 LITERATURE_RESULT_ROUTE = LITERATURE_ROUTE_PREFIX + "result"
 LITERATURE_REVIEW_ROUTE = LITERATURE_ROUTE_PREFIX + "review"
+LITERATURE_ACQUIRE_ROUTE = LITERATURE_ROUTE_PREFIX + "acquire"
+LITERATURE_RECEIPT_ROUTE = LITERATURE_ROUTE_PREFIX + "receipt"
+ACQUIRE_MAX_PAPERS = 5
+ACQUIRE_PAPER_ID_CHARS = 128
+ACQUIRE_IDENTIFIER_CHARS = 512
+ACQUIRE_TITLE_CHARS = 512
 
 
 class LiteratureResultPublish(BaseModel):
@@ -371,6 +427,30 @@ class LiteratureReviewPublish(BaseModel):
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+class LiteratureAcquirePaper(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    paper_id: str = Field(min_length=1, max_length=ACQUIRE_PAPER_ID_CHARS)
+    identifier: str = Field(min_length=1, max_length=ACQUIRE_IDENTIFIER_CHARS)
+    identifier_kind: Literal["arxiv", "doi"]
+    title: str = Field(default="", max_length=ACQUIRE_TITLE_CHARS)
+
+
+class LiteratureAcquire(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+    papers: list[LiteratureAcquirePaper] = Field(min_length=1, max_length=ACQUIRE_MAX_PAPERS)
+
+
+class LiteratureReceipt(BaseModel):
+    """Ask serve what this turn may actually read; the run dir is never the truth."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run: str = Field(min_length=1, max_length=ARTIFACT_PATH_CHARS)
+
+
 LITERATURE_READING_REQUESTS: dict[str, type[BaseModel]] = {
     "list": LiteratureList,
     "read": LiteratureRead,
@@ -381,6 +461,8 @@ LITERATURE_REQUESTS: dict[str, type[BaseModel]] = {
     **LITERATURE_READING_REQUESTS,
     "result": LiteratureResultPublish,
     "review": LiteratureReviewPublish,
+    "acquire": LiteratureAcquire,
+    "receipt": LiteratureReceipt,
 }
 LITERATURE_ROUTES = {
     "list": LITERATURE_ROUTE_PREFIX + "list",
@@ -389,6 +471,8 @@ LITERATURE_ROUTES = {
     ANNOTATIONS_OPERATION: LITERATURE_ROUTE_PREFIX + ANNOTATIONS_OPERATION,
     "result": LITERATURE_RESULT_ROUTE,
     "review": LITERATURE_REVIEW_ROUTE,
+    "acquire": LITERATURE_ACQUIRE_ROUTE,
+    "receipt": LITERATURE_RECEIPT_ROUTE,
 }
 BRIDGE_REQUESTS.update(
     {
@@ -430,7 +514,9 @@ class PlanItem(BaseModel):
 class PlanWrite(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    operation: Literal["create", "update", "revise", "release"]
+    operation: Literal["create", "update", "revise", "release"] = Field(
+        description="request.operation is the plan mutation, not action; outer operation is always write."
+    )
     plan_id: str = Field(min_length=1, max_length=PLAN_ID_CHARS)
     expected_revision: int = Field(ge=0)
     request_id: str = Field(min_length=1, max_length=PLAN_ID_CHARS)

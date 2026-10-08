@@ -53,7 +53,8 @@ import {
 import { resourceFileIcon } from './icons'
 import { ResourceStatus } from './Indicators'
 import { loadFileVersionSettings } from './settings'
-import { pendingChildCount, ResourceNode, type NameDraftState } from './state'
+import type { ResourceNode } from './state'
+import { pendingChildCount, type NameDraftState } from './state'
 
 /** 搜索防抖间隔：边打字边搜会把后端打满，也让结果闪烁。 */
 const SEARCH_DEBOUNCE_MS = 260
@@ -878,19 +879,20 @@ export function ResourcePanel(): React.JSX.Element {
       ) : null}
 
       {migrationRequired && (
-        <Alert tone="warning" className="mx-2">
-          <AlertDescription className="flex flex-wrap items-center gap-2">
-            <span>{t('treeStatus.migration')}</span>
-            <Button
+        <Alert
+          action={<Button
               size="sm"
               variant="secondary"
               data-testid="tree-confirm-policy"
               onClick={() => act.openSettings('files')}
             >
               {t('treeStatus.confirmSettings')}
-            </Button>
-          </AlertDescription>
-        </Alert>
+            </Button>}
+          className="mx-2"
+          description={t('treeStatus.migration')}
+          layout="stacked"
+          tone="warning"
+        />
       )}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="vds-tree-head mb-3">

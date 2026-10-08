@@ -109,9 +109,9 @@ test('account requests keep legacy code/error, HTTP requests and authentication 
       assert.equal(result.error, '验证码不正确')
       assert.deepEqual(result.applicationFailure, { code: 'invalid_code', diagnostic })
       await locale.changeLanguage('en')
-      assert.equal(accountFailureText(result, locale.getFixedT(null, 'account')), `The verification code is incorrect\n${diagnostic}`)
+      assert.equal(accountFailureText(result, locale.getFixedT(null, 'account')), 'The verification code is incorrect')
       await locale.changeLanguage('zh')
-      assert.equal(accountFailureText(result, locale.getFixedT(null, 'account')), `验证码不正确\n${diagnostic}`)
+      assert.equal(accountFailureText(result, locale.getFixedT(null, 'account')), '验证码不正确')
     }
     assert.deepEqual(calls.slice(0, 3), [
       { path: 'https://account.test/api/phone/code', method: 'POST', body: JSON.stringify({ phone: '15200000000', purpose: 'change' }), authorization: undefined },
@@ -150,7 +150,7 @@ test('account local fallbacks and unknown messages retain provenance without str
     assert.equal(network.ok, false)
     if (!network.ok) {
       assert.equal(network.error, '无法连接账号服务')
-      assert.equal(accountFailureText(network, t), `Could not connect to the account service\n${raw}`)
+      assert.equal(accountFailureText(network, t), 'Could not connect to the account service')
     }
     for (const code of ['unknown', '__proto__', 'constructor']) {
       globalThis.fetch = async () => Response.json({ code, message: '验证码不正确' }, { status: 400 })
@@ -159,7 +159,7 @@ test('account local fallbacks and unknown messages retain provenance without str
       if (!result.ok) {
         assert.equal(result.code, code)
         assert.equal(result.applicationFailure, undefined)
-        assert.equal(accountFailureText(result, t), '验证码不正确')
+        assert.equal(accountFailureText(result, t), 'The operation did not complete. Please try again.')
       }
     }
     globalThis.fetch = async () => Response.json({ code: 'unauthorized' }, { status: 401 })
@@ -232,7 +232,7 @@ test('logout preserves service-before-cookie order, original bridge failures and
     assert.equal(raw.ok, false)
     if (!raw.ok) {
       assert.equal(raw.applicationFailure, undefined)
-      assert.equal(accountFailureText(raw, t), reply.error)
+      assert.equal(accountFailureText(raw, t), 'The operation did not complete. Please try again.')
     }
     reply = { ok: true }
     assert.deepEqual(await logoutDesktopSession(), { ok: true, data: { local_cleared: true } })

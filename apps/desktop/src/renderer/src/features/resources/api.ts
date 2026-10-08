@@ -262,6 +262,17 @@ export interface ResourceReviewBatchDecision {
   pending_revision: number
   action: ResourceReviewAction
   expected_disk_revision: string | null
+  revised_content?: Uint8Array
+}
+
+const REVIEW_BASE64_CHUNK_SIZE = 8192
+
+function reviewContentBase64(content: Uint8Array): string {
+  const chunks: string[] = []
+  for (let offset = 0; offset < content.length; offset += REVIEW_BASE64_CHUNK_SIZE) {
+    chunks.push(String.fromCharCode(...content.subarray(offset, offset + REVIEW_BASE64_CHUNK_SIZE)))
+  }
+  return btoa(chunks.join(''))
 }
 
 export interface ResourceReviewBatchResult {
@@ -401,7 +412,10 @@ export async function decideResourceReviewBatch(
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ decisions: decisions.map((decision) => ({ ...decision })) })
+        body: JSON.stringify({ decisions: decisions.map((decision) => ({
+          ...decision,
+          revised_content: decision.revised_content ? reviewContentBase64(decision.revised_content) : undefined
+        })) })
       }
     )
     const payload = await response.json().catch(() => null) as Omit<ResourceReviewBatchMutation, 'ok'> | null
@@ -503,6 +517,7 @@ export interface ResourceVersion {
   state: 'present' | 'tombstone'
   path: string
   origin: string
+  review_backup?: boolean
   created_at_ms: number
   session_id?: string | null
   turn_id?: string | null

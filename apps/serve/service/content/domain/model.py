@@ -45,6 +45,7 @@ PREPARED_UNAVAILABLE = "prepared_content_unavailable"
 PROJECT_STATE_DIRNAME = ".scholarseed"
 ROOT_UNAVAILABLE_ERROR = "root_unavailable"
 PATH_OUTSIDE_ROOT_ERROR = "path_outside_root"
+READ_FAILED = "read_failed"
 
 #: 不进入任何扫描的目录名 (版本库内部、依赖、系统噪声、产品自己的状态目录)。
 IGNORED_NAMES = frozenset(
@@ -68,6 +69,14 @@ class ContentError(Exception):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class ContentReadPermissionError(ContentError):
+    """A refused read with its authorized project-relative location."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(READ_FAILED)
+        self.path = path
 
 
 @dataclass(frozen=True)

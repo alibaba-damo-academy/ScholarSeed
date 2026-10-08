@@ -20,6 +20,10 @@
      叠进面板的那段命中区会被头部层抢走指针事件；仍须留在浮层带 60 之下。 */
   --vds-z-sticky-header: 45;
   --vds-z-resize-handle: 46;
+  /* 非模态 AI 浮窗：要盖住工作区 chrome（sticky 头 45 / 拖拽条 46），但必须留在浮层带
+     之下 —— background-task 55、inline-flyout 60、sheet 61+、dialog 70+ 都压在它上面，
+     保证任何模态对话框与遮罩始终覆盖非模态浮窗。 */
+  --vds-z-floating-panel: 50;
   /* Full-page surfaces replace the conversation body but remain below sheets. */
   --vds-z-workspace-files: 35;
   --vds-z-background-task: 55;

@@ -77,6 +77,7 @@ export function WebImportDestination({
     setCreatingFolder(false)
     if (failure) {
       toast({
+        dedupeKey: JSON.stringify(['destination-create-failure', failure]),
         description: <ResourceFailure message={failure} />,
         title: <DestinationFeedback message={{ key: 'destination.failed' }} />,
         tone: 'error'

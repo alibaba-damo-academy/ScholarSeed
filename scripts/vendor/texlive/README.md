@@ -1,5 +1,21 @@
 # Vendored TeX Live for the packaged Desktop backend
 
+Development extracts the verified tree into `artifactCache()/texlive/<archive-sha256>`,
+independent of checkout depth. XeTeX stores native font filenames in XDV with a
+one-byte length; repository-local extraction could exceed 255 UTF-8 bytes and
+truncate a valid font path. The full checksum and receipt still identify the tree;
+concurrent checkouts reuse only a matching published receipt. Old checkout-local
+caches are left untouched and no longer selected.
+
+| Platform | Development extraction | Packaged extraction |
+| --- | --- | --- |
+| macOS | `~/.cache/scholarseed/artifacts/texlive/<sha256>` | Unchanged: application resources |
+| Windows | `%LOCALAPPDATA%/ScholarSeed/cache/artifacts/texlive/<sha256>` | Unchanged: provisioned component |
+
+The existing `SCHOLARSEED_ARTIFACT_CACHE` override applies on both platforms.
+Keep its resolved font paths within the XeTeX 255-byte limit. This cache relocation
+does not remove that upstream limit for unusually long user or installation paths.
+
 Desktop ships a pruned TeX Live tree in `resources/backend/texlive` so the
 bundled `literature-review` skill can compile Chinese (`xelatex` + `ctexart` +
 `xeCJK`) and English (`pdflatex` + the skill's `neurips_2026.sty`) survey PDFs

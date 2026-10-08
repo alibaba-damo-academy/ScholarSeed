@@ -48,8 +48,9 @@ test('main installs the application menu and hides rather than removes the Windo
   assert.doesNotMatch(mainSource, /mainWindow\.setMenu\(null\)/)
 })
 
-test('main hides the Windows native title bar while preserving native controls', () => {
-  assert.match(mainSource, /titleBarStyle: process\.platform === WINDOWS_PLATFORM \? 'hidden' : 'hiddenInset'/)
-  assert.match(mainSource, /titleBarOverlay: process\.platform === WINDOWS_PLATFORM/)
-  assert.match(mainSource, /symbolColor: WINDOWS_TITLE_BAR_SYMBOL_COLOR/)
+test('main keeps the native Windows titlebar while preserving macOS hiddenInset', () => {
+  assert.match(mainSource, /process\.platform === WINDOWS_PLATFORM\s*\?\s*\{\}/)
+  assert.match(mainSource, /titleBarStyle: 'hiddenInset'/)
+  assert.doesNotMatch(mainSource, /titleBarOverlay/)
+  assert.doesNotMatch(mainSource, /WINDOWS_TITLE_BAR_/)
 })

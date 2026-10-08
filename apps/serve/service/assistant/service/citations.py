@@ -23,6 +23,8 @@ from service.assistant.service.presentation import (
     project,
 )
 from service.content.domain.model import ContentError
+from service.literature.service.fulltexts import MANAGED_FULLTEXT_SOURCE_KIND
+from service.literature.service.result import AUTHORIZATION_PAPER_PREFIX
 from service.platform.bridge import (
     LiteratureAnnotations,
     LiteratureList,
@@ -39,6 +41,7 @@ from service.platform.citations import (
     CitationDocumentProvider,
     CitationPage,
     LiteratureEvidencePort,
+    ManagedFulltextPort,
     PdfAttachmentPort,
     PdfIndexPort,
     PdfPreviewPort,
@@ -48,6 +51,7 @@ from service.platform.context import (
     AssistantTurnItem,
     AssistantTurnSnapshot,
     ContextAuthority,
+    ContextOrigin,
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
@@ -305,6 +309,7 @@ class CitationService:
         literature: LiteratureEvidencePort | None = None,
         records: ProjectPdfRecordPort | None = None,
         preview: PdfPreviewPort | None = None,
+        fulltexts: ManagedFulltextPort | None = None,
     ) -> None:
         self._answers = answers
         self._snapshot = snapshot_for_turn
@@ -317,6 +322,7 @@ class CitationService:
         self._literature = literature
         self._records = records
         self._preview = preview
+        self._fulltexts = fulltexts
 
     def filter_answer(self, session_id: str, snapshot_id: str, markdown: str) -> str:
         """Guarantee that every clickable citation belongs to this turn snapshot."""
@@ -357,7 +363,43 @@ class CitationService:
         if query.ref_id.startswith(LIBRARY_REF_PREFIX) and self._literature is not None:
             source_kind = ContextRefKind.LITERATURE.value
             source_id = query.ref_id[len(LIBRARY_REF_PREFIX) :]
-            document = self._literature.document(snapshot.project_id or "", source_id)
+            explicit = any(
+                candidate.ref.origin in (ContextOrigin.EXPLICIT, ContextOrigin.CURRENT_SELECTION)
+                and candidate.ref.kind is ContextRefKind.LITERATURE
+                and candidate.ref.source_id == source_id
+                for candidate in items
+            )
+            active = next(
+                (
+                    candidate
+                    for candidate in items
+                    if candidate.ref.origin is ContextOrigin.CURRENT_DOCUMENT
+                    and candidate.ref.kind is ContextRefKind.LITERATURE
+                    and candidate.ref.source_id == source_id
+                ),
+                None,
+            )
+            document = self._literature.document(
+                snapshot.project_id or "",
+                source_id,
+                (
+                    str(active.surface["attachment_id"])
+                    if active is not None and not explicit
+                    else None
+                ),
+            )
+            ref = None
+        elif query.ref_id.startswith(AUTHORIZATION_PAPER_PREFIX) and self._fulltexts is not None:
+            # Managed bytes acquired by serve; reachability is already gated by
+            # FulltextAuthorizer.require in the calling route.
+            managed_document = self._fulltexts.managed_fulltext_document(
+                snapshot.project_id or "",
+                query.ref_id[len(AUTHORIZATION_PAPER_PREFIX) :],
+            )
+            if managed_document is None:
+                raise ValueError("citation_source_not_authorized")
+            document = managed_document
+            source_kind, source_id = MANAGED_FULLTEXT_SOURCE_KIND, query.ref_id
             ref = None
         elif attachment is not None and self._attachments is not None:
             document = self._attachments.pdf_document(session_id, turn_id, query.ref_id)
@@ -750,8 +792,57 @@ class CitationService:
         if self._literature is None:
             raise ValueError("literature_evidence_unavailable")
         source_id = request.ref_id[len(LIBRARY_REF_PREFIX) :]
+        explicit = any(
+            item.state in READABLE_STATES
+            and item.ref.origin in (ContextOrigin.EXPLICIT, ContextOrigin.CURRENT_SELECTION)
+            and item.ref.kind is ContextRefKind.LITERATURE
+            and item.ref.source_id == source_id
+            for item in snapshot.items
+        )
+        active = next(
+            (
+                item
+                for item in snapshot.items
+                if item.state in READABLE_STATES
+                and item.ref.origin is ContextOrigin.CURRENT_DOCUMENT
+                and item.ref.kind is ContextRefKind.LITERATURE
+                and item.ref.source_id == source_id
+            ),
+            None,
+        )
+        attachment_id = request.attachment_id or (
+            str(active.surface["attachment_id"]) if active is not None and not explicit else None
+        )
+        if attachment_id and not any(
+            item.state in READABLE_STATES
+            and item.ref.kind is ContextRefKind.LITERATURE
+            and item.ref.source_id == source_id
+            and (
+                item.ref.origin is ContextOrigin.CURRENT_DOCUMENT
+                and item.surface.get("attachment_id") == attachment_id
+                or item.ref.anchor is not None
+                and item.ref.anchor.document_id == attachment_id
+            )
+            for item in snapshot.items
+        ):
+            raise ValueError("citation_source_not_authorized")
         reading = self._literature.read_pages(
-            snapshot.project_id or "", source_id, request.start_page, request.end_page
+            snapshot.project_id or "",
+            source_id,
+            request.start_page,
+            request.end_page,
+            attachment_id,
+        )
+        if active is not None and attachment_id == active.surface.get("attachment_id"):
+            if (
+                active.ref.source_revision
+                and reading.document.revision != active.ref.source_revision
+            ):
+                raise ValueError("citation_source_stale")
+        read_attachment_id = (
+            reading.document.record_target.subject_id
+            if reading.document.record_target is not None
+            else ""
         )
         pending_pages = []
         for page in reading.pages:
@@ -761,7 +852,7 @@ class CitationService:
             pending_fragments = []
             for fragment in fragments:
                 receipt = {
-                    "source_key": f"literature:{source_id}:{reading.document.revision}:fragment:{fragment.fragment_id}",
+                    "source_key": f"literature:{source_id}:{read_attachment_id}:{reading.document.revision}:fragment:{fragment.fragment_id}",
                     "handle": uuid.uuid4().hex,
                     "project_id": reading.document.project_id,
                     "path": reading.document.path,
@@ -774,6 +865,7 @@ class CitationService:
                     "pages": [asdict(anchor) for anchor in fragment.pages],
                     "source_kind": ContextRefKind.LITERATURE.value,
                     "source_id": source_id,
+                    "attachment_id": read_attachment_id,
                     "content_level": "fulltext",
                     "pipeline": LOCAL_PIPELINE,
                     "fallback_reason": "",
@@ -1045,7 +1137,9 @@ class CitationService:
             record["source_kind"] == ContextRefKind.LITERATURE.value
             and self._literature is not None
         ):
-            return self._literature.document(record["project_id"], record["source_id"])
+            return self._literature.document(
+                record["project_id"], record["source_id"], record.get("attachment_id")
+            )
         if record["source_kind"] == ATTACHMENT_SOURCE_KIND:
             if self._attachments is None:
                 raise ValueError("citation_attachment_unavailable")

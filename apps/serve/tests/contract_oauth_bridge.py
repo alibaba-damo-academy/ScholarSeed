@@ -24,9 +24,15 @@ GATEWAY_ENDPOINT = "https://gateway.example/v1/chat/completions"
 class PausedStream(httpx.AsyncByteStream):
     def __init__(self) -> None:
         self.closed = False
+        self.reading = asyncio.Event()
 
     async def __aiter__(self):
+        # forward() eagerly preflights the native stream until it observes a semantic
+        # event, so response.created alone (retry-safe) would block it forever; the
+        # output_text.delta releases the preflight and keeps the stream live afterwards.
         yield b'data: {"type":"response.created"}\n\n'
+        yield b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+        self.reading.set()
         await asyncio.Event().wait()
 
     async def aclose(self) -> None:
@@ -96,7 +102,10 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
             [request.headers["authorization"] for request in calls],
             ["Bearer access-1", "Bearer access-2"],
         )
-        self.assertTrue(all(client.is_closed for client in clients))
+        self.assertEqual(len(clients), 1)
+        self.assertFalse(clients[0].is_closed)
+        await self.bridge.close()
+        self.assertTrue(clients[0].is_closed)
         self.assertEqual(resolutions, [(OWNER, CONNECTION), (OWNER, CONNECTION)])
 
     async def test_registered_environment_policy_reaches_upstream_client(self) -> None:
@@ -161,8 +170,16 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.bridge.forward(registration.bridge_id, {})).status_code, 404)
 
     async def test_logout_stops_active_sse_and_closes_upstream(self) -> None:
+        for spec_version in ("2.3", "2.4"):
+            with self.subTest(spec_version=spec_version):
+                self.bridge = CompletionBridge("http://127.0.0.1:8770")
+                self.addAsyncCleanup(self.bridge.close)
+                await self._assert_logout_stops_active_sse(spec_version)
+
+    async def _assert_logout_stops_active_sse(self, spec_version: str) -> None:
         stream = PausedStream()
         received = asyncio.Event()
+        consumers = []
 
         async def resolve(owner, connection):
             return ModelCredential(api_key="access")
@@ -174,21 +191,37 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
                 registration.bridge_id, {"model": "model", "stream": True}
             )
 
-            async def consume():
-                async for data in response.body_iterator:
-                    self.assertTrue(data.startswith(b"data:"))
+            async def send(message):
+                if message["type"] == "http.response.body" and message.get("body"):
+                    consumers.append(asyncio.current_task())
                     received.set()
 
-            task = asyncio.create_task(consume())
-            await asyncio.wait_for(received.wait(), 2)
-            self.assertEqual(self.bridge.revoke_owner(OWNER), 1)
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-        self.assertTrue(stream.closed)
-        self.assertTrue(clients[0].is_closed)
-        self.assertEqual(self.bridge._calls, set())
+            async def receive():
+                await asyncio.Event().wait()
 
-    async def test_cancel_before_headers_closes_http_client(self) -> None:
+            task = asyncio.create_task(
+                response({"type": "http", "asgi": {"spec_version": spec_version}}, receive, send)
+            )
+            await asyncio.wait_for(received.wait(), 2)
+            await asyncio.wait_for(stream.reading.wait(), 2)
+            self.assertIs(response.call.task, consumers[-1])
+            # The first anext task has finished; revocation must still reach the
+            # task consuming the entire response, not that completed child.
+            self.assertEqual(self.bridge.revoke_owner(OWNER), 1)
+            try:
+                await asyncio.wait_for(task, 2)
+            except asyncio.CancelledError:
+                pass
+            self.assertIsNone(response.call.task)
+            self.assertTrue(response.call.diagnostic.finished)
+            self.assertEqual(response.call.diagnostic.upstream_end, "revoked")
+        self.assertTrue(stream.closed)
+        self.assertFalse(clients[0].is_closed)
+        self.assertEqual(self.bridge._calls, set())
+        await self.bridge.close()
+        self.assertTrue(clients[0].is_closed)
+
+    async def test_cancel_before_headers_keeps_pooled_client_until_shutdown(self) -> None:
         entered = asyncio.Event()
 
         async def resolve(owner, connection):
@@ -208,6 +241,8 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+        self.assertFalse(clients[0].is_closed)
+        await self.bridge.close()
         self.assertTrue(clients[0].is_closed)
 
     async def test_owner_switch_invalidates_instead_of_rebinding_oauth(self) -> None:
@@ -231,6 +266,51 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 403)
         self.assertNotIn(b"secret-access", response.body)
 
+    async def test_upstream_token_revocation_invokes_handler_and_surfaces_code(self) -> None:
+        """推理端 401 token_revoked：桥调用回写钩子并透出 reauth 码，而非通用 rejected。"""
+
+        seen = []
+
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        def handler(owner, connection, status_code, error_code):
+            seen.append((owner, connection, status_code, error_code))
+            revoked = status_code == 401 and error_code == "token_revoked"
+            return "oauth_reauth_required" if revoked else ""
+
+        registration = self.register(resolve, credential_revocation_handler=handler)
+        transport, _ = self.transport(
+            lambda request: httpx.Response(
+                401, json={"error": {"code": "token_revoked"}, "status": 401}
+            )
+        )
+        with transport:
+            response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(json.loads(response.body)["error"]["code"], "oauth_reauth_required")
+        self.assertEqual(seen, [(OWNER, CONNECTION, 401, "token_revoked")])
+
+    async def test_non_revocation_upstream_error_keeps_generic_rejection(self) -> None:
+        """钩子判定为非吊销（返回空串）时维持既有通用 model_upstream_rejected 语义。"""
+
+        async def resolve(owner, connection):
+            return ModelCredential(api_key="access")
+
+        def handler(owner, connection, status_code, error_code):
+            return ""
+
+        registration = self.register(resolve, credential_revocation_handler=handler)
+        transport, _ = self.transport(
+            lambda request: httpx.Response(
+                401, json={"error": {"code": "unauthorized"}, "status": 401}
+            )
+        )
+        with transport:
+            response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(json.loads(response.body)["error"]["code"], "model_upstream_rejected")
+
     async def test_transient_server_failure_retries_before_returning(self) -> None:
         calls = []
 
@@ -248,9 +328,7 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
 
         registration = self.register(resolve)
         transport, _ = self.transport(handler)
-        with transport, patch(
-            "service.chat.service.completions.asyncio.sleep", new=no_delay
-        ):
+        with transport, patch("service.chat.service.completions.asyncio.sleep", new=no_delay):
             response = await self.bridge.forward(registration.bridge_id, {"model": "model"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(calls), 2)
@@ -314,9 +392,11 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "downstream closed"):
                 await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
         self.assertTrue(stream.closed)
-        self.assertTrue(clients[0].is_closed)
+        self.assertFalse(clients[0].is_closed)
         self.assertFalse(upstream.calls)
         self.assertFalse(self.bridge._calls)
+        await self.bridge.close()
+        self.assertTrue(clients[0].is_closed)
 
     async def test_revocation_finalizes_stream_that_was_never_consumed(self) -> None:
         stream = PausedStream()
@@ -333,9 +413,11 @@ class OAuthBridgeContract(unittest.IsolatedAsyncioTestCase):
             self.bridge.revoke_connection(OWNER, CONNECTION)
             await asyncio.gather(*(call.close() for call in calls))
         self.assertTrue(stream.closed)
-        self.assertTrue(clients[0].is_closed)
+        self.assertFalse(clients[0].is_closed)
         self.assertFalse(upstream.calls)
         self.assertFalse(self.bridge._calls)
+        await self.bridge.close()
+        self.assertTrue(clients[0].is_closed)
 
     async def test_shutdown_rejects_new_work_while_draining(self) -> None:
         entered, finish = asyncio.Event(), asyncio.Event()

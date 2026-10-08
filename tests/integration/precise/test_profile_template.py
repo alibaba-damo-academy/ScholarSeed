@@ -3,13 +3,21 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from browser_pool import BrowserPool
 from browser_pool_support import cleanup_pool, pool_environment
-from profile_template import MARKER, copy_entries, create_template, initialize_profile
+from profile_template import (
+    MARKER,
+    ProfileInUse,
+    copy_entries,
+    create_template,
+    initialize_profile,
+    require_offline,
+)
 
 SCRIPTS = Path(__file__).resolve().parents[3] / "skills/community/precise-literature-search/scripts"
 
@@ -54,6 +62,93 @@ class ProfileTemplateTests(unittest.TestCase):
     def tearDown(self):
         self.patch.stop()
         self.temp.cleanup()
+
+    def test_edge_template_is_separate_and_cross_browser_copy_is_rejected(self):
+        create_template(self.source, self.template)
+        edge_profile = self.pool_root / "slot-1/edge-profile"
+        with self.assertRaisesRegex(ValueError, "No edge profile template"):
+            initialize_profile(edge_profile, self.pool_root, browser="edge")
+        self.assertFalse(edge_profile.exists())
+        edge_template = self.pool_root / "edge-profile-template"
+        create_template(self.source, edge_template, browser="edge")
+        initialize_profile(edge_profile, self.pool_root, browser="edge")
+        self.assertEqual((edge_profile / "Default/Cookies").read_bytes(), b"synthetic login data")
+        for browser, template in (("edge", self.template), ("chrome", edge_template)):
+            with mock.patch.dict(os.environ, {"PAPER_DL_PROFILE_TEMPLATE": str(template)}):
+                with self.assertRaisesRegex(ValueError, "wrong-browser"):
+                    initialize_profile(
+                        self.pool_root / (browser + "-new"), self.pool_root, browser=browser
+                    )
+
+    def test_windows_running_edge_blocks_offline_template_copy(self):
+        local = self.root / "local"
+        source = local / "Microsoft/Edge/User Data"
+        for command in (None, "msedge.exe"):
+            windows = types.SimpleNamespace(
+                process_commands=lambda: [{"Name": "msedge.exe", "CommandLine": command}],
+                command_arguments=lambda value: value.split(),
+            )
+            with (
+                mock.patch("profile_template.WINDOWS", True),
+                mock.patch.dict(sys.modules, {"windows_support": windows}),
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}),
+            ):
+                with self.assertRaises(ProfileInUse):
+                    require_offline(source)
+
+    def test_windows_default_profiles_are_scoped_to_process_vendor(self):
+        local = self.root / "local"
+        vendors = {
+            "chrome.exe": "Google/Chrome",
+            "chromium.exe": "Chromium",
+            "msedge.exe": "Microsoft/Edge",
+        }
+        for process_name, process_vendor in vendors.items():
+            windows = types.SimpleNamespace(
+                process_commands=lambda: [
+                    {"Name": process_name.upper(), "CommandLine": process_name}
+                ],
+                command_arguments=lambda value: [value],
+            )
+            with (
+                mock.patch("profile_template.WINDOWS", True),
+                mock.patch.dict(sys.modules, {"windows_support": windows}),
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}),
+            ):
+                for source_vendor in vendors.values():
+                    source = local / source_vendor / "User Data"
+                    with self.subTest(process=process_name, source=source_vendor):
+                        if source_vendor == process_vendor:
+                            with self.assertRaises(ProfileInUse):
+                                require_offline(source)
+                        else:
+                            require_offline(source)
+
+    def test_windows_uncertain_or_explicit_profile_use_still_blocks(self):
+        for process_name in ("chrome.exe", "chromium.exe", "msedge.exe"):
+            for arguments in (
+                [],
+                [process_name],
+                [process_name, f"--user-data-dir={self.source}"],
+                [process_name, "--user-data-dir", str(self.source)],
+            ):
+                environment = (
+                    {} if arguments == [process_name] else {"LOCALAPPDATA": str(self.root)}
+                )
+                windows = types.SimpleNamespace(
+                    process_commands=lambda: [
+                        {"Name": process_name, "CommandLine": " ".join(arguments)}
+                    ],
+                    command_arguments=lambda value: arguments,
+                )
+                with (
+                    self.subTest(process=process_name, arguments=arguments),
+                    mock.patch("profile_template.WINDOWS", True),
+                    mock.patch.dict(sys.modules, {"windows_support": windows}),
+                    mock.patch.dict(os.environ, environment, clear=True),
+                    self.assertRaises(ProfileInUse),
+                ):
+                    require_offline(self.source)
 
     def test_snapshot_preserves_login_storage_and_cleans_session_artifacts(self):
         create_template(self.source, self.template)

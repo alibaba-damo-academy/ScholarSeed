@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+from arxiv import normalize_arxiv_id
 
 DOCUMENT_TYPES = {"paper", "blog", "documentation", "dataset", "web_page", "unknown"}
 IDENTITY_STATUSES = {"verified", "probable", "unverified"}
@@ -60,16 +65,10 @@ def _arxiv_id(paper: dict[str, Any]) -> str | None:
     if not value:
         for key in ("url", "landing_page_url", "landingPageUrl", "pdf_url", "pdfUrl"):
             candidate = paper.get(key)
-            if isinstance(candidate, str) and "arxiv.org/" in candidate.casefold():
+            if normalize_arxiv_id(candidate):
                 value = candidate
                 break
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = re.sub(r"^arxiv:\s*", "", value.strip(), flags=re.I)
-    normalized = re.sub(
-        r"^https?://arxiv\.org/(?:abs|pdf)/", "", normalized, flags=re.I
-    )
-    return normalized.removesuffix(".pdf") or None
+    return normalize_arxiv_id(value)
 
 
 def _authors(value: Any) -> list[str]:

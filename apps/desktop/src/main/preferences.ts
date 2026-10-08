@@ -2,9 +2,11 @@ import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 
+import type {
+  RendererPreferences
+} from '../preferences'
 import {
   defaultRendererPreferences,
-  RendererPreferences,
   sanitizeRendererPreferences
 } from '../preferences'
 import { applyMainLanguage } from './localization'

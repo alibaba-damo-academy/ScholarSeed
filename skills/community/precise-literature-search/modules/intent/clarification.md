@@ -3,8 +3,11 @@
 Use this procedure before retrieval. Keep every user-facing message in the
 user's language and never expose internal checks or artifact paths.
 
+This procedure starts only after the mandatory start confirmation in `SKILL.md`.
+Explicit auto mode does not waive that confirmation.
+
 If the host identifies an explicit auto, autonomous, unattended, or no-interaction
-request, do not ask clarification or confirmation questions. Resolve ambiguity
+request, do not ask further intent clarification or confirmation questions. Resolve ambiguity
 conservatively from the original request, leave unsupported optional criteria empty
 or null, disclose material assumptions in `precise_intent`, set
 `schema_version: 1.1`, set `confirmed: true`, and add
@@ -30,10 +33,13 @@ Check the request in this order:
 5. **Required inputs:** ask for an omitted value only when retrieval cannot
    start without it. Do not ask about search engines or query construction.
 
-Ask one question per turn, choosing the most decisive unresolved fork first.
-Describe alternatives neutrally in research terms, without UI pickers. Re-run
-all five checks after each answer because resolving one fork may reveal the
-next. Re-ask when an answer remains contradictory or does not settle the fork.
+Ask only questions that materially change retrieval, in one 1–3 question card
+and at most one conflict-resolution follow-up. Use a question tool only when
+available and permitted; otherwise ask the same questions in conversation.
+Describe alternatives neutrally in research terms. Re-run all five checks after
+each answer. If a material conflict remains after the follow-up, explain what
+prevents retrieval and wait for a corrected brief rather than inventing scope
+or continuing an unbounded clarification loop.
 
 Do not assume a conventional value silently. If the user deliberately skips a
 question, state the narrowest safe default (or no exclusions for an exclusion

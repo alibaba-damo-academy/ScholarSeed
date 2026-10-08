@@ -8,11 +8,33 @@ import {
   findExecutableOnPath,
   mergeExecutablePaths,
   parseLoginShellPath,
+  protocolClientArguments,
   resolveDeveloperToolsEnabled,
   resolvePreferredExecutable,
   requiresSingleInstanceLock,
   standardExecutablePath
 } from './environment.ts'
+
+test('Windows protocol callbacks preserve the initiating profile', () => {
+  const profile = 'C:\\Users\\Example User\\Desktop profile'
+  const appPath = 'C:\\Source tree\\apps\\desktop'
+  assert.deepEqual(protocolClientArguments('win32', true, appPath, profile), [
+    appPath,
+    `--user-data-dir=${profile}`
+  ])
+  assert.deepEqual(protocolClientArguments('win32', false, appPath, profile), [
+    `--user-data-dir=${profile}`
+  ])
+})
+
+test('other platforms retain their existing protocol arguments', () => {
+  for (const platform of ['darwin', 'linux']) {
+    assert.deepEqual(protocolClientArguments(platform, true, '/source/desktop', '/profile'), [
+      '/source/desktop'
+    ])
+    assert.deepEqual(protocolClientArguments(platform, false, '/source/desktop', '/profile'), [])
+  }
+})
 
 test('enables developer tools only for an interactive Vite renderer launch', () => {
   assert.equal(resolveDeveloperToolsEnabled('http://localhost:5173', false, '1'), true)

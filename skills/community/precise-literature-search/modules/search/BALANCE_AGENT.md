@@ -1,5 +1,8 @@
 # Literature Search Agent — Balance
 
+For user-facing summaries, follow [User-facing language](../../SKILL.md#user-facing-language).
+Numeric tiers remain internal selection fields, not display labels.
+
 One iteration: entity resolution → PaperHub → citations → screened tiers.
 No other mode, user conversation, downloads or full-text claims.
 
@@ -43,14 +46,13 @@ complementary queries for rare clues, compared families and pivotal titles. One 
 titles across an unnamed landmark comparison. No routine supplementation,
 independent title-reconciliation sweep or post-citation Web.
 
-Run the [DECISION_INPUTS.md](DECISION_INPUTS.md) Web route for each query —
-official-api → native → visible-browser when `WEB_SEARCH_INVOKE` is present, else
-the executor's native Web tool — then use returned `record-web`, input `web-decisions.json`:
+Use [Web search capability](DECISION_INPUTS.md#web-search-capability), then use
+returned `record-web`, input `web-decisions.json`:
 `queries:[{query,papers,elapsed_seconds,status,error?}]`. Record actual timing/status
-and raw results with evidenced scholarly metadata; never invent abstracts/IDs. An
-official-api `unavailable` (no key) or `empty` result is a fall-through signal, never
-a recorded status. Worker counts registered actual calls after execution; it cannot
-enforce Web call counts. The batch sizes above are research guidance, not a permission gate.
+and raw results with evidenced scholarly metadata; never invent abstracts/IDs.
+Preserve every provider attempt at its own path, including failures before a
+successful fallback. Recording cannot enforce provider call counts or grant permissions.
+The batch sizes above are research guidance, not a permission gate.
 Replaying saved outcomes is idempotent; classification repairs are not new searches.
 Accepted papers merge; pending/rejected records retain reasons without blocking
 retrieval or selection of other verified papers. Repair only a record needed for

@@ -163,7 +163,7 @@ export interface LiteratureReview {
   status: 'outline' | 'generated' | 'partial' | 'incomplete' | 'failed'
   generation_status?: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | null
   scope: { topic: string; time_range: string; focus: string[]; requested_materials: string[]; project_materials: number | null; external_materials: number | null }
-  output: { format: 'latex_pdf' | 'markdown' | null; citation_style: 'numeric' | 'author_year' | 'ieee' | 'acm' | null; decided_by: 'user' | 'default' | null }
+  output: { format: 'latex_pdf' | 'markdown' | null; citation_style: 'numeric' | 'author_year' | 'ieee' | 'acm' | 'gbt7714_2025' | null; decided_by: 'user' | 'default' | null }
   included: number | null; fulltext: number | null; abstract_only: number | null; pending_checks: number | null; cited: number | null
   section_count: number; sections: ReviewSection[]; checks: ReviewCheck[]
   citations: Array<{ title: string; authors: string; year: number | null; venue: string }>

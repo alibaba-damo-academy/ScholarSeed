@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { ReviewConflict } from '../../components/business/ReviewConflict'
 
 import {
-  Alert, AlertTitle, AlertDescription, Button,
+  Alert, AlertDescription, Button,
   AlertDialog, AlertDialogPortal, AlertDialogContent, AlertDialogHeader, AlertDialogTitle,
   AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction
 } from '../../components/ui'
@@ -142,27 +142,17 @@ export function SnapshotReview({ session, file, onResolved }: {
       } catch { setNotice({ key: 'snapshotNotice.failed' }) }
       finally { setBusy(false) }
     }
-    return <Alert tone="info" data-testid="snapshot-pending">
-      <AlertTitle>{t('snapshot.pendingTitle')}</AlertTitle>
-      <AlertDescription truncate={false}>{t('snapshot.pendingDescription')}</AlertDescription>
-      {notice && <div role="status"><p>{t(notice.key)}</p>{notice.detail && <pre>{notice.detail}</pre>}</div>}
-      <div className="vds-version-actions mt-1.5 flex flex-wrap items-center gap-2">
+    return <Alert action={<div className="vds-version-actions flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={busy || !capability.can_version || capability.drifted || Boolean(session?.dirty)}
           data-testid="snapshot-save-pending" onClick={() => void save()}>{resourceText(snapshotSaveMessage(capability, false))}</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>{t('snapshot.refresh')}</Button>
-      </div>
+      </div>} data-testid="snapshot-pending" layout="stacked" title={t('snapshot.pendingTitle')} tone="info">
+      <AlertDescription truncate={false}>{t('snapshot.pendingDescription')}</AlertDescription>
+      {notice && <div role="status"><p>{t(notice.key)}</p>{notice.detail && <pre>{notice.detail}</pre>}</div>}
     </Alert>
   }
 
-  return <Alert tone="info" data-testid="snapshot-review">
-    <AlertTitle>{t('snapshot.title')}</AlertTitle>
-    <AlertDescription truncate={false}>
-      {t('snapshot.description')}
-    </AlertDescription>
-    {notice && <div role="status"><p>{t(notice.key)}</p>{notice.detail && <pre>{notice.detail}</pre>}</div>}
-    {capability.drifted && <ReviewConflict project={project} path={path} pending={pending}
-      disabled={busy} onResolved={async () => { await refresh(); await onResolved() }} />}
-    <div className="vds-version-actions mt-1.5 flex flex-wrap items-center gap-2">
+  return <Alert action={<div className="vds-version-actions flex flex-wrap items-center gap-2">
       <Button size="sm" variant="secondary" disabled={busy || !review.base.object_id || !capability.can_preview_history}
         onClick={() => {
           if (review.base.object_id) act.openSnapshot({ kind: 'review-base', project,
@@ -179,7 +169,13 @@ export function SnapshotReview({ session, file, onResolved }: {
       <Button size="sm" variant="ghost" disabled={busy || review.base.state === 'tombstone'}
         onClick={() => void downloadBase()}>{t('snapshot.download')}</Button>
       <Button size="sm" variant="secondary" disabled={busy} onClick={() => void refresh()}>{t('snapshot.refresh')}</Button>
-    </div>
+    </div>} data-testid="snapshot-review" layout="stacked" title={t('snapshot.title')} tone="info">
+    <AlertDescription truncate={false}>
+      {t('snapshot.description')}
+    </AlertDescription>
+    {notice && <div role="status"><p>{t(notice.key)}</p>{notice.detail && <pre>{notice.detail}</pre>}</div>}
+    {capability.drifted && <ReviewConflict project={project} path={path} pending={pending}
+      disabled={busy} onResolved={async () => { await refresh(); await onResolved() }} />}
     <AlertDialog open={confirmReject} onOpenChange={setConfirmReject}>
       <AlertDialogPortal>
       <AlertDialogContent>

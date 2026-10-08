@@ -87,8 +87,11 @@ def probe_command(path: Path, arguments: tuple[str, ...] = COMMAND_HELP_ARGUMENT
             "Command probe at %s exited with code %s: %s",
             path,
             result.returncode,
-            result.stderr.decode(errors="replace")[:COMMAND_PROBE_ERROR_LIMIT]
-            if result.stderr else "",
+            (
+                result.stderr.decode(errors="replace")[:COMMAND_PROBE_ERROR_LIMIT]
+                if result.stderr
+                else ""
+            ),
         )
         return False
     return True

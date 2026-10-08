@@ -1,0 +1,10 @@
+{
+  "reporter": ["text", "html", "cobertura"],
+  "check-coverage": true,
+  "all": true,
+  "include": ["src/**"],
+  "lines": 20,
+  "branches": 18,
+  "functions": 18,
+  "statements": 20
+}

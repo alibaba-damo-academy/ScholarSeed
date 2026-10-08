@@ -3,11 +3,8 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { ASSISTANT_TRANSLATION_TARGETS } from '../../contracts/assistant.ts'
 
-test('resource translation reuses the complete mainstream target catalog', () => {
-  assert.deepEqual(ASSISTANT_TRANSLATION_TARGETS, [
-    'zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'fr', 'de', 'es', 'pt',
-    'it', 'ru', 'ar', 'hi', 'th', 'vi', 'id', 'tr', 'nl'
-  ])
+test('resource translation exposes only the supported target languages', () => {
+  assert.deepEqual(ASSISTANT_TRANSLATION_TARGETS, ['zh-CN', 'en'])
 })
 
 test('resource translation keeps current source and exposes shared target and model pickers', () => {
@@ -23,6 +20,8 @@ test('resource translation keeps current source and exposes shared target and mo
   assert.match(suggestion, /<ModelMenu[\s\S]*?testIdPrefix="resource-translation-model"/)
   assert.match(suggestion, /writeTranslationTarget\('resource-selection'/)
   assert.match(suggestion, /writeTranslationModel\('resource-selection'/)
+  assert.match(suggestion, /const selectedModel = selectableActionModelKey/)
+  assert.match(suggestion, /model_key: modelOverride, client_attempt_id/)
   assert.doesNotMatch(suggestion, /suggestion\.toEnglish|suggestion\.toChinese/)
   assert.match(suggestion, /\{selectedText\}/)
   assert.match(suggestion, /stream.current === abort/)

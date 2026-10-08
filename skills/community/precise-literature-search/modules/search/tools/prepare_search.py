@@ -11,6 +11,7 @@ SKILL_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from io_utils import atomic_write_json, read_json, utc_now
+from filesystem import canonical_path, filesystem_path, path_exists
 from validate_json import validate_data
 from state import initialize
 import prepare_fast_mock
@@ -27,18 +28,18 @@ MODES = {
 
 
 def prepare(request_path: Path, work_dir: Path) -> dict:
-    if request_path.is_symlink() or work_dir.is_symlink():
+    if filesystem_path(request_path).is_symlink() or filesystem_path(work_dir).is_symlink():
         raise ValueError("request and work paths must not be symbolic links")
-    request_path, work_dir = request_path.resolve(), work_dir.resolve()
-    if work_dir != (request_path.parent / "work").resolve():
+    request_path, work_dir = canonical_path(request_path), canonical_path(work_dir)
+    if work_dir != canonical_path((request_path.parent / "work")):
         raise ValueError("work directory must be the request file's sibling work directory")
     request = read_json(request_path)
     validate_data("search-request", request)
     if request["intent"].get("confirmed") is not True:
         raise ValueError("search requires confirmed intent")
     plan_path, dispatch_path = work_dir / "plan.json", work_dir / "dispatch.json"
-    plan = read_json(plan_path) if plan_path.exists() else None
-    saved = read_json(dispatch_path) if dispatch_path.exists() else None
+    plan = read_json(plan_path) if path_exists(plan_path) else None
+    saved = read_json(dispatch_path) if path_exists(dispatch_path) else None
     mode = request["search_profile"]
     if mode not in MODES:
         raise ValueError("search supports fast_mock, full, or balance")
@@ -67,11 +68,11 @@ def prepare(request_path: Path, work_dir: Path) -> dict:
         dispatch["policy"] = policy
     # No model-authored plan is generated here for balance/full. Their executor
     # reads only the selected prompt and writes the real entity/query plan.
-    work_dir.mkdir(parents=True, exist_ok=True)
-    (work_dir / "results").mkdir(exist_ok=True)
+    filesystem_path(work_dir).mkdir(parents=True, exist_ok=True)
+    filesystem_path((work_dir / "results")).mkdir(exist_ok=True)
     if mode == "fast_mock":
         prepare_fast_mock.prepare(request_path, work_dir, profile="fast_mock")
-    state_exists = (work_dir / "state.json").exists()
+    state_exists = path_exists((work_dir / "state.json"))
     state = initialize(work_dir)
     if not state_exists:
         state["max_iterations"] = iterations
@@ -79,7 +80,7 @@ def prepare(request_path: Path, work_dir: Path) -> dict:
     validate_data("search-state", state)
     if saved is None:
         atomic_write_json(dispatch_path, dispatch)
-    return {**dispatch, "status": "ready" if plan_path.exists() else "planning_required",
+    return {**dispatch, "status": "ready" if path_exists(plan_path) else "planning_required",
             "work_dir": str(work_dir)}
 
 

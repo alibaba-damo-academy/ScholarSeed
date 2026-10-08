@@ -6,8 +6,14 @@ import json
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 
 from service.content.domain.model import ContentError
+from service.content.service.spreadsheet import (
+    SpreadsheetRangeError,
+    SpreadsheetRangeTooLarge,
+    read_spreadsheet_range,
+)
 from service.literature.api.importer import register_attachment_import
 from service.literature.domain.model import MAX_IMPORT_BYTES
 from service.literature.persistence.reading import (
@@ -38,6 +44,13 @@ OCTET_STREAM_MEDIA_TYPE = "application/octet-stream"
 NO_CONTENT_STATUS = 204
 PRECONDITION_REQUIRED_STATUS = 428
 ROUTE = "/api/v1/literatures/{literature_id}/attachments/{attachment_id}"
+SELECTION_SNAPSHOT_ROUTE = f"{ROUTE}/selection-snapshot"
+MAXIMUM_SELECTION_FIELD_CHARS = 256
+SELECTION_RANGE_INVALID_STATUS = 422
+SELECTION_RANGE_TOO_LARGE_STATUS = 413
+SELECTION_RANGE_INVALID = "selection_locator_invalid"
+SELECTION_RANGE_TOO_LARGE = "selection_too_large"
+REVISION_CONFLICT = "revision_conflict"
 IDEMPOTENCY_HEADER = "idempotency-key"
 PARTIAL_CONTENT_STATUS = 206
 RANGE_NOT_SATISFIABLE_STATUS = 416
@@ -73,6 +86,12 @@ RETRYABLE_CONTENT_ERRORS = frozenset(
         "prepared_content_unavailable",
     }
 )
+
+
+class SelectionSnapshotRequest(BaseModel):
+    source_revision: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
+    sheet: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
+    range: str = Field(min_length=1, max_length=MAXIMUM_SELECTION_FIELD_CHARS)
 
 
 def _target(literature_id: str, attachment_id: str) -> RecordTarget:
@@ -120,6 +139,26 @@ def register_reading_routes(
 ) -> None:
     catalog = AttachmentRecordCatalog(repository.database)
     register_attachment_import(app, attachments, catalog)
+
+    @app.post(SELECTION_SNAPSHOT_ROUTE)
+    def capture_selection_snapshot(
+        literature_id: str, attachment_id: str, body: SelectionSnapshotRequest
+    ) -> dict[str, str]:
+        try:
+            attachment = attachments.attachment(literature_id, attachment_id)
+            data, _media_type, revision = attachments.read_attachment(literature_id, attachment_id)
+            if revision != body.source_revision:
+                raise ContentError(REVISION_CONFLICT)
+            selected = read_spreadsheet_range(attachment.name, data, body.sheet, body.range)
+        except ContentError as error:
+            raise _content_error(error) from error
+        except SpreadsheetRangeTooLarge as error:
+            raise HTTPException(
+                SELECTION_RANGE_TOO_LARGE_STATUS, SELECTION_RANGE_TOO_LARGE
+            ) from error
+        except SpreadsheetRangeError as error:
+            raise HTTPException(SELECTION_RANGE_INVALID_STATUS, SELECTION_RANGE_INVALID) from error
+        return {"snapshot_text": selected.text, "source_revision": revision}
 
     @app.get(f"{ROUTE}/open")
     def open_attachment(literature_id: str, attachment_id: str) -> Response:

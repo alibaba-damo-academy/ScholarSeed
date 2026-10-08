@@ -130,6 +130,18 @@ export function isUpdateEntryVisible(state: UpdateSnapshot | null): boolean {
   return state !== null && UPDATE_ENTRY_PHASES.has(state.phase)
 }
 
+export type UpdateEntryBadge = 'none' | 'unread' | 'warning' | 'ready'
+
+export function updateEntryBadgeOf(
+  state: UpdateSnapshot | null,
+  unread = !isAnnouncementAcknowledged(state)
+): UpdateEntryBadge {
+  if (!isUpdateEntryVisible(state)) return 'none'
+  if (updateFailureOf(state)) return 'warning'
+  if (state?.phase === 'ready') return 'ready'
+  return state?.phase === 'available' && unread ? 'unread' : 'none'
+}
+
 // 安装包体积按十进制 MB 报，与访达对同一个文件显示的数字一致。
 const DECIMAL_MB = 1_000_000
 const DECIMAL_GB = 1_000_000_000
@@ -315,10 +327,6 @@ export interface UpdateAnnouncement {
  *
  * PRD：每次检测到新版本默认先给弹窗，用户收起或关闭后不再自动弹，之后只保留活动栏
  * 的常驻入口。按 version+build_number 记，所以同一版本的下一次构建会重新弹一次。
- * 工作台活动栏与 0.1 侧栏底部按 mainView 互斥挂载，两边各自调用不会重复弹。
- *
- * 这里只回答「该不该自动展开」，不持有浮窗的开关：浮窗已经收敛为入口自己的锚定
- * 弹层（不再有独立的居中模态），开关归调用方，两边才能各自保持原有的位置行为。
  */
 export function useUpdateAnnouncement(): UpdateAnnouncement {
   const state = useUpdateState()
@@ -332,7 +340,7 @@ export function useUpdateAnnouncement(): UpdateAnnouncement {
   return {
     pending,
     acknowledge: () => {
-      if (!key) return
+      if (!key || !pending) return
       acknowledgeAnnouncement()
       setAckedKey(key)
     }

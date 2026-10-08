@@ -1,7 +1,8 @@
 import React from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 
-import { createManagedProject, Project, removeProject, renameProject } from '../../api'
+import type { Project } from '../../api'
+import { createManagedProject, removeProject, renameProject } from '../../api'
 import { PROJECT_NAME_MAX } from '../../contracts/content'
 import { Icon } from '../../icons'
 import {

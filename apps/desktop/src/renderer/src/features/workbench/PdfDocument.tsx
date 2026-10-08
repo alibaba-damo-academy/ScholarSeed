@@ -1,4 +1,4 @@
-import { ExternalLink, FileLock2, NotepadText, Undo2 } from 'lucide-react'
+import { Copy, ExternalLink, FileLock2, NotepadText, Pencil, Undo2 } from 'lucide-react'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs'
@@ -89,6 +89,8 @@ import { usePdfAnalysis } from './pdf/Reading'
 import { loadPdfVisualRegionImage, loadPdfVisualRegions, type PdfVisualRegion } from './pdf/analysis'
 import { PdfScale } from './pdf/Scale'
 import { pdfWheelScale } from './pdf/zoom'
+
+const TRANSLATION_COLUMN_RATIO = 3 / 7
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 const SEARCH_BATCH_SIZE = 8
@@ -357,6 +359,10 @@ export function PdfDocument({
   const update = useCallback((patch: Record<string, unknown>): void => {
     controller.setTabViewState(tabId, { ...readingRef.current, ...patch })
   }, [tabId])
+  const handleDocumentTranslationChange = useCallback((open: boolean): void => {
+    setTranslationLayoutOpen(open)
+    if (open) set({ modulePanelOpen: false })
+  }, [set])
 
   useEffect(() => {
     setPageCount(0)
@@ -839,7 +845,7 @@ export function PdfDocument({
           })
         }}
       >
-        <Icon name="copy" size={16} />{t('copy')}
+        <Copy size={16} />{t('copy')}
       </CopyButton>
     ),
     expanded: false,
@@ -986,15 +992,17 @@ export function PdfDocument({
     const viewport = persistedSelectionViewport(host, selections)
     if (viewport) controller.setSelection(tabId, selectedSession.selection, viewport)
   }
+  const canExport = Boolean(session?.bytes.length && (!recordTargetFor(session.source) || sidecar))
+  const exportLabel = exporting ? t('pdfToolbar.exporting') : !session?.bytes.length ? t('loading') : !canExport ? t('status.readFailed') : t('pdfToolbar.export')
   const exportPdf = async (): Promise<void> => {
-    if (!session || !sidecar || exportingRef.current) return
+    if (!session || !canExport || exportingRef.current) return
     exportingRef.current = true
     setExporting(true)
     try {
       const result = await exportAnnotatedPdf(
         session.bytes,
         sidecar,
-        session.title.replace(/\.pdf$/i, '') + t('export.annotatedFilenameSuffix'),
+        sidecar ? session.title.replace(/\.pdf$/i, '') + t('export.annotatedFilenameSuffix') : session.title,
         t('export.attachmentDescription')
       )
       if (result.ok) notifyResult('exported')
@@ -1011,11 +1019,12 @@ export function PdfDocument({
     setCropBox(null)
   }, [])
   const anchoredMarks = sidecar?.records.marks.filter((mark) => mark.anchor_state === 'anchored') ?? []
-  const analysis = usePdfAnalysis({ active, literatureId, attachmentId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
+  const analysis = usePdfAnalysis({ active, literatureId, literatureTitle: excerptSource?.literatureId === literatureId ? excerptSource.title : '', attachmentId, title: session?.title ?? '', assetId: session?.source.kind === 'project' ? session.source.assetId ?? '' : '', path: session?.source.kind === 'project' ? session.source.path : '',
     projectId: session?.source.kind === 'project' ? session.source.project ?? '' : '', revision: session?.revision ?? '', tabId,
     page: currentPage, pageCount, selection: selections, canAnnotate: Boolean(sidecar && session?.capabilities.can_annotate), onAddComment: addAiComment, onNavigate: navigate,
     onLocate: (sourcePage, text) => { navigate(sourcePage); requestFocus({ kind: 'reading', page: sourcePage, text }) },
-    onDocumentTranslationChange: setTranslationLayoutOpen,
+    onDocumentTranslationChange: handleDocumentTranslationChange,
+    viewportRef,
     onExclusiveSurfaceOpen: () => {
       clearFigureSelection()
       closeDocumentPanel()
@@ -1148,7 +1157,9 @@ export function PdfDocument({
             source={excerptSource}
           />
         ) : null}
-        <IconButton label={exporting ? t('pdfToolbar.exporting') : t('pdfToolbar.export')} icon={<Icon name="upload" size={15} />} size="sm" variant="outline" data-testid="pdf-export" disabled={!sidecar || exporting} onClick={() => void exportPdf()} />
+        <Tooltip portalled content={exportLabel} side="bottom">
+          <IconButton label={exportLabel} title={undefined} icon={<Icon name="upload" size={15} />} size="sm" variant="outline" data-testid="pdf-export" disabled={!canExport || exporting} onClick={() => void exportPdf()} />
+        </Tooltip>
       </div>
       {citationPages && citationPages.length > 1 && <span aria-label={t('citationPages')} className="col-span-2 inline-flex items-center gap-1">
         <span>{t('citationLabel')}</span>{citationPages.map(target => <Button key={target.page} size="sm" variant="ghost" aria-label={t('viewCitation', { page: target.page })} aria-pressed={currentPage === target.page} onClick={() => { requestFocus({ kind: 'citation', page: target.page }) }}>{t('page', { page: target.page })}</Button>)}
@@ -1294,14 +1305,17 @@ export function PdfDocument({
               />}
             />
             return analysis.translationOpen ? <div
-              className="mx-auto mb-4 grid w-max items-start gap-[var(--vds-space-4)] [&>.vds-pdf-page]:m-0"
+              className="relative mx-auto mb-4 grid w-max items-start shadow-[var(--vds-shadow-2-center)] before:pointer-events-none before:absolute before:inset-y-0 before:left-[var(--pdf-source-page-width)] before:z-[var(--vds-z-content)] before:w-[var(--vds-border-width-1)] before:bg-[var(--vds-border-default)] before:content-[''] [&>.vds-pdf-page]:m-0 [&>.vds-pdf-page]:![box-shadow:none]"
               data-page-pair={number}
               data-testid={`pdf-page-pair-${number}`}
               key={number}
-              style={{ gridTemplateColumns: `${estimatedPageSize.width * scale}px ${estimatedPageSize.width * scale}px` }}
+              style={{ '--pdf-source-page-width': `${estimatedPageSize.width * scale}px`, gridTemplateColumns: `${estimatedPageSize.width * scale}px ${estimatedPageSize.width * scale * TRANSLATION_COLUMN_RATIO}px` } as React.CSSProperties}
             >
               {sourcePage}
-              {analysis.translationPage(number, estimatedPageSize, scale)}
+              {analysis.translationPage(number, {
+                width: estimatedPageSize.width * scale * TRANSLATION_COLUMN_RATIO,
+                height: estimatedPageSize.height * scale,
+              }, 1)}
             </div> : sourcePage
           })}
         </div>
@@ -1342,7 +1356,7 @@ export function PdfDocument({
             />
           </Tooltip>
         })}
-        <Tooltip portalled content={t('pdfAnnotation.records')} side="left"><IconButton data-testid="pdf-annotation-toggle" variant={recordsOpen ? 'secondary' : 'ghost'} aria-pressed={recordsOpen} label={t('pdfAnnotation.records')} title={undefined} icon={<Icon name="pen" size={18} />} onClick={() => { exitFigureSelection(); closeDocumentPanel(); analysis.setPanel(null); update({ records: !recordsOpen }) }} /></Tooltip>
+        <Tooltip portalled content={t('pdfAnnotation.records')} side="left"><IconButton data-testid="pdf-annotation-toggle" variant={recordsOpen ? 'secondary' : 'ghost'} aria-pressed={recordsOpen} label={t('pdfAnnotation.records')} title={undefined} icon={<Pencil size={18} />} onClick={() => { exitFigureSelection(); closeDocumentPanel(); analysis.setPanel(null); update({ records: !recordsOpen }) }} /></Tooltip>
       </nav>}
     </div>
     </>}

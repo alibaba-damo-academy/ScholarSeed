@@ -1,4 +1,5 @@
 import { documentDisplayTitle } from '../../delivery'
+import { openSystemPath } from '../../api'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
@@ -286,6 +287,7 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
   const { t: uiText } = useTranslation('ui')
   const state = useDocumentWorkspace()
   const workspace = useWorkspaceController()
+  const { toast } = useToast()
   const [activePanelId, setActivePanelId] = useState<string | null>(null)
   const session = state.sessions[tab.sessionId]
   const missing = Boolean(session?.loadState === 'error'
@@ -297,6 +299,9 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
   }
   if (session.loadState === 'error') {
     const failure = session.loadFailure
+    const oversizedArtifact = failure?.code === 'session_artifact_too_large'
+      && session.source.kind === 'session-artifact'
+    const externalPath = session.source.kind === 'session-artifact' ? session.source.absolutePath : undefined
     if (missing) {
       return (
         <div className="vds-viewer-empty" data-testid="document-missing">
@@ -307,7 +312,19 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
     return (
       <div className="vds-viewer-empty" data-testid="document-load-error">
         <Alert
-          action={failure?.retryable
+          layout="stacked"
+          action={oversizedArtifact && externalPath
+            ? (
+                <Button
+                  variant="outline"
+                  onClick={() => void openSystemPath(externalPath).then((result) => {
+                    if (!result.ok) toast({ title: t('dock.openFailed'), description: result.error, tone: 'error' })
+                  })}
+                >
+                  {t('dock.openExternal')}
+                </Button>
+              )
+            : failure?.retryable
             ? (
                 <Button
                   data-testid="document-load-retry"
@@ -318,7 +335,9 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
                 </Button>
               )
             : undefined}
-          description={failure
+          description={oversizedArtifact
+            ? t('dock.artifactTooLarge')
+            : failure
             ? t('dock.loadFailureDetail', { message: failure.message, code: failure.code })
             : t('dock.loadFailureUnknown')}
           title={t('dock.loadFailed', { title: documentDisplayTitle(tab, conversation, t) })}
@@ -347,15 +366,11 @@ function DocumentView({ active, tab }: { active: boolean; tab: DocumentTab }): R
         />
       )}
       {session.saveState === 'conflict' && (
-        <Alert tone="warning" data-testid="document-save-conflict">
-          <AlertTitle>{t('dock.conflictTitle')}</AlertTitle>
-          <AlertDescription>{t('dock.conflictDescription')}</AlertDescription>
-          <div className="vds-version-actions">
+        <Alert action={<div className="vds-version-actions">
             <Button size="sm" variant="danger" data-testid="document-conflict-overwrite" onClick={() => void workspace.overwriteDisk(session.id)}>{t('dock.overwrite')}</Button>
             <Button size="sm" variant="secondary" data-testid="document-conflict-discard" onClick={() => void workspace.discardMemory(session.id)}>{t('dock.discard')}</Button>
             <Button size="sm" variant="secondary" data-testid="document-conflict-copy" onClick={() => void workspace.saveManagedCopy(session.id)}>{t('dock.saveAs')}</Button>
-          </div>
-        </Alert>
+          </div>} data-testid="document-save-conflict" description={t('dock.conflictDescription')} layout="stacked" title={t('dock.conflictTitle')} tone="warning" />
       )}
       <div className="vds-document-view-body flex">
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -571,6 +586,7 @@ export function DocumentDock(): React.JSX.Element {
   const drag = useDocumentDrag()
   const officeRuntime = useOfficeRuntime()
   const project = selectedProject(appState)?.id ?? ''
+  const dockRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!project) return undefined
@@ -599,23 +615,40 @@ export function DocumentDock(): React.JSX.Element {
       }
       window.getSelection()?.removeAllRanges()
     }
-    const dismissOutsideSelection = (event: Event): void => {
+    const saveOutsideDock = (event: Event): void => {
+      if (!appState.autoSave) return
+      const host = dockRef.current
+      if (
+        !host
+        || (event.target instanceof Node && host.contains(event.target))
+        || retainsDocumentSelection(null, event.target)
+      ) return
+      void workspace.saveFocused()
+    }
+    const handleOutsideFocus = (event: FocusEvent): void => {
       if (retainsDocumentSelection(null, event.target)) return
       dismissSelection()
+      saveOutsideDock(event)
     }
-    const dismissOutsidePointer = (event: PointerEvent): void => {
-      if (preserveTextSelectionForContextMenu(event)) return
-      dismissOutsideSelection(event)
+    const handleOutsidePointer = (event: PointerEvent): void => {
+      if (!preserveTextSelectionForContextMenu(event)) {
+        if (!retainsDocumentSelection(null, event.target)) dismissSelection()
+      }
+      saveOutsideDock(event)
     }
-    document.addEventListener('focusin', dismissOutsideSelection, true)
-    document.addEventListener('pointerdown', dismissOutsidePointer, true)
-    window.addEventListener('blur', dismissSelection)
+    const handleWindowBlur = (event: FocusEvent): void => {
+      dismissSelection()
+      saveOutsideDock(event)
+    }
+    document.addEventListener('focusin', handleOutsideFocus, true)
+    document.addEventListener('pointerdown', handleOutsidePointer, true)
+    window.addEventListener('blur', handleWindowBlur)
     return () => {
-      document.removeEventListener('focusin', dismissOutsideSelection, true)
-      document.removeEventListener('pointerdown', dismissOutsidePointer, true)
-      window.removeEventListener('blur', dismissSelection)
+      document.removeEventListener('focusin', handleOutsideFocus, true)
+      document.removeEventListener('pointerdown', handleOutsidePointer, true)
+      window.removeEventListener('blur', handleWindowBlur)
     }
-  }, [workspace])
+  }, [appState.autoSave, workspace])
 
   const beginAreaResize = (event: React.PointerEvent<HTMLDivElement>): void => {
     event.preventDefault()
@@ -642,17 +675,7 @@ export function DocumentDock(): React.JSX.Element {
     <div
       className="vds-document-dock"
       data-testid="document-dock"
-      onBlurCapture={(event) => {
-        if (!appState.autoSave) return
-        const host = event.currentTarget
-        const related = event.relatedTarget
-        if (related instanceof Node && host.contains(related)) return
-        queueMicrotask(() => {
-          const active = document.activeElement
-          if (document.hasFocus() && active instanceof Node && host.contains(active)) return
-          void workspace.saveFocused()
-        })
-      }}
+      ref={dockRef}
     >
       <SelectionActionHost />
       <div

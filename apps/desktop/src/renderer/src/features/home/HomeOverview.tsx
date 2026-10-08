@@ -1,13 +1,10 @@
 import React from 'react'
 import { Trans, useTranslation } from 'react-i18next'
 import {
-  Archive,
   Box,
   FileDown,
   Inbox,
-  MonitorDown,
-  MoreHorizontal,
-  Pencil,
+  MonitorDown
 } from 'lucide-react'
 
 import homeBook from '../../assets/home_book.webp'
@@ -32,15 +29,6 @@ import type {
 import { createFormatters } from '../../../../localization/format'
 import {
   Alert,
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPortal,
-  AlertDialogTitle,
   Button,
   Checkbox,
   Dialog,
@@ -54,11 +42,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   EllipsisText,
-  IconButton,
   Input,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
   ProgressBar,
   ScrollArea,
   Spinner,
@@ -66,8 +50,7 @@ import {
 } from '../../components/ui'
 import { Icon } from '../../icons'
 import { IconFont } from '../../components/primitive'
-import { listProjects } from '../../api'
-import { PROJECT_NAME_MAX } from '../../contracts/content'
+import { ProjectActionsMenu } from '../../components/business/ProjectActions'
 import {
   createImportTask,
   LiteratureApiError,
@@ -84,8 +67,10 @@ import {
   type ZoteroPreview
 } from '../literature/api'
 import {
+  openedLiteratureAttachment,
   openedLiteratureIconKind,
   openedLiteratureLabel,
+  openRecentLiterature,
   RECENT_LITERATURE_DISPLAY_LIMIT,
   RECENT_LITERATURE_RESOLVE_LIMIT,
   type RecentLiteratureIconKind
@@ -101,7 +86,6 @@ import {
   literatureErrorMessage,
   type LiteratureErrorMessage
 } from '../literature/error'
-import { renameProject, setProjectArchived } from '../project/api'
 import { fetchResourceCount } from '../resources/api'
 import { projectModifiedLabel, projectSummary } from '../../project'
 import { useApp } from '../../store'
@@ -135,11 +119,10 @@ interface PdfImportRecord {
   error?: LiteratureErrorMessage
 }
 
-/** 首页「最近打开」行：指针在偏好里，展示字段按 id 回文献域现取。 */
+/** 首页「最近打开」行：指针在偏好里，展示字段按 id 回文献域现取；只收附件行。 */
 interface RecentOpenRow {
   id: string
-  title: string
-  attachmentName: string | null
+  attachmentName: string
   iconKind: RecentLiteratureIconKind
   openedAt: number
 }
@@ -257,84 +240,16 @@ function ZoteroTreeNode({
   )
 }
 
-/** 后端错误码 → 用户能看懂的提示。与 ProjectPanel 同一约定: 按码分支不按文案。 */
-const PROJECT_ERROR_KEYS = {
-  name_required: 'errors.name_required',
-  name_too_long: 'errors.name_too_long',
-  unknown_project: 'errors.unknown_project',
-  cannot_archive_current_project: 'errors.cannot_archive_current_project'
-} as const
-
-const PROJECT_ACTION_ITEM_CLASS_NAME =
-  'h-9 w-full justify-start gap-2 px-2 text-left text-[14px]'
-
-function ProjectActionsMenu({
-  id,
-  name,
-  onArchive,
-  onRename
-}: {
-  id: string
-  name: string
-  onArchive: (id: string) => void
-  onRename: (id: string, name: string) => void
-}): React.JSX.Element {
-  const { t } = useTranslation('components')
-  const [open, setOpen] = React.useState(false)
-  const close = (action: () => void): void => {
-    setOpen(false)
-    action()
-  }
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <IconButton
-          className={`absolute right-[10px] top-[10px] z-[var(--vds-z-local-control)] transition-opacity ${
-            open
-              ? 'opacity-100'
-              : 'opacity-0 group-hover/home-card:opacity-100 focus-visible:opacity-100'
-          }`}
-          data-testid={`home-project-menu-${id}`}
-          icon={<MoreHorizontal size={16} strokeWidth={1.6} />}
-          label={t('home.menu.label', { name })}
-          size="sm"
-          variant="ghost"
-        />
-      </PopoverTrigger>
-      <PopoverContent
-        aria-label={t('home.menu.label', { name })}
-        className="w-[195px]"
-      >
-        <Button
-          className={PROJECT_ACTION_ITEM_CLASS_NAME}
-          data-testid={`home-project-rename-${id}`}
-          variant="ghost"
-          onClick={() => close(() => onRename(id, name))}
-        >
-          <Pencil size={14} strokeWidth={1.6} />
-          {t('home.menu.rename')}
-        </Button>
-        <Button
-          className={`${PROJECT_ACTION_ITEM_CLASS_NAME} !text-[var(--vds-error-text-primary)]`}
-          data-testid={`home-project-archive-${id}`}
-          variant="ghost"
-          onClick={() => close(() => onArchive(id))}
-        >
-          <Archive size={14} strokeWidth={1.6} />
-          {t('home.menu.archive')}
-        </Button>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
 export function HomeOverview(): React.JSX.Element {
   const { t: projectText } = useTranslation('project')
   const { state, set, act } = useApp()
   const { t } = useTranslation('components')
   const { t: literature } = useTranslation('literature')
+  const { toast } = useToast()
   const format = createFormatters(state.lang)
-  const [counts, setCounts] = React.useState<LiteratureCounts | null>(null)
+  const [counts, setCounts] = React.useState<LiteratureCounts | null>(
+    () => catalogue.overviewCounts()
+  )
   const [recentOpens, setRecentOpens] = React.useState<RecentOpenRow[]>([])
   const [literatureByProject, setLiteratureByProject] = React.useState<
     Record<string, number>
@@ -366,25 +281,13 @@ export function HomeOverview(): React.JSX.Element {
   const [zoteroCollections, setZoteroCollections] = React.useState(true)
   const [importError, setImportError] =
     React.useState<LiteratureErrorMessage | null>(null)
-  const [renameTarget, setRenameTarget] = React.useState<{
-    id: string
-    name: string
-  } | null>(null)
-  const [renameDraft, setRenameDraft] = React.useState('')
-  const [renameError, setRenameError] = React.useState<string | null>(null)
-  const [renameBusy, setRenameBusy] = React.useState(false)
-  const [archiveTarget, setArchiveTarget] = React.useState<{
-    id: string
-    name: string
-  } | null>(null)
-  const [archiveBusy, setArchiveBusy] = React.useState(false)
-  const archivePending = React.useRef(false)
-  const { toast } = useToast()
 
   React.useEffect(() => {
+    if (catalogue.overviewCountsFresh()) return
     let alive = true
     getLiteratureCounts()
       .then((value) => {
+        catalogue.cacheOverviewCounts(value)
         if (alive) setCounts(value)
       })
       .catch(() => undefined)
@@ -418,14 +321,21 @@ export function HomeOverview(): React.JSX.Element {
             } => row !== null
           )
           .sort((left, right) => right.entry.openedAt - left.entry.openedAt)
+          .flatMap((row) => {
+            // 只有能点开的附件才进「最近打开」：没有主附件的纯文献条目、
+            // 以及文件已丢失的附件，都不再占这三行。
+            const attachment = openedLiteratureAttachment(row.item)
+            if (!attachment) return []
+            return [
+              {
+                id: row.item.id,
+                attachmentName: attachment.name,
+                iconKind: openedLiteratureIconKind(row.item),
+                openedAt: row.entry.openedAt
+              }
+            ]
+          })
           .slice(0, RECENT_LITERATURE_DISPLAY_LIMIT)
-          .map((row) => ({
-            id: row.item.id,
-            title: row.item.title,
-            attachmentName: row.item.primary_attachment?.name ?? null,
-            iconKind: openedLiteratureIconKind(row.item),
-            openedAt: row.entry.openedAt
-          }))
       )
     })
     return () => {
@@ -484,71 +394,6 @@ export function HomeOverview(): React.JSX.Element {
     })
     openLiteratureOverview()
     act.activateTab('literature')
-  }
-
-  const projectErrorText = React.useCallback(
-    (code: string): string =>
-      Object.prototype.hasOwnProperty.call(PROJECT_ERROR_KEYS, code)
-        ? projectText(
-            PROJECT_ERROR_KEYS[code as keyof typeof PROJECT_ERROR_KEYS],
-            {
-              max: PROJECT_NAME_MAX
-            }
-          )
-        : projectText('notices.unknown', { code }),
-    [projectText]
-  )
-
-  const reloadProjects = React.useCallback(async (): Promise<void> => {
-    const active = await listProjects()
-    if (active) set({ projects: active.projects })
-  }, [set])
-
-  const openRename = React.useCallback((id: string, name: string): void => {
-    setRenameTarget({ id, name })
-    setRenameDraft(name)
-    setRenameError(null)
-  }, [])
-
-  const submitRename = async (): Promise<void> => {
-    if (!renameTarget) return
-    const name = renameDraft.trim()
-    if (!name) {
-      setRenameError('name_required')
-      return
-    }
-    setRenameBusy(true)
-    const result = await renameProject(renameTarget.id, name)
-    setRenameBusy(false)
-    if (!result.ok) {
-      setRenameError(result.error ?? 'unknown_project')
-      return
-    }
-    setRenameTarget(null)
-    toast({ title: projectText('notices.renamed'), tone: 'success' })
-    await reloadProjects()
-  }
-
-  const archiveProject = async (): Promise<void> => {
-    if (!archiveTarget || archivePending.current) return
-    archivePending.current = true
-    setArchiveBusy(true)
-    try {
-      const result = await setProjectArchived(archiveTarget.id, true)
-      if (!result.ok) {
-        toast({
-          title: projectErrorText(result.error ?? 'unknown_project'),
-          tone: 'error'
-        })
-        return
-      }
-      setArchiveTarget(null)
-      toast({ title: projectText('notices.archived'), tone: 'success' })
-      await reloadProjects()
-    } finally {
-      archivePending.current = false
-      setArchiveBusy(false)
-    }
   }
 
   const waitForImportTask = React.useCallback(
@@ -967,48 +812,6 @@ export function HomeOverview(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog
-        open={renameTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !renameBusy) setRenameTarget(null)
-        }}
-      >
-        <DialogContent className="w-[min(420px,calc(100vw-48px))]">
-          <DialogHeader>
-            <DialogTitle>{t('home.rename.title')}</DialogTitle>
-            <DialogDescription>
-              {t('home.rename.description')}
-            </DialogDescription>
-          </DialogHeader>
-          <Input
-            autoFocus
-            className="vds-input"
-            data-testid="home-rename-input"
-            maxLength={PROJECT_NAME_MAX}
-            value={renameDraft}
-            onChange={(event) => setRenameDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void submitRename()
-              if (event.key === 'Escape' && !renameBusy) setRenameTarget(null)
-            }}
-          />
-          {renameError ? (
-            <Alert tone="error" title={projectErrorText(renameError)} />
-          ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameTarget(null)}>
-              {t('home.rename.cancel')}
-            </Button>
-            <Button
-              data-testid="home-rename-submit"
-              disabled={renameBusy}
-              onClick={() => void submitRename()}
-            >
-              {t('home.rename.confirm')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <div className="vds-home-in !mx-auto !box-border !w-[min(calc(100%_-_56px),880px)]">
         <div className="vds-home-welcome">
           <img alt="" draggable={false} src={scholarseedLogoMark} />
@@ -1092,21 +895,11 @@ export function HomeOverview(): React.JSX.Element {
                         className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-4)] px-[var(--vds-space-2)] py-[6px] text-left hover:bg-[var(--vds-bg-white-hover-transparent)]"
                         data-testid={`home-recent-literature-${row.id}`}
                         onClick={() => {
-                          if (!row.attachmentName) {
-                            void act.openLiteratureItem(row.id, '')
-                            return
-                          }
-                          // openLiteratureAttachment 只切文档页签，不负责从首页
-                          // 进入工作台；先走文献全览入口，再打开附件预览页签。
-                          // 作用域必须显式传 ''：openLiteratureItem 刚改过
-                          // homeSelectedProjectId，stateRef 此刻还是批处理前旧值。
-                          void act
-                            .openLiteratureItem(row.id, '')
-                            .then(() =>
-                              act.openLiteratureAttachment(row.id, undefined, undefined, {
-                                projectId: ''
-                              })
-                            )
+                          void openRecentLiterature(act, row.id)
+                            .then((result) => {
+                              if (result !== 'opened') toast({ title: t('home.recentOpenFailed'), tone: 'error' })
+                            })
+                            .catch(() => toast({ title: t('home.recentOpenFailed'), tone: 'error' }))
                         }}
                       >
                         <img
@@ -1119,7 +912,7 @@ export function HomeOverview(): React.JSX.Element {
                           wrapperClassName="min-w-0 flex-1"
                           tooltipPortalled
                         >
-                          {row.attachmentName ?? row.title}
+                          {row.attachmentName}
                         </EllipsisText>
                         <span className="flex-none text-[var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-tertiary)]">
                           {openedLiteratureLabel(row.openedAt, format)}
@@ -1200,14 +993,16 @@ export function HomeOverview(): React.JSX.Element {
                     act.selectProject(project.id)
                     act.openWorkbenchView('resource')
                   }}
-                  title={t('home.enterProject', { name: project.name })}
+                  aria-label={t('home.enterProject', { name: project.name })}
                 >
                   <span className="vds-home-card-head">
                     <span className="vds-home-card-icon">
                       <Box size={20} strokeWidth={1.6} />
                     </span>
                     <span className="vds-home-card-title-group">
-                      <span className="vds-home-card-t">{project.name}</span>
+                      <EllipsisText wrapperClassName="w-full" className="vds-home-card-t" tooltipPortalled>
+                        {project.name}
+                      </EllipsisText>
                       <span className="vds-home-card-m">
                         <span className="!w-auto flex-none whitespace-nowrap">
                           {t('home.recentlyModified')}
@@ -1244,12 +1039,10 @@ export function HomeOverview(): React.JSX.Element {
                   </span>
                 </Button>
                 <ProjectActionsMenu
-                  id={project.id}
-                  name={project.name}
-                  onArchive={(targetId) =>
-                    setArchiveTarget({ id: targetId, name: project.name })
-                  }
-                  onRename={openRename}
+                  idPrefix="home-project-"
+                  project={project}
+                  triggerClassName="absolute right-[var(--vds-space-2)] top-[var(--vds-space-2)] z-[var(--vds-z-local-control)] opacity-0 transition-opacity group-hover/home-card:opacity-100 focus-visible:opacity-100 aria-[expanded=true]:opacity-100"
+                  triggerTestId={`home-project-menu-${project.id}`}
                 />
               </div>
             )
@@ -1261,41 +1054,6 @@ export function HomeOverview(): React.JSX.Element {
           </div>
         )}
       </div>
-      <AlertDialog
-        open={archiveTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !archivePending.current) setArchiveTarget(null)
-        }}
-      >
-        <AlertDialogPortal>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>
-                {projectText('archive.title', {
-                  name: archiveTarget?.name ?? ''
-                })}
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                {projectText('archive.description')}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={archiveBusy}>
-                {projectText('archive.cancel')}
-              </AlertDialogCancel>
-              <AlertDialogAction
-                disabled={archiveBusy}
-                onClick={(event) => {
-                  event.preventDefault()
-                  void archiveProject()
-                }}
-              >
-                {projectText('archive.confirm')}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialogPortal>
-      </AlertDialog>
     </div>
   )
 }

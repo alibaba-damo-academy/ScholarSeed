@@ -74,7 +74,8 @@ def audit(workspace: Path) -> dict:
         complete = 0
         for key, entry in sorted(entries.items()):
             missing_required = [f for f in spec["required"] if not _has(entry, f)]
-            missing_recommended = [f for f in spec["recommended"] if not _has(entry, f)]
+            recommended = spec["recommended"] + spec.get("recommended_by_type", {}).get(entry.entry_type, [])
+            missing_recommended = [f for f in recommended if not _has(entry, f)]
             required_ok += not missing_required
             complete += not missing_required and not missing_recommended
             if missing_required or missing_recommended:

@@ -7,10 +7,14 @@ import {
   effectiveSessionModelKey,
   hasSelectableModel,
   personalModelId,
+  projectCatalogFailure,
   pruneMissingCatalogThreads,
   requestModelSupportsImageInput,
   requestModelKey,
   retainCatalogThread,
+  selectableActionModelKey,
+  sessionCatalogRetryDelay,
+  sessionCatalogNeedsRefresh,
   selectableCatalogModelKey,
   selectedSessionModelKey
 } from './catalog.ts'
@@ -18,6 +22,45 @@ import type { SessionNode, Thread } from './model.ts'
 
 const APPEARANCE_GRACE_SECONDS = 5
 const NOW_SECONDS = 100
+
+test('catalog keeps refreshing completed sessions until recovery settlement is authoritative', () => {
+  const sessions = [{ id: 'active', status: 'done' as const }]
+  assert.equal(sessionCatalogNeedsRefresh(sessions, 'active', { active: { recoveryPending: true } }), true)
+  assert.equal(sessionCatalogNeedsRefresh(sessions, 'active', { active: { recoveryPending: false } }), false)
+  assert.equal(sessionCatalogNeedsRefresh([], null, { detached: { recoveryPending: true } }), true)
+})
+
+test('catalog preserves background running and waiting refresh without polling ordinary idle sessions', () => {
+  for (const status of ['running', 'waiting'] as const) {
+    const sessions = [{ id: 'active', status }, { id: 'background', status }]
+    assert.equal(sessionCatalogNeedsRefresh(sessions, 'active', {}), true)
+    assert.equal(sessionCatalogNeedsRefresh([sessions[0]], 'active', {}), false)
+  }
+  assert.equal(sessionCatalogNeedsRefresh([{ id: 'idle', status: 'done' }], 'active', {}), false)
+})
+
+test('catalog failures preserve a loaded workspace and retry only retryable failures', () => {
+  assert.deepEqual(projectCatalogFailure('ready', true), {
+    workspaceLoadState: 'ready',
+    retry: true
+  })
+  assert.deepEqual(projectCatalogFailure('loading', true), {
+    workspaceLoadState: 'error',
+    retry: true
+  })
+  assert.deepEqual(projectCatalogFailure('error', false), {
+    workspaceLoadState: 'error',
+    retry: false
+  })
+})
+
+test('catalog retry backoff grows and caps at ten seconds', () => {
+  assert.equal(sessionCatalogRetryDelay(0), 1_000)
+  assert.equal(sessionCatalogRetryDelay(1), 2_000)
+  assert.equal(sessionCatalogRetryDelay(2), 5_000)
+  assert.equal(sessionCatalogRetryDelay(3), 10_000)
+  assert.equal(sessionCatalogRetryDelay(99), 10_000)
+})
 
 function thread(id: string): Thread {
   return {
@@ -199,6 +242,23 @@ test('catalog selection preserves an enabled previous choice before using the fi
   )
   assert.equal(selectableCatalogModelKey('missing', models), 'personal-first:first')
   assert.equal(selectableCatalogModelKey('missing', []), 'missing')
+})
+
+test('reading actions resolve a stale preference against the current selectable catalog', () => {
+  const models = [
+    { key: 'qwen3.8-max', disabled: true, model_id: 'qwen3.8-max' },
+    { key: 'personal-own:qwen3.8-max', model_id: 'qwen3.8-max' },
+    { key: 'personal-other:other', model_id: 'other' }
+  ]
+  assert.equal(selectableActionModelKey('qwen3.8-max', models, 'personal-other:other'), 'personal-other:other')
+  assert.equal(selectableActionModelKey('qwen3.8-max', models), 'personal-own:qwen3.8-max')
+  assert.equal(selectableActionModelKey('personal-own:qwen3.8-max', models), 'personal-own:qwen3.8-max')
+  assert.equal(selectableActionModelKey('qwen3.8-max', models.slice(0, 1)), '')
+  assert.equal(selectableActionModelKey('', [], ''), '')
+  assert.equal(selectableActionModelKey('chatgpt-disconnected', [
+    { key: 'chatgpt-disconnected', disabled: true, model_id: 'gpt' },
+    { key: 'qwen3.8-flash', model_id: 'qwen3.8-flash' }
+  ]), 'qwen3.8-flash')
 })
 
 // 登出前开的会话，其 runtime 仍是置灰的内置键：会话面（选择器/文献解释/阅读请求）必须

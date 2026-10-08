@@ -17,6 +17,7 @@ MILLISECONDS_PER_SECOND = 1000
 
 class ActivationStage(str, Enum):
     TOTAL = "activation.total"
+    READINESS = "activation.readiness"
     LOCK_WAIT = "activation.lock_wait"
     LIFECYCLE_LOCK_WAIT = "activation.lifecycle_lock_wait"
     SKILLS = "activation.skills"

@@ -1,0 +1,2 @@
+export const streamingTextClassName =
+  'font-medium text-transparent bg-[linear-gradient(100deg,var(--vds-text-primary)_0%,var(--vds-text-primary)_42%,var(--vds-text-tertiary)_50%,var(--vds-text-primary)_58%,var(--vds-text-primary)_100%)] bg-[length:360%_100%] bg-[position:120%_0] bg-clip-text animate-[vds-streaming-text-shimmer_6.5s_linear_infinite] motion-reduce:animate-none motion-reduce:bg-none motion-reduce:text-[var(--vds-text-secondary)]'

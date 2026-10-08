@@ -2050,6 +2050,49 @@ test('concurrent saves for one document share a single CAS transaction', async (
   assert.equal(workspace.getSnapshot().sessions[sessionId].saveState, 'clean')
 })
 
+test('a newer change queues another save while the prior save refreshes version metadata', async () => {
+  let releaseVersioning!: () => void
+  let markVersioningStarted!: () => void
+  const versioningStarted = new Promise<void>((resolve) => { markVersioningStarted = resolve })
+  const pendingVersioning = new Promise<void>((resolve) => { releaseVersioning = resolve })
+  const committed: string[] = []
+  const base = loader()
+  const workspace = new DocumentWorkspace({
+    ...base,
+    async load(requested) {
+      const loaded = await base.load(requested)
+      assert.ok(loaded)
+      return { ...loaded, versioning: managedVersioning }
+    },
+    async commit(_source, bytes) {
+      committed.push(new TextDecoder().decode(bytes))
+      return { ok: true, revision: `sha256:saved-${committed.length}` }
+    },
+    async versioning() {
+      markVersioningStarted()
+      await pendingVersioning
+      return managedVersioning
+    }
+  })
+  const tabId = await workspace.open(source, 'edit')
+  const sessionId = workspace.getSnapshot().tabs[tabId].sessionId
+  workspace.updateText(sessionId, '# First queued save\n')
+
+  const first = workspace.save(sessionId)
+  await versioningStarted
+  workspace.updateText(sessionId, '# Second queued save\n')
+  const second = workspace.save(sessionId)
+  releaseVersioning()
+
+  assert.equal(await first, true)
+  assert.equal(await second, true)
+  assert.deepEqual(committed, ['# First queued save\n', '# Second queued save\n'])
+  const session = workspace.getSnapshot().sessions[sessionId]
+  assert.equal(session.savedText, '# Second queued save\n')
+  assert.equal(session.dirty, false)
+  assert.equal(session.saveState, 'clean')
+})
+
 test('the resolved project identity from open is retained for later saves', async () => {
   const requested = { kind: 'project' as const, path: 'notes/readme.md' }
   const canonical = { ...requested, project: 'project-resolved' }

@@ -157,6 +157,18 @@ export function expandedResourceAncestors(
   return next
 }
 
+export function openResourceDirectory(resource: ResourceState, path: string): ResourceState {
+  if (findResourceNode(resource.tree, path)?.kind !== 'dir') return resource
+  return {
+    ...resource,
+    selected: path,
+    expanded: {
+      ...expandedResourceAncestors(resource.tree, path, resource.expanded),
+      [path]: true
+    }
+  }
+}
+
 /** 把 OS 绝对路径统一成正斜杠, 让前缀包含判定与分隔符无关 (Windows 反斜杠同样适用)。 */
 function normalizeAbsoluteSource(path: string): string {
   return path.replace(/\\/g, RESOURCE_PATH_SEPARATOR)

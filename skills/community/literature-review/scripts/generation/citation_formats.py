@@ -64,7 +64,6 @@ __all__ = [
     "CitationResolver", "STYLES",
 ]
 
-STYLES = ("numeric", "author_year", "ieee", "acm")
 
 # How many authors a reference entry prints before it truncates. Matches the
 # cap baked into assets/unsrtnat_scholarseed.bst, so the two paths do not disagree
@@ -347,6 +346,54 @@ def _render_acm(entry: BibEntry, number: int) -> str:
     return " ".join(parts)
 
 
+_GBT_AUTHOR_CAP = 3
+_GBT_MARKERS = {
+    "article": "J", "inproceedings": "C", "conference": "C",
+    "proceedings": "C", "book": "M", "incollection": "M",
+    "phdthesis": "D", "mastersthesis": "D", "techreport": "R",
+    "misc": "EB/OL", "online": "EB/OL",
+}
+_GBT_CONTAINED = {"inproceedings", "conference", "incollection"}
+_GBT_ONLINE_SUFFIX = '/OL'
+
+
+def _render_gbt(entry: BibEntry, number: int) -> str:
+    authors = []
+    for given, family in entry.authors[:_GBT_AUTHOR_CAP]:
+        initials = "".join(part[0].upper() for part in re.split(r"[\s.-]+", given) if part)
+        authors.append(" ".join(part for part in (family, initials) if part))
+    if len(entry.authors) > _GBT_AUTHOR_CAP:
+        authors.append("等" if any(re.search(r"[\u3400-\u9fff]", name) for name in authors) else "et al.")
+    marker = _GBT_MARKERS.get(entry.entry_type, "Z")
+    if entry.fields.get('eprint') and entry.entry_type in {'misc', 'online'}:
+        marker = 'PP/OL'
+    if (entry.doi or entry.url) and not marker.endswith(_GBT_ONLINE_SUFFIX):
+        marker += _GBT_ONLINE_SUFFIX
+    title = f"{entry.title}[{marker}]"
+    if entry.entry_type in _GBT_CONTAINED:
+        title += f"//{entry.venue}"
+    elif entry.venue:
+        title += f". {entry.venue}"
+    place = entry.fields.get("address") or entry.fields.get("location", "")
+    publication = ": ".join(part for part in (place, entry.publisher) if part)
+    date = ", ".join(part for part in (publication, entry.year) if part)
+    if entry.volume:
+        date += f", {entry.volume}"
+    if entry.number:
+        date += f"({entry.number})"
+    if entry.pages:
+        date += f": {entry.pages}"
+    accessed = entry.fields.get("urldate") or entry.fields.get("accessed")
+    if accessed:
+        date += f"[{accessed}]"
+    result = f"[{number}] " + ". ".join(part for part in (", ".join(authors), title, date) if part).rstrip(".") + "."
+    if entry.url:
+        result += f" {entry.url}."
+    if entry.doi:
+        result += f" DOI:{entry.doi}."
+    return result
+
+
 def _render_author_year(entry: BibEntry, number: int) -> str:
     del number  # author-year reference lists are not numbered
     parts = [_inverted_names(entry)]
@@ -367,11 +414,13 @@ def _render_author_year(entry: BibEntry, number: int) -> str:
 #   "citation"    — order of first appearance in the document
 #   "alphabetic"  — sorted by first author, then year, then title
 _STYLE_TABLE = {
+    "gbt7714_2025": (_render_gbt, True, "citation"),
     "numeric":     (_render_numeric,     True,  "citation"),
     "ieee":        (_render_ieee,        True,  "citation"),
     "acm":         (_render_acm,         True,  "alphabetic"),
     "author_year": (_render_author_year, False, "alphabetic"),
 }
+STYLES = tuple(_STYLE_TABLE)
 
 
 # ---------------------------------------------------------------------------

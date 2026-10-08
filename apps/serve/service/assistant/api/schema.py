@@ -150,6 +150,7 @@ class SelectionAnchorRequest(BaseModel):
     locator: SelectionLocatorRequest
     selected_text_hash: str = Field(pattern=SHA256_PATTERN)
     preview_text: str = ""
+    snapshot_text: str = ""
 
 
 class ContextRefRequest(BaseModel):

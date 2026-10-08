@@ -130,6 +130,7 @@
       "source_changed_during_generation": "The source PDF changed during generation. Previous results are preserved. Reopen the literature item.",
       "execution_failed": "Generation failed. Previous results are preserved. Try again.",
       "preparation_failed": "Could not prepare the reading task. Check the document and model settings, then try again.",
+      "model_unavailable": "The selected model is unavailable. Sign in or configure and select an available model in Settings → Model services.",
       "operation_busy": "This operation already has a generation task. Other AI operations are still available.",
       "figure_stream_required": "Figure explanation requires the streaming endpoint. Update the client and try again.",
       "source_invalid": "Select a valid project PDF file for figure explanation."

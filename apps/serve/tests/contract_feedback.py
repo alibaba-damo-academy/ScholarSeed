@@ -15,13 +15,17 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from scholarseed_runtime.contract.session import RuntimeExecutionThread
 from service.chat.api.feedback import mount_feedback_routes
+from service.chat.persistence.catalog import SessionAccessError
 from service.chat.service import feedback as fb
 
 PASS = 0
@@ -84,15 +88,20 @@ def _service(
         include_trace: bool,
         session_id: str = "",
         vendor_thread_id: str = "",
+        execution_threads: tuple[RuntimeExecutionThread, ...] = (),
+        execution_tree_status: str = "unavailable",
         recording_report: bytes = b"",
+        renderer_diagnostics: bytes = b"",
         include_diagnostics: bool = True,
     ) -> bytes:
+        del execution_threads, execution_tree_status
         calls.append(
             {
                 "include_trace": include_trace,
                 "session_id": session_id,
                 "vendor_thread_id": vendor_thread_id,
                 "recording_report": recording_report,
+                "renderer_diagnostics": renderer_diagnostics,
                 "include_diagnostics": include_diagnostics,
             }
         )
@@ -156,6 +165,7 @@ def test_trace_is_opt_in() -> None:
                 "session_id": "",
                 "vendor_thread_id": "",
                 "recording_report": b"",
+                "renderer_diagnostics": b"",
                 "include_diagnostics": True,
             }
         ],
@@ -183,6 +193,7 @@ def test_trace_is_opt_in() -> None:
                 "session_id": "sess-a",
                 "vendor_thread_id": "thread-a",
                 "recording_report": b"",
+                "renderer_diagnostics": b"",
                 "include_diagnostics": True,
             }
         ],
@@ -302,6 +313,7 @@ def test_recording_report_bundle() -> None:
                 "session_id": "",
                 "vendor_thread_id": "",
                 "recording_report": report,
+                "renderer_diagnostics": b"",
                 "include_diagnostics": False,
             }
         ],
@@ -311,6 +323,25 @@ def test_recording_report_bundle() -> None:
         "recording bundle is forwarded through the existing logs field",
         result.ok and any(name == "logs_bundle" for name, _ in recorder.files),
     )
+
+
+def test_renderer_diagnostics_bundle() -> None:
+    diagnostics = b'{"schemaVersion":1,"consoleMessages":[],"networkRequests":[]}'
+    bundle = fb.build_log_bundle(
+        include_trace=False,
+        include_diagnostics=False,
+        renderer_diagnostics=diagnostics,
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+        check(
+            "renderer diagnostics use a dedicated bundle member",
+            archive.namelist() == [fb.RENDERER_DIAGNOSTICS_ARCNAME],
+            str(archive.namelist()),
+        )
+        check(
+            "renderer diagnostics contents are preserved",
+            archive.read(fb.RENDERER_DIAGNOSTICS_ARCNAME) == diagnostics,
+        )
 
 
 def test_recording_report_route() -> None:
@@ -387,6 +418,95 @@ def test_recording_report_route() -> None:
             unsupported.status_code == 422,
             unsupported.text,
         )
+        renderer_response = client.post(
+            "/api/serve/feedback",
+            data={"description": "renderer diagnostics"},
+            files={
+                "renderer_diagnostics": (
+                    "renderer-diagnostics.json",
+                    b'{"schemaVersion":1,"consoleMessages":[],"networkRequests":[]}',
+                    "application/json",
+                )
+            },
+        )
+        check(
+            "renderer diagnostics route accepts JSON",
+            renderer_response.status_code == 200,
+            renderer_response.text,
+        )
+        check(
+            "renderer diagnostics route passes exact bytes to the service",
+            feedback.submission is not None
+            and feedback.submission.renderer_diagnostics.startswith(b'{"schemaVersion":1'),
+        )
+
+
+def test_feedback_route_scopes_execution_tree_to_owned_session() -> None:
+    class Catalog:
+        def get(self, session_id: str) -> Any:
+            if session_id in {"owned", "denied"}:
+                return SimpleNamespace(vendor_thread_id="root-thread")
+            return None
+
+        def require(self, session_id: str, _principal: Any) -> None:
+            if session_id == "denied":
+                raise SessionAccessError("not owned")
+
+    class Runtime:
+        calls: list[str] = []
+
+        async def execution_threads(self, session_id: str) -> tuple[RuntimeExecutionThread, ...]:
+            self.calls.append(session_id)
+            return (RuntimeExecutionThread("child-thread", "root-thread"),)
+
+    class Feedback:
+        submissions: list[fb.FeedbackSubmission] = []
+
+        def submit(self, submission: fb.FeedbackSubmission) -> fb.FeedbackResult:
+            self.submissions.append(submission)
+            return fb.FeedbackResult(ok=True, feedback_id="feedback-1")
+
+    class Credentials:
+        async def ensure(self, _user_id: str, _token: str) -> dict[str, str]:
+            return {}
+
+    app = FastAPI()
+    app.state.auth_enabled = False
+    app.state.ownership_axis = "machine"
+    runtime = Runtime()
+    feedback = Feedback()
+    mount_feedback_routes(
+        app,
+        feedback=feedback,  # type: ignore[arg-type]
+        catalog=Catalog(),  # type: ignore[arg-type]
+        credentials=Credentials(),  # type: ignore[arg-type]
+        runtime=runtime,  # type: ignore[arg-type]
+    )
+    with TestClient(app) as client:
+        for session_id in ("owned", "denied"):
+            response = client.post(
+                "/api/serve/feedback",
+                data={
+                    "description": "trace check",
+                    "include_logs": "true",
+                    "include_trace": "true",
+                    "session_id": session_id,
+                },
+            )
+            check(f"{session_id} feedback submits", response.status_code == 200, response.text)
+    check(
+        "only the owned session discovers children",
+        runtime.calls == ["owned"]
+        and feedback.submissions[0].session_id == "owned"
+        and len(feedback.submissions[0].execution_threads) == 1,
+        str(runtime.calls),
+    )
+    check(
+        "denied session cannot smuggle product trace or child IDs",
+        feedback.submissions[1].session_id == ""
+        and feedback.submissions[1].vendor_thread_id == ""
+        and not feedback.submissions[1].execution_threads,
+    )
 
 
 def test_bundle_filename() -> None:
@@ -575,6 +695,7 @@ def _check_bundle_budget_is_hard() -> None:
             fb.TRACE_DIR,
             fb.SYSTEM_LOG,
             fb.BACKEND_LOG,
+            fb.WINDOW_LOG,
             fb.CODEX_SESSIONS_DIR,
         )
         fb.DIAGNOSTIC_SOURCES = ()
@@ -582,6 +703,7 @@ def _check_bundle_budget_is_hard() -> None:
         fb.CODEX_SESSIONS_DIR = empty
         fb.SYSTEM_LOG = empty / "none.log"
         fb.BACKEND_LOG = hostile
+        fb.WINDOW_LOG = empty / "window.log"
         try:
             for budget in (256 * 1024, 1024 * 1024):
                 payload = fb.build_log_bundle(include_trace=False, budget=budget)
@@ -614,8 +736,62 @@ def _check_bundle_budget_is_hard() -> None:
                 fb.TRACE_DIR,
                 fb.SYSTEM_LOG,
                 fb.BACKEND_LOG,
+                fb.WINDOW_LOG,
                 fb.CODEX_SESSIONS_DIR,
             ) = original
+
+
+def test_installer_diagnostics_priority() -> None:
+    """Keep both installer generations and update evidence before a noisy backend."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        evidence = {
+            "install/install.log": b'{"event":"rejected","result":"ready-write-failed"}\n',
+            "install/install-prev.log": b'{"event":"start","result":"protocol"}\n',
+            "update/update.log": b"installer exited during handshake with code 2\n",
+        }
+        for name, body in evidence.items():
+            (root / Path(name).name).write_bytes(body)
+        backend = root / "backend.log"
+        backend.write_bytes(os.urandom(256 * 1024))
+        with patch.multiple(
+            fb,
+            create=True,
+            INSTALL_LOG=root / "install.log",
+            INSTALL_PREV_LOG=root / "install-prev.log",
+            UPDATE_LOG=root / "update.log",
+            BACKEND_LOG=backend,
+            WINDOW_LOG=root / "missing-window.log",
+            SYSTEM_LOG=root / "missing-system.log",
+            DIAGNOSTIC_SOURCES=(),
+        ):
+            for budget in (fb.BUNDLE_BUDGET_RESERVE + 64 * 1024, fb.MAX_BUNDLE_SIZE):
+                payload = fb.build_log_bundle(include_trace=False, budget=budget)
+                with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                    check(
+                        f"installer and update evidence survive backend pressure ({budget})",
+                        all(
+                            name in archive.namelist() and archive.read(name) == body
+                            for name, body in evidence.items()
+                        ),
+                        str(archive.namelist()),
+                    )
+                check("installer evidence respects bundle budget", len(payload) <= budget)
+            check(
+                "installer diagnostics require diagnostic consent",
+                not _bundle_names(
+                    fb.build_log_bundle(include_trace=False, include_diagnostics=False)
+                ),
+            )
+            (root / "install.log").unlink()
+            (root / "install-prev.log").unlink()
+            names = _bundle_names(fb.build_log_bundle(include_trace=False))
+            check(
+                "platforms without installer logs still collect update and backend",
+                "update/update.log" in names
+                and "backend/backend.log" in names
+                and not any(name.startswith("install/") for name in names),
+            )
 
 
 def test_bundle_budget_and_scope() -> None:
@@ -633,11 +809,42 @@ def test_bundle_budget_and_scope() -> None:
         # 实时后端日志: Electron 写到家目录 logs/backend.log, 必须被收走。
         backend_log = root / "backend.log"
         backend_log.write_text("serve started\n", encoding="utf-8")
+        window_log = root / "window.log"
+        window_log.write_text("backend stopped unexpectedly code=1 signal=null\n", encoding="utf-8")
         # 更新链路诊断: 主进程落 logs/update.log (Authenticode STATUS/SUBJECT、计时、
         # 失败分类)。自更新被拦截的工单里, 这是唯一能定论失败类别的证据。
         update_log = root / "update.log"
+        installation_events = [
+            {
+                "phase": "macos-install",
+                "event": "step-start",
+                "updateId": "attempt-87306807",
+                "step": "gatekeeper",
+                "application": "source",
+                "timeoutMs": 180000,
+                "elapsedMs": 76000,
+            },
+            {
+                "phase": "macos-install",
+                "event": "cancel-requested",
+                "updateId": "attempt-87306807",
+                "step": "gatekeeper",
+                "stepElapsedMs": 75000,
+                "elapsedMs": 151000,
+            },
+            {
+                "phase": "macos-install",
+                "event": "preparation-result",
+                "updateId": "attempt-87306807",
+                "step": "cleanup",
+                "result": "cancelled",
+                "elapsedMs": 153000,
+            },
+        ]
         update_log.write_text(
-            "[update] Windows Authenticode verdict input: status=NotTrusted\n", encoding="utf-8"
+            "[update] Windows Authenticode verdict input: status=NotTrusted\n"
+            + "".join(json.dumps(event) + "\n" for event in installation_events),
+            encoding="utf-8",
         )
 
         # 两个会话各自一份 trace + 一份 rollout; 只有 "mine" 那一份得进包。
@@ -661,6 +868,7 @@ def test_bundle_budget_and_scope() -> None:
             fb.TRACE_DIR,
             fb.SYSTEM_LOG,
             fb.BACKEND_LOG,
+            fb.WINDOW_LOG,
             fb.UPDATE_LOG,
             fb.CODEX_SESSIONS_DIR,
         )
@@ -668,6 +876,7 @@ def test_bundle_budget_and_scope() -> None:
         fb.TRACE_DIR = trace_dir
         fb.SYSTEM_LOG = system_log
         fb.BACKEND_LOG = backend_log
+        fb.WINDOW_LOG = window_log
         fb.UPDATE_LOG = update_log
         fb.CODEX_SESSIONS_DIR = codex_sessions.parents[2]
         try:
@@ -686,10 +895,37 @@ def test_bundle_budget_and_scope() -> None:
                 str(names),
             )
             check(
+                "desktop lifecycle log is in the default diagnostic bundle",
+                "window/window.log" in names,
+                str(names),
+            )
+            check(
                 "live update.log is in the default diagnostic bundle",
                 "update/update.log" in names,
                 str(names),
             )
+            with zipfile.ZipFile(io.BytesIO(fb.build_log_bundle(include_trace=False))) as archive:
+                check(
+                    "desktop lifecycle log retains the exit evidence",
+                    archive.read("window/window.log") == window_log.read_bytes(),
+                )
+                check(
+                    "feedback ZIP retains macOS installation steps, cancellation and outcome",
+                    archive.read("update/update.log") == update_log.read_bytes(),
+                )
+            check(
+                "feedback without diagnostic consent excludes update log",
+                "update/update.log"
+                not in _bundle_names(
+                    fb.build_log_bundle(include_trace=False, include_diagnostics=False)
+                ),
+            )
+            window_log.unlink()
+            check(
+                "missing desktop lifecycle log does not block feedback",
+                "window/window.log" not in _bundle_names(fb.build_log_bundle(include_trace=False)),
+            )
+            window_log.write_text("backend recovered\n", encoding="utf-8")
             check(
                 "diagnostic bundle carries no conversation",
                 not any(n.startswith("conversation/") for n in names),
@@ -753,6 +989,7 @@ def test_bundle_budget_and_scope() -> None:
                 fb.TRACE_DIR,
                 fb.SYSTEM_LOG,
                 fb.BACKEND_LOG,
+                fb.WINDOW_LOG,
                 fb.UPDATE_LOG,
                 fb.CODEX_SESSIONS_DIR,
             ) = original
@@ -761,6 +998,158 @@ def test_bundle_budget_and_scope() -> None:
 def _bundle_names(payload: bytes) -> list[str]:
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         return archive.namelist()
+
+
+def test_subagent_rollouts_are_scoped_and_reported() -> None:
+    root_id = "11111111-1111-7111-8111-111111111111"
+    child_id = "22222222-2222-7222-8222-222222222222"
+    grandchild_id = "33333333-3333-7333-8333-333333333333"
+    unrelated_id = "44444444-4444-7444-8444-444444444444"
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        sessions = root / "sessions" / "2026" / "09" / "28"
+        sessions.mkdir(parents=True)
+        for thread_id in (root_id, child_id, grandchild_id, unrelated_id):
+            (sessions / f"rollout-2026-09-28T10-00-00-{thread_id}.jsonl").write_text(
+                json.dumps({"thread": thread_id}) + "\n", encoding="utf-8"
+            )
+        original_sessions = fb.CODEX_SESSIONS_DIR
+        fb.CODEX_SESSIONS_DIR = root / "sessions"
+        try:
+            bundle = fb.build_log_bundle(
+                include_trace=True,
+                include_diagnostics=False,
+                session_id="owned",
+                vendor_thread_id=root_id,
+                execution_threads=(
+                    RuntimeExecutionThread(child_id, root_id),
+                    RuntimeExecutionThread(grandchild_id, child_id),
+                ),
+                execution_tree_status="complete",
+            )
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                names = archive.namelist()
+                tree = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))
+                check(
+                    "parent and nested subagent rollouts share one authorized bundle",
+                    any(name.endswith(f"{root_id}.jsonl") for name in names)
+                    and all(
+                        any(
+                            name.startswith(f"conversation/subagents/{thread_id}/")
+                            for name in names
+                        )
+                        for thread_id in (child_id, grandchild_id)
+                    ),
+                    str(names),
+                )
+                check(
+                    "unrelated rollout is excluded",
+                    not any(unrelated_id in name for name in names),
+                    str(names),
+                )
+                check(
+                    "thread tree points to actual child files and their direct parents",
+                    tree["discovery_status"] == "complete"
+                    and [(row["thread_id"], row["parent_thread_id"]) for row in tree["threads"]]
+                    == [(child_id, root_id), (grandchild_id, child_id)]
+                    and all(row["path"] in names for row in tree["threads"]),
+                    str(tree),
+                )
+                check(
+                    "child attachment contains its own execution record",
+                    all(
+                        json.loads(archive.read(row["path"]))["thread"] == row["thread_id"]
+                        for row in tree["threads"]
+                    ),
+                )
+            check(
+                "without consent no subagent or tree enters the bundle",
+                not any(
+                    name.startswith("conversation/")
+                    for name in _bundle_names(
+                        fb.build_log_bundle(
+                            include_trace=False,
+                            include_diagnostics=False,
+                            session_id="owned",
+                            vendor_thread_id=root_id,
+                            execution_threads=(RuntimeExecutionThread(child_id, root_id),),
+                        )
+                    )
+                ),
+            )
+            with zipfile.ZipFile(
+                io.BytesIO(
+                    fb.build_log_bundle(
+                        include_trace=True,
+                        include_diagnostics=False,
+                        session_id="owned",
+                        vendor_thread_id=root_id,
+                        execution_tree_status="unavailable",
+                    )
+                )
+            ) as archive:
+                tree = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))
+                check(
+                    "unavailable discovery is explicit, not reported as an empty complete tree",
+                    tree["discovery_status"] == "unavailable" and tree["threads"] == [],
+                )
+        finally:
+            fb.CODEX_SESSIONS_DIR = original_sessions
+
+
+def test_subagent_tail_and_budget_remain_parseable() -> None:
+    child_id = "55555555-5555-7555-8555-555555555555"
+    with tempfile.TemporaryDirectory() as directory:
+        sessions = Path(directory)
+        rollout = sessions / f"rollout-2026-09-28T10-00-00-{child_id}.jsonl"
+        rollout.write_text(
+            "".join(json.dumps({"index": index}) + "\n" for index in range(10)),
+            encoding="utf-8",
+        )
+        original_sessions = fb.CODEX_SESSIONS_DIR
+        original_tail = fb.LOG_TAIL_BYTES
+        fb.CODEX_SESSIONS_DIR = sessions
+        fb.LOG_TAIL_BYTES = 56
+        try:
+            bundle = fb.build_log_bundle(
+                include_trace=True,
+                include_diagnostics=False,
+                session_id="owned",
+                vendor_thread_id="root-thread",
+                execution_threads=(RuntimeExecutionThread(child_id, "root-thread"),),
+                execution_tree_status="complete",
+            )
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                row = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))["threads"][0]
+                payload = archive.read(row["path"])
+                check(
+                    "truncated child rollout retains only complete JSONL records",
+                    row["status"] == "truncated"
+                    and payload.endswith(b"\n")
+                    and all(json.loads(line) for line in payload.splitlines()),
+                )
+            fb.LOG_TAIL_BYTES = original_tail
+            rollout.write_text(json.dumps({"body": "a" * 25_000}) + "\n", encoding="utf-8")
+            bundle = fb.build_log_bundle(
+                include_trace=True,
+                include_diagnostics=False,
+                session_id="owned",
+                vendor_thread_id="root-thread",
+                execution_threads=(RuntimeExecutionThread(child_id, "root-thread"),),
+                execution_tree_status="complete",
+                budget=fb.THREAD_TREE_MANIFEST_RESERVE + 16_000,
+            )
+            with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                row = json.loads(archive.read(fb.THREAD_TREE_ARCNAME))["threads"][0]
+                check(
+                    "budget exclusion is explicit and does not publish a partial child file",
+                    row["status"] == "budget_excluded"
+                    and row["path"] is None
+                    and not any("subagents/" in name for name in archive.namelist()),
+                )
+        finally:
+            fb.CODEX_SESSIONS_DIR = original_sessions
+            fb.LOG_TAIL_BYTES = original_tail
 
 
 def test_session_error_summary_is_additive() -> None:
@@ -853,11 +1242,16 @@ def main() -> int:
     test_trace_is_opt_in()
     test_multipart_shape()
     test_recording_report_bundle()
+    test_renderer_diagnostics_bundle()
     test_recording_report_route()
+    test_feedback_route_scopes_execution_tree_to_owned_session()
     test_bundle_filename()
     test_validation_and_upstream_failures()
     _check_bundle_budget_is_hard()
+    test_installer_diagnostics_priority()
     test_bundle_budget_and_scope()
+    test_subagent_rollouts_are_scoped_and_reported()
+    test_subagent_tail_and_budget_remain_parseable()
     test_session_error_summary_is_additive()
     print(f"passed={PASS} failed={FAIL}")
     return 1 if FAIL else 0

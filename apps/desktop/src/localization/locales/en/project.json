@@ -42,14 +42,13 @@
     "too_many_entries": "Too many entries at the project root. Organize them first.",
     "cannot_forget_current_project": "This is the current project. Switch to another project first.",
     "cannot_archive_current_project": "This is the current project. Switch to another project before archiving it.",
+    "reveal_unavailable": "Could not show the project folder: {{path}}. It may not exist or be inaccessible.",
     "name_too_long": "Project names can contain up to {{max}} characters."
   },
   "notices": {
     "renamed": "Renamed. The local folder name is unchanged.",
     "archived": "Archived. The project is hidden from default lists and can be restored from the archived section.",
     "unarchived": "Unarchived. The project is back in the default lists.",
-    "savedRestart": "Saved. New projects will use the new root after restarting ScholarSeed.",
-    "saved": "Saved.",
     "linked": "Linked. The Agent gains write access on the next conversation turn.",
     "planFailed": "Could not load the migration plan.",
     "managed": "Migration completed. The project now uses the managed library layout.",
@@ -69,12 +68,9 @@
     "link": "Link local folder",
     "revoke": "Revoke",
     "interrupt": "Interrupt running tasks immediately when revoking access (otherwise write access is removed on the next turn).",
-    "root": "Root folder for new projects",
-    "fromStartup": "(from startup arguments; not explicitly configured)",
     "openTrash": "View in system trash",
     "trashHint": "Deleted files go to the system trash. Restore them there to return them to their original locations below.",
-    "migrationTitle": "Migrate “{{name}}” to the managed library layout · {{size}} total",
-    "effectiveRoot": "Currently active: {{path}}"
+    "migrationTitle": "Migrate “{{name}}” to the managed library layout · {{size}} total"
   },
   "cards": {
     "title": "Projects",

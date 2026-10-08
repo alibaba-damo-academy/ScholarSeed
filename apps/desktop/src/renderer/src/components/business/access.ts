@@ -11,41 +11,77 @@ interface AccountAccess {
   revision: number
 }
 
-export function watchAccountAccess(ready: boolean, onChange: (access: AccountAccess) => void): () => void {
-  let request = 0
-  let alive = true
-  let authenticated = false
-  let revision = 0
-  const changed = (): void => {
-    revision += 1
-    onChange({ authenticated, revision })
+const listeners = new Map<(access: AccountAccess) => void, boolean>()
+let access: AccountAccess = { authenticated: false, revision: 0 }
+let resolved = false
+let request = 0
+let pending: Promise<void> | null = null
+let eventsAttached = false
+
+const changed = (authenticated = access.authenticated): void => {
+  access = { authenticated, revision: access.revision + 1 }
+  for (const listener of listeners.keys()) listener(access)
+}
+
+const refresh = (): void => {
+  if (![...listeners.values()].some(Boolean) || pending) return
+  if (resolved) {
+    for (const listener of listeners.keys()) listener(access)
+    return
   }
-  const refresh = (): void => {
-    const current = ++request
-    authenticated = false
-    changed()
-    if (!ready) return
-    void getAuthMe().then((identity) => {
-      if (!alive || current !== request) return
-      authenticated = identity?.auth === true
-      changed()
+  const current = ++request
+  changed(false)
+  pending = getAuthMe()
+    .then((identity) => {
+      if (current !== request) return
+      resolved = true
+      changed(identity?.auth === true)
     })
-  }
-  const clear = (): void => {
-    request += 1
-    authenticated = false
-    changed()
-  }
+    .finally(() => {
+      if (current === request) pending = null
+    })
+}
+
+const clear = (): void => {
+  request += 1
+  pending = null
+  resolved = true
+  changed(false)
+}
+
+const restored = (): void => {
+  request += 1
+  pending = null
+  resolved = false
   refresh()
+}
+
+const revisionChanged = (): void => changed()
+
+const attachEvents = (): void => {
+  if (eventsAttached) return
+  eventsAttached = true
   window.addEventListener(AUTH_REQUIRED_EVENT, clear)
-  window.addEventListener(AUTH_RESTORED_EVENT, refresh)
-  window.addEventListener(SKILL_CATALOG_CHANGED_EVENT, changed)
+  window.addEventListener(AUTH_RESTORED_EVENT, restored)
+  window.addEventListener(SKILL_CATALOG_CHANGED_EVENT, revisionChanged)
+}
+
+const detachEvents = (): void => {
+  if (!eventsAttached || listeners.size > 0) return
+  eventsAttached = false
+  window.removeEventListener(AUTH_REQUIRED_EVENT, clear)
+  window.removeEventListener(AUTH_RESTORED_EVENT, restored)
+  window.removeEventListener(SKILL_CATALOG_CHANGED_EVENT, revisionChanged)
+}
+
+export function watchAccountAccess(ready: boolean, onChange: (access: AccountAccess) => void): () => void {
+  listeners.set(onChange, ready)
+  attachEvents()
+  onChange(access)
+  if (ready) refresh()
   return () => {
-    alive = false
-    request += 1
-    window.removeEventListener(AUTH_REQUIRED_EVENT, clear)
-    window.removeEventListener(AUTH_RESTORED_EVENT, refresh)
-    window.removeEventListener(SKILL_CATALOG_CHANGED_EVENT, changed)
+    listeners.delete(onChange)
+    detachEvents()
   }
 }
 

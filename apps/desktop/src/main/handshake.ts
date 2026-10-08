@@ -15,10 +15,14 @@ import { join } from 'path'
 export const HANDSHAKE_SCHEMA_VERSION = '1'
 export const REQUEST_FILE = 'request.ini'
 export const READY_FILE = 'ready.ini'
+export const ELEVATION_FILE = 'elevation.ini'
 export const DECISION_FILE = 'decision.ini'
 export const INSTALL_SUBDIRNAME = 'install'
 export const READY_POLL_INTERVAL_MS = 200
 export const READY_TIMEOUT_MS = 30_000
+export const ELEVATION_TIMEOUT_MS = 120_000
+export const ELEVATION_REQUIRED = 'elevation-required'
+export const INSTALLER_READY = 'ready'
 /** NSIS 侧安装参数（$CMDLINE）。用 /NAME=value 形态，与 NSIS 惯用开关一致。 */
 export const UPDATE_ID_ARGUMENT_PREFIX = '/SCHOLARSEED_UPDATE_ID='
 /** spawn 安装器时传递已解析 home 与 nonce 的环境变量名。 */
@@ -187,15 +191,48 @@ export function validateRequest(record: HandshakeRequest): boolean {
  * 丢一个 ready.ini 冒充握手对端。
  */
 export function validateReady(record: ReadyRecord, request: Pick<HandshakeRequest, 'updateId' | 'nonce'>): boolean {
+  return validateInstallerRecord(record, request) && record.result === INSTALLER_READY
+}
+
+function validateInstallerRecord(record: ReadyRecord, request: Pick<HandshakeRequest, 'updateId' | 'nonce'>): boolean {
   return (
     record.schemaVersion === HANDSHAKE_SCHEMA_VERSION &&
     record.updateId === request.updateId &&
     record.nonce === request.nonce &&
     DECIMAL_PATTERN.test(record.installerPid) &&
     isSignedInt32(record.installerCreationLow) &&
-    isSignedInt32(record.installerCreationHigh) &&
-    record.result === 'ready'
+    isSignedInt32(record.installerCreationHigh)
   )
+}
+
+export type ReadyOutcome = 'ready' | 'timeout' | 'installer-exited' | 'invalid-ready'
+
+export class InstallerReadiness {
+  private deadline: number
+  private awaitingElevation = false
+
+  constructor(
+    private readonly request: Pick<HandshakeRequest, 'updateId' | 'nonce'>,
+    private readonly installerPid: number,
+    startedAt: number
+  ) {
+    this.deadline = startedAt + READY_TIMEOUT_MS
+  }
+
+  observe(record: ReadyRecord | null, now: number): ReadyOutcome | null {
+    if (now >= this.deadline) return 'timeout'
+    if (record === null) return null
+    if (!validateInstallerRecord(record, this.request) || Number(record.installerPid) !== this.installerPid) {
+      return 'invalid-ready'
+    }
+    if (record.result === INSTALLER_READY) return 'ready'
+    if (record.result !== ELEVATION_REQUIRED) return 'invalid-ready'
+    if (!this.awaitingElevation) {
+      this.awaitingElevation = true
+      this.deadline = now + ELEVATION_TIMEOUT_MS
+    }
+    return null
+  }
 }
 
 export function parseReady(buffer: Buffer): ReadyRecord | null {

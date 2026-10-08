@@ -70,6 +70,16 @@ def fixture_zip(extra: dict[str, bytes] | None = None, *, directories: bool = Fa
 
 
 class PackageContracts(unittest.TestCase):
+    def test_precise_search_manifest_matches_registered_dependencies(self) -> None:
+        skills_root = Path(__file__).resolve().parents[3] / "skills"
+        registry = json.loads((skills_root / "registry.json").read_text())
+        manifest = json.loads(
+            (skills_root / "community" / "precise-literature-search" / PACKAGE_MANIFEST).read_text()
+        )
+        self.assertEqual(
+            manifest["dependencies"], registry["dependencies"]["precise-literature-search"]
+        )
+
     def test_payload_and_modes_survive_hub_style_zip(self) -> None:
         package = read_package(fixture_zip(directories=True))
         self.assertEqual(package.files["scripts/run"].mode, EXECUTABLE_MODE)

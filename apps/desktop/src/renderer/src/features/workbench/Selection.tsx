@@ -11,7 +11,7 @@ import {
 } from "../resources/Suggestion";
 import type { ResourceAction, ResourceInput } from "../resources/ai";
 import type { SelectionAnchor } from "../../contracts/workbench";
-import { digestText } from "./api";
+import { captureSelectionSnapshot, digestText } from "./api";
 import {
   useSelectionActionRegistry,
   selectionAnnotationFor,
@@ -132,7 +132,8 @@ export function SelectionActionHost(): React.JSX.Element | null {
         active.tabId !== focusedTabId ||
         (!active.pinned &&
           !suggestionOwnsFocus() &&
-          (active.identity !== currentIdentity || !currentVisible)))
+          (active.identity !== currentIdentity ||
+            (active.action !== "translate" && !currentVisible))))
     )
       setActive(null);
   }, [
@@ -149,6 +150,7 @@ export function SelectionActionHost(): React.JSX.Element | null {
   );
   const activeAttachedToSelection = Boolean(
     active &&
+      active.action !== "translate" &&
       suggestionVisible &&
       currentVisible &&
       active.identity === currentIdentity,
@@ -199,50 +201,30 @@ export function SelectionActionHost(): React.JSX.Element | null {
   };
   if (!current && !suggestionVisible) return null;
   return (
-    <>
-      {active && suggestionVisible && !activeAttachedToSelection ? (
-        <div {...documentSelectionInteractionProps} className="contents">
-          <ResourceSuggestion
-            key={`${active.identity}:${active.action}`}
-            action={active.action}
-            identity={active.identity}
-            selectedText={active.selectedText}
-            point={active.point}
-            snapshot={active.snapshot}
-            pinned={active.pinned}
-            onPinnedChange={(pinned) =>
-              setActive((value) => (value ? { ...value, pinned } : value))
-            }
-            onClose={() => setActive(null)}
-            onAnnotate={active.onAnnotate}
-            onApply={active.onApply}
-          />
-        </div>
-      ) : null}
-      {current ? (
-        <SelectionActions
-          key={currentIdentity}
-          active={activeAttachedToSelection ? active : null}
-          activeAction={activeAttachedToSelection ? active?.action ?? null : null}
-          onCloseSuggestion={() => setActive(null)}
-          onOpenSuggestion={openSuggestion}
-          onPinnedChange={(pinned) =>
-            setActive((value) => (value ? { ...value, pinned } : value))
-          }
-        />
-      ) : null}
-    </>
+    <SelectionActions
+      key={active && suggestionVisible ? active.identity : currentIdentity}
+      active={suggestionVisible ? active : null}
+      activeAttachedToSelection={activeAttachedToSelection}
+      activeAction={activeAttachedToSelection ? active?.action ?? null : null}
+      onCloseSuggestion={() => setActive(null)}
+      onOpenSuggestion={openSuggestion}
+      onPinnedChange={(pinned) =>
+        setActive((value) => (value ? { ...value, pinned } : value))
+      }
+    />
   );
 }
 
 function SelectionActions({
   active,
+  activeAttachedToSelection,
   activeAction,
   onCloseSuggestion,
   onOpenSuggestion,
   onPinnedChange,
 }: {
   active: ActiveSuggestion | null;
+  activeAttachedToSelection: boolean;
   activeAction: ResourceAction | null;
   onCloseSuggestion: () => void;
   onOpenSuggestion: (suggestion: ActiveSuggestion) => void;
@@ -271,8 +253,33 @@ function SelectionActions({
     toolbarObserverRef.current = observer;
   }, []);
   useEffect(() => {
-    if (active && expanded) onCloseSuggestion();
-  }, [active, expanded, onCloseSuggestion]);
+    if (active && activeAttachedToSelection && expanded) onCloseSuggestion();
+  }, [active, activeAttachedToSelection, expanded, onCloseSuggestion]);
+  const renderSuggestion = (
+    position?: ReturnType<typeof selectionActionPosition>,
+    toolbarActions?: React.ReactNode,
+  ): React.JSX.Element | null => active ? (
+    <div {...documentSelectionInteractionProps} className="contents">
+      <ResourceSuggestion
+        key={`${active.identity}:${active.action}`}
+        action={active.action}
+        anchorPosition={position}
+        anchorWidth={position?.width}
+        identity={active.identity}
+        selectedText={active.selectedText}
+        point={active.point}
+        snapshot={active.snapshot}
+        pinned={active.pinned}
+        toolbarActions={toolbarActions}
+        toolbarLabel={w('selection.label')}
+        onPinnedChange={onPinnedChange}
+        onClose={onCloseSuggestion}
+        onAnnotate={active.onAnnotate}
+        onApply={active.onApply}
+      />
+    </div>
+  ) : null;
+  if (active && !activeAttachedToSelection) return renderSuggestion();
   if (
     !current ||
     current.selection.status !== "exact" ||
@@ -313,6 +320,18 @@ function SelectionActions({
       }
       sourceRevision = committed.revision;
     }
+    let snapshotText = selection.text;
+    if ((source.kind === "project" || source.kind === "literature") && selection.locator.kind === "calc"
+      && selection.locator.content_mode === "reference") {
+      try {
+        const snapshot = await captureSelectionSnapshot(source, sourceRevision, selection);
+        snapshotText = snapshot.snapshot_text;
+        sourceRevision = snapshot.source_revision;
+      } catch {
+        setErrorKey("selectionActions.contextAddFailed");
+        return;
+      }
+    }
     const locator = selection.locator.kind === "pdf"
       ? {
           ...selection.locator,
@@ -332,6 +351,7 @@ function SelectionActions({
         locator,
         selected_text_hash: await digestText(selection.text),
         preview_text: selection.text,
+        snapshot_text: snapshotText,
       },
     });
     if (result.accepted_ref_ids.length) {
@@ -483,27 +503,7 @@ function SelectionActions({
     </div>
   );
   if (active) {
-    return (
-      <div {...documentSelectionInteractionProps} className="contents">
-        <ResourceSuggestion
-          key={`${active.identity}:${active.action}`}
-          action={active.action}
-          anchorPosition={position}
-          anchorWidth={position.width}
-          identity={active.identity}
-          selectedText={active.selectedText}
-          point={active.point}
-          snapshot={active.snapshot}
-          pinned={active.pinned}
-          toolbarActions={toolbarActions}
-          toolbarLabel={w('selection.label')}
-          onPinnedChange={onPinnedChange}
-          onClose={onCloseSuggestion}
-          onAnnotate={active.onAnnotate}
-          onApply={active.onApply}
-        />
-      </div>
-    );
+    return renderSuggestion(position, toolbarActions);
   }
   return (
     <FloatingToolbar

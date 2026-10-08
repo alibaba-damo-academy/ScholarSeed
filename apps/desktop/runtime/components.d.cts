@@ -6,11 +6,13 @@ export const HOME_ENV: string
 export const LOCKS_DIRNAME: string
 export const MANIFESTS_DIRNAME: string
 export const PYLIBS_DIRNAME: string
+export const POWERSHELL_ENTRY_RELATIVE: string
+export const POWERSHELL_KIND: string
+export const POWERSHELL_TREE_DIRNAME: string
 export const PYTHON_ENTRY_RELATIVE: string
 export const PYTHON_KIND: string
 export const PYTHON_TREE_DIRNAME: string
 export const RUNTIME_DIRNAME: string
-export const RUNTIME_STORE_ENV: string
 export const STAGING_DIRNAME: string
 export const TEXLIVE_BIN_PARENT_RELATIVE: string
 export const TEXLIVE_KIND: string
@@ -24,6 +26,7 @@ export interface AppComponentEntry {
   archiveBytes: number
   entry: string
   executables?: string[]
+  version?: string
 }
 
 export interface AppComponentsManifest {
@@ -35,6 +38,11 @@ export interface AppComponentsManifest {
 export function componentTarget(platform: string, arch: string): string
 export function componentDirectoryName(kind: string, target: string, contentId: string): string
 export function componentArchiveName(kind: string, contentId: string): string
+export function derivePowerShellContentId(input: {
+  target: string
+  archiveSha256: string
+  version: string
+}): string
 export function parseAppComponents(text: string): AppComponentsManifest | null
 export function validateAppComponents(value: unknown): boolean
 export function storeComponentDirectory(storeRoot: string, kind: string, target: string, contentId: string): string
@@ -44,7 +52,6 @@ export function storeStagingDirectory(storeRoot: string): string
 export function storeManifestsDirectory(storeRoot: string): string
 export function storeLocksDirectory(storeRoot: string): string
 export function windowsComponentPreamble(target: string, contentId: string): string[]
-export function isValidRuntimeStoreRoot(value: string, platform: string): boolean
-export function resolveRuntimeStoreRoot(env: NodeJS.ProcessEnv, home: string, platform: string): string
+export function runtimeStoreRoot(home: string): string
 export function skillPythonLauncherCommand(target: string, contentId: string, module: string): string
 export function consoleScriptLauncherCommand(target: string, contentId: string, pyLaunch: string): string

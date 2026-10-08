@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import { FolderOpen } from 'lucide-react'
 
 import {
   Alert,
@@ -30,7 +31,7 @@ import {
 import { useApp } from '../../store'
 import { hasDirtyProjectPath, useDocumentWorkspace } from '../workbench/workspace'
 import { validateResourceMove } from './lifecycle'
-import { ResourceNode } from './state'
+import type { ResourceNode } from './state'
 
 /** 绝对路径没有单词边界，必须允许在任意字符处折行，否则会顶穿弹窗宽度。 */
 const PATH_TEXT_CLASS_NAME = '[overflow-wrap:anywhere]'
@@ -343,6 +344,8 @@ export function MoveDialog(): React.JSX.Element | null {
               </>
             ) : (
               <EmptyState
+                variant="compact"
+                icon={<FolderOpen />}
                 data-testid="resource-move-target-empty"
                 title={t('move.empty')}
               />

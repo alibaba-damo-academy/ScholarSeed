@@ -6,7 +6,7 @@
 // 陈旧挂载做恢复，而不把探针逻辑埋进安装编排里（updater 顶层 import electron，node --test
 // 加载不了）。
 
-import { spawn } from 'child_process'
+import { runCommandAsync, type CommandOptions } from './subprocess.ts'
 
 export const MACOS_HDIUTIL = '/usr/bin/hdiutil'
 const MACOS_PLUTIL = '/usr/bin/plutil'
@@ -16,37 +16,16 @@ const MACOS_PLUTIL = '/usr/bin/plutil'
  * 命令直连管道，不经过 shell。任一环非 0 退出或 JSON 解析失败都 reject —— 调用方把探针
  * 失败降级为「不清扫、照旧 attach」，探针是恢复手段而不是安装前置条件。
  */
-export function readHdiutilInfoPlist(): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const info = spawn(MACOS_HDIUTIL, ['info', '-plist'], { windowsHide: true })
-    const plistChunks: Buffer[] = []
-    info.stdout.on('data', (chunk: Buffer) => plistChunks.push(chunk))
-    info.stderr.resume()
-    info.on('error', reject)
-    info.on('close', (status) => {
-      if (status !== 0) {
-        reject(new Error(`hdiutil info failed with status ${status}`))
-        return
-      }
-      const plutil = spawn(MACOS_PLUTIL, ['-convert', 'json', '-o', '-', '-'], { windowsHide: true })
-      const jsonChunks: Buffer[] = []
-      plutil.stdout.on('data', (chunk: Buffer) => jsonChunks.push(chunk))
-      plutil.stderr.resume()
-      plutil.on('error', reject)
-      plutil.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`plutil plist conversion failed with status ${code}`))
-          return
-        }
-        try {
-          resolve(JSON.parse(Buffer.concat(jsonChunks).toString('utf8')) as unknown)
-        } catch (error) {
-          reject(error)
-        }
-      })
-      plutil.stdin.end(Buffer.concat(plistChunks))
-    })
+export async function readHdiutilInfoPlist(options: CommandOptions = {}): Promise<unknown> {
+  const info = await runCommandAsync(MACOS_HDIUTIL, ['info', '-plist'], options)
+  if (info.status !== 0) throw new Error(`hdiutil info failed with status ${info.status}`)
+  const converted = await runCommandAsync(MACOS_PLUTIL, ['-convert', 'json', '-o', '-', '-'], {
+    ...options,
+    input: info.stdout,
   })
+  if (converted.status !== 0)
+    throw new Error(`plutil plist conversion failed with status ${converted.status}`)
+  return JSON.parse(converted.stdout) as unknown
 }
 
 /**

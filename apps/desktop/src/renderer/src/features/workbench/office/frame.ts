@@ -215,7 +215,7 @@ function diagnostic(stage,detail={}){post('diagnostic',{detail:{stage,...detail}
 function progress(message){status.textContent=message}
 function applyPalette(value){palette=value;document.documentElement.style.colorScheme=value.mode;document.documentElement.style.setProperty('--office-background',value.background);document.documentElement.style.setProperty('--office-foreground',value.foreground);port?.postMessage({cmd:'theme',palette})}
 function officeMessage(message){const code=String(message).replace(/^Error: /,'');return Object.prototype.hasOwnProperty.call(config.errors,code)?config.errors[code]:config.text.operationFailed+' '+String(message)}
-function fail(reason,error){const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;if(!runtimeReadyAt)warmup('error',{error:reason,detail:String(message)});post('unavailable',{reason})}
+function fail(reason,error){if(disposed)return;const message=error||reason;status.textContent=officeMessage(message);status.dataset.error='true';loading.hidden=false;diagnostic('unavailable',{reason,detail:String(message),bindingId});if(!runtimeReadyAt||reason.startsWith('runtime-'))warmup('error',{error:reason,detail:String(message)});post('unavailable',{reason,detail:String(message),bindingId})}
 ScholarSeedOfficeClipboard.install(navigator.clipboard,error=>diagnostic('clipboard-write-failed',{error:String(error)}));
 function resizeViewport(){viewportResizeFrame=0;if(port&&!disposed)port.postMessage({cmd:viewportResizeCommand,bindingId,requestId:++viewportRequestSequence})}
 function scheduleViewportResize(){cancelAnimationFrame(viewportResizeFrame);viewportResizeFrame=requestAnimationFrame(resizeViewport)}
@@ -251,6 +251,7 @@ function csvFilterOptions(){
 function upload(){if(!port||!bytes)return;filename=safeName(filename);try{FS.mkdir('/tmp/office')}catch(error){}FS.writeFile('/tmp/office/'+filename,bytes);port.postMessage({cmd:'upload',filename,processor,expectedDocumentKind,readOnly:!editable,csvOptions:csvFilterOptions(),bindingId})}
 var Module={canvas,uno_scripts:[config.zetaUrl,config.policyUrl,config.governanceUrl,config.protectionUrl,config.searchUrl,config.embeddedUrl,config.caretUrl,config.paletteUrl,config.docUrl,config.docxUrl,config.selectionUrl,config.threadUrl],locateFile(path,prefix){return(prefix||config.assetsBaseUrl)+path}};
 globalThis.Module=Module;
+Module.onAbort=error=>fail('runtime-initialization',String(error));
 Module.mainScriptUrlOrBlob=new Blob(['importScripts('+JSON.stringify(config.assetsBaseUrl+'soffice.js')+');'],{type:'text/javascript'});
 async function start(){
   if(started||starting||disposed)return;starting=true;startupStartedAt=performance.now();retry.hidden=true;delete status.dataset.error;
@@ -328,6 +329,7 @@ function onThread(event){
   else if(message.cmd==='paste_failed')post('operation-rejected',{message:'office_paste_failed'})
   else if(message.cmd==='save_failed')post('save-failed',{message:message.message})
   else if(message.cmd==='policy_failed')fail('office-policy-failed',message.message)
+  else if(message.cmd==='document_failed'&&message.bindingId===bindingId)fail('document-load',message.detail||message.message)
   else if(message.cmd==='operation_rejected')post('operation-rejected',{message:message.message})
   else if(message.cmd==='image_request')post('image-request',{requestId:message.requestId,source:message.source})
   else if(message.cmd==='image_failed'){

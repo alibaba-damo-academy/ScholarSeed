@@ -250,7 +250,7 @@ test('request fallback keeps HTTP identity and leaves app wording to the descrip
       assert.ok(error instanceof LiteratureApiError)
       assert.equal(error.failure.code, 'VENDOR_ERROR')
       assert.equal(error.message, '原始诊断')
-      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: 'VENDOR_ERROR: 原始诊断' })
+      assert.deepEqual(literatureErrorMessage(error.failure.code, error.message, 'batch.loadFailed'), { key: 'batch.loadFailed', detail: undefined })
       return true
     })
   } finally { globalThis.window = previousWindow; globalThis.fetch = previousFetch }

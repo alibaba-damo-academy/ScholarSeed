@@ -47,7 +47,7 @@ test('history, confirmed queue and optimistic queue retain provenance without re
   const t = locale.getFixedT(null, 'assistant')
   const input = [{ type: 'text' as const, text: 'Question / & <中英>' }]
   const reference = { ...marked, ref_id: 'ref', source_id: 'source', state: 'ready' }
-  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 3, state: 'queued', input, assistant_references: [reference] })
+  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 3, state: 'queued', submission_mode: 'queued', input, assistant_references: [reference] })
   const optimistic = optimisticQueuedMessage([], 'optimistic', input, [reference])
   const history = projectHistory([{ kind: 'user', text: input[0].text, refs: [{ type: 'assistant_context', id: 'ref', title: marked.label, kind: 'session', label_fallback: marked.label_fallback, source_id: 'source', snapshot_id: 'snapshot' }] }])
   const message = history[0]
@@ -146,7 +146,7 @@ test('selection metadata survives queued and live/history projections without ch
   const anchor = { locator: { kind: 'writer', start: 1, end: 2 }, preview_text: '原选区 / & <text>' }
   const input = [{ type: 'text' as const, text: '原问题' }]
   const reference = { kind: 'selection', ref_id: 'ref', label: '原组合 · 划词', selection_source_label: '', anchor }
-  const queued = queuedMessageFromPayload({ queued_message_id: 'q', enqueue_seq: 2, state: 'queued', input, assistant_references: [reference] })
+  const queued = queuedMessageFromPayload({ queued_message_id: 'q', enqueue_seq: 2, state: 'queued', submission_mode: 'queued', input, assistant_references: [reference] })
   const optimistic = optimisticQueuedMessage([], 'q', input, [reference])
   assert.deepEqual(queued.assistantReferences, optimistic.assistantReferences)
   assert.equal(queuedReferenceSummary(input, queued.assistantReferences, t), ' · Selection')
@@ -191,7 +191,7 @@ test('new-session reference provenance remains distinct through candidates, hist
   const source = { kind: 'session' as const, label: '新对话', label_fallback: 'new_session' as const }
   const candidate = { kind: 'session' as const, source_id: 'new-session', label: source.label, labelFallback: 'newSession' as const, origin: 'explicit' as const }
   const input = [{ type: 'text' as const, text: 'Keep canonical names / & <中英>' }]
-  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 1, state: 'queued', input, assistant_references: [source] })
+  const queue = queuedMessageFromPayload({ queued_message_id: 'queued', enqueue_seq: 1, state: 'queued', submission_mode: 'queued', input, assistant_references: [source] })
   const history = projectHistory([{ kind: 'user', text: input[0].text, refs: [{ type: 'assistant_context', id: 'ref', title: source.label, kind: 'session', label_fallback: source.label_fallback }] }])
   const message = history[0]
   assert.equal(message.kind, 'user')

@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from scholarseed_runtime.contract import (
+    PermissionIntent,
     RuntimeCallbackRequest,
     RuntimeCallbackResponse,
     RuntimeCapabilityName,
@@ -52,6 +53,7 @@ INVOCATION_INTERRUPT_WAIT_SECONDS = 10
 INVOCATION_QUEUE_SIZE = 256
 INVOCATION_WORKSPACE_UNAVAILABLE = "invocation_workspace_unavailable"
 INVOCATION_RUNTIME_FAILED = "invocation_runtime_failed"
+INVOCATION_PERMISSION_EXCEEDS_PARENT = "invocation_permission_exceeds_parent"
 INVOCATION_TERMINAL_EVENTS = frozenset(
     {
         "result.completed",
@@ -86,6 +88,7 @@ class PreparedInvocation:
     developer_prompt: bool
     execution: InvocationExecution
     permission_mode: RuntimePermissionMode
+    permission: PermissionIntent | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,7 @@ class InvocationService:
         owner_id: str,
         user_id: str,
         trusted_workspace: TrustedInvocationWorkspace | None = None,
+        permission: PermissionIntent | None = None,
     ) -> PreparedInvocation:
         process_environment = await self._environment(user_id)
         skill: ResolvedSkill | None = None
@@ -206,6 +210,18 @@ class InvocationService:
             if skill is not None and skill.permission_mode is not None
             else INVOCATION_PERMISSION_MODES[request.execution.sandbox]
         )
+        if permission is not None:
+            if (
+                skill is not None
+                and skill.permission_mode is not None
+                and skill.permission_mode is not permission.mode
+            ):
+                raise InvocationError(INVOCATION_PERMISSION_EXCEEDS_PARENT)
+            permission_mode = permission.mode
+            request = replace(
+                request,
+                execution=replace(request.execution, network_access=permission.network_access),
+            )
         invocation_id = uuid.uuid4().hex
         workspace = (
             self._trusted_workspace(trusted_workspace)
@@ -237,6 +253,7 @@ class InvocationService:
             developer_prompt=request.developer_prompt,
             execution=request.execution,
             permission_mode=permission_mode,
+            permission=permission,
         )
 
     async def stream(self, prepared: PreparedInvocation) -> AsyncIterator[dict | None]:
@@ -326,6 +343,7 @@ class InvocationService:
                 input_text=prepared.prompt,
                 executable=self._settings.runtime_executable(),
                 permission_mode=prepared.permission_mode,
+                permission=prepared.permission,
                 network_access=prepared.execution.network_access,
                 reasoning_effort=prepared.execution.reasoning_effort or "",
                 service_tier=prepared.execution.service_tier,

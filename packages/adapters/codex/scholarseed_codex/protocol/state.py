@@ -99,12 +99,6 @@ CODEX_READINESS_CACHE_TTL_SECONDS = 10.0
 CODEX_IDLE_HOST_TTL_SECONDS = 300.0
 
 
-CODEX_MAX_PROCESS_HOSTS = 16
-
-
-AGENT_RUNTIME_CAPACITY_ERROR = "agent_runtime_capacity_reached"
-
-
 CODEX_MAX_THREADS_PER_HOST = 128
 
 
@@ -213,6 +207,11 @@ CODEX_AUTO_APPROVAL_NOTIFICATION_KINDS = {
 }
 
 
+# 上游第三个自动审批通知（StrictReviewRequiredNotification: threadId/turnId/startedAtMs）。
+# 它没有 started/completed 配对，也不带 reviewId，所以单独登记而不是塞进上面的映射。
+CODEX_STRICT_REVIEW_NOTIFICATION = "autoApprovalReview/strictReviewRequired"
+
+
 CODEX_DEDICATED_ITEM_TYPES = frozenset(
     {
         "agentMessage",
@@ -282,7 +281,6 @@ CODEX_BENIGN_NOTIFICATION_METHODS = {
     "thread/unarchived",
     "turn/moderationMetadata",
     "windows/worldWritableWarning",
-    "windowsSandbox/setupCompleted",
 }
 
 

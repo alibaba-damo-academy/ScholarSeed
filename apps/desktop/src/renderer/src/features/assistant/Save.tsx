@@ -13,9 +13,14 @@ import {
   DialogHeader,
   DialogPortal,
   DialogTitle,
+  EmptyState,
   Input,
   ScrollArea,
   Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
   useToast
 } from '../../components/ui'
 import { resourceNameError } from '../resources/state'
@@ -261,9 +266,14 @@ export function ResourceSaveDialog({
               value={selectedProjectId ?? ''}
               onValueChange={onProjectChange}
             >
-              {projectOptions.map((project) => (
-                <option key={project.id} value={project.id}>{project.name}</option>
-              ))}
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {projectOptions.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>{project.name}</SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           ) : null}
           <div className="grid gap-1">
@@ -360,9 +370,7 @@ export function ResourceSaveDialog({
                     selected={location.parent}
                   />
                 )) : (
-                  <p className="m-0 px-4 py-5 text-sm text-[var(--vds-text-tertiary)]">
-                    {assistantText('remaining.emptyFolders')}
-                  </p>
+                  <EmptyState variant="compact" icon={<Icon name="folder" />} title={assistantText('remaining.emptyFolders')} />
                 )}
               </ScrollArea>
             </div>

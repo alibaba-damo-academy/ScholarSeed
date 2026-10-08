@@ -9,32 +9,33 @@ from functools import wraps
 from pathlib import Path
 
 from io_utils import atomic_write_json, read_json, utc_now
+from filesystem import canonical_path, filesystem_path, path_exists
 from platform_support import lock_file
 
 STAGES = {"search", "reading", "final-report"}
 
 
 def contained(run_dir: Path, value: str | Path) -> Path:
-    root = run_dir.resolve()
+    root = canonical_path(run_dir)
     candidate = Path(value)
     candidate = candidate if candidate.is_absolute() else root / candidate
-    resolved = candidate.resolve()
+    resolved = canonical_path(candidate)
     if not resolved.is_relative_to(root):
         raise ValueError("artifact escapes run directory")
     return resolved
 
 
 def digest(path: Path) -> str:
-    with path.open("rb") as handle:
+    with filesystem_path(path).open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 @contextmanager
 def control_lock(run_dir: Path):
     path = run_dir / ".stage-control.lock"
-    if path.is_symlink():
+    if filesystem_path(path).is_symlink():
         raise ValueError("stage control lock cannot be a symbolic link")
-    with path.open("a+b") as handle:
+    with filesystem_path(path).open("a+b") as handle:
         lock_file(handle)
         yield
 
@@ -44,9 +45,9 @@ def serialized(operation):
     @wraps(operation)
     def wrapped(run_dir, *args, **kwargs):
         path = run_dir / ".stage-operation.lock"
-        if path.is_symlink():
+        if filesystem_path(path).is_symlink():
             raise ValueError("stage operation lock cannot be a symbolic link")
-        with path.open("a+b") as handle:
+        with filesystem_path(path).open("a+b") as handle:
             try:
                 lock_file(handle, blocking=False)
             except OSError as exc:
@@ -73,11 +74,14 @@ def claim_stage(run_dir: Path, stage: str, round_number: int, inputs: list[Path]
         raise ValueError("unknown agent stage")
     with control_lock(run_dir):
         path = contained(run_dir, "stage-lease.json")
-        previous = read_json(path) if path.exists() else {}
+        previous = read_json(path) if path_exists(path) else {}
         if previous.get("status") == "active":
             raise ValueError("a stage already owns this run; resume with its token or cancel it explicitly")
-        bindings = {str(contained(run_dir, p).relative_to(run_dir)): digest(contained(run_dir, p))
-                    for p in (inputs or [])}
+        root = canonical_path(run_dir)
+        bindings = {}
+        for input_path in inputs or []:
+            bound = contained(run_dir, input_path)
+            bindings[str(bound.relative_to(root))] = digest(bound)
         lease = {"schema_version": "1.0", "stage": stage, "round": round_number,
                  "token": "stage_" + secrets.token_urlsafe(24),
                  "status": "active", "created_at": utc_now(), "input_sha256": bindings}
@@ -138,10 +142,14 @@ def authorize_download(run_dir: Path, selection_path: Path, decision_source: str
         selection = read_json(selection_path)
         validate_data("selection", selection)
         metadata_path = contained(run_dir, selection["metadata_path"])
+        latest_metadata = state["paths"].get("latest_metadata")
+        if not isinstance(latest_metadata, str) or not latest_metadata:
+            raise ValueError("download selection must reference this run's current real metadata")
+        latest_metadata_path = contained(run_dir, latest_metadata)
         metadata = read_json(metadata_path)
         validate_data("metadata", metadata)
         if (selection["run_id"] != state["run_id"] or metadata["run_id"] != state["run_id"]
-                or selection["metadata_path"] != state["paths"]["latest_metadata"]
+                or metadata_path != latest_metadata_path
                 or metadata.get("is_placeholder") is not False):
             raise ValueError("download selection must reference this run's current real metadata")
         ids = selection["selected_paper_ids"]

@@ -46,7 +46,9 @@ class DownloaderResolutionTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"SCHOLARSEED_PYTHON": sys.executable}),
             mock.patch.object(adapter, "find_spec", return_value=None),
             mock.patch.object(adapter.shutil, "which") as which,
-            self.assertRaisesRegex(ValueError, "paper_dl.*not importable.*bundled runtime") as failure,
+            self.assertRaisesRegex(
+                ValueError, "paper_dl.*not importable.*bundled runtime"
+            ) as failure,
         ):
             adapter.resolve_paper_dl()
         self.assertIn("paper_fulltext_dl-0.1.3-py3-none-any.whl", str(failure.exception))

@@ -425,7 +425,7 @@ export interface LiteratureView {
   years: number[]
   fulltextCounts: Record<string, number>
 }
-function legacyItem(item: import('../../contracts/literature').LiteratureSummary): LiteratureItem {
+function legacyItem(item: LiteratureSummary): LiteratureItem {
   return {
     id: item.id, pubtype: 'misc', title: item.title, authors: item.creators_display,
     journal: item.publication_display, venue: item.publication_display, url: '', year: item.year,

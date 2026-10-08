@@ -87,6 +87,7 @@ class ModelInvocationRequest:
     attachments: tuple[ModelAttachment, ...] = ()
     json_output: bool = False
     reasoning_policy: ReasoningPolicy = ReasoningPolicy.DEFAULT
+    require_tool_free: bool = False
 
 
 @dataclass(frozen=True)

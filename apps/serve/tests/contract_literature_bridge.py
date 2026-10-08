@@ -25,6 +25,8 @@ from service.assistant.service.authorization import (
 )
 from service.chat.persistence.catalog import SessionCatalogStore
 from service.cli.bridge import parser
+from service.content.persistence.catalog import ContentCatalog
+from service.content.service.port import ContentService, ProjectRegistry
 from service.literature.persistence import files as literature_files
 from service.literature.persistence.cards import PaperCards
 from service.literature.persistence.store import LiteratureRepository
@@ -49,11 +51,20 @@ from service.platform.bridge import (
 )
 from service.platform.citations import (
     LITERATURE_STORAGE,
+    MANAGED_STORAGE_SCOPE,
     PDF_FORMULA,
     CitationDocument,
     CitationPage,
     PdfFragment,
     PdfPageContent,
+)
+from service.platform.context import (
+    AssistantTurnItem,
+    ContextItemRole,
+    ContextOrigin,
+    ContextRef,
+    ContextRefKind,
+    ContextResolutionState,
 )
 from service.platform.records import RecordOwner, RecordTarget
 from service.workbench.service import indexing
@@ -180,7 +191,13 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 page.insert_text((72, 72), f"{prefix} page {page_number} unique text.")
             return pdf.tobytes()
 
-    def _stage(self, literature_id: str, name: str, payload: bytes) -> dict[str, Any]:
+    def _stage(
+        self,
+        literature_id: str,
+        name: str,
+        payload: bytes,
+        role: AttachmentRole = AttachmentRole.PRIMARY,
+    ) -> dict[str, Any]:
         """Write one literature-owned attachment copy and register its row."""
         published = literature_files.managed_object(literature_id, payload, ".pdf")
         location = self.files / published.name
@@ -190,7 +207,7 @@ class LiteratureBridgeContracts(unittest.TestCase):
             name,
             str(location),
             revision=published.revision,
-            role=AttachmentRole.PRIMARY,
+            role=role,
             media_type=PDF_MEDIA_TYPE,
         )
 
@@ -240,7 +257,15 @@ class LiteratureBridgeContracts(unittest.TestCase):
     def test_commands_use_independent_literature_routes_and_keep_pdf_routes(self) -> None:
         self.assertEqual(
             set(LITERATURE_REQUESTS),
-            {"list", "read", "authorize", ANNOTATIONS_OPERATION, "result", "review"},
+            {
+                "list",
+                "read",
+                "authorize",
+                ANNOTATIONS_OPERATION,
+                "result",
+                "review",
+                "acquire",
+            },
         )
         self.assertEqual(
             BRIDGE_REQUESTS[("literature", "list")],
@@ -390,6 +415,55 @@ class LiteratureBridgeContracts(unittest.TestCase):
         self.assertEqual(receipt["fragment_kind"], "sentence")
         self.assertEqual(receipt["quote"], fragment["text"])
         self.assertEqual(receipt["pages"][0]["page"], 2)
+
+    def test_current_supplementary_pdf_reads_and_cites_exact_attachment(self) -> None:
+        attachment = self._stage(
+            "paper",
+            "supplementary.pdf",
+            self._pdf("Supplementary"),
+            role=AttachmentRole.SUPPLEMENTARY,
+        )
+        current = AssistantTurnItem(
+            "e_02",
+            ContextRef(
+                "current-paper",
+                ContextRefKind.LITERATURE,
+                "paper",
+                "Project Paper",
+                source_revision=attachment["revision"],
+                origin=ContextOrigin.CURRENT_DOCUMENT,
+            ),
+            ContextResolutionState.READY,
+            role=ContextItemRole.SCOPE,
+            model_locator="literature:paper",
+            surface={"kind": "literature", "attachment_id": attachment["id"]},
+        )
+        self.citations.snapshot = replace(
+            self.citations.snapshot,
+            items=(*self.citations.snapshot.items, current),
+        )
+        request = LiteratureRead(ref_id="literature:paper", start_page=2, end_page=2)
+        prepared = self.citations.service.literature_read("session", "snapshot", request, "turn")
+        result = self.citations.service.commit_literature_read("session", "snapshot", prepared)
+        self.assertIn("Supplementary page 2", result["pages"][0]["text"])
+        self.assertNotIn("Project page 2", result["pages"][0]["text"])
+        handle = result["pages"][0]["fragments"][0]["citation_url"].split(":", 1)[1]
+        receipt = self.citations.store.get("session", "snapshot", handle)
+        self.assertEqual(receipt["attachment_id"], attachment["id"])
+        document = self.citations.service._document(receipt)
+        self.assertEqual(document.record_target.subject_id, attachment["id"])
+        self.assertEqual(document.revision, attachment["revision"])
+        with self.assertRaisesRegex(ValueError, "citation_source_not_authorized"):
+            self.citations.service.literature_read(
+                "session",
+                "snapshot",
+                LiteratureRead(
+                    ref_id="literature:paper",
+                    start_page=1,
+                    end_page=1,
+                    attachment_id=self.paper_attachment["id"],
+                ),
+            )
 
     def test_read_keeps_sentence_receipts_separate_with_precise_geometry(self) -> None:
         first = PdfFragment(
@@ -807,6 +881,41 @@ class LiteratureBridgeContracts(unittest.TestCase):
                 self.assertEqual(indexes.forget_literature(()), 0)
         finally:
             indexes.close()
+
+    def test_managed_fulltext_indexes_use_user_storage_without_a_project(self) -> None:
+        """Serve-held full texts must index in sessions that have no project.
+
+        Literature-overview sessions carry an empty project id while managed
+        bytes live in the user-level literature store; dispatching them to a
+        project database raised ``no_project_selected`` (Bug 87345701). The same
+        dispatch keeps project-bound sessions from writing serve-held indexes
+        into ``project.sqlite3``.
+        """
+        catalog = ContentCatalog(self.root / "content.sqlite3")
+        registry = ProjectRegistry(str(self.root / "workspace"), catalog)
+        content = ContentService(registry, catalog)
+        project = registry.create("托管索引项目")
+        indexes = PdfIndexService(content)
+        database = self.root / "managed-indexes.sqlite3"
+        reference = fixtures.ContextRef("ref", fixtures.ContextRefKind.FILE, "paper.pdf", "Paper")
+        source = fixtures.SourceFixture(self.root / "managed")
+        managed = replace(
+            source.citation_document("", reference), storage_scope=MANAGED_STORAGE_SCOPE
+        )
+        bound = replace(managed, project_id=project.id)
+        try:
+            with patch.object(indexing, "SERVICE_LITERATURE_DATABASE", database):
+                self.assertEqual([page.page for page in indexes.pages(managed, 1, 1)], [1])
+                self.assertIsNotNone(indexes.index(managed, wait=True))
+                self.assertEqual([page.page for page in indexes.pages(bound, 1, 1)], [1])
+                with sqlite3.connect(database) as connection:
+                    revisions = {
+                        row[0] for row in connection.execute(f"SELECT revision FROM {PAGE_TABLE}")
+                    }
+        finally:
+            indexes.close()
+        self.assertEqual(revisions, {managed.revision})
+        self.assertEqual(list(self.root.rglob("project.sqlite3")), [])
 
     def test_page_count_reads_metadata_without_running_the_text_parser(self) -> None:
         source = fixtures.SourceFixture(self.root / "metadata")

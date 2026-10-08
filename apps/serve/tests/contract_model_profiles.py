@@ -34,6 +34,7 @@ from service.chat.service.models import (  # noqa: E402
     ModelService,
     SessionModelUnavailableError,
 )
+from service.chat.service.probe import PROBE_BASE_URL_REQUIRED_ERROR  # noqa: E402
 from service.identity.service.account_token import (  # noqa: E402
     CONV_MESSAGE_ID_HEADER,
     CONV_TURN_ID_HEADER,
@@ -765,6 +766,22 @@ def test_model_listing_does_not_persist() -> None:
     check("listing refuses a provider without a translation leg", refused)
 
 
+def test_model_listing_classifies_missing_base_url() -> None:
+    """缺服务地址时拉取返回结构化错误码, 界面才能按类给中文原因而不是透传原文。"""
+    store = ModelProfileStore()
+    service, _selected = build_service(store)
+    result = service.profile_models(
+        {"provider": PERSONAL_PROVIDER, "wire_api": "chat_completions", "model_name": ""}
+    )
+    check("missing base_url listing fails closed", result["ok"] is False, str(result))
+    check(
+        "missing base_url listing carries a structured error class",
+        result.get("error_class") == PROBE_BASE_URL_REQUIRED_ERROR,
+        str(result),
+    )
+    check("missing base_url listing returns no candidates", result["models"] == [], str(result))
+
+
 def test_connection_probe_uses_model_directory() -> None:
     """The editor tests connectivity without requiring or invoking a selected model."""
     store = ModelProfileStore()
@@ -997,12 +1014,15 @@ class _DisconnectedSubscriptions:
     def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         return {"state": "disconnected", "account_label": "", "billing": "subscription"}
 
+    async def refresh_expiring(self, owner_id: str, connection_id: str) -> None:
+        return None
+
     def sync_on_cooldown(self, owner_id: str, connection_id: str) -> bool:
         return True
 
 
-def test_subscription_disabled_default_is_not_auto_switched() -> None:
-    """订阅连接断开置灰的默认模型不被自动切换：那是用户要显式处理的连接状态。"""
+def test_subscription_disabled_default_is_auto_switched() -> None:
+    """订阅连接断开后，默认模型和执行选择都回落到可用个人连接。"""
 
     store = ModelProfileStore(shared_ownership=True)
     for existing in store.list()["profiles"]:
@@ -1034,7 +1054,7 @@ def test_subscription_disabled_default_is_not_auto_switched() -> None:
     gateway_catalog = [{"key": GATEWAY_MODEL_KEY, "label": "Qwen", "billing": "api"}]
     personal_key = personal_model_key(personal["id"], "personal-model")
     with patch("service.chat.service.models.available_models", return_value=gateway_catalog):
-        payload = asyncio.run(service.catalog(user_id="u-real"))
+        payload = asyncio.run(service.catalog(user_id=LOCAL_USER_ID))
         rows = {row["key"]: row for row in payload["available_models"]}
         check(
             "目录里确实存在可用的个人连接回落",
@@ -1042,9 +1062,13 @@ def test_subscription_disabled_default_is_not_auto_switched() -> None:
             str(sorted(rows)),
         )
         check(
-            "订阅置灰的默认键保持不变",
-            payload["current_model"] == subscription_key and selected["model"] == subscription_key,
+            "订阅置灰的默认键回落并落盘",
+            payload["current_model"] == personal_key and selected["model"] == personal_key,
             str(payload["current_model"]),
+        )
+        check(
+            "订阅失效的执行选择回落到可用个人连接",
+            service.selected_model_key(subscription_key, user_id=LOCAL_USER_ID) == personal_key,
         )
         row = rows[subscription_key]
         check(
@@ -1065,6 +1089,9 @@ class _RecordingSubscriptions:
     def status(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         self.owners.append(owner_id)
         return {"state": "connected", "account_label": "", "billing": "subscription"}
+
+    async def refresh_expiring(self, owner_id: str, connection_id: str) -> None:
+        self.owners.append(owner_id)
 
     async def models(self, owner_id: str, connection_id: str) -> dict[str, Any]:
         self.owners.append(owner_id)
@@ -1823,11 +1850,12 @@ def main() -> int:
     test_personal_profile_keeps_its_own_credential()
     test_preset_providers_are_declared_and_registered()
     test_model_listing_does_not_persist()
+    test_model_listing_classifies_missing_base_url()
     test_product_catalog_hides_concrete_subscription_models()
     test_builtin_models_greyed_out_when_signed_out()
     test_signed_out_default_auto_switches_to_first_available_model()
     test_signed_out_without_available_models_keeps_the_readable_error()
-    test_subscription_disabled_default_is_not_auto_switched()
+    test_subscription_disabled_default_is_auto_switched()
     test_machine_axis_splits_gateway_gate_and_personal_connection_identities()
     test_declared_empty_legacy_connection_uses_product_gateway()
     test_credential_fields_never_erase_the_builtin_catalog()

@@ -4,6 +4,7 @@ import test from 'node:test'
 import { createInstance } from 'i18next'
 
 import {
+  literatureCollections,
   mergeLiteratureSummaries,
   replaceLiteratureSummary,
   timestampLabel
@@ -26,11 +27,22 @@ const summary = (id: string, title: string, version: number): LiteratureSummary 
   title,
   version
 } as LiteratureSummary)
+test('collection projection respects project scope without global fallback', () => {
+  const item = {
+    collections: [{ id: 'global', name: 'Global' }],
+    project_collections: [{ id: 'project', name: 'Project' }]
+  } as LiteratureSummary
+  assert.deepEqual(literatureCollections(item), item.collections)
+  assert.deepEqual(literatureCollections(item, 'project-id'), item.project_collections)
+  assert.deepEqual(literatureCollections({ ...item, project_collections: [] }, 'project-id'), [])
+  assert.deepEqual(literatureCollections({ ...item, collections: [] }), [])
+})
 // 与 localization/format.ts 的 createFormatters 同形, 但保留显式 locale 以便逐语言断言。
 const formatters = (locale: string) => ({
     date: (value: Date | number, options?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, options).format(value),
     relative: (value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions) => new Intl.RelativeTimeFormat(locale, options).format(value, unit),
-    number: (value: number) => String(value)
+    number: (value: number) => String(value),
+    bytes: (value: number) => String(value)
 })
 
 test('literature timestamps are shown down to the second', () => {
@@ -101,6 +113,12 @@ test('the whole literature table is a copy drop target for external files', () =
   assert.match(listSource, /event\.dataTransfer\.dropEffect = 'copy'/)
   assert.match(listSource, /void importPdfFiles\(event\.dataTransfer\.files\)/)
   assert.match(listSource, /literature\('pdfImport\.drop'\)/)
+})
+
+test('the literature header checkbox shows mixed selection for some visible rows', () => {
+  assert.match(listSource, /const visibleSelectedCount = items\.filter\(\(item\) => picked\.has\(item\.id\)\)\.length/)
+  assert.match(listSource, /const selectAllState = visibleSelectedCount === 0\s*\? false\s*: visibleSelectedCount === items\.length \? true : 'mixed'/)
+  assert.match(listSource, /checked=\{selectAllState\}/)
 })
 
 test('chip columns let the cell do the clipping so truncation stays detectable', () => {

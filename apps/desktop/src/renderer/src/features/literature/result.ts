@@ -4,6 +4,7 @@ export type ResultSort = 'relevance' | 'title' | 'year' | 'citations'
 export type AccessFilter = 'all' | 'open' | 'closed'
 export type DecisionFilter = 'all' | 'included' | 'excluded'
 export type ReviewEvidence = 'fulltext' | 'abstract' | 'metadata' | 'unknown'
+const CARD_PRESENTED_REPORT_ORIGINS = new Set(['literature-review', 'precise-search'])
 
 export function presentedSearchArtifacts(result: {
   origin?: string
@@ -13,7 +14,7 @@ export function presentedSearchArtifacts(result: {
   report?: { artifact_id?: string }
 }): readonly string[] {
   return [result.metadata?.artifact_id, result.selection?.artifact_id, result.fulltext?.artifact_id,
-    ...(result.origin === 'literature-review' ? [result.report?.artifact_id] : [])]
+    ...(result.origin && CARD_PRESENTED_REPORT_ORIGINS.has(result.origin) ? [result.report?.artifact_id] : [])]
     .filter((id): id is string => Boolean(id))
 }
 

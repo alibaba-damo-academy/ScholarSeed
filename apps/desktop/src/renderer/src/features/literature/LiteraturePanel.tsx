@@ -149,7 +149,7 @@ export function LiteraturePanel(): React.JSX.Element {
   const { t } = useTranslation('literature')
   const { t: ui } = useTranslation('ui')
   const projectId = state.homeSelectedProjectId ?? undefined
-  const { query, reload, panelReload } = useCatalogue()
+  const { query, reload, panelReload, panel, scopedTags: cachedTags } = useCatalogue()
   const [joinFlash, setJoinFlash] = useState<CreatedCollectionNotice | null>(null)
   useEffect(() => onJoinedCollectionCreated(notice => {
     if (projectId && notice.projectId !== projectId) return
@@ -158,11 +158,15 @@ export function LiteraturePanel(): React.JSX.Element {
     setExpandedCollections(current => new Set([...current, ...notice.ancestors]))
     setJoinFlash(notice)
   }), [projectId])
-  const [counts, setCounts] = useState(EMPTY_COUNTS)
-  const [facets, setFacets] = useState(EMPTY_FACETS)
+  const [counts, setCounts] = useState(() => panel?.counts ?? EMPTY_COUNTS)
+  const [facets, setFacets] = useState(() => panel?.facets ?? EMPTY_FACETS)
   /** 标签云单独存一份 facet: facets.tags 是全量标签, 归打标签用, 计数不按分类收敛。 */
-  const [scopedTags, setScopedTags] = useState<LiteratureTagFacet[]>([])
-  const [projects, setProjects] = useState<LiteratureProject[]>([])
+  const [scopedTags, setScopedTags] = useState<LiteratureTagFacet[]>(
+    () => cachedTags
+  )
+  const [projects, setProjects] = useState<LiteratureProject[]>(
+    () => panel?.projects ?? []
+  )
   const [expandedProjects, setExpandedProjects] = useSidebarSet('projects')
   const [expandedCollections, setExpandedCollections] = useSidebarSet('collections')
   const [collectionsOpen, setCollectionsOpen] = useSidebarBoolean('collectionsOpen')
@@ -186,7 +190,7 @@ export function LiteraturePanel(): React.JSX.Element {
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [mutationError, setMutationError] = useState<PanelError | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(panel === null)
   const [searchError, setSearchError] = useState<PanelError | null>(null)
   const [searching, setSearching] = useState(false)
   const selectLiteratureScope = (
@@ -212,8 +216,9 @@ export function LiteraturePanel(): React.JSX.Element {
   }
 
   useEffect(() => {
+    if (catalogue.panelFresh()) return
     let active = true
-    setLoading(true)
+    if (catalogue.getSnapshot().panel === null) setLoading(true)
     Promise.all([
       getLiteratureCounts(projectId),
       getLiteratureFacets({ project_id: projectId }),
@@ -224,6 +229,11 @@ export function LiteraturePanel(): React.JSX.Element {
         setCounts(nextCounts)
         setFacets(nextFacets)
         setProjects(nextProjects.projects)
+        catalogue.panel({
+          counts: nextCounts,
+          facets: nextFacets,
+          projects: nextProjects.projects
+        })
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -247,6 +257,7 @@ export function LiteraturePanel(): React.JSX.Element {
    * 交集, 被选中的维度不能过滤自己的 facet; 而且每点一次标签就重取一遍纯属白跑)。
    */
   useEffect(() => {
+    if (catalogue.tagsFresh()) return
     let active = true
     getLiteratureTagFacets({
       collection_id: query.collection_id,
@@ -258,6 +269,7 @@ export function LiteraturePanel(): React.JSX.Element {
       .then((value) => {
         if (!active) return
         setScopedTags(value.tags)
+        catalogue.tags(value.tags)
         pruneStaleTags(value.tags)
       })
       .catch(() => {
@@ -442,32 +454,56 @@ export function LiteraturePanel(): React.JSX.Element {
                 onClick={(event) => event.stopPropagation()}
               />
             </DropdownMenuTrigger>
-            <IconButton
-              label={t('panel.newChild', { name: collection.name })}
-              size="sm"
-              variant="ghostIcon"
-              icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-              onClick={(event) => {
-                event.stopPropagation()
-                openCreate({
-                  kind: 'collection',
-                  projectId: project?.id ?? projectId,
-                  parentId: collection.id,
-                  parentName: collection.name
-                })
-              }}
-            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  label={t('panel.import')}
+                  size="sm"
+                  variant="ghostIcon"
+                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
+                  onClick={(event) => event.stopPropagation()}
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-52">
+                {IMPORT_SOURCES.map((source) => (
+                  <DropdownMenuItem
+                    key={source.value}
+                    onSelect={() => {
+                      act.activateTab('literature')
+                      catalogue.requestImport(source.value, {
+                        projectId: project?.id ?? projectId ?? '',
+                        collectionId: collection.id
+                      })
+                    }}
+                  >
+                    {source.icon === 'local-pdf' ? (
+                      <MonitorDown />
+                    ) : source.icon === 'bib-ris' ? (
+                      <FileDown />
+                    ) : (
+                      <IconFont type="icon-zotero" />
+                    )}
+                    {t(source.labelKey)}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={() => openCreate({
+                    kind: 'collection',
+                    projectId: project?.id ?? projectId,
+                    parentId: collection.id,
+                    parentName: collection.name
+                  })}
+                >
+                  <IconFont type="icon-line-operation-add" />
+                  {t('panel.createChild')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </span>
         </div>
         </ContextMenuTrigger>
         <ContextMenuContent>
-          <ContextMenuItem onSelect={() => openCreate({
-            kind: 'collection', projectId: project?.id ?? projectId,
-            parentId: collection.id, parentName: collection.name
-          })}>
-            <IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />
-            {t('panel.createChild')}
-          </ContextMenuItem>
           <ContextMenuItem onSelect={() => setEditTarget({
             ...collection, projectId: project?.id ?? projectId, mode: 'rename', collections
           })}>
@@ -678,11 +714,11 @@ export function LiteraturePanel(): React.JSX.Element {
           </Button>
         </CollapsibleTrigger>
         <CollapsibleContent className="border-0 bg-transparent p-0 text-[var(--vds-text-secondary)] shadow-none">
-          <div data-testid="literature-search-box" className={`flex flex-col self-stretch gap-[var(--vds-space-2)] rounded-[var(--vds-radius-5)] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-[var(--vds-space-3)] shadow-none focus-within:border-[var(--vds-brand-light-border)]${authenticated ? '' : ' !rounded-b-none'}`}>
+          <div data-testid="literature-search-box" className={`flex h-[76px] max-h-[280px] self-stretch items-start gap-2 rounded-[12px] border border-solid border-[var(--vds-border-default)] bg-[var(--vds-bg-white-default)] p-3 shadow-none${authenticated ? '' : ' !rounded-b-none'}`}>
             <Textarea
               unstyled
               aria-label={t('panel.discover')}
-              className="min-h-[var(--vds-control-height-standard)] w-full resize-none border-0 bg-transparent p-0 font-[family-name:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] outline-none placeholder:text-[var(--vds-text-5)]"
+              className="min-h-0 flex-1 resize-none border-0 bg-transparent p-0 font-['PingFang_SC'] text-[14px] font-normal leading-5 text-[var(--vds-text-primary)] outline-none placeholder:font-['PingFang_SC'] placeholder:text-[14px] placeholder:font-normal placeholder:text-[var(--vds-text-5)]"
               placeholder={t('panel.searchPlaceholder')}
               rows={2}
               value={discovery}
@@ -698,10 +734,10 @@ export function LiteraturePanel(): React.JSX.Element {
                 void startSearch()
               }}
             />
-            <div className="flex shrink-0 justify-end">
+            <div className="flex h-full shrink-0 items-end">
               <Button
                 aria-label={t('panel.search')}
-                className="!size-[var(--vds-control-height-sm)] !min-h-0 !min-w-[var(--vds-control-height-sm)] !p-0 [&_svg]:!size-[var(--vds-icon-7)] disabled:!bg-[var(--vds-brand-light-bg-default)] disabled:!text-[var(--vds-text-5)] disabled:!opacity-[var(--vds-opacity-full)]"
+                className="!size-6 !min-h-0 !min-w-0 !p-0"
                 data-testid="literature-search-submit"
                 disabled={!authenticated || searching || !discovery.trim()}
                 icon={
@@ -793,7 +829,9 @@ export function LiteraturePanel(): React.JSX.Element {
                       // 列表, 再把导入意图交给 store 由列表消费; DOM 事件在这种
                       // 时候没有听者, 点了会静默失效。
                       act.activateTab('literature')
-                      catalogue.requestImport(source.value)
+                      catalogue.requestImport(source.value, projectId ? null : {
+                        projectId: '', collectionId: ''
+                      })
                     }}
                   >
                     {source.icon === 'local-pdf' ? (
@@ -989,22 +1027,49 @@ export function LiteraturePanel(): React.JSX.Element {
                                     {project.count}
                                   </span>
                                 </Button>
-                                <IconButton
-                                  className="pointer-events-none absolute right-0 opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100"
-                                  label={t('panel.newInProject', {
-                                    name: project.name
-                                  })}
-                                  size="sm"
-                                  variant="ghostIcon"
-                                  icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
-                                  onClick={() =>
-                                    openCreate({
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <IconButton
+                                      className="pointer-events-none absolute right-0 opacity-0 group-hover/project:pointer-events-auto group-hover/project:opacity-100 group-focus-within/project:pointer-events-auto group-focus-within/project:opacity-100"
+                                      label={t('panel.import')}
+                                      size="sm"
+                                      variant="ghostIcon"
+                                      icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}
+                                    />
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent className="!z-[var(--vds-z-modal)] w-52">
+                                    {IMPORT_SOURCES.map((source) => (
+                                      <DropdownMenuItem
+                                        key={source.value}
+                                        onSelect={() => {
+                                          act.activateTab('literature')
+                                          catalogue.requestImport(source.value, {
+                                            projectId: project.id,
+                                            collectionId: ''
+                                          })
+                                        }}
+                                      >
+                                        {source.icon === 'local-pdf' ? (
+                                          <MonitorDown />
+                                        ) : source.icon === 'bib-ris' ? (
+                                          <FileDown />
+                                        ) : (
+                                          <IconFont type="icon-zotero" />
+                                        )}
+                                        {t(source.labelKey)}
+                                      </DropdownMenuItem>
+                                    ))}
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem onSelect={() => openCreate({
                                       kind: 'collection',
                                       projectId: project.id,
                                       parentName: project.name
-                                    })
-                                  }
-                                />
+                                    })}>
+                                      <IconFont type="icon-line-operation-add" />
+                                      {t('panel.createCollection')}
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </div>,
                               ...(expanded
                                 ? collectionNodes(
@@ -1051,7 +1116,7 @@ export function LiteraturePanel(): React.JSX.Element {
                   placeholder={t('panel.searchTags')}
                   size="sm"
                   value={tagSearch}
-                  containerClassName="min-w-0 flex-1"
+                  containerClassName="ml-[var(--vds-space-2)] min-w-0 flex-1"
                   onChange={(event) => setTagSearch(event.target.value)}
                   onBlur={() => {
                     setTagSearchOpen(false)

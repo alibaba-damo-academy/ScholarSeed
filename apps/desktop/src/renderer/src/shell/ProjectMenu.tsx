@@ -5,6 +5,7 @@ import { Box, Check, House, LibraryBig } from 'lucide-react'
 import { IconFont } from '../components/primitive'
 import { Button } from '../components/ui'
 import { cx } from '../components/ui'
+import { ProjectActionsMenu } from '../components/business/ProjectActions'
 import { useApp } from '../store'
 
 /** Project selection is a navigation flyout: above chrome, below modal surfaces. */
@@ -111,39 +112,54 @@ export function ProjectMenu({
           const active = project.id === activeProjectId
 
           return (
-            <Button
+            <div
               key={project.id}
-              className={cx(
-                PROJECT_MENU_ITEM_CLASS_NAME,
-                active && PROJECT_MENU_ITEM_ACTIVE_CLASS_NAME
-              )}
-              data-testid={`project-menu-option-${project.name}`}
-              onClick={() => {
-                onClose()
-                act.selectProject(project.id)
-                act.openWorkbenchView('resource')
-              }}
-              variant="ghost"
+              className="group/project-row relative rounded-[7px] has-[[aria-expanded=true]]:bg-[var(--vds-bg-gray-hover-transparent)]"
             >
-              <Box size={16} strokeWidth={1.45} />
-              <span
+              <Button
                 className={cx(
-                  PROJECT_MENU_LABEL_CLASS_NAME,
-                  active && PROJECT_MENU_LABEL_ACTIVE_CLASS_NAME
+                  PROJECT_MENU_ITEM_CLASS_NAME,
+                  active && PROJECT_MENU_ITEM_ACTIVE_CLASS_NAME
                 )}
-                title={project.path}
+                data-testid={`project-menu-option-${project.name}`}
+                onClick={() => {
+                  onClose()
+                  act.selectProject(project.id)
+                  act.openWorkbenchView('resource')
+                }}
+                variant="ghost"
               >
-                {project.name}
-              </span>
-              {active && (
-                <Check
-                  aria-hidden="true"
-                  className="shrink-0 text-[var(--vds-brand-bg-default)]"
-                  size={18}
-                  strokeWidth={1.8}
-                />
-              )}
-            </Button>
+                <Box size={16} strokeWidth={1.45} />
+                <span
+                  className={cx(
+                    PROJECT_MENU_LABEL_CLASS_NAME,
+                    active && PROJECT_MENU_LABEL_ACTIVE_CLASS_NAME
+                  )}
+                  title={project.path}
+                >
+                  {project.name}
+                </span>
+                {active && (
+                  <Check
+                    aria-hidden="true"
+                    className="shrink-0 text-[var(--vds-brand-bg-default)] group-hover/project-row:hidden group-has-[[aria-expanded=true]]/project-row:hidden group-has-[button:focus-visible]/project-row:hidden"
+                    size={18}
+                    strokeWidth={1.8}
+                  />
+                )}
+              </Button>
+              {/* 管理操作是行内独立触发器：点它与菜单项都不冒泡到项目切换。
+                  触发器恒贴行右缘：内缩会让侧向子菜单左缘缩进下拉面板底下，
+                  图标列被面板盖住（悬停/展开时由对勾让位给触发器）。 */}
+              <ProjectActionsMenu
+                idPrefix="project-menu-"
+                project={project}
+                side="right"
+                triggerClassName="absolute inset-y-0 my-auto right-[var(--vds-space-1)] opacity-0 transition-opacity group-hover/project-row:opacity-100 focus-visible:opacity-100 aria-[expanded=true]:opacity-100"
+                triggerTestId={`project-menu-actions-${project.id}`}
+                onAction={onClose}
+              />
+            </div>
           )
         })}
       </div>

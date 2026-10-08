@@ -1,13 +1,16 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs'
 import { dirname, join, relative, resolve } from 'path'
+import { createServer as createHttpServer } from 'node:http'
+import { createHash } from 'node:crypto'
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import { createServer, loadConfigFromFile, type UserConfig } from 'vite'
 import { PDFDocument } from 'pdf-lib'
 import { IMPORT_PICKER_TARGET, supportsImportPickerTarget } from '../src/picker'
+import { ONBOARDING_GROUPS } from '../src/onboarding'
 import { MATHEMATICS_SOURCE } from './fixtures/mathematics'
 import { TABLE_MATH_SOURCE } from './fixtures/table-math'
 import { apiBase, DesktopSession, enterWorkbenchShell, waitForFinishedTurn } from './fixtures/electron'
-import { createRuntime } from './fixtures/runtime'
+import { createRuntime, seedLiveConfig } from './fixtures/runtime'
 import { BROKEN_PDF_NAME, fileDigest, LONG_PDF_NAME, MARKDOWN_SOURCE, NOTE_TEXT, openFile, PDF_LONG_OUTLINE_TITLE, PDF_LONG_UNAVAILABLE_OUTLINE_TITLE, PDF_NAME, SECOND_PDF_NAME, seedLongPdf, seedProject, selectPdfText, selectProject, SOURCE_CASES } from './fixtures/workbench'
 
 const SHORTCUT = process.platform === 'darwin' ? 'Meta' : 'Control'
@@ -53,6 +56,205 @@ const FORMAT_ON_SAVE_EXPECTED = 'const answer = { value: 42 };\n'
 const FORMAT_ON_SAVE_DISABLED_SOURCE = 'const disabled={value:42}\r\n'
 const HEADING_ONLY_MARKDOWN = '# Heading only'
 const UNFORMATTED_MARKDOWN = '# 123\n```bash\nabcabc\n```'
+const TOAST_HOVER_OBSERVATION_MS = 7500
+const TOAST_DISMISS_TIMEOUT_MS = 7000
+const OVERSIZED_RESOURCE_NAME_LENGTH = 300
+const UNSENT_COMPOSER_DRAFT = 'abcdwe 未发送的研究问题\nPDF 与文档切换后应保留'
+const DRAFT_RESET_PROJECT_NAME = '草稿重置验收'
+const RENDERER_PREFERENCES_FILENAME = 'renderer-preferences.json'
+
+test('document tab activation and context menus preserve unsent composer drafts', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const preferencesPath = join(runtime.userData, RENDERER_PREFERENCES_FILENAME)
+  const preferences = JSON.parse(readFileSync(preferencesPath, 'utf8'))
+  writeFileSync(preferencesPath, JSON.stringify({
+    ...preferences,
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    const response = await page.request.post(`${await apiBase(page)}/api/content/projects`, {
+      data: { name: DRAFT_RESET_PROJECT_NAME }
+    })
+    expect(response.ok(), await response.text()).toBe(true)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await selectProject(page)
+    if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    await openFile(page, 'acceptance.md')
+    await openFile(page, PDF_NAME)
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible()
+    const input = page.getByTestId('composer-input')
+    const tabs = page.locator('[data-testid^="document-tab-"]')
+    const pdfTab = tabs.filter({ hasText: PDF_NAME })
+    const markdownTab = tabs.filter({ hasText: 'acceptance.md' })
+    await input.fill(UNSENT_COMPOSER_DRAFT)
+    await pdfTab.click()
+    await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    for (const tab of [markdownTab, pdfTab, markdownTab, pdfTab]) {
+      await tab.click({ button: 'right' })
+      await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+      await page.keyboard.press('Escape')
+      await tab.click()
+      await expect(input).toHaveValue(UNSENT_COMPOSER_DRAFT)
+    }
+    await page.screenshot({ path: join(runtime.artifacts, 'composer-draft-after-document-tabs.png') })
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${DRAFT_RESET_PROJECT_NAME}`).click()
+    await expect(input).toHaveValue('')
+    await input.fill(UNSENT_COMPOSER_DRAFT)
+    await page.getByTestId('activity-home').click()
+    await expect(page.getByTestId('workbench-home-space')).toBeVisible()
+    await enterWorkbenchShell(page)
+    if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
+    await expect(page.getByTestId('composer-input')).toHaveValue('')
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+const EDITOR_VERSION_WINDOW_MS = 60_000
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`Markdown links ${theme} highlight, hover, navigate and survive save`, async ({}, testInfo) => {
+    const runtime = createRuntime(testInfo)
+    writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', theme, onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+    const desktop = new DesktopSession(runtime, testInfo)
+    const requests: string[] = []
+    const server = createHttpServer((request, response) => {
+      requests.push(request.url ?? '')
+      response.setHeader('Cache-Control', 'no-store')
+      response.end('Markdown link acceptance: opened by the system browser.')
+    })
+    await new Promise<void>(resolveListening => server.listen(0, '127.0.0.1', resolveListening))
+    const address = server.address()
+    if (!address || typeof address === 'string') throw new Error('Browser acceptance endpoint unavailable')
+    const href = `http://127.0.0.1:${address.port}/markdown-link?requirement=87241309`
+    const keyboardHref = `${href}&keyboard=true`
+    const name = 'links.md'
+    const source = `# Link acceptance\n\n[External paper](${href} "Original title")\n\n[Keyboard external](${keyboardHref})\n\n[Reference](#ref-paper)\n\n[Unavailable citation](scholarseed-cite:missing-receipt)\n\nPlain editable text.\n\n${Array.from({ length: 40 }, (_, index) => `Paragraph ${index}.\n`).join('\n')}\n<a id="ref-paper"></a>\nReference destination.\n`
+    try {
+      let page = await desktop.launch()
+      const resources = await seedProject(page, runtime)
+      writeFileSync(join(resources, name), source)
+      await page.getByTestId('resource-refresh').click()
+      await openFile(page, name)
+      const editor = page.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+      const external = editor.getByRole('link', { name: 'External paper', exact: true })
+      await expect(external).toHaveAttribute('data-document-link', href)
+      await expect(external).toHaveAttribute('title', 'Original title')
+      await expect(external).toHaveCSS('color', theme === 'light' ? 'rgb(54, 122, 189)' : 'rgb(108, 175, 248)')
+      await external.hover()
+      await expect(page.getByTestId('markdown-link-tooltip')).toHaveText(`${href} — 单击在默认浏览器中打开`)
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-link-${theme}.png`) })
+      await external.click()
+      await expect.poll(() => requests.includes('/markdown-link?requirement=87241309')).toBe(true)
+      await page.bringToFront()
+      await expect(page.getByTestId('markdown-save-dirty')).toHaveCount(0)
+      await editor.getByRole('link', { name: 'Reference', exact: true }).click()
+      await expect(editor.locator('p').filter({ hasText: 'Reference destination.' })).toBeInViewport()
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-reference-${theme}.png`) })
+      await page.getByTestId('markdown-return-to-source').click()
+      const keyboardLink = editor.getByRole('link', { name: 'Keyboard external', exact: true })
+      await keyboardLink.focus()
+      await expect(keyboardLink).toBeFocused()
+      await expect(page.getByTestId('markdown-link-tooltip')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId('markdown-link-tooltip')).toHaveCount(0)
+      await expect(keyboardLink).toBeFocused()
+      await page.keyboard.press('Enter')
+      await expect.poll(() => requests.includes('/markdown-link?requirement=87241309&keyboard=true')).toBe(true)
+      await page.bringToFront()
+      await editor.getByRole('link', { name: 'Unavailable citation' }).click()
+      await expect(page.getByText('无法打开链接 scholarseed-cite:missing-receipt，目标不可用或打开失败。', { exact: true })).toBeVisible()
+
+      await editor.getByText('Plain editable text.', { exact: true }).click()
+      await page.keyboard.press('End')
+      await page.keyboard.insertText(' Saved edit.')
+      await expect(editor).toContainText('Saved edit.')
+      await expect(page.getByTestId('markdown-save-dirty')).toBeVisible()
+      await page.getByTestId('markdown-open-source').click()
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText(href)
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText('Saved edit.')
+      await page.getByTestId('markdown-open-editor').click()
+      await expect(external).toHaveAttribute('data-document-link', href)
+      await page.getByTestId('markdown-save').click()
+      await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain(`[External paper](${href} "Original title")`)
+      expect(readFileSync(join(resources, name), 'utf8')).toContain('scholarseed-cite:missing-receipt')
+      await expect.poll(() => readFileSync(join(resources, name), 'utf8')).toContain('Saved edit.')
+      await desktop.close()
+      page = await desktop.launch()
+      await selectProject(page)
+      await openFile(page, name)
+      const reopened = page.getByTestId('markdown-visual-editor').locator('.ProseMirror')
+      await expect(reopened.getByRole('link', { name: 'External paper', exact: true })).toHaveAttribute('data-document-link', href)
+      await expect(reopened).toContainText('Saved edit.')
+      await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+      await page.setViewportSize({ width: 760, height: 700 })
+      await reopened.getByRole('link', { name: 'External paper', exact: true }).hover()
+      await expect(page.getByTestId('markdown-link-tooltip')).toBeInViewport()
+      await page.screenshot({ path: join(runtime.artifacts, `markdown-reopened-narrow-${theme}.png`) })
+      desktop.assertNoPageErrors()
+    } finally {
+      await desktop.attachArtifacts()
+      await new Promise<void>((resolveClosed, rejectClosed) => {
+        server.close(error => error ? rejectClosed(error) : resolveClosed())
+        server.closeAllConnections()
+      })
+    }
+  })
+}
+
+test('Markdown saved citation from a real answer opens its PDF evidence', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const base = await apiBase(page)
+    const listing = await page.request.get(`${base}/api/content/projects`)
+    const project = (await listing.json() as { projects: Array<{ id: string; root: string }> }).projects.find(candidate => candidate.root === dirname(resources))
+    expect(project).toBeTruthy()
+    const imported = await page.request.post(`${base}/api/literature/import`, {
+      data: { project: project!.id, source: 'local', sources: [join(resources, PDF_NAME)] }
+    })
+    expect(imported.ok(), await imported.text()).toBe(true)
+    await page.getByTestId('topbar-ai').click()
+    await page.getByTestId('composer-input').fill('请使用 project-literature 技能通过 scholarseed_bridge 列出本项目文献，读取 acceptance 文献的第一页，仅引用包含 Needle marker 1 的最小原文片段，用一句话原文和一个完整的 scholarseed-cite 链接回答。不要创造或缩短 citation_url。')
+    await page.getByTestId('composer-send').click()
+    const status = await waitForFinishedTurn(page)
+    const history = await page.request.get(`${base}/api/serve/history/${status.activeSession}`)
+    const turns = (await history.json() as { turns: Array<{ kind: string; text: string; item_id?: string }> }).turns
+    const answer = turns.findLast(turn => turn.kind === 'text' && turn.text.includes('scholarseed-cite:'))
+    expect(answer, JSON.stringify(turns)).toBeTruthy()
+    const answerId = await page.locator('.answer-annotation-root[data-answer-id]').last().getAttribute('data-answer-id')
+    expect(answerId).toBeTruthy()
+    const revision = `sha256:${createHash('sha256').update(answer!.text).digest('hex')}`
+    const created = await page.request.post(`${base}/api/assistant/sessions/${status.activeSession}/resources/create`, {
+      data: { project_id: project!.id, name: 'saved-citation.md', content: answer!.text, source: { answer_id: answerId, answer_revision: revision, start_utf16: 0, end_utf16: answer!.text.length, selected_text_hash: revision } }
+    })
+    expect(created.ok(), await created.text()).toBe(true)
+    const node = (await created.json() as { node: { path: string; name: string } }).node
+    await page.getByTestId('ai-panel').getByRole('button', { name: '关闭', exact: true }).click()
+    await page.getByTestId('resource-refresh').click()
+    await page.getByTestId(`tree-${node.path.slice(0, node.path.lastIndexOf('/'))}`).click()
+    await page.getByTestId(`tree-${node.path}`).click()
+    const link = page.getByTestId('markdown-visual-editor').locator('a[data-document-link^="scholarseed-cite:"]').first()
+    await expect(link).toBeVisible()
+    await link.hover()
+    await expect(page.getByTestId('markdown-link-tooltip')).toContainText('单击跳转到引用位置')
+    await link.click()
+    await expect(page.getByTestId('pdf-page-1')).toBeInViewport()
+    await expect(page.locator('[data-citation-highlight]').first()).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-saved-citation.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
 
 function monacoContent(frame: Locator): Locator {
   return frame.contentFrame().locator('#root')
@@ -1016,6 +1218,323 @@ test('file tabs follow projects and auto-save on workspace blur with a version',
   } finally { await desktop.attachArtifacts() }
 })
 
+test('editor saves coalesce one minute version and keep the window across Desktop restart', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    let page = await desktop.launch()
+    const saveResponses: string[] = []
+    const observeSave = (target: Page): void => {
+      target.on('response', async (response) => {
+        if (response.request().method() === 'PUT' && response.url().includes('/api/workbench/')) {
+          saveResponses.push(`${response.status()} ${response.status() >= 400 ? await response.text() : ''}`)
+        }
+      })
+    }
+    observeSave(page)
+    const resources = await seedProject(page, runtime)
+    const path = join(resources, 'acceptance.md')
+    let projectId = ''
+    await openFile(page, 'acceptance.md')
+    await page.getByTestId('markdown-open-source').click()
+    const history = async (): Promise<Array<{ id: string; sequence: number; created_at_ms: number }>> => {
+      const base = await apiBase(page)
+      const projects = await page.request.get(`${base}/api/content/projects`)
+      const payload = await projects.json() as { projects: Array<{ id: string; root: string }> }
+      const project = payload.projects.find((item) => resolve(item.root, RESOURCES_DIR) === resolve(resources))
+      expect(project).toBeTruthy()
+      projectId = project!.id
+      const query = `project=${encodeURIComponent(project!.id)}`
+      const capability = await page.request.get(`${base}/api/resource/capability?${query}&path=resources/acceptance.md`)
+      const identity = await capability.json() as { file_id: string }
+      const response = await page.request.get(`${base}/api/resource/files/${identity.file_id}/versions?${query}`)
+      expect(response.ok(), await response.text()).toBe(true)
+      return (await response.json()).versions
+    }
+    const readVersion = async (versionId: string): Promise<string> => {
+      const response = await page.request.get(`${await apiBase(page)}/api/resource/versions/${versionId}/content?project=${encodeURIComponent(projectId)}`)
+      expect(response.ok(), await response.text()).toBe(true)
+      return response.text()
+    }
+    const save = async (marker: string, manual: boolean): Promise<void> => {
+      const editor = visibleMonacoEditor(page)
+      await editor.locator('.view-lines').click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(editor.locator('.view-lines')).toContainText(marker)
+      await expect(page.getByRole('tab', { name: /acceptance\.md/ }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+      if (manual) await page.getByTestId('markdown-save').click()
+      else {
+        await page.getByTestId('activity-account').click()
+        await page.getByTestId('account-menu-settings').click()
+      }
+      try {
+        await expect.poll(() => readFileSync(path, 'utf8')).toContain(marker)
+      } catch (error) {
+        console.log('Editor save responses:', saveResponses)
+        await page.screenshot({ path: join(runtime.artifacts, 'minute-save-failure.png') })
+        throw error
+      }
+      await expect(page.getByRole('tab', { name: /acceptance\.md/ }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+      if (!manual) await page.keyboard.press('Escape')
+    }
+    await save('First minute save', false)
+    const first = await history()
+    expect(first.map((version) => version.sequence)).toEqual([2, 1])
+    await save('Latest minute save', false)
+    expect(await history()).toEqual(first.map((version) => expect.objectContaining({
+      id: version.id, sequence: version.sequence, created_at_ms: version.created_at_ms
+    })))
+    expect(await readVersion(first[0].id)).toBe(readFileSync(path, 'utf8'))
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(2)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-autosave-coalesced.png') })
+    await page.keyboard.press('Escape')
+    await desktop.close()
+    page = await desktop.launch()
+    observeSave(page)
+    await selectProject(page)
+    await openFile(page, 'acceptance.md')
+    await page.getByTestId('markdown-open-source').click()
+    await save('Manual save after restart', true)
+    expect((await history()).map((version) => version.id)).toEqual(first.map((version) => version.id))
+    const minuteContent = readFileSync(path, 'utf8')
+    expect(await readVersion(first[0].id)).toBe(minuteContent)
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(2)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-save-restarted.png') })
+    await page.keyboard.press('Escape')
+    const remaining = first[0].created_at_ms + EDITOR_VERSION_WINDOW_MS - Date.now()
+    if (remaining > 0) await page.waitForTimeout(remaining)
+    await save('Next minute new version', false)
+    const next = await history()
+    expect(next.map((version) => version.sequence)).toEqual([3, 2, 1])
+    expect(next[1].id).toBe(first[0].id)
+    expect(await readVersion(next[1].id)).toBe(minuteContent)
+    expect(await readVersion(next[0].id)).toBe(readFileSync(path, 'utf8'))
+    await page.getByTestId('document-version-history').click()
+    await expect(page.getByTestId('version-history-row-action')).toHaveCount(3)
+    await page.screenshot({ path: join(runtime.artifacts, 'minute-save-next-version.png') })
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('file auto-save repeats across visual Markdown, Markdown source and code editors', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    const openSettings = async (): Promise<void> => {
+      await page.getByTestId('activity-account').click()
+      await page.getByTestId('account-menu-settings').click()
+      await expect(page.getByTestId('account-settings-shell')).toBeVisible()
+    }
+    const closeSettings = async (): Promise<void> => {
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId('account-settings-shell')).toHaveCount(0)
+    }
+    const expectAutoSaved = async (path: string, marker: string, tabName: RegExp): Promise<void> => {
+      await openSettings()
+      await expect.poll(() => readFileSync(path, 'utf8')).toContain(marker)
+      await expect(page.getByRole('tab', { name: tabName }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+      await closeSettings()
+    }
+    const appendToMonaco = async (marker: string): Promise<void> => {
+      const editor = visibleMonacoEditor(page)
+      await editor.locator('.view-lines').click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(editor.locator('.view-lines')).toContainText(marker)
+    }
+
+    const markdownPath = join(resources, 'acceptance.md')
+    const markdownTab = /acceptance\.md/
+    await openFile(page, 'acceptance.md')
+    const visualEditor = page.locator('[data-testid="markdown-visual-editor"] .ProseMirror')
+    for (const marker of ['Repeated visual save one', 'Repeated visual save two']) {
+      await visualEditor.click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+      await expectAutoSaved(markdownPath, marker, markdownTab)
+    }
+
+    const beforeBackspace = readFileSync(markdownPath, 'utf8')
+    await visualEditor.click()
+    await page.keyboard.press(`${SHORTCUT}+End`)
+    await page.keyboard.press('Backspace')
+    await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+    await openSettings()
+    await expect.poll(() => readFileSync(markdownPath, 'utf8')).not.toBe(beforeBackspace)
+    await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+    await closeSettings()
+    await page.screenshot({ path: join(runtime.artifacts, 'visual-backspace-auto-save.png') })
+
+    const switchAndSave = async (marker: string, manually: boolean): Promise<void> => {
+      await visualEditor.click()
+      await page.keyboard.press(`${SHORTCUT}+End`)
+      await page.keyboard.press('Enter')
+      await page.keyboard.type(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+      await page.getByTestId('markdown-open-source').click()
+      await expect(visibleMonacoEditor(page).locator('.view-lines')).toContainText(marker)
+      if (manually) {
+        await page.getByTestId('markdown-save').click()
+        await expect.poll(() => readFileSync(markdownPath, 'utf8')).toContain(marker)
+        await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+      } else {
+        await expectAutoSaved(markdownPath, marker, markdownTab)
+      }
+      await page.screenshot({
+        path: join(runtime.artifacts, manually
+          ? 'visual-source-manual-save.png'
+          : 'visual-source-auto-save.png')
+      })
+      await page.getByTestId('markdown-open-editor').click()
+    }
+    await switchAndSave('Visual source switch auto-save', false)
+    await switchAndSave('Visual source switch manual save', true)
+
+    await page.getByTestId('markdown-open-source').click()
+    for (const marker of ['Repeated Markdown source save one', 'Repeated Markdown source save two']) {
+      await appendToMonaco(marker)
+      await expect(page.getByRole('tab', { name: markdownTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+      await expectAutoSaved(markdownPath, marker, markdownTab)
+    }
+
+    const codePath = join(resources, 'source.py')
+    const codeTab = /source\.py/
+    await openFile(page, 'source.py')
+    for (const marker of ['# Repeated code save one', '# Repeated code save two']) {
+      await appendToMonaco(marker)
+      await expect(page.getByRole('tab', { name: codeTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+      await expectAutoSaved(codePath, marker, codeTab)
+    }
+    await page.screenshot({ path: join(runtime.artifacts, 'repeated-file-auto-save.png') })
+
+    await openSettings()
+    await page.getByTestId('account-settings-nav-files').click()
+    const autoSave = page.getByTestId('file-version-auto-save')
+    await expect(autoSave).toHaveAttribute('aria-checked', 'true')
+    await autoSave.click()
+    await expect(autoSave).toHaveAttribute('aria-checked', 'false')
+    await closeSettings()
+    const disabledMarker = '# Auto-save disabled'
+    await appendToMonaco(disabledMarker)
+    await openSettings()
+    await page.waitForTimeout(CODE_ACTION_SETTLE_MS)
+    expect(readFileSync(codePath, 'utf8')).not.toContain(disabledMarker)
+    await expect(page.getByRole('tab', { name: codeTab }).locator('i[aria-label="未保存"]')).toHaveCount(1)
+    await closeSettings()
+    await page.screenshot({ path: join(runtime.artifacts, 'file-auto-save-disabled.png') })
+    await page.getByTestId('source-document-save').click()
+    await expect.poll(() => readFileSync(codePath, 'utf8')).toContain(disabledMarker)
+    await expect(page.getByRole('tab', { name: codeTab }).locator('i[aria-label="未保存"]')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'manual-save-after-auto-save-disabled.png') })
+
+    desktop.assertNoPageErrors()
+  } finally { await desktop.attachArtifacts() }
+})
+
+test('resource error toasts deduplicate, pause on hover and close automatically or manually', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    const error = page.locator('.vds-toast').filter({ hasText: '文件或文件夹名称、路径过长' })
+    const trigger = async (): Promise<void> => {
+      await page.getByTestId('resource-add').click()
+      await page.getByTestId('resource-new-folder').click()
+      const input = page.getByTestId('resource-name-input')
+      await input.fill('x'.repeat(OVERSIZED_RESOURCE_NAME_LENGTH))
+      await input.press('Enter')
+      await expect(input).toHaveCount(0)
+      await expect(error).toHaveCount(1)
+    }
+    await trigger()
+    const original = await error.elementHandle()
+    await trigger()
+    expect(await original!.evaluate(element => element.isConnected)).toBe(true)
+    await error.hover()
+    await page.waitForTimeout(TOAST_HOVER_OBSERVATION_MS)
+    await expect(error).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('resource-error-toast-hover-paused.png') })
+    await page.mouse.move(0, 0)
+    await expect(error).toHaveCount(0, { timeout: TOAST_DISMISS_TIMEOUT_MS })
+    await page.screenshot({ path: testInfo.outputPath('resource-error-toast-auto-dismissed.png') })
+    await trigger()
+    await error.getByRole('button', { name: '关闭通知' }).click()
+    await expect(error).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('resource toasts center on the app and delete warnings align their icons', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await seedProject(page, runtime)
+    await page.getByTestId('resource-add').click()
+    await page.getByTestId('resource-new-folder').click()
+    const input = page.getByTestId('resource-name-input')
+    await input.fill(EMPTY_FOLDER_NAME)
+    await input.press('Enter')
+    const toast = page.locator('.vds-toast').filter({ hasText: EMPTY_FOLDER_NAME }).first()
+    await expect(toast).toBeVisible()
+    expect(await toast.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return Math.abs(bounds.left + bounds.width / 2 - window.innerWidth / 2)
+    })).toBeLessThan(1)
+    await page.screenshot({ path: testInfo.outputPath('resource-toast-app-centered.png') })
+    await page.getByTestId('tree-resources/acceptance.md').click({ button: 'right' })
+    await page.getByTestId('menu-delete').click()
+    const dialog = page.getByTestId('resource-delete-confirm')
+    await expect(dialog).toBeVisible()
+    for (const width of [1280, 480]) {
+      await page.setViewportSize({ width, height: 800 })
+      const alignment = await dialog.locator('.vds-alert').evaluate((element) => {
+        const icon = element.querySelector('.vds-alert__icon')!.getBoundingClientRect()
+        const content = element.querySelector('.vds-alert__content')!.getBoundingClientRect()
+        const description = element.querySelector('.vds-alert__description')!
+        const text = description.getBoundingClientRect()
+        const multiline = text.height > parseFloat(getComputedStyle(description).lineHeight)
+        return Math.abs(multiline ? icon.top - content.top : icon.top + icon.height / 2 - text.top - text.height / 2)
+      })
+      expect(alignment).toBeLessThan(0.5)
+      await page.screenshot({ path: testInfo.outputPath(`resource-delete-aligned-${width}.png`) })
+    }
+    await page.getByTestId('resource-delete-cancel').click()
+    await expect(dialog).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test('empty resource library creates its first folder and Markdown document from the add menu', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const desktop = new DesktopSession(runtime, testInfo)
@@ -1342,7 +1861,7 @@ test('Monaco preserves cursor movement, selection and backspace editing', async 
   } finally { await desktop.attachArtifacts() }
 })
 
-test('language switch reloads open code editors without leaving the current project or file', async ({}, testInfo) => {
+test('language switch preserves editors and dismisses the pending Markdown notice', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
     language: 'zh',
@@ -1352,6 +1871,10 @@ test('language switch reloads open code editors without leaving the current proj
   try {
     const page = await desktop.launch()
     const resources = await seedProject(page, runtime)
+    writeFileSync(join(resources, 'language-notice.md'), '# Language notice')
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, 'language-notice.md')
+    await expect(page.getByTestId('markdown-visual-editor')).toBeVisible()
     await openFile(page, 'source.cpp')
     await openFile(page, 'source.py')
     const editor = visibleMonacoEditor(page)
@@ -1400,6 +1923,15 @@ test('language switch reloads open code editors without leaving the current proj
       frames.every((frame) => frame.getAttribute('src')?.includes('language=en'))
     ))).toBe(true)
     await expectMonacoPresentation()
+
+    await page.getByRole('tab', { name: /language-notice\.md/ }).click()
+    const languageNotice = page.getByTestId('markdown-language-pending')
+    await expect(languageNotice).toBeVisible()
+    await expect(languageNotice).toContainText('The editor language will update when you close and reopen the document.')
+    await languageNotice.getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(languageNotice).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'markdown-language-notice-dismissed.png') })
+    await page.getByRole('tab', { name: /source\.py/ }).click()
 
     await page.locator('[data-testid="markdown-find"]:visible').click()
     await expect(editor.getByRole('textbox', { name: 'Find', exact: true })).toBeVisible()
@@ -3877,10 +4409,14 @@ test('oversized files stay quiet in the tree and menu while keeping the detail w
   }
 })
 
-test('file tree review indicator follows a real Agent file edit', async ({}, testInfo) => {
+test('review tab follows its project after a real Agent file edit', async ({}, testInfo) => {
   const realHome = process.env.SCHOLARSEED_REAL_HOME
   test.skip(!realHome, 'SCHOLARSEED_REAL_HOME is required for the real model flow')
   const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
   const modelSettings = JSON.parse(readFileSync(join(realHome!, 'service', 'settings.json'), 'utf8')) as { codex_model: string }
   copyFileSync(join(realHome!, 'model_profiles.json'), join(runtime.home, 'model_profiles.json'))
   const service = join(runtime.home, 'service')
@@ -3889,6 +4425,9 @@ test('file tree review indicator follows a real Agent file edit', async ({}, tes
   const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
   try {
     const page = await desktop.launch()
+    const otherProjectName = 'Review scope project B'
+    const otherProject = await page.request.post(`${await apiBase(page)}/api/content/projects`, { data: { name: otherProjectName } })
+    expect(otherProject.ok(), await otherProject.text()).toBe(true)
     const resources = await seedProject(page, runtime)
     if (!await page.getByTestId('ai-panel').isVisible()) await page.getByTestId('topbar-ai').click()
     await expect(page.getByTestId('composer-input')).toBeVisible()
@@ -3900,18 +4439,20 @@ test('file tree review indicator follows a real Agent file edit', async ({}, tes
     await page.getByTestId('composer-send').click()
     await waitForFinishedTurn(page)
     expect(readFileSync(join(resources, 'acceptance.md'), 'utf8')).toContain('文件树真实审阅验收')
-    await page.getByTestId('resource-refresh').click()
-    const review = page.getByTestId('tree-review-resources/acceptance.md')
+    const review = page.getByTestId('ai-panel').getByRole('button', { name: '审核', exact: true })
     await expect(review).toBeVisible()
-    await expect(page.getByTestId('tree-dirty-resources/acceptance.md')).toHaveCount(0)
-    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review.png') })
-    await review.hover()
-    await expect(page.getByRole('tooltip')).toHaveText('待审阅 · 查看并处理修改')
     await review.click()
     await expect(page.getByRole('tab', { name: /审阅修改/ })).toBeVisible()
     await expect(page.getByRole('group', { name: '审阅文件列表' })).toBeVisible()
     await expect(page.getByTestId('snapshot-review')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-page.png') })
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${otherProjectName}`).click()
+    await expect(page.getByRole('tab', { name: /审阅修改/ })).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-project-b.png') })
+    await selectProject(page)
+    await expect(page.getByRole('tab', { name: /审阅修改/ })).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'tree-real-review-project-a-restored.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.page?.screenshot({ path: join(runtime.artifacts, 'tree-final-state.png') }).catch(() => undefined)

@@ -10,6 +10,7 @@ import {
   releaseNoteLines,
   UPDATE_NOTES_COLLAPSED_COUNT,
   updateActionOf,
+  updateEntryBadgeOf,
   updateFailureOf,
   updateFailureText,
   updateFailureTitle,
@@ -37,6 +38,24 @@ const CANDIDATE: LatestVersionMeta = {
 function snapshot(phase: UpdateSnapshot['phase'], extra: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
   return { phase, currentVersion: '0.2.0', ...extra }
 }
+
+test('update entry distinguishes unread releases, failures and ready packages', () => {
+  const available = snapshot('available', { candidate: CANDIDATE })
+  assert.equal(updateEntryBadgeOf(available), 'unread')
+  assert.equal(updateEntryBadgeOf(available, false), 'none')
+  assert.equal(updateEntryBadgeOf({ ...available, announcedKey: `${CANDIDATE.version}-${CANDIDATE.build_number}` }), 'none')
+  assert.equal(updateEntryBadgeOf({ ...available, announcedKey: 'older-build' }), 'unread')
+  assert.equal(isUpdateEntryVisible(available), true)
+  for (const phase of ['downloading', 'verifying', 'installing', 'restarting', 'manual', 'idle', 'up-to-date', 'unsupported'] as const) {
+    assert.equal(updateEntryBadgeOf(snapshot(phase, { candidate: CANDIDATE })), 'none', phase)
+  }
+  assert.equal(updateEntryBadgeOf(null), 'none')
+  assert.equal(updateEntryBadgeOf(snapshot('ready'), false), 'ready')
+  assert.equal(updateEntryBadgeOf(snapshot('failed'), false), 'warning')
+  assert.equal(updateEntryBadgeOf(snapshot('rolled-back'), false), 'warning')
+  assert.equal(updateEntryBadgeOf(snapshot('ready', { errorFallback: 'install_failed' }), false), 'warning')
+  assert.equal(updateEntryBadgeOf(snapshot('available', { error: 'download failed' })), 'warning')
+})
 
 test('the download action is offered exactly where the main process accepts it', () => {
   // 主进程只在 available / failed 且候选包仍是当前那一个时放行下载。

@@ -1,7 +1,19 @@
 {
   "navigation": {
     "projects": "首页",
-    "returnHome": "返回首页"
+    "returnHome": "返回首页",
+    "skipToContent": "跳转到主要内容"
+  },
+  "errorBoundary": {
+    "title": "页面遇到了一些问题",
+    "description": "书深没有正常完成页面渲染，但你的项目和本地文件不会因此丢失。",
+    "notice": "应用暂时无法继续显示",
+    "guidance": "请重新加载页面，或发送错误反馈。反馈会包含本次错误详情和本机诊断日志，帮助我们定位问题。",
+    "reload": "重新加载",
+    "feedback": "反馈错误",
+    "feedbackSubmitted": "反馈已发送",
+    "feedbackFailedTitle": "反馈发送失败",
+    "feedbackFailed": "暂时无法发送错误信息，请检查网络后重试。"
   },
   "chrome": {
     "projectOverview": "首页",
@@ -44,6 +56,10 @@
     "hint": "请根据以下提示处理：",
     "runtimeNotReady": "Codex Runtime 尚未就绪。",
     "submitNotReady": "真实消息提交入口尚未就绪。",
+    "harnessLanding": "无头 harness 前提未满足：首启首页尚未关闭。先走完首启链（跳过首页、创建项目、跳过新手引导），或按隔离实例 + CDP 配方驱动，再重试。",
+    "harnessLogin": "无头 harness 前提未满足：登录 dialog 尚未关闭。先登录或选择「暂不登录」关闭它，再重试。",
+    "harnessGuide": "无头 harness 前提未满足：新手引导尚未跳过。先跳过引导，再重试。",
+    "harnessNoProject": "无头 harness 前提未满足：尚无任何项目，消息输入框只挂在项目的 AI 面板内。先创建至少一个项目，再重试。",
     "reviewUnknown": "无法确认待审阅状态，请稍后重试。",
     "reviewUnsaved": "待审阅文件仍有未保存编辑，请先保存或放弃编辑后再继续对话。",
     "effortFailed": "思考深度切换失败，请重试。",
@@ -93,6 +109,8 @@
     "reproduceHint": "调用论文复现技能：拆算法、落代码、跑 demo 验证"
   },
   "workspaceLoading": {
+    "retrying": "会话目录暂时不可用，当前工作台保持可用，正在自动恢复。",
+    "unavailable": "会话目录返回了不可识别的数据，当前工作台保持可用，请稍后重新加载。",
     "signInTitle": "登录后继续",
     "failedTitle": "对话暂时没有加载完成",
     "loadingTitle": "正在加载工作台",

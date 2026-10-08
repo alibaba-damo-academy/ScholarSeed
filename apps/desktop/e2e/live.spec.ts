@@ -1,11 +1,115 @@
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, readFileSync } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { join, sep } from 'path'
+import { DatabaseSync } from 'node:sqlite'
 import { expect, test, type Page } from '@playwright/test'
 import { apiBase, DesktopSession, liveStatus, waitForFinishedTurn } from './fixtures/electron'
-import { createRuntime, seedLiveConfig } from './fixtures/runtime'
+import { createRuntime, seedLiveConfig, type RuntimePaths } from './fixtures/runtime'
 
 const GREETING = '请用一句话确认本次桌面端端到端测试已收到。'
+const INTERRUPTION_STYLE_PROMPT = '请只调用一次 shell 运行 python -c "import time; time.sleep(60)"，等待命令完成后再简短回复。'
+const DATABASE_READ_TIMEOUT_MS = 5_000
+const PERMISSION_TERMINAL_STATUSES = new Set(['completed', 'failed', 'interrupted'])
+const PERMISSION_DIALOG_VIEWPORT = { width: 600, height: 500 }
+
+function nativeThread(runtime: RuntimePaths, sessionId: string): string {
+  const database = new DatabaseSync(join(runtime.home, 'service', 'sessions.sqlite3'), {
+    readOnly: true, timeout: DATABASE_READ_TIMEOUT_MS
+  })
+  try {
+    const row = database.prepare('SELECT vendor_thread_id FROM session_catalog WHERE session_id = ?').get(sessionId)
+    return String(row?.vendor_thread_id ?? '')
+  } finally {
+    database.close()
+  }
+}
+
+async function permissionSnapshot(page: Page, base: string, sessionId: string) {
+  return page.evaluate(async ({ base, sessionId }) => {
+    const response = await fetch(`${base}/api/serve/sessions/open`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resume_session_id: sessionId })
+    })
+    if (!response.ok) throw new Error(`permission snapshot failed: ${response.status}`)
+    return response.json()
+  }, { base, sessionId })
+}
+
+test('interrupted task uses a warning card and user message uses normal weight', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(
+    join(runtime.userData, 'renderer-preferences.json'),
+    JSON.stringify({
+      language: 'zh',
+      onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+    })
+  )
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    let page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, { timeout: RUNTIME_READY_TIMEOUT_MS }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-bypassPermissions-confirm').click()
+    await send(page, INTERRUPTION_STYLE_PROMPT)
+    const message = page.getByTestId('user-bubble').getByText(INTERRUPTION_STYLE_PROMPT, { exact: true })
+    await expect(message).toBeVisible()
+    await expect.soft(message).toHaveCSS('font-weight', '400')
+    await expect(page.getByTestId('composer-stop')).toBeVisible()
+    const sessionId = (await liveStatus(page))?.activeSession
+    expect(sessionId).toBeTruthy()
+    await expect.poll(async () => {
+      const snapshot = await page.evaluate(async (resumeSessionId) => {
+        const response = await fetch('/api/serve/sessions/open', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ resume_session_id: resumeSessionId })
+        })
+        if (!response.ok) throw new Error(`session open failed: ${response.status}`)
+        return response.json()
+      }, sessionId)
+      return { running: snapshot.running, activeTurnId: snapshot.active_turn_id, status: snapshot.last_turn_status }
+    }, { timeout: RUNTIME_READY_TIMEOUT_MS }).toMatchObject({ running: true, activeTurnId: expect.any(String) })
+    await desktop.close()
+    page = await desktop.launch()
+    await page.getByTestId('ai-session-toggle').click()
+    await page.getByTestId(`ai-session-${sessionId}`).click()
+    const notice = page.getByTestId('turn-interrupted-notice')
+    await expect(notice).toBeVisible({ timeout: RUNTIME_READY_TIMEOUT_MS })
+    await expect(notice).toHaveClass(/vds-alert--warning/)
+    await expect(notice).toHaveCSS('margin-bottom', '12px')
+    await expect(notice.getByTestId('turn-unknown-continue')).toBeEnabled()
+    await expect(page.getByTestId('user-bubble').getByText(INTERRUPTION_STYLE_PROMPT, { exact: true })).toHaveCSS('font-weight', '400')
+    await page.screenshot({ path: testInfo.outputPath('interrupted-warning-card.png') })
+    const turnStarts: string[] = []
+    page.on('request', request => {
+      if (request.method() === 'POST' && request.url().endsWith(`/api/serve/sessions/${sessionId}/turns`))
+        turnStarts.push(request.url())
+    })
+    const confirmed = page.waitForResponse(response => response.url().includes('/confirm-unknown') && response.request().method() === 'POST')
+    await notice.getByTestId('turn-unknown-continue').click()
+    expect((await confirmed).ok()).toBe(true)
+    await expect(notice).toHaveCount(0)
+    expect(turnStarts).toHaveLength(0)
+    const nextAdmission = page.waitForResponse(response =>
+      response.request().method() === 'POST' && response.url().endsWith(`/api/serve/sessions/${sessionId}/turns`))
+    await send(page, GREETING)
+    expect((await nextAdmission).status()).toBe(202)
+    await expect(page.getByTestId('composer-stop')).toBeVisible()
+    await expect(page.getByTestId('composer-stop')).toHaveCount(0, { timeout: TURN_COMPLETE_TIMEOUT_MS })
+    expect(turnStarts).toHaveLength(1)
+    await expect(page.getByTestId('user-bubble').getByText(GREETING, { exact: true })).toBeVisible()
+    await page.screenshot({ path: testInfo.outputPath('safe-follow-up.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
 const PLAN_PROMPT = '请规划如何在当前项目创建一份简短的研究记录，先不要执行。'
 const HIL_MARKER_FILE = 'playwright-hil-marker.txt'
 const HIL_MARKER = 'PLAYWRIGHT_HIL_P0'
@@ -16,6 +120,7 @@ const NAVIGATION_DRAFT = '这是一条尚未发送的后续问题'
 const OVERSIZED_ATTACHMENT_BYTES = 21 * 1024 * 1024
 const RUNTIME_READY_TIMEOUT_MS = 45_000
 const TURN_COMPLETE_TIMEOUT_MS = 180_000
+const PERMISSION_CANCELLATION_TIMEOUT_MS = 5_000
 const SESSION_OPEN_ROUTE = '**/api/serve/sessions/open'
 // 注入的挂起远超客户端自己的恢复超时 (api.ts RESUME_REQUEST_TIMEOUT_MS = 20s): 若客户端
 // 不封顶, 恢复窗口内就永远接不回来。
@@ -30,11 +135,13 @@ const RUNNING_COMPOSER_DRAFT = '11111'
 const QUEUED_MESSAGE_ONE = 'QUEUE_MESSAGE_ONE'
 const QUEUED_MESSAGE_TWO = 'QUEUE_MESSAGE_TWO'
 const QUEUED_MESSAGE_THREE = 'QUEUE_MESSAGE_THREE_SEND_NOW'
-const SUBAGENT_PROMPT = '请必须使用 Codex 原生协作能力并行启动两个 subagent：一个只回答 2+2，另一个只回答 3+3；等待它们完成后汇总。不要由主 agent 自己直接计算。'
+const SUBAGENT_PROMPT = '请必须使用 Codex 原生协作能力并行启动两个 subagent：第一个先用 shell 执行 sleep 12，再回答 2+2；第二个回答 3+3。等待它们完成后汇总。不要由主 agent 自己直接计算。'
 const DEFERRED_MODEL_TURN_PROMPT = '请只调用一次 shell 运行 python -c "import time; time.sleep(20)"，等待命令完成后再简短回复。'
 const DEFERRED_MODEL_NEXT_PROMPT = '请只用一句话确认下一轮已经开始。'
 const SUMMARY_ORDER_MARKER = 'FINAL_SUMMARY_ORDER_ACCEPTED'
 const SUMMARY_ORDER_PROMPT = `请只调用一次 shell 工具执行 pwd，等待工具完成后用两句话给出最终总结，最后一行只能写 ${SUMMARY_ORDER_MARKER}。不要提前写这个标记，也不要调用其他工具。`
+const ACTIVITY_COPY_PROMPT = '请只调用一次 shell 工具执行 sleep 8 && pwd，等待命令完成后简短回答。'
+const NO_TOOL_ACTIVITY_COPY_PROMPT = '不要调用任何工具。请先在内部思考，然后只回答“完成”。'
 
 async function send(page: Page, message: string): Promise<void> {
   await page.getByTestId('composer-input').fill(message)
@@ -107,10 +214,14 @@ test('P0-9 switches completed session permissions without losing the conversatio
   }
 })
 
-test('P0 queues running messages, hides intervention, and sends one after stop', async ({}, testInfo) => {
+test('P0 queues running messages, hides intervention, and keeps them after stop', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
   const blocker = seedLiveConfig(runtime)
   test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -122,6 +233,8 @@ test('P0 queues running messages, hides intervention, and sends one after stop',
     await page.getByTestId('mode-bypassPermissions-confirm').click()
     await send(page, RUNNING_COMPOSER_PROMPT)
     await expect(page.getByTestId('composer-stop')).toBeVisible({ timeout: RUNTIME_READY_TIMEOUT_MS })
+    await expect(page.getByTestId('composer-message-queue')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'direct-running-no-queue.png') })
 
     const composer = page.getByTestId('composer-input')
     const sendButton = page.getByTestId('composer-send')
@@ -152,31 +265,31 @@ test('P0 queues running messages, hides intervention, and sends one after stop',
     await page.route('**/api/serve/sessions/*/queue/*', rejectDelete)
     await thirdRow.getByRole('button', { name: '删除' }).click()
     await expect(thirdRow).toBeVisible()
-    await expect(page.getByTestId('foreground-error')).toContainText('排队消息撤回失败')
+    await expect(page.getByTestId('foreground-error')).toContainText('消息状态已变化，无法撤回')
+    await page.getByTestId('foreground-error').getByRole('button', { name: '关闭' }).click()
+    await expect(page.getByTestId('foreground-error')).toHaveCount(0)
     await page.unroute('**/api/serve/sessions/*/queue/*', rejectDelete)
     await thirdRow.getByRole('button', { name: '删除' }).click()
     await expect(page.getByTestId('composer-message-queue')).not.toContainText(QUEUED_MESSAGE_THREE)
     await expect(page.getByTestId('user-bubble')).toHaveCount(userBubbleCount)
     await expect(page.getByTestId('composer-message-queue')).toContainText(QUEUED_MESSAGE_ONE)
     await expect(page.getByTestId('composer-message-queue')).toContainText(QUEUED_MESSAGE_TWO)
-    await expect(page.getByTestId('foreground-error')).toHaveCount(0)
     await page.screenshot({ path: join(runtime.artifacts, 'running-queue-retracted.png') })
     await page.getByTestId('composer-stop').click()
     await expect.poll(async () => (await liveStatus(page))?.running, {
       timeout: RUNTIME_READY_TIMEOUT_MS
     }).toBe(false)
-    await expect(page.getByText('已停止', { exact: true })).toHaveCount(1)
+    await expect(page.getByText('用户主动停止了该任务', { exact: true })).toHaveCount(1)
+    await expect(page.getByText('书深正在思考', { exact: true })).toHaveCount(0)
+    await expect(page.getByTestId('composer-stop')).toHaveCount(0)
     await expect(page.getByText('正在终止当前运行', { exact: true })).toHaveCount(0)
     await expect(page.getByRole('button', { name: '继续', exact: true })).toHaveCount(0)
     await expect(page.getByTestId('composer-message-queue')).toContainText(QUEUED_MESSAGE_TWO)
-    await expect(page.getByRole('button', { name: '直接发送' })).toHaveCount(2)
+    await expect(page.locator('[data-testid^="queued-send-"]')).toHaveCount(0)
+    await expect(page.getByText('排队中', { exact: true })).toHaveCount(2)
     await expect(page.getByTestId('user-bubble')).toHaveCount(userBubbleCount)
     await expect(composer).toHaveValue('')
-    await expect(sendButton).toBeDisabled()
     await page.screenshot({ path: join(runtime.artifacts, 'queue-turn-interrupted.png') })
-    await page.locator('[data-testid^="queued-message-"]').filter({ hasText: QUEUED_MESSAGE_TWO }).getByRole('button', { name: '直接发送' }).click()
-    await expect(page.getByTestId('composer-message-queue')).not.toContainText(QUEUED_MESSAGE_TWO)
-    await expect(page.getByTestId('user-bubble')).toHaveCount(userBubbleCount + 2)
     desktop.assertNoPageErrors()
   } finally {
     try {
@@ -196,6 +309,13 @@ test('P0-13 renders native Codex subagent lifecycle as product activity', async 
   const runtime = createRuntime(testInfo)
   const blocker = seedLiveConfig(runtime)
   test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(
+    join(runtime.userData, 'renderer-preferences.json'),
+    JSON.stringify({
+      language: 'zh',
+      onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+    })
+  )
   const desktop = new DesktopSession(runtime, testInfo)
   try {
     const page = await desktop.launch()
@@ -209,8 +329,15 @@ test('P0-13 renders native Codex subagent lifecycle as product activity', async 
     await expect(page.getByTestId('turn-activity').filter({ hasText: '子代理活动' }).first()).toBeVisible({
       timeout: TURN_COMPLETE_TIMEOUT_MS
     })
-    await page.screenshot({ path: join(runtime.artifacts, 'native-subagent-lifecycle.png') })
+    const elapsed = page.getByTestId('subagent-elapsed').first()
+    await expect(elapsed).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    await expect(page.getByTestId('subagent-last-observed').first()).toContainText('最近确认')
+    const initialElapsed = await elapsed.textContent()
+    await expect.poll(async () => elapsed.textContent(), { timeout: RUNTIME_READY_TIMEOUT_MS }).not.toBe(initialElapsed)
+    await page.screenshot({ path: join(runtime.artifacts, 'native-subagent-running.png') })
     await waitForFinishedTurn(page)
+    await expect(page.getByTestId('subagent-elapsed')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'native-subagent-completed.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -417,6 +544,46 @@ test('P0-12 keeps a completed turn summary below its late activity after restart
   }
 })
 
+test('activity summary shows running and completed duration copy', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({ language: 'zh', onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } } }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-bypassPermissions-confirm').click()
+    await send(page, ACTIVITY_COPY_PROMPT)
+    const summary = page.getByTestId('turn-activity-trigger').last()
+    await expect(summary).toContainText('执行中', { timeout: TURN_COMPLETE_TIMEOUT_MS })
+    await expect(summary).toContainText(/· \d+s/)
+    await expect(summary).not.toContainText('执行工具')
+    await page.screenshot({ path: join(runtime.artifacts, 'activity-duration-running.png') })
+    const status = await waitForFinishedTurn(page)
+    expect(status.status).toBe('done')
+    await expect(summary).toBeVisible()
+    await expect(summary).toContainText(/执行工具 1 次\s*· 用时\d+s/)
+    await expect(summary).not.toContainText('已完成')
+    await expect(summary).not.toContainText('任务用时')
+    await page.screenshot({ path: join(runtime.artifacts, 'activity-duration-completed.png') })
+    const beforeNoTool = await liveStatus(page)
+    await send(page, NO_TOOL_ACTIVITY_COPY_PROMPT)
+    const noToolStatus = await waitForFinishedTurn(page, beforeNoTool?.lastSeq ?? 0)
+    expect(noToolStatus.status).toBe('done')
+    const noToolSummary = page.getByTestId('turn-activity-trigger').last()
+    await expect(noToolSummary).toContainText(/已处理\s*· 用时\d+s/)
+    await expect(noToolSummary).not.toContainText('执行工具')
+    await page.screenshot({ path: join(runtime.artifacts, 'activity-duration-no-tool.png') })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 test.beforeEach(async ({}, testInfo) => {
   test.skip(testInfo.project.name !== 'live', 'real LLM cases belong to the live project')
 })
@@ -491,6 +658,323 @@ test('P0-4 resolves a real permission HIL and writes the requested file', async 
     expect(existsSync(markerPath), `missing HIL artifact: ${markerPath}`).toBe(true)
     await expect(page.getByTestId('turn-activity').first()).toBeVisible()
     await page.screenshot({ path: join(runtime.artifacts, 'permission-allowed.png') })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('permission selection during a real approval hot switches and safely continues', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const protectedPath = join(runtime.root, 'permission-protected.txt')
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    theme: 'system',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await expect(page.getByTestId('mode-menu')).not.toContainText('切换不改变已挂起的审批、已开始的步骤或子会话。')
+    await page.getByTestId('mode-ask').click()
+    const initialModeSnapshots: Array<{ active_mode: string; deferred: boolean }> = []
+    page.on('response', async (response) => {
+      if (response.request().method() === 'GET' && /\/sessions\/[^/]+\/mode$/.test(response.url())) {
+        initialModeSnapshots.push(await response.json())
+      }
+    })
+    await send(page, `请实际使用 exec_command，运行 printf 'permission-switch' >> '${protectedPath}'。
+该路径在当前项目可写范围之外，只属于本次隔离测试。调用时请求 sandbox_permissions=require_escalated，
+不要改用 apply_patch、service_bridge 或改写项目内其它文件。批准后完成写入即可。`)
+    const card = page.getByTestId('hil-card').last()
+    await expect(card).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    await expect(page.getByTestId('mode-chip')).toBeEnabled()
+    await expect.poll(() => initialModeSnapshots.some((snapshot) => snapshot.active_mode === 'ask')).toBe(true)
+    for (const snapshot of initialModeSnapshots.filter((snapshot) => !snapshot.active_mode)) {
+      expect(snapshot.deferred).toBe(false)
+    }
+    await expect(page.getByTestId('mode-chip')).toHaveText('请求批准')
+    await testInfo.attach('first-turn-mode-snapshots', {
+      body: JSON.stringify(initialModeSnapshots), contentType: 'application/json'
+    })
+    await page.getByTestId('ai-toggle-cover').click()
+    await expect(page.getByTestId('ai-panel')).toHaveClass(/is-cover/)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-first-binding.png') })
+    await page.getByTestId('ai-toggle-cover').click()
+    const sessionId = (await liveStatus(page))?.activeSession
+    expect(sessionId).toBeTruthy()
+    const originalThread = nativeThread(runtime, sessionId!)
+    expect(originalThread).not.toBe('')
+    const base = await apiBase(page)
+    const readMode = () => page.evaluate(async ({ base, sessionId }) => {
+      const response = await fetch(`${base}/api/serve/sessions/${sessionId}/mode`, { credentials: 'include' })
+      if (!response.ok) throw new Error(`mode read failed: ${response.status}`)
+      return response.json()
+    }, { base, sessionId })
+    const cancelNextTurn = async (active: string, label: string) => {
+      const before = await permissionSnapshot(page, base, sessionId!)
+      await page.getByTestId('mode-chip').click()
+      const cancellationResponse = page.waitForResponse((response) =>
+        response.url().endsWith(`/sessions/${sessionId}/mode`) && response.request().method() === 'POST')
+      await page.getByTestId(`mode-${active}`).click()
+      await expect(page.getByTestId('mode-application-dialog')).toHaveCount(0)
+      await expect(page.getByTestId('mode-chip')).toBeEnabled({ timeout: PERMISSION_CANCELLATION_TIMEOUT_MS })
+      const cancelled = await cancellationResponse
+      expect({ status: cancelled.status(), payload: await cancelled.json() }).toMatchObject({
+        status: 200, payload: { ok: true, mode: active, active_mode: active, next_turn_selected: false }
+      })
+      await expect(page.getByTestId('mode-chip')).toHaveText(label)
+      expect(await readMode()).toMatchObject({
+        mode: active, active_mode: active, next_turn_selected: false, deferred: false, switch_warning: ''
+      })
+      const after = await permissionSnapshot(page, base, sessionId!)
+      expect(after.running).toBe(true)
+      expect(after.active_turn_id).toBe(before.active_turn_id)
+      expect(after.pending_hil).toEqual(before.pending_hil)
+      expect(nativeThread(runtime, sessionId!)).toBe(originalThread)
+      await expect(card).toHaveAttribute('data-hil-resolved', 'false')
+      await expect(card.getByTestId('hil-permission-accept')).toBeEnabled()
+      await expect(page.getByTestId('foreground-error')).toHaveCount(0)
+      await testInfo.attach(`cancel-next-turn-${active}`, {
+        body: JSON.stringify({ before, after, mode: await readMode() }), contentType: 'application/json'
+      })
+      await page.getByTestId('ai-toggle-cover').click()
+      await page.screenshot({
+        path: join(runtime.artifacts, `approval-mode-cancel-${active}.png`), animations: 'disabled'
+      })
+      await page.getByTestId('ai-toggle-cover').click()
+    }
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-application-next-turn').click()
+    await expect(page.getByTestId('mode-chip')).toHaveText('请求批准 · 下一轮：完全访问')
+    expect(await readMode()).toMatchObject({ mode: 'bypassPermissions', active_mode: 'ask', next_turn_selected: true })
+    await cancelNextTurn('ask', '请求批准')
+    await page.getByTestId('mode-chip').click()
+    const switchResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/sessions/${sessionId}/mode`) && response.request().method() === 'POST')
+    await page.getByTestId('mode-safe_auto').click()
+    await expect(page.getByTestId('mode-application-dialog')).toHaveCount(0)
+    const switched = await switchResponse
+    const switchResult = { status: switched.status(), payload: await switched.json() }
+    expect(switchResult).toMatchObject({
+      status: 200,
+      payload: { ok: true, mode: 'safe_auto', active_mode: 'safe_auto', deferred: false }
+    })
+    await expect(card).toHaveAttribute('data-hil-resolved', 'false')
+    await expect(page.getByTestId('foreground-error')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-live.png') })
+    const pendingSnapshot = await permissionSnapshot(page, base, sessionId!)
+    const offeredOptions = pendingSnapshot.pending_hil.flatMap((item) => item.options ?? [])
+    await testInfo.attach('native-permission-options', {
+      body: JSON.stringify(offeredOptions), contentType: 'application/json'
+    })
+    for (const option of offeredOptions.filter((option) => !['decline', 'cancel'].includes(option.id))) {
+      await expect(card.getByTestId(`hil-permission-${option.id}`)).toBeVisible()
+    }
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    const applicationDialog = page.getByTestId('mode-application-dialog')
+    await expect(applicationDialog).toBeVisible()
+    await expect(applicationDialog.getByRole('status')).toHaveCount(0)
+    await expect(page.getByTestId('mode-deferred')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-application-dialog.png') })
+    const fullViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))
+    await page.setViewportSize(PERMISSION_DIALOG_VIEWPORT)
+    await page.emulateMedia({ colorScheme: 'dark' })
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    for (const action of ['cancel', 'next-turn', 'now']) {
+      const control = page.getByTestId(`mode-application-${action}`)
+      await expect(control).toBeVisible()
+      const bounds = await control.boundingBox()
+      expect(bounds).not.toBeNull()
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(PERMISSION_DIALOG_VIEWPORT.height)
+    }
+    await page.keyboard.press('Tab')
+    expect(await applicationDialog.evaluate(element => element.contains(document.activeElement))).toBe(true)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-dialog-dark-narrow.png') })
+    await page.keyboard.press('Escape')
+    await expect(applicationDialog).toHaveCount(0)
+    await page.emulateMedia({ colorScheme: 'light' })
+    await page.setViewportSize(fullViewport)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await expect(applicationDialog).toBeVisible()
+    expect(await readMode()).toMatchObject({ mode: 'safe_auto', active_mode: 'safe_auto', next_turn_selected: false })
+    await page.getByTestId('mode-application-cancel').click()
+    await expect(applicationDialog).toHaveCount(0)
+    expect(await readMode()).toMatchObject({ mode: 'safe_auto', next_turn_selected: false })
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-application-next-turn').click()
+    await expect(page.getByTestId('mode-chip')).toHaveText('帮我批准 · 下一轮：完全访问')
+    await expect(page.getByTestId('mode-deferred')).toHaveCount(0)
+    expect(await readMode()).toMatchObject({ mode: 'bypassPermissions', active_mode: 'safe_auto', next_turn_selected: true })
+    await expect(card).toHaveAttribute('data-hil-resolved', 'false')
+    await cancelNextTurn('safe_auto', '帮我批准')
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-bypassPermissions').click()
+    await page.getByTestId('mode-application-next-turn').click()
+    await expect(page.getByTestId('mode-chip')).toHaveText('帮我批准 · 下一轮：完全访问')
+    await page.getByTestId('ai-toggle-cover').click()
+    await expect(page.getByTestId('mode-chip')).toHaveText('帮我批准 · 下一轮：完全访问')
+    await page.getByTestId('mode-chip').click()
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-deferred.png') })
+    await page.getByTestId('mode-bypassPermissions').click()
+    await expect(applicationDialog).toBeVisible()
+    const continuationResponse = page.waitForResponse((response) =>
+      response.url().endsWith(`/sessions/${sessionId}/mode`) && response.request().method() === 'POST')
+    await page.getByTestId('mode-application-now').click()
+    const continued = await continuationResponse
+    expect({ status: continued.status(), payload: await continued.json() }).toMatchObject({
+      status: 200,
+      payload: { ok: true, mode: 'bypassPermissions', active_mode: 'bypassPermissions', continued: true }
+    })
+    let continuationStatus = ''
+    await expect.poll(async () => {
+      const snapshot = await permissionSnapshot(page, base, sessionId!)
+      continuationStatus = snapshot.last_turn_status
+      return !snapshot.running && PERMISSION_TERMINAL_STATUSES.has(continuationStatus)
+        && snapshot.last_turn_id !== pendingSnapshot.active_turn_id
+    }, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
+    await waitForFinishedTurn(page)
+    expect((await liveStatus(page))?.activeSession).toBe(sessionId)
+    const continuedThread = nativeThread(runtime, sessionId!)
+    expect(continuedThread).toBe(originalThread)
+    await testInfo.attach('permission-runtime-identity', {
+      body: JSON.stringify({ home: runtime.home, sessionId, originalThread, continuedThread }),
+      contentType: 'application/json'
+    })
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-continuation-terminal.png') })
+    expect(continuationStatus).toBe('completed')
+    expect(readFileSync(protectedPath, 'utf8')).toBe('permission-switch')
+    await expect(page.getByTestId('foreground-error')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-continued.png') })
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-safe_auto').click()
+    await send(page, GREETING)
+    await expect.poll(async () => page.evaluate(async ({ api, sid }) => {
+      const response = await fetch(`${api}/api/serve/sessions/${sid}/mode`)
+      return response.json()
+    }, { api: base, sid: sessionId }), { timeout: TURN_COMPLETE_TIMEOUT_MS }).toMatchObject({
+      mode: 'safe_auto', active_mode: 'safe_auto', deferred: false
+    })
+    await waitForFinishedTurn(page)
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-mode-next-turn.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('live reviewer switch routes subsequent native approvals through auto review', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const filename = 'reviewer-protected.txt'
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-ask').click()
+    await send(page, `请依次调用 exec_command 两次，每次在当前实际工作目录运行 printf 'reviewer-switch' >> '${filename}'，
+调用时均请求 sandbox_permissions=require_escalated。这是本次隔离测试的唯一文件，允许追加这两个标记。
+第一次结果返回后再发起第二次，不要并行，不要合成一条命令，不要使用其它工具。完成后简短回复。`)
+    const card = page.getByTestId('hil-card').last()
+    await expect(card).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    const sessionId = (await liveStatus(page))?.activeSession
+    const base = await apiBase(page)
+    expect(sessionId).toBeTruthy()
+    const workdir = await activeSessionWorkdir(page, sessionId!)
+    expect(workdir).toBeTruthy()
+    expect(realpathSync(workdir).startsWith(`${realpathSync(runtime.home)}${sep}`)).toBe(true)
+    const protectedPath = join(workdir, filename)
+    const switched = page.waitForResponse((response) =>
+      response.url().endsWith(`/sessions/${sessionId}/mode`) && response.request().method() === 'POST')
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-safe_auto').click()
+    expect(await (await switched).json()).toMatchObject({ active_mode: 'safe_auto', deferred: false })
+    await expect(page.getByTestId('mode-application-dialog')).toHaveCount(0)
+    await expect(card).toHaveAttribute('data-hil-resolved', 'false')
+    await card.getByTestId('hil-permission-accept').click()
+    let reviews: unknown[] = []
+    await expect.poll(async () => {
+      const history = await page.evaluate(async ({ base, sessionId }) => {
+        const response = await fetch(`${base}/api/serve/history/${sessionId}`, { credentials: 'include' })
+        if (!response.ok) throw new Error(`history read failed: ${response.status}`)
+        return response.json()
+      }, { base, sessionId })
+      reviews = history.activity_events.filter((event: { type: string; data: { activity_type?: string } }) =>
+        event.type === 'native_activity_completed' && event.data.activity_type === 'approval_review')
+      return reviews.length
+    }, { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBeGreaterThan(0)
+    await testInfo.attach('subsequent-native-auto-reviews', {
+      body: JSON.stringify(reviews), contentType: 'application/json'
+    })
+    await waitForFinishedTurn(page)
+    const completed = await permissionSnapshot(page, base, sessionId!)
+    expect(completed.last_turn_status).toBe('completed')
+    expect(completed.pending_hil).toHaveLength(0)
+    expect(readFileSync(protectedPath, 'utf8')).toBe('reviewer-switchreviewer-switch')
+    await page.getByTestId('ai-toggle-cover').click()
+    await expect(page.getByTestId('mode-chip')).toHaveText('帮我批准')
+    await page.screenshot({ path: join(runtime.artifacts, 'approval-reviewer-subsequent.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('native session-scope permission remains reachable in the dock', async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const target = join(runtime.root, 'session-scope.txt')
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await page.getByTestId('mode-chip').click()
+    await page.getByTestId('mode-ask').click()
+    await send(page, `请只使用 apply_patch，在项目可写范围外的隔离测试路径 ${target} 添加文件，
+内容为 session-scope。必须实际提交补丁；需要授权时等待我批准，不改路径、不换工具。
+补丁返回成功后直接简短回复，无需额外读取验证，验收程序会独立验证内容。`)
+    const card = page.getByTestId('hil-card').last()
+    await expect(card).toBeVisible({ timeout: TURN_COMPLETE_TIMEOUT_MS })
+    const sessionGrant = card.getByTestId('hil-permission-acceptForSession')
+    await page.screenshot({ path: join(runtime.artifacts, 'session-scope-pending.png') })
+    const sessionId = (await liveStatus(page))?.activeSession
+    const base = await apiBase(page)
+    const snapshot = await permissionSnapshot(page, base, sessionId!)
+    await testInfo.attach('session-scope-offered-options', {
+      body: JSON.stringify({ home: runtime.home, sessionId, options: snapshot.pending_hil.flatMap((item) => item.options ?? []) }),
+      contentType: 'application/json'
+    })
+    await expect(sessionGrant).toBeVisible()
+    await sessionGrant.click()
+    await expect.poll(() => existsSync(target), { timeout: TURN_COMPLETE_TIMEOUT_MS }).toBe(true)
+    expect(readFileSync(target, 'utf8').trim()).toBe('session-scope')
+    await waitForFinishedTurn(page)
+    await page.screenshot({ path: join(runtime.artifacts, 'session-scope-resolved.png') })
+    desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
   }

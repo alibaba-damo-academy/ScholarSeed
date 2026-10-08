@@ -24,6 +24,7 @@ from service.platform.bridge import (
     RESOURCE_SCOPE,
     RESOURCE_UNAVAILABLE_WARNING,
     ResourceList,
+    ResourceRead,
 )
 from service.platform.content import RootKind
 from service.resources.api.bridge import register_resource_bridge
@@ -123,6 +124,75 @@ class ResourceBridgeContracts(unittest.TestCase):
             BRIDGE_REQUESTS[("resource", "list")],
             (ResourceList, RESOURCE_ROUTE_PREFIX + "list"),
         )
+
+    def test_cli_and_transport_map_expose_resource_read(self) -> None:
+        command = parser().parse_args(["resource", "read", "--json", '{"path":"resources/a.md"}'])
+        self.assertEqual((command.capability, command.operation), ("resource", "read"))
+        self.assertEqual(
+            BRIDGE_REQUESTS[("resource", "read")],
+            (ResourceRead, RESOURCE_ROUTE_PREFIX + "read"),
+        )
+
+    def test_route_reads_project_and_linked_files_without_exposing_absolute_paths(self) -> None:
+        with self._client() as client:
+            local = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                json={"path": "resources/a.md"},
+                headers=self.headers,
+            )
+            linked = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                json={"path": f"{self.linked.mount_path}/linked.md"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(local.status_code, 200, local.text)
+        self.assertEqual(local.json()["content"], "alpha")
+        self.assertEqual(local.json()["encoding"], "text")
+        self.assertEqual(linked.status_code, 200, linked.text)
+        self.assertEqual(linked.json()["content"], "linked")
+        self.assertNotIn(str(self.external), linked.text)
+        self.assertEqual(self.live.publish.await_count, 2)
+
+    def test_route_reads_bounded_base64_chunks(self) -> None:
+        with self._client() as client:
+            response = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                json={
+                    "path": "resources/b.txt",
+                    "offset": 1,
+                    "limit": 2,
+                    "encoding": "base64",
+                },
+                headers=self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["content"], "cmE=")
+        self.assertFalse(payload["eof"])
+        self.assertEqual(payload["size"], 5)
+
+    def test_route_rejects_unavailable_and_missing_files(self) -> None:
+        with self._client() as client:
+            unavailable = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                json={"path": f"{self.unavailable.mount_path}/gone.md"},
+                headers=self.headers,
+            )
+            missing = client.post(
+                RESOURCE_ROUTE_PREFIX + "read",
+                json={"path": "resources/missing.md"},
+                headers=self.headers,
+            )
+
+        self.assertEqual(unavailable.status_code, 400)
+        self.assertEqual(
+            unavailable.json(),
+            {"ok": False, "error": RESOURCE_UNAVAILABLE_WARNING},
+        )
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(missing.json(), {"ok": False, "error": "file_not_found"})
 
     def test_route_requires_active_private_session_scope(self) -> None:
         with self._client() as client:

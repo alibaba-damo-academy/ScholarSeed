@@ -14,11 +14,30 @@ import {
   hilPermissionScope,
   hilSubmissionFailure,
   pendingHilItems,
+  projectHilCard,
+  settlePendingHil,
+  hilResolvedRunState,
   pendingPermissionItems,
   permissionDecisionOptions,
   transcriptPresentationItems
 } from './hil.ts'
 import type { ConvItem } from './model.ts'
+
+test('product authorization survives completion while native callbacks expire', () => {
+  const product = projectHilCard({ request_id: 'product', kind: 'question', lifetime: 'session' }, 1, 'turn')
+  const native = projectHilCard({ request_id: 'native', kind: 'question' }, 1, 'turn')
+  const completed = settlePendingHil([product, native], 'turn', 'stale', true)
+  assert.equal(completed[0].kind === 'hil' && completed[0].hilState, 'pending')
+  assert.equal(completed[1].kind === 'hil' && completed[1].hilState, 'stale')
+  assert.equal(settlePendingHil([product], 'turn', 'stale')[0].kind === 'hil', true)
+  assert.equal(pendingHilItems(settlePendingHil([product], 'turn', 'stale')).length, 0)
+})
+
+test('late authorization HTTP and SSE answers cannot invent execution', () => {
+  assert.deepEqual(hilResolvedRunState({ running: false, status: 'done', turnOutcomes: { turn: 'completed' } }, 'turn'), {})
+  assert.deepEqual(hilResolvedRunState({ running: true, status: 'waiting', turnOutcomes: { turn: 'running' } }, 'turn'), { running: true, status: 'running' })
+  assert.deepEqual(hilResolvedRunState({ running: true, status: 'waiting', turnOutcomes: { other: 'running', turn: 'completed' } }, 'turn'), {})
+})
 
 test('keeps pending interactions out of the transcript for the composer dock', () => {
   const items: ConvItem[] = [
@@ -52,7 +71,7 @@ test('keeps pending interactions out of the transcript for the composer dock', (
   ])
 })
 
-test('projects a confirmed question answer as one interaction reply', () => {
+test('projects confirmed questions as distinct ordered interaction replies', () => {
   const resolved: ConvItem = {
     kind: 'hil',
     requestId: 'question-1',
@@ -72,6 +91,19 @@ test('projects a confirmed question answer as one interaction reply', () => {
     itemId: undefined,
     eventSeq: 8
   }])
+  const next: ConvItem = {
+    kind: 'hil',
+    requestId: 'question-2',
+    hilKind: 'question',
+    hilState: 'resolved',
+    questions: [{ question: '喝什么？', options: [] }],
+    answers: { '喝什么？': '豆浆' },
+    turnId: 'turn-1',
+    eventSeq: 9
+  }
+  assert.deepEqual(transcriptPresentationItems([resolved, next]).map((item) => (
+    item.kind === 'interaction_reply' ? item.requestId : item.kind
+  )), ['question-1', 'question-2'])
 })
 
 test('never presents a stale question as a user reply', () => {
@@ -144,8 +176,21 @@ test('selects the vendor one-time decision instead of broader session permission
     ]
   }
   const decision = permissionDecisionOptions(item)
-  assert.equal(decision.allowOnce.id, 'accept')
+  assert.equal(decision.allowOnce?.id, 'accept')
   assert.equal(decision.deny.id, 'decline')
+  assert.deepEqual(decision.allowed.map((option) => option.id), ['acceptForSession', 'accept'])
+})
+
+test('does not invent a one-time grant when only session scope is offered', () => {
+  const decision = permissionDecisionOptions({
+    kind: 'hil', requestId: 'session-only', hilKind: 'permission',
+    options: [
+      { id: 'acceptForSession', label: 'Allow for session' },
+      { id: 'decline', label: 'Decline' }
+    ]
+  })
+  assert.equal(decision.allowOnce, undefined)
+  assert.deepEqual(decision.allowed.map((option) => option.id), ['acceptForSession'])
 })
 
 

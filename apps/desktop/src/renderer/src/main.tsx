@@ -10,15 +10,19 @@ import './browser'
 import './styles.css'
 import './shell/workbench.css'
 import { App } from './App'
-import { LocalizationProvider } from './app/localization'
 import { featureRegistry } from './app/composition'
+import { ErrorBoundary } from './app/Error'
+import { LocalizationProvider } from './app/localization'
 import { DisplayCardProvider } from './components/business/Cards'
 import { InteractionPolicyProvider } from './components/business/Interactions'
 import { TaskCenterProvider } from './components/business/Tasks'
 import { Toaster, ToastProvider } from './components/ui'
 import { resolveDocumentWorkspaceProject } from './features/workbench/scope'
 import { DocumentWorkspaceContext, documentWorkspaces } from './features/workbench/workspace'
+import { installRendererDiagnostics } from './diagnostics'
 import { assistantProject, StoreProvider, useApp } from './store'
+
+installRendererDiagnostics()
 
 function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const { state } = useApp()
@@ -44,20 +48,22 @@ function ProjectWorkspaceProvider({ children }: { children: React.ReactNode }): 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <LocalizationProvider>
-    <ToastProvider>
-      <StoreProvider assistantSources={featureRegistry.assistantSources}>
-        <ProjectWorkspaceProvider>
-          <TaskCenterProvider sources={featureRegistry.taskSources}>
-            <DisplayCardProvider cards={featureRegistry.displayCards}>
-              <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
-                <App />
-              </InteractionPolicyProvider>
-            </DisplayCardProvider>
-          </TaskCenterProvider>
-        </ProjectWorkspaceProvider>
-      </StoreProvider>
-      <Toaster placement="top-right" />
-    </ToastProvider>
+      <ErrorBoundary>
+        <ToastProvider>
+          <StoreProvider assistantSources={featureRegistry.assistantSources}>
+            <ProjectWorkspaceProvider>
+              <TaskCenterProvider sources={featureRegistry.taskSources}>
+                <DisplayCardProvider cards={featureRegistry.displayCards}>
+                  <InteractionPolicyProvider policies={featureRegistry.interactionPolicies}>
+                    <App />
+                  </InteractionPolicyProvider>
+                </DisplayCardProvider>
+              </TaskCenterProvider>
+            </ProjectWorkspaceProvider>
+          </StoreProvider>
+          <Toaster placement="top-right" />
+        </ToastProvider>
+      </ErrorBoundary>
     </LocalizationProvider>
   </React.StrictMode>
 )

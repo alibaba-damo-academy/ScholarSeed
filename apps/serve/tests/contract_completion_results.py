@@ -9,6 +9,7 @@ import json
 import socket
 import ssl
 import unittest
+from hashlib import sha256
 from unittest.mock import patch
 
 import httpx
@@ -70,25 +71,30 @@ class CompletionBridgeContract(unittest.TestCase):
         registration = bridge.register(
             endpoint="https://provider.example/v1/chat/completions", api_key="", session_id="turn"
         )
+
+        async def run():
+            try:
+                return await bridge.forward(
+                    registration.bridge_id,
+                    {
+                        "model": "model",
+                        "instructions": "Trusted policy",
+                        "input": "Untrusted document",
+                        "stream": False,
+                        "tools": [],
+                        "max_output_tokens": 128,
+                    },
+                )
+            finally:
+                bridge.release("turn")
+                await bridge.close()
+
         try:
             with patch("service.chat.service.completions.httpx.AsyncClient", return_value=client):
-                result = asyncio.run(
-                    bridge.forward(
-                        registration.bridge_id,
-                        {
-                            "model": "model",
-                            "instructions": "Trusted policy",
-                            "input": "Untrusted document",
-                            "stream": False,
-                            "tools": [],
-                            "max_output_tokens": 128,
-                        },
-                    )
-                )
+                result = asyncio.run(run())
             self.assertEqual(len(requests), 1)
             return json.loads(result.body)
         finally:
-            bridge.release("turn")
             self.assertEqual(bridge.registration_count(), 0)
             self.assertTrue(client.is_closed)
 
@@ -148,6 +154,7 @@ class CompletionBridgeContract(unittest.TestCase):
                     f"/api/internal/model-bridge/{registration.bridge_id}/v1/responses",
                     json={"model": "codex-auto-review", "input": inputs, "stream": streaming},
                 )
+                client.portal.call(bridge.close)
         self.assertEqual(response.status_code, status)
         return observed, response.content
 
@@ -327,6 +334,43 @@ class CompletionBridgeContract(unittest.TestCase):
         self.assertEqual(diagnostic.input_shapes[0]["id_prefix"], "msg")
         self.assertNotIn("private", json.dumps(diagnostic.input_shapes))
 
+    def test_tool_schema_diagnostics_are_bounded_and_content_free(self):
+        diagnostic = CompletionDiagnostic("session", "model")
+        schema = {
+            "type": "object",
+            "description": "private description",
+            "$defs": {"TaskActivate": {"type": "object"}},
+        }
+        declaration = {"name": "bridge", "parameters": schema}
+        for tool in (
+            declaration,
+            {"function": declaration},
+            {"type": "namespace", "tools": [declaration]},
+        ):
+            diagnostic.observe_tools({"tools": [tool]})
+            observed = diagnostic.tool_schema_fingerprints
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0]["definitions"], ["TaskActivate"])
+            self.assertIn("sha256", observed[0])
+            self.assertNotIn("private", json.dumps(observed))
+        diagnostic.observe_tools({"tools": [declaration] * (INPUT_SHAPE_LIMIT + 1)})
+        self.assertEqual(len(diagnostic.tool_schema_fingerprints), INPUT_SHAPE_LIMIT)
+
+    def test_input_diagnostics_correlate_latest_user_message_without_text(self):
+        diagnostic = CompletionDiagnostic("session", "model")
+        diagnostic.observe_input(
+            {
+                "input": [{"type": "message", "role": "assistant", "content": "earlier"}]
+                * INPUT_SHAPE_LIMIT
+                + [{"type": "message", "role": "user", "content": "最新提问"}]
+            }
+        )
+        self.assertEqual(
+            diagnostic.user_input_fingerprints[-1],
+            {"sha256": sha256("最新提问".encode()).hexdigest(), "chars": 4},
+        )
+        self.assertNotIn("最新提问", json.dumps(diagnostic.user_input_fingerprints))
+
     def test_tool_prefix_is_projected_without_mutating_messages_or_tool_schemas(self):
         tools = [{"type": "function", "name": "exec", "parameters": {"type": "object"}}]
         payload = {
@@ -456,6 +500,64 @@ class CompletionBridgeContract(unittest.TestCase):
                 "provider_http_status": 400,
             },
         )
+
+    def test_native_response_failed_instream_5xx_recovers_transient_semantics(self):
+        # bug 87190842 的形态：HTTP 200 + 首事件 response.failed(server_error, <500> …)。
+        # 流内瞬时 5xx 没有头部状态可恢复，靠 TRANSIENT_PROVIDER_CODES 恢复「暂时不可用」，
+        # 不再塌进通用「rejected the request」。
+        body = (
+            b'data: {"type":"response.failed","sequence_number":0,"response":'
+            b'{"id":"resp_x","status":"failed","error":{"code":"server_error","message":'
+            b'"<500> InternalError.Algo: An error occurred in model serving"}}}\n\n'
+        )
+        _, returned = self.model_response(body, native=True, streaming=True)
+        self.assertEqual(returned, body)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["status_code"], 200)
+        self.assertEqual(fields["downstream"]["terminal_event"], "response.failed")
+        self.assertEqual(fields["downstream"]["error_code"], "server_error")
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "The model provider is temporarily unavailable.",
+                "error_code": "server_error",
+                "safe_error": "The model provider is temporarily unavailable.",
+                "retryability": "user_retryable",
+                "provider_http_status": 503,
+                "automatic_retry_attempts": 3,
+            },
+        )
+
+    def test_native_server_is_overloaded_recovers_unavailable_semantics(self):
+        body = (
+            b'data: {"type":"error","code":"server_is_overloaded",'
+            b'"message":"Our servers are currently overloaded."}\n\n'
+        )
+        self.model_response(body, native=True, streaming=True)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(
+            terminal_provider_failure(fields),
+            {
+                "error": "The model provider is temporarily unavailable.",
+                "error_code": "server_is_overloaded",
+                "safe_error": "The model provider is temporarily unavailable.",
+                "retryability": "user_retryable",
+                "provider_http_status": 503,
+                "automatic_retry_attempts": 3,
+            },
+        )
+
+    def test_native_overload_after_semantic_output_does_not_claim_retry(self):
+        body = (
+            b'data: {"type":"response.output_text.delta","delta":"partial"}\n\n'
+            b'data: {"type":"error","code":"server_is_overloaded",'
+            b'"message":"Our servers are currently overloaded."}\n\n'
+        )
+        self.model_response(body, native=True, streaming=True)
+        fields = self.diagnostics[-1][1]
+        self.assertEqual(fields["attempt"], 1)
+        self.assertEqual(fields["stream_retries"], 0)
+        self.assertNotIn("automatic_retry_attempts", terminal_provider_failure(fields))
 
     def test_recovered_message_is_bounded_and_url_redacted(self):
         body = (

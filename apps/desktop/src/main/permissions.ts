@@ -1,9 +1,11 @@
 import { Notification, shell } from 'electron'
 
-import {
+import type {
   SystemPermissionId,
   SystemPermissionRecord,
-  SystemPermissionsSnapshot,
+  SystemPermissionsSnapshot
+} from '../permissions'
+import {
   unavailablePermissionRecords
 } from '../permissions'
 

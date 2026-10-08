@@ -12,7 +12,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from scholarseed_codex.activity import auto_approval_payload
+from scholarseed_codex.activity import (
+    auto_approval_payload,
+    strict_review_item_id,
+    strict_review_payload,
+)
 from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.events import translate_event
@@ -1155,6 +1159,23 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
                     local_socket_permissions("danger-full-access", (endpoint,)), ("", ())
                 )
                 self.assertEqual(local_socket_permissions("workspace-write", ()), ("", ()))
+                domain = "scholarseed.damo.alibaba.com"
+                profile, arguments = local_socket_permissions(
+                    "workspace-write", (), network_domains=(domain,)
+                )
+                config = tomllib.loads("\n".join(argument.value for argument in arguments[1:]))
+                network = config["permissions"][profile]["network"]
+                self.assertEqual(network["domains"], {domain: "allow"})
+                self.assertEqual(network["unix_sockets"], {})
+                self.assertEqual(network["mode"], "full")
+                self.assertTrue(config["features"]["network_proxy"]["enabled"])
+                profile, arguments = local_socket_permissions(
+                    "workspace-write", (endpoint,), network_domains=(domain,)
+                )
+                config = tomllib.loads("\n".join(argument.value for argument in arguments[1:]))
+                network = config["permissions"][profile]["network"]
+                self.assertEqual(network["domains"], {domain: "allow"})
+                self.assertEqual(network["unix_sockets"], {str(endpoint.resolve()): "allow"})
                 profile, arguments = local_socket_permissions(
                     "workspace-write", (endpoint,), network_access=True
                 )
@@ -1165,6 +1186,10 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(network["unix_sockets"], {str(endpoint.resolve()): "allow"})
                 with self.assertRaises(ValueError):
                     local_socket_permissions("workspace-write", (Path(directory),))
+                with self.assertRaises(ValueError):
+                    local_socket_permissions(
+                        "workspace-write", (), network_domains=("*.damo.alibaba.com",)
+                    )
 
     async def test_local_profile_is_exclusive_on_thread_and_turn(self) -> None:
         request = replace(
@@ -1218,10 +1243,12 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
                 "threadId": self.state.thread_id,
                 "turnId": "turn-review",
                 "reviewId": "review-1",
+                "targetItemId": "item-command-1",
                 "action": {"type": "command", "command": "make test", "cwd": str(self.workspace)},
                 "review": {
                     "status": "approved",
                     "riskLevel": "low",
+                    "userAuthorization": "medium",
                     "rationale": "repository test command",
                 },
                 "decisionSource": "agent",
@@ -1240,7 +1267,45 @@ class CodexWatchContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.events[0].item_id, "review-1")
         self.assertEqual(self.events[1].payload["activity_type"], "approval_review")
         self.assertEqual(self.events[1].payload["status"], "approved")
-        self.assertEqual(self.events[1].payload["details"]["risk_level"], "low")
+        details = self.events[1].payload["details"]
+        self.assertEqual(details["risk_level"], "low")
+        # 上游 review/action 的语义字段一个都不能丢：这些是判断机器审批是否合理的唯一依据。
+        self.assertEqual(
+            details,
+            {
+                "action": {"type": "command", "command": "make test", "cwd": str(self.workspace)},
+                "action_type": "command",
+                "target_item_id": "item-command-1",
+                "decision_source": "agent",
+                "risk_level": "low",
+                "user_authorization": "medium",
+                "rationale": "repository test command",
+                "review_duration_ms": 1,
+            },
+        )
+        self.assertTrue(self.events[1].payload["ok"])
+
+    async def test_strict_review_notification_is_projected_as_native_activity(self) -> None:
+        await self.host._handle_notification(
+            "autoApprovalReview/strictReviewRequired",
+            {"threadId": self.state.thread_id, "turnId": "turn-review", "startedAtMs": 7},
+        )
+
+        self.assertEqual(len(self.events), 1)
+        self.assertEqual(self.events[0].kind, CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED)
+        self.assertEqual(self.events[0].item_id, "strict-review-7")
+        self.assertEqual(self.events[0].payload["activity_type"], "approval_strict_review")
+        self.assertEqual(self.events[0].payload["status"], "strict_review_required")
+        self.assertEqual(self.events[0].payload["details"], {"started_at_ms": 7})
+
+    def test_strict_review_item_ids_do_not_collide_within_a_turn(self) -> None:
+        # 上游这个通知不带 reviewId，Serve 按 item id 去重：同一轮两次升级必须落到不同条目。
+        first = strict_review_item_id({"startedAtMs": 11}, "turn-review")
+        second = strict_review_item_id({"startedAtMs": 12}, "turn-review")
+
+        self.assertNotEqual(first, second)
+        self.assertEqual(strict_review_item_id({}, "turn-review"), "strict-review-turn-review")
+        self.assertEqual(strict_review_payload({})["details"], {})
 
     async def test_guardian_warning_is_not_discarded(self) -> None:
         await self.host._handle_notification(

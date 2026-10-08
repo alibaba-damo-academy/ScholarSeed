@@ -3,9 +3,13 @@ import test from 'node:test'
 import { createInstance } from 'i18next'
 import zh from '../../localization/locales/zh/components.json' with { type: 'json' }
 import en from '../../localization/locales/en/components.json' with { type: 'json' }
+import zhConversation from '../../localization/locales/zh/conversation.json' with { type: 'json' }
+import enConversation from '../../localization/locales/en/conversation.json' with { type: 'json' }
 
 import {
+  QUEUE_PRESENTATION_MESSAGE_KEYS,
   canCancelQueuedMessage,
+  hasAcceptedMessageAwaitingRuntime,
   hasQueuedMessageAwaitingRuntime,
   markOptimisticQueueOutcomeUnknown,
   optimisticQueuedMessage,
@@ -26,6 +30,57 @@ import {
 } from './outbox.ts'
 
 const input = [{ type: 'text' as const, text: '继续补充证据' }]
+
+test('optimistic outbox freezes selected literature for retry', () => {
+  const selectedLiteratureIds = ['selected-paper']
+  const queued = optimisticQueuedMessage(
+    [], 'queued-selected', input, [], 0, 'queued', undefined, selectedLiteratureIds
+  )
+  selectedLiteratureIds.push('later-paper')
+  assert.deepEqual(queued.selectedLiteratureIds, ['selected-paper'])
+})
+
+test('permission admission errors preserve paths and explain recovery in both languages', async () => {
+  const instance = createInstance()
+  await instance.init({ lng: 'zh', fallbackLng: 'en', interpolation: { escapeValue: false }, resources: {
+    zh: { components: zh, conversation: zhConversation },
+    en: { components: en, conversation: enConversation }
+  } })
+  const translate = instance.getFixedT(null, 'components')
+  const path = 'resources/受限 <文件> & report.md'
+  const queued = queuedMessageFromPayload({
+    queued_message_id: 'denied', enqueue_seq: 1, state: 'failed', submission_mode: 'direct',
+    input, safe_error: 'resource_baseline_permission_denied', safe_error_details: { path }
+  })
+  assert.deepEqual(queued.safeErrorDetails, { path })
+  const chinese = queuedMessageErrorText(queued.safeErrorCode, queued.state, translate, queued.safeErrorDetails)
+  assert.match(chinese, /系统拒绝读取项目文件/)
+  assert.ok(chinese.includes(path))
+  assert.match(chinese, /本条消息尚未提交/)
+  assert.match(chinese, /处理后再重新发送/)
+  assert.doesNotMatch(chinese, /resource_baseline_permission_denied/)
+  await instance.changeLanguage('en')
+  const english = queuedMessageErrorText(queued.safeErrorCode, queued.state, translate, queued.safeErrorDetails)
+  assert.ok(english.includes(path))
+  assert.match(english, /access permissions/)
+  assert.match(english, /not been submitted/)
+  assert.match(english, /send the message again/)
+  assert.match(queuedMessageErrorText(queued.safeErrorCode, 'failed', translate), /project file/)
+})
+
+test('pending questions explain why a queued message cannot leave the queue', async () => {
+  const instance = createInstance()
+  await instance.init({ lng: 'zh', fallbackLng: 'en', resources: {
+    zh: { components: zh },
+    en: { components: en }
+  } })
+  const translate = instance.getFixedT(null, 'components')
+  assert.match(queuedMessageErrorText('runtime_resource_wait_pending_hil', 'failed', translate), /待回答的问题/)
+  assert.match(queuedMessageErrorText('runtime_resource_wait_activity_unavailable', 'failed', translate), /无法确认/)
+  await instance.changeLanguage('en')
+  assert.match(queuedMessageErrorText('runtime_resource_wait_pending_hil', 'failed', translate), /question/)
+  assert.match(queuedMessageErrorText('runtime_resource_wait_activity_unavailable', 'failed', translate), /could not be confirmed/)
+})
 
 test('withdrawal feedback distinguishes conflicts, missing messages, access and uncertainty', () => {
   const cases = [
@@ -61,7 +116,7 @@ test('presents only the first idle submission as an immediate user message', () 
 })
 
 test('hides a represented queue placeholder while retaining recovery states', () => {
-  const pending = optimisticQueuedMessage([], 'client-1', input, [])
+  const pending = optimisticQueuedMessage([], 'client-1', input, [], undefined, 'direct')
   const conversation = [{
     kind: 'user' as const,
     text: '继续补充证据',
@@ -70,10 +125,19 @@ test('hides a represented queue placeholder while retaining recovery states', ()
 
   assert.equal(shouldPresentQueuedMessage(pending, conversation), false)
   assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'queued' }, conversation), false)
-  assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'waiting_resources' }, conversation), true)
+  assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'waiting_resources' }, conversation), false)
+  assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'submitting' }, conversation), false)
   assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'failed' }, conversation), true)
   assert.equal(shouldPresentQueuedMessage({ ...pending, state: 'outcome_unknown' }, conversation), true)
-  assert.equal(shouldPresentQueuedMessage(pending, []), true)
+  assert.equal(shouldPresentQueuedMessage(pending, []), false)
+})
+
+test('presents every transient stage of a user-queued message as one queue item', () => {
+  const pending = optimisticQueuedMessage([], 'client-1', input, [], undefined, 'queued')
+
+  for (const state of ['queued', 'waiting_resources', 'submitting'] as const) {
+    assert.equal(shouldPresentQueuedMessage({ ...pending, state }, []), true)
+  }
 })
 
 test('hides queue recovery when the turn recovery card owns confirmation', () => {
@@ -96,14 +160,40 @@ test('hides queue recovery when the turn recovery card owns confirmation', () =>
   assert.equal(shouldPresentQueuedMessage({ ...pending, nativeTurnId: 'turn-2' }, conversation), true)
 })
 
-test('reports only pre-runtime queue states as awaiting execution', () => {
-  const pending = optimisticQueuedMessage([], 'client-1', input, [])
+test('shows direct admission as working without treating user queue items as active', () => {
+  const pending = optimisticQueuedMessage([], 'client-1', input, [], undefined, 'direct')
+  const queued = optimisticQueuedMessage([], 'client-2', input, [], undefined, 'queued')
 
   assert.equal(hasQueuedMessageAwaitingRuntime([pending]), true)
   assert.equal(hasQueuedMessageAwaitingRuntime([{ ...pending, state: 'queued' }]), true)
-  assert.equal(hasQueuedMessageAwaitingRuntime([{ ...pending, state: 'waiting_resources' }]), false)
+  assert.equal(hasQueuedMessageAwaitingRuntime([{ ...pending, state: 'waiting_resources' }]), true)
   assert.equal(hasQueuedMessageAwaitingRuntime([{ ...pending, state: 'failed' }]), false)
+  assert.equal(hasQueuedMessageAwaitingRuntime([queued]), false)
+  assert.equal(hasQueuedMessageAwaitingRuntime([{ ...queued, state: 'queued', serverPresent: true }]), false)
+  assert.equal(hasQueuedMessageAwaitingRuntime([{ ...queued, state: 'waiting_resources', serverPresent: true }]), false)
   assert.equal(hasQueuedMessageAwaitingRuntime([]), false)
+})
+
+test('offers stopping only after the server accepts pending execution', () => {
+  const pending = optimisticQueuedMessage([], 'client-1', input, [], undefined, 'direct')
+  const queued = optimisticQueuedMessage([], 'client-2', input, [], undefined, 'queued')
+
+  assert.equal(hasAcceptedMessageAwaitingRuntime([pending]), false)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...pending, state: 'queued' }]), false)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...pending, state: 'queued', serverPresent: true }]), true)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...pending, state: 'waiting_resources', serverPresent: true }]), true)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...pending, state: 'failed', serverPresent: true }]), false)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...pending, state: 'outcome_unknown', serverPresent: true }]), false)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...queued, state: 'queued', serverPresent: true }]), false)
+  assert.equal(hasAcceptedMessageAwaitingRuntime([{ ...queued, state: 'waiting_resources', serverPresent: true }]), false)
+})
+
+test('uses one queue label for every internal delivery stage', () => {
+  for (const state of ['queued', 'waiting_resources', 'submitting'] as const) {
+    assert.equal(QUEUE_PRESENTATION_MESSAGE_KEYS[state], 'composer.queued')
+  }
+  assert.equal(QUEUE_PRESENTATION_MESSAGE_KEYS.failed, 'composer.answerFailed')
+  assert.equal(QUEUE_PRESENTATION_MESSAGE_KEYS.outcome_unknown, 'composer.unknownOutcome')
 })
 
 test('reconciles the optimistic queue row with the authoritative event by id', () => {
@@ -112,6 +202,7 @@ test('reconciles the optimistic queue row with the authoritative event by id', (
     queued_message_id: 'client-1',
     enqueue_seq: 7,
     state: 'queued',
+    submission_mode: 'queued',
     input
   })
   const reconciled = upsertQueuedMessage([optimistic], authoritative)
@@ -125,6 +216,7 @@ test('preserves complete annotation audit fields from the authoritative queue', 
     queued_message_id: 'annotated-1',
     enqueue_seq: 2,
     state: 'queued',
+    submission_mode: 'queued',
     input,
     assistant_references: [{
       kind: 'note',
@@ -148,6 +240,14 @@ test('a response can settle the optimistic row before its event arrives', () => 
 
   assert.equal(settled[0]?.state, 'queued')
   assert.equal(settled[0]?.serverPresent, true)
+  assert.equal(settled[0]?.submissionMode, 'queued')
+
+  const serverCorrected = settleOptimisticQueuedMessage(
+    [{ ...optimistic, submissionMode: 'direct' }],
+    'client-1',
+    'queued'
+  )
+  assert.equal(serverCorrected[0]?.submissionMode, 'queued')
 })
 
 test('resource waits retain deadline, purpose, request identity and frozen references', () => {
@@ -155,6 +255,7 @@ test('resource waits retain deadline, purpose, request identity and frozen refer
     queued_message_id: 'wait-1',
     enqueue_seq: 3,
     state: 'waiting_resources',
+    submission_mode: 'direct',
     deadline: 12345,
     purpose: 'turn',
     input,
@@ -172,7 +273,7 @@ test('resource waits retain deadline, purpose, request identity and frozen refer
 test('late admission receipts do not downgrade authoritative wait or submission events', () => {
   for (const state of ['waiting_resources', 'submitting', 'outcome_unknown'] as const) {
     const authoritative = queuedMessageFromPayload({
-      queued_message_id: 'client-1', enqueue_seq: 1, state, input
+      queued_message_id: 'client-1', enqueue_seq: 1, state, submission_mode: 'queued', input
     })
     assert.deepEqual(
       settleOptimisticQueuedMessage([authoritative], 'client-1'),
@@ -185,7 +286,7 @@ test('late admission receipts do not downgrade authoritative wait or submission 
 test('a transport failure does not overwrite an authoritative queue state', () => {
   for (const state of ['waiting_resources', 'submitting', 'queued'] as const) {
     const authoritative = queuedMessageFromPayload({
-      queued_message_id: 'client-1', enqueue_seq: 1, state, input
+      queued_message_id: 'client-1', enqueue_seq: 1, state, submission_mode: 'queued', input
     })
     assert.deepEqual(
       markOptimisticQueueOutcomeUnknown([authoritative], 'client-1'),
@@ -207,7 +308,7 @@ test('cancellation is available only while a request is known not to be submitti
 test('admission settles only its own pending row and preserves another resource wait', () => {
   const pending = optimisticQueuedMessage([], 'pending-1', input, [])
   const waiting = queuedMessageFromPayload({
-    queued_message_id: 'waiting-2', enqueue_seq: 2, state: 'waiting_resources', input
+    queued_message_id: 'waiting-2', enqueue_seq: 2, state: 'waiting_resources', submission_mode: 'queued', input
   })
   const settled = settleOptimisticQueuedMessage([pending, waiting], pending.queuedMessageId)
   assert.equal(settled[0].serverPresent, true)
@@ -224,7 +325,7 @@ test('keeps an uncertain submission visible until an authoritative refresh', () 
 test('removes only a locally rejected optimistic submission', () => {
   const optimistic = optimisticQueuedMessage([], 'client-1', input, [])
   const authoritative = queuedMessageFromPayload({
-    queued_message_id: 'server-2', enqueue_seq: 2, state: 'queued', input
+    queued_message_id: 'server-2', enqueue_seq: 2, state: 'queued', submission_mode: 'queued', input
   })
 
   assert.deepEqual(
@@ -260,6 +361,7 @@ test('restores an unacknowledged local outbox row and clears it on server acknow
     queued_message_id: 'client-outbox',
     enqueue_seq: 1,
     state: 'queued',
+    submission_mode: 'queued',
     input
   })
   assert.deepEqual(mergeQueuedOutbox('session-outbox', [authoritative]), [authoritative])
@@ -270,7 +372,8 @@ test('restores an unacknowledged local outbox row and clears it on server acknow
 test('queue failure codes translate while unknown codes use state-specific fallbacks', async () => {
   const instance = createInstance()
   await instance.init({ lng: 'zh', fallbackLng: 'en', resources: {
-    zh: { components: zh }, en: { components: en }
+    zh: { components: zh, conversation: zhConversation },
+    en: { components: en, conversation: enConversation }
   } })
   const translate = instance.getFixedT(null, 'components')
   assert.equal(
@@ -280,6 +383,10 @@ test('queue failure codes translate while unknown codes use state-specific fallb
   assert.equal(
     queuedMessageErrorText('runtime_resource_wait_timeout', 'waiting_resources', translate),
     zh.composer.resourceWaitTimeout
+  )
+  assert.equal(
+    queuedMessageErrorText('runtime_resource_wait_blocked', 'waiting_resources', translate),
+    zh.composer.resourceWaitBlocked
   )
   assert.equal(
     queuedMessageErrorText('runtime_turn_failed', 'outcome_unknown', translate),
@@ -295,7 +402,6 @@ test('queue failure codes translate while unknown codes use state-specific fallb
   )
   for (const errorCode of [
     'session_model_switch_failed',
-    'resource_baseline_failed',
     'queued_message_not_sendable',
     'assistant_context_unavailable',
     'assistant_context_revision_conflict',
@@ -311,6 +417,10 @@ test('queue failure codes translate while unknown codes use state-specific fallb
     en.composer.resourceWaitTimeout
   )
   assert.equal(
+    queuedMessageErrorText('runtime_resource_wait_blocked', 'waiting_resources', translate),
+    en.composer.resourceWaitBlocked
+  )
+  assert.equal(
     queuedMessageErrorText('runtime_turn_failed', 'outcome_unknown', translate),
     en.composer.runtimeTurnFailed
   )
@@ -323,10 +433,10 @@ test('queue failure codes translate while unknown codes use state-specific fallb
 test('an unconfirmed queue outcome blocks the remaining queue presentation', () => {
   const unknown = queuedMessageFromPayload({
     queued_message_id: 'unknown-1', enqueue_seq: 1, state: 'outcome_unknown',
-    safe_error: 'runtime_turn_failed', native_turn_id: 'native-1', input
+    submission_mode: 'direct', safe_error: 'runtime_turn_failed', native_turn_id: 'native-1', input
   })
   const queued = queuedMessageFromPayload({
-    queued_message_id: 'queued-2', enqueue_seq: 2, state: 'queued', input
+    queued_message_id: 'queued-2', enqueue_seq: 2, state: 'queued', submission_mode: 'queued', input
   })
 
   assert.equal(unknown.nativeTurnId, 'native-1')

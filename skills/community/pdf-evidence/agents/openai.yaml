@@ -1,0 +1,7 @@
+interface:
+  display_name: "PDF Evidence"
+  short_description: "Read authorized PDFs, annotations, and fragment citations"
+  default_prompt: "Use $pdf-evidence to read the relevant authorized PDF fragments and cite their exact returned URLs."
+
+policy:
+  allow_implicit_invocation: true

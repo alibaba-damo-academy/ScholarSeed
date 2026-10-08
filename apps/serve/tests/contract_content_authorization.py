@@ -11,12 +11,18 @@
 
 from __future__ import annotations
 
+import errno
 import sqlite3
 import tempfile
 from hashlib import sha256
 from pathlib import Path
+from unittest.mock import patch
 
-from service.content.domain.model import MANAGED_RESOURCES_ROOT_RELATIVE, ContentError
+from service.content.domain.model import (
+    MANAGED_RESOURCES_ROOT_RELATIVE,
+    ContentError,
+    ContentReadPermissionError,
+)
 from service.content.persistence.catalog import (
     AUDIT_AUTHORIZE,
     AUDIT_REVOKE,
@@ -25,6 +31,7 @@ from service.content.persistence.catalog import (
 from service.content.service.port import ContentService, ProjectRegistry
 from service.content.service.token import TrashTokenVault
 from service.platform.content import AssetKind, AssetOrigin, RootKind
+from service.platform.storage import DirectoryHandle
 
 PASS = 0
 FAIL = 0
@@ -100,6 +107,33 @@ def main() -> int:
             capture.revision,
         )
         check("稳定采集写入调用方流", captured.read() == streamed_payload)
+
+    capture_path = f"{MANAGED_RESOURCES_ROOT_RELATIVE}/流式版本.bin"
+    for failure in (
+        PermissionError(errno.EPERM, "Operation not permitted", str(streamed)),
+        PermissionError(errno.EACCES, "Permission denied", str(streamed)),
+    ):
+        with (
+            tempfile.TemporaryFile() as captured,
+            patch.object(DirectoryHandle, "open", side_effect=failure),
+        ):
+            try:
+                content.capture_stable(project.id, capture_path, len(streamed_payload), captured)
+            except ContentReadPermissionError as error:
+                check("权限拒绝保留现有读取失败码", error.code == "read_failed")
+                check("权限拒绝只公开项目相对路径", error.path == capture_path)
+                check("保留原始系统异常用于诊断", error.__cause__ is failure)
+            else:
+                check("不可读文件不得采集成功", False)
+    with (
+        tempfile.TemporaryFile() as captured,
+        patch.object(DirectoryHandle, "open", side_effect=OSError(errno.EIO, "I/O error")),
+    ):
+        check(
+            "普通读取失败不误报权限拒绝",
+            code_of(lambda: content.capture_stable(project.id, capture_path, 1024, captured))
+            == "read_failed",
+        )
 
     # ---- 1. 登记、枚举、留痕 ----
     ref = content.authorize_root(project.id, str(external), "外部资料")

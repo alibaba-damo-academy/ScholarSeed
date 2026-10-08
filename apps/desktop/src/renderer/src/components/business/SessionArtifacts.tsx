@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import { openByDefault } from '../../fileOpen'
 import { Icon } from '../../icons'
-import { SessionArtifact } from '../../model'
+import type { SessionArtifact } from '../../model'
 import { activeThread, useApp } from '../../store'
 import { Button } from '../ui'
 

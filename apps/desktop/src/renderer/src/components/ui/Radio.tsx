@@ -13,6 +13,7 @@ import {
 import { cx } from './utils'
 
 export interface RadioProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChange' | 'role'> {
+  align?: 'center' | 'first-line'
   checked?: boolean
   label?: string
   onCheckedChange?: (checked: boolean) => void
@@ -20,11 +21,11 @@ export interface RadioProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>
 }
 
 export const Radio = forwardRef<HTMLButtonElement, RadioProps>(
-  ({ checked = false, children, className, disabled, label, onCheckedChange, type = 'button', ...props }, ref) => (
+  ({ align = 'center', checked = false, children, className, disabled, label, onCheckedChange, type = 'button', ...props }, ref) => (
     <button
       aria-checked={checked}
       aria-label={label}
-      className={cx(radioClassName({ checked, className }), radioStyleClassName())}
+      className={cx(radioClassName({ checked, className }), radioStyleClassName(), align === 'first-line' && 'items-start')}
       disabled={disabled}
       ref={ref}
       role="radio"
@@ -34,7 +35,7 @@ export const Radio = forwardRef<HTMLButtonElement, RadioProps>(
       }}
       {...props}
     >
-      <span aria-hidden="true" className={radioDotClassName} />
+      <span aria-hidden="true" className={cx(radioDotClassName, align === 'first-line' && 'mt-[calc((var(--vds-lh-body-lv2)_-_var(--vds-radio-size))_/_2)]')} />
       {children || label ? <span className={cx('vds-radio__label', controlLabelClassName)}>{children ?? label}</span> : null}
     </button>
   )

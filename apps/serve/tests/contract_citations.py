@@ -40,6 +40,8 @@ from service.platform.context import (
     AssistantAnswer,
     AssistantTurnItem,
     AssistantTurnSnapshot,
+    ContextItemRole,
+    ContextOrigin,
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
@@ -399,6 +401,25 @@ class CitationContracts(unittest.TestCase):
     def tearDown(self):
         self.indexes.close()
         self.temp.cleanup()
+
+    def test_active_project_pdf_is_an_authorized_turn_source(self):
+        current = AssistantTurnItem(
+            "e_02",
+            ContextRef(
+                "current-pdf",
+                ContextRefKind.FILE,
+                "current.pdf",
+                "Current PDF",
+                origin=ContextOrigin.CURRENT_DOCUMENT,
+            ),
+            ContextResolutionState.READY,
+            role=ContextItemRole.SCOPE,
+            model_locator="current.pdf",
+            surface={"kind": "project_file", "media_type": "application/pdf"},
+        )
+        self.snapshot = replace(self.snapshot, items=(current,))
+        document = self.service.document("session", "snapshot", PdfQuery(ref_id="current-pdf"))
+        self.assertEqual(document.document.path, "current.pdf")
 
     def test_final_answer_keeps_only_snapshot_backed_citation_links(self):
         valid = "0123456789abcdef0123456789abcdef"

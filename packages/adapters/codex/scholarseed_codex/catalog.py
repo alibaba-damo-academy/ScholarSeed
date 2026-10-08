@@ -20,7 +20,12 @@ from scholarseed_codex.environment import (
 )
 from scholarseed_codex.executable import discover_codex_executable
 from scholarseed_codex.protocol.session import CodexRuntimeLaunchArgument, CodexSessionOpenRequest
-from scholarseed_runtime.contract import ModelConnectionMode, ModelIntent, ModelToolProtocol
+from scholarseed_runtime.contract import (
+    ModelCatalogEntry,
+    ModelConnectionMode,
+    ModelIntent,
+    ModelToolProtocol,
+)
 
 CATALOG_CONFIG_KEY = "model_catalog_json"
 CATALOG_TIMEOUT_SECONDS = 30
@@ -40,21 +45,23 @@ NATIVE_MODEL_NAMESPACE_SEPARATOR = "/"
 MODELS_SUFFIX = "/models"
 
 
-def standard_model(intent: ModelIntent, base_instructions: str) -> dict[str, Any]:
-    capabilities = intent.capabilities
+def standard_model(
+    entry: ModelCatalogEntry, base_instructions: str, approval_model_ref: str = ""
+) -> dict[str, Any]:
+    capabilities = entry.capabilities
     modalities = capabilities.input_modalities
     if modalities is not None and not set(modalities).issubset(
         SUPPORTED_MODALITIES | PRODUCT_FILE_MODALITIES
     ):
         raise ValueError(MODALITIES_ERROR)
     model: dict[str, Any] = {
-        "slug": intent.model_ref,
-        "display_name": intent.model_ref,
+        "slug": entry.model_ref,
+        "display_name": entry.model_ref,
         "base_instructions": base_instructions,
         "supported_reasoning_levels": [
             {"effort": effort, "description": effort} for effort in capabilities.reasoning_efforts
         ],
-        "default_reasoning_level": intent.reasoning_effort or None,
+        "default_reasoning_level": None,
         "shell_type": SHELL_TYPE,
         "visibility": MODEL_VISIBILITY,
         "supported_in_api": True,
@@ -71,15 +78,20 @@ def standard_model(intent: ModelIntent, base_instructions: str) -> dict[str, Any
         "use_responses_lite": False,
         "tool_mode": DIRECT_TOOL_MODE,
         "apply_patch_tool_type": None,
-        "auto_review_model_override": intent.model_ref,
+        "auto_review_model_override": approval_model_ref or entry.model_ref,
     }
-    if intent.context_window is not None:
-        model["context_window"] = intent.context_window
-        model["max_context_window"] = intent.context_window
+    if entry.context_window is not None:
+        model["context_window"] = entry.context_window
+        model["max_context_window"] = entry.context_window
     return model
 
 
-def bind_native_model(catalog: dict[str, Any], model_ref: str) -> dict[str, Any]:
+def bind_native_models(
+    catalog: dict[str, Any],
+    model_refs: tuple[str, ...],
+    selected_model: str,
+    approval_model_ref: str = "",
+) -> dict[str, Any]:
     if not isinstance(catalog, dict):
         raise ValueError(CATALOG_ERROR)
     models = catalog.get("models")
@@ -90,34 +102,34 @@ def bind_native_model(catalog: dict[str, Any], model_ref: str) -> dict[str, Any]
         for row in models
     ):
         raise ValueError(CATALOG_ERROR)
-    if not model_ref:
-        result = copy.deepcopy(catalog)
-        for row in result["models"]:
-            row["auto_review_model_override"] = row["slug"]
-        return result
-    candidates = [model_ref]
-    if model_ref.count(NATIVE_MODEL_NAMESPACE_SEPARATOR) == 1:
-        candidates.append(model_ref.split(NATIVE_MODEL_NAMESPACE_SEPARATOR, 1)[1])
-    selected = None
-    for candidate in candidates:
-        matches = [
-            row
-            for row in models
-            if isinstance(row, dict)
-            and isinstance(row.get("slug"), str)
-            and row["slug"]
-            and candidate.startswith(row["slug"])
-        ]
-        if matches:
-            selected = max(matches, key=lambda row: len(row["slug"]))
-            break
-    if selected is None:
-        raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {model_ref}")
     result = copy.deepcopy(catalog)
-    bound = copy.deepcopy(selected)
-    bound["slug"] = model_ref
-    bound["auto_review_model_override"] = model_ref
-    result["models"] = [row for row in result["models"] if row.get("slug") != model_ref] + [bound]
+    for row in result["models"]:
+        row["auto_review_model_override"] = approval_model_ref or row["slug"]
+    known = {row["slug"] for row in result["models"]}
+    for model_ref in sorted(set(model_refs)):
+        if not model_ref:
+            continue
+        if model_ref in known:
+            continue
+        candidates = [model_ref]
+        if model_ref.count(NATIVE_MODEL_NAMESPACE_SEPARATOR) == 1:
+            candidates.append(model_ref.split(NATIVE_MODEL_NAMESPACE_SEPARATOR, 1)[1])
+        selected = None
+        for candidate in candidates:
+            matches = [row for row in models if candidate.startswith(row["slug"])]
+            if matches:
+                selected = max(matches, key=lambda row: len(row["slug"]))
+                break
+        if selected is None:
+            if model_ref == selected_model:
+                raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {model_ref}")
+            continue
+        bound = copy.deepcopy(selected)
+        bound["slug"] = model_ref
+        bound["auto_review_model_override"] = approval_model_ref or model_ref
+        result["models"].append(bound)
+    if selected_model and selected_model not in {row["slug"] for row in result["models"]}:
+        raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {selected_model}")
     return result
 
 
@@ -165,10 +177,24 @@ async def native_catalog(request: CodexSessionOpenRequest) -> dict[str, Any]:
 async def model_catalog_argument(
     intent: ModelIntent, request: CodexSessionOpenRequest
 ) -> CodexRuntimeLaunchArgument:
+    entries = intent.catalog_models or (
+        ModelCatalogEntry(intent.model_ref, intent.capabilities, intent.context_window),
+    )
+    if intent.model_ref and intent.model_ref not in {entry.model_ref for entry in entries}:
+        raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {intent.model_ref}")
+    if intent.approval_model_ref and intent.approval_model_ref not in {
+        entry.model_ref for entry in entries
+    }:
+        raise ValueError(f"{MODEL_NOT_FOUND_ERROR}: {intent.approval_model_ref}")
     if intent.capabilities.tool_protocol is ModelToolProtocol.JSON_SCHEMA:
         if not intent.model_ref:
             raise ValueError(MODEL_NOT_FOUND_ERROR)
-        catalog = {"models": [standard_model(intent, request.base_instructions)]}
+        catalog = {
+            "models": [
+                standard_model(entry, request.base_instructions, intent.approval_model_ref)
+                for entry in sorted(entries, key=lambda item: item.model_ref)
+            ]
+        }
     else:
         if intent.transport.mode is ModelConnectionMode.REMOTE:
             async with httpx.AsyncClient(
@@ -202,7 +228,12 @@ async def model_catalog_argument(
                 source = response.json()
         else:
             source = await native_catalog(request)
-        catalog = bind_native_model(source, intent.model_ref)
+        catalog = bind_native_models(
+            source,
+            tuple(entry.model_ref for entry in entries),
+            intent.model_ref,
+            intent.approval_model_ref,
+        )
     payload = json.dumps(catalog, ensure_ascii=False, sort_keys=True).encode(TEXT_ENCODING)
     path = store_model_catalog(Path(request.process_environment[CODEX_HOME_ENV]), payload)
     return CodexRuntimeLaunchArgument(

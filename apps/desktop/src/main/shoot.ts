@@ -1,4 +1,5 @@
-import { app, BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { app } from 'electron'
 import { mkdirSync, writeFileSync } from 'fs'
 import { join, resolve } from 'path'
 

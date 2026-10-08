@@ -79,8 +79,15 @@ def main() -> int:
         conversation = client.get("/api/capabilities/skills?surface=conversation")
         assert conversation.status_code == 200, conversation.text
         conversation_skills = {item["name"]: item for item in conversation.json()["skills"]}
-        assert set(conversation_skills) == CONVERSATION_SKILLS, set(conversation_skills)
+        assert set(conversation_skills) == CONVERSATION_SKILLS | {"demo-skill"}, set(
+            conversation_skills
+        )
         assert conversation_skills["research-idea-partner"]["descriptions"]["zh"]
+        assert conversation_skills["agentic-search"]["descriptions"]["zh"]
+        assert conversation_skills["agentic-search"]["description"].startswith(
+            "Tiered academic paper discovery"
+        )
+        assert conversation_skills["demo-skill"]["active"] is True
         settings = client.get("/api/capabilities/skills?surface=settings")
         assert settings.status_code == 200, settings.text
         settings_skills = {item["name"]: item for item in settings.json()["skills"]}
@@ -153,6 +160,16 @@ def main() -> int:
         }
         assert skills["demo-skill"]["active"] is False
         assert skills["demo-skill"]["runtime_enabled"] is False
+        disabled_conversation = client.get("/api/capabilities/skills?surface=conversation")
+        assert disabled_conversation.status_code == 200, disabled_conversation.text
+        assert (
+            next(
+                item
+                for item in disabled_conversation.json()["skills"]
+                if item["name"] == "demo-skill"
+            )["active"]
+            is False
+        )
 
         enabled = client.post("/api/capabilities/skills/demo-skill/activate")
         assert enabled.status_code == 200, enabled.text

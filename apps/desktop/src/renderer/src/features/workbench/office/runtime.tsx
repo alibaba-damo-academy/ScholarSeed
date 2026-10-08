@@ -30,13 +30,12 @@ import { reconcileOfficeHosts, type OfficeHostState, type OfficeRuntimeHost } fr
 import { OfficeRuntimeContext } from './officeRuntimeContext'
 import { officeProcessor } from './processors/registry'
 import { officePalette } from './theme'
-import { OfficeWarmup } from './Warmup'
+import { OfficeLoading } from './Loading'
+import { INITIAL_OFFICE_RECOVERY, officeRecovery, type OfficeRecoveryEvent } from './recovery'
 import {
   INITIAL_OFFICE_WARMUP_STATUS,
-  OFFICE_WARMUP_SLOW_THRESHOLD_MS,
-  officeWarmupRetryDelay,
-  parseOfficeWarmupStatus,
-  type OfficeWarmupStatus
+  OFFICE_WARMUP_RECOVERY_WINDOW_MS,
+  parseOfficeWarmupStatus
 } from './progress'
 
 const IDLE_HOST_SIZE = { width: 1024, height: 768 }
@@ -233,10 +232,6 @@ function OfficeHost({
   const hasDocument = Boolean(binding || tab)
   const switchingDocument = workspace.pendingExclusiveOpen?.ownerTabId === viewId
     || Boolean(hasDocument && readyBinding && !documentReady)
-  const [warmup, setWarmup] = useState<OfficeWarmupStatus>(INITIAL_OFFICE_WARMUP_STATUS)
-  const [showWarmupProgress, setShowWarmupProgress] = useState(false)
-  const [slowWarmup, setSlowWarmup] = useState(false)
-  const [automaticRetryAttempt, setAutomaticRetryAttempt] = useState<number | null>(null)
   const [palette, setPalette] = useState(() => officePalette(document.documentElement))
   const [bounds, setBounds] = useState<OfficeBounds | null>(null)
   const imageFailureText = useImageFailureText()
@@ -251,9 +246,16 @@ function OfficeHost({
   const activeRevealRequest = useRef('')
   const revealTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const warmupStartedAt = useRef(performance.now())
-  const warmupRetryAttempt = useRef(0)
+  const recoveryRef = useRef(INITIAL_OFFICE_RECOVERY)
+  const [recovery, setRecovery] = useState(INITIAL_OFFICE_RECOVERY)
+  const updateRecovery = useCallback((event: OfficeRecoveryEvent) => {
+    const next = officeRecovery(recoveryRef.current, event)
+    recoveryRef.current = next
+    setRecovery(next)
+    return next
+  }, [])
   const warmupRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const warmupSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const warmupRecoveryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const serializedImages = useRef<string[]>([])
   const imageLeases = useMemo(() => session ? new OfficeImageLeases<OfficeImageLease>(
     lease => releaseOfficeImage(session.source, lease),
@@ -263,32 +265,45 @@ function OfficeHost({
 
   const clearWarmupTimers = useCallback((): void => {
     if (warmupRetryTimer.current) clearTimeout(warmupRetryTimer.current)
-    if (warmupSlowTimer.current) clearTimeout(warmupSlowTimer.current)
+    if (warmupRecoveryTimer.current) clearTimeout(warmupRecoveryTimer.current)
     warmupRetryTimer.current = null
-    warmupSlowTimer.current = null
+    warmupRecoveryTimer.current = null
   }, [])
-  const beginWarmupWindow = useCallback((visible: boolean): void => {
+  const beginWarmupWindow = useCallback((): void => {
     clearWarmupTimers()
     warmupStartedAt.current = performance.now()
-    warmupRetryAttempt.current = 0
-    setAutomaticRetryAttempt(null)
-    setSlowWarmup(false)
-    setShowWarmupProgress(visible)
-    warmupSlowTimer.current = setTimeout(() => {
-      setSlowWarmup(true)
-      setShowWarmupProgress(true)
-      warmupSlowTimer.current = null
-    }, OFFICE_WARMUP_SLOW_THRESHOLD_MS)
-  }, [clearWarmupTimers])
-  const dismissWarmup = useCallback((): void => {
-    setShowWarmupProgress(false)
-    if (warmupSlowTimer.current) clearTimeout(warmupSlowTimer.current)
-    warmupSlowTimer.current = null
-  }, [])
+    updateRecovery({ type: 'reset' })
+    warmupRecoveryTimer.current = setTimeout(() => {
+      if (warmupRetryTimer.current) clearTimeout(warmupRetryTimer.current)
+      warmupRetryTimer.current = null
+      warmupRecoveryTimer.current = null
+      updateRecovery({ type: 'timeout' })
+      console.warn('[office-runtime]', JSON.stringify({
+        hostId: host.id,
+        viewId: host.viewId,
+        stage: 'warmup-timeout',
+        elapsedMs: OFFICE_WARMUP_RECOVERY_WINDOW_MS
+      }))
+    }, OFFICE_WARMUP_RECOVERY_WINDOW_MS)
+  }, [clearWarmupTimers, host.id, host.viewId, updateRecovery])
   useEffect(() => {
-    beginWarmupWindow(false)
+    beginWarmupWindow()
     return clearWarmupTimers
   }, [beginWarmupWindow, clearWarmupTimers])
+
+  const retryOffice = useCallback(() => {
+    beginWarmupWindow()
+    setFrameEpoch(epoch => epoch + 1)
+  }, [beginWarmupWindow])
+
+  useEffect(() => {
+    if (!runtimeReady || !hasDocument || documentReady) return
+    const timer = setTimeout(() => {
+      updateRecovery({ type: 'status', status: { ...INITIAL_OFFICE_WARMUP_STATUS, stage: 'error', error: 'document-load' }, now: performance.now() })
+      console.warn('[office-runtime]', JSON.stringify({ hostId: host.id, viewId: host.viewId, stage: 'document-timeout', bindingId: bindingIdentity }))
+    }, OFFICE_WARMUP_RECOVERY_WINDOW_MS)
+    return () => clearTimeout(timer)
+  }, [bindingIdentity, documentReady, hasDocument, host.id, host.viewId, runtimeReady, updateRecovery])
 
   const post = useCallback((type: string, detail: Record<string, unknown> = {}, transfer: Transferable[] = []): void => {
     if (!frame) return
@@ -527,11 +542,12 @@ function OfficeHost({
       } else if (message.type === 'warmup') {
         const status = parseOfficeWarmupStatus(message)
         if (status) {
-          setWarmup(status)
+          const previous = recoveryRef.current
+          const next = updateRecovery({ type: 'status', status, now: performance.now() })
+          if (next === previous) return
           if (status.stage === 'error') {
             const elapsedMs = performance.now() - warmupStartedAt.current
-            const attempt = warmupRetryAttempt.current
-            const retryDelay = officeWarmupRetryDelay(status, elapsedMs, attempt)
+            const retryDelay = next.retryAt === null ? null : Math.max(0, next.retryAt - performance.now())
             console.warn('[office-runtime]', JSON.stringify({
               hostId: host.id,
               viewId: host.viewId,
@@ -542,31 +558,25 @@ function OfficeHost({
               retryInMs: retryDelay
             }))
             if (retryDelay !== null) {
-              warmupRetryAttempt.current = attempt + 1
-              setAutomaticRetryAttempt(attempt + 1)
               if (warmupRetryTimer.current) clearTimeout(warmupRetryTimer.current)
               warmupRetryTimer.current = setTimeout(() => {
-                setAutomaticRetryAttempt(null)
-                setWarmup(INITIAL_OFFICE_WARMUP_STATUS)
+                updateRecovery({ type: 'retry' })
                 setFrameEpoch(epoch => epoch + 1)
                 warmupRetryTimer.current = null
               }, retryDelay)
             } else {
-              setAutomaticRetryAttempt(null)
+              clearWarmupTimers()
             }
           } else if (status.stage === 'ready') {
             clearWarmupTimers()
-            setAutomaticRetryAttempt(null)
-            setSlowWarmup(false)
-            setShowWarmupProgress(false)
-          } else {
-            setAutomaticRetryAttempt(null)
           }
         }
       } else if (message.type === 'runtime-ready') {
         setRuntimeReady(true)
       } else if (message.type === 'ready') {
         if (message.bindingId !== loadedBinding.current) return
+        clearWarmupTimers()
+        updateRecovery({ type: 'status', status: { ...INITIAL_OFFICE_WARMUP_STATUS, stage: 'ready' }, now: performance.now() })
         setReadyBinding(message.bindingId)
         if (session && message.readonlyReason) controller.restrictEditing(session.id, message.readonlyReason)
       } else if (message.type === 'focus' && tab) {
@@ -631,6 +641,13 @@ function OfficeHost({
           post('paste-result', { requestId, ok: false, error: 'clipboard_failed' })
         })
       } else if (message.type === 'unavailable') {
+        if (message.bindingId && message.bindingId !== loadedBinding.current) return
+        setReadyBinding('')
+        if (recoveryRef.current.status.stage !== 'error') {
+          updateRecovery({ type: 'status', status: { ...INITIAL_OFFICE_WARMUP_STATUS, stage: 'error', error: 'document-load', detail: String(message.detail ?? message.reason) }, now: performance.now() })
+          clearWarmupTimers()
+        }
+        console.warn('[office-runtime]', JSON.stringify({ hostId: host.id, viewId: host.viewId, stage: 'unavailable', reason: message.reason, detail: message.detail, bindingId: message.bindingId }))
         pendingSave.current?.(null)
         pendingSave.current = null
         failPendingReplacements()
@@ -761,7 +778,7 @@ function OfficeHost({
     }
     window.addEventListener('message', receive)
     return () => window.removeEventListener('message', receive)
-  }, [clearWarmupTimers, controller, failPendingReplacements, failPendingSearches, finishReveal, frame, host.id, host.viewId, imageLeases, post, publishPresentationState, publishSearchAction, publishSearchResult, session, tab])
+  }, [clearWarmupTimers, controller, failPendingReplacements, failPendingSearches, finishReveal, frame, host.id, host.viewId, imageLeases, post, publishPresentationState, publishSearchAction, publishSearchResult, session, tab, updateRecovery])
 
   const visible = Boolean((anchor || switchingDocument) && bounds && bounds.width > 0 && bounds.height > 0)
   const style: React.CSSProperties = visible && bounds
@@ -772,9 +789,8 @@ function OfficeHost({
         height: isPresentationDocument ? `calc(${bounds.height}px + var(--vds-space-5))` : bounds.height,
         clipPath: isPresentationDocument ? 'inset(0 var(--vds-space-5) var(--vds-space-5) 0)' : undefined,
         visibility: 'visible',
-        opacity: documentReady || switchingDocument ? 1 : 0,
         backgroundColor: palette.background,
-        pointerEvents: interactionBlocked ? 'none' : 'auto'
+        pointerEvents: interactionBlocked || !documentReady ? 'none' : 'auto'
       }
     : {
         left: -IDLE_HOST_SIZE.width * 2,
@@ -800,6 +816,10 @@ function OfficeHost({
       data-document-ready={documentReady}
       data-office-presentation={isPresentationDocument}
     />
+    {visible && bounds && hasDocument && !documentReady && <div
+      className="fixed"
+      style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height, pointerEvents: interactionBlocked ? 'none' : 'auto' }}
+    ><OfficeLoading recovery={recovery} startedAt={warmupStartedAt.current} onRetry={retryOffice} /></div>}
     {visible && bounds && switchingDocument && <div
       className="vds-office-switch-mask"
       style={{ left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height }}
@@ -808,18 +828,6 @@ function OfficeHost({
     />}
     {imageError && <Toaster toasts={[{ id: 'office-image-error', tone: 'warning', title: imageError.cause instanceof Error && imageError.cause.message === 'office_image_permission' ? officeFailureText(imageError.cause.message, t) : imageFailureText(imageError.cause) }]} onDismiss={() => setImageError(null)} closeLabel={t('officeDocument.close')} />}
     {notice && <Toaster toasts={[{ id: notice.id, tone: 'warning', title: officeFailureText(notice.message, t), description: notice.detail }]} onDismiss={() => setNotice(null)} closeLabel={t('officeDocument.close')} />}
-    <OfficeWarmup
-      automaticRetryAttempt={automaticRetryAttempt}
-      onDismiss={dismissWarmup}
-      status={warmup}
-      slow={slowWarmup}
-      visible={showWarmupProgress}
-      onRetry={() => {
-        beginWarmupWindow(true)
-        setWarmup(INITIAL_OFFICE_WARMUP_STATUS)
-        setFrameEpoch(epoch => epoch + 1)
-      }}
-    />
   </>) : <></>
 }
 

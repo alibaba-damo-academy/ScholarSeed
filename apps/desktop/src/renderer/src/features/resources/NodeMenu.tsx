@@ -25,7 +25,7 @@ import { findResourceNode } from './state'
  */
 export function NodeMenu(): React.JSX.Element | null {
   const { state, act } = useApp()
-  const { t } = useTranslation('resources')
+  const { t } = useTranslation(['resources'])
   const menu = state.resource.nodeMenu
   if (!menu) return null
 

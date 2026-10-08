@@ -252,9 +252,7 @@ class SessionLedger:
                     "outcome": PRODUCT_TURN_OUTCOME_INTERRUPTED,
                 },
                 turn_id=turn_id,
-                idempotency_key=(
-                    f"{INTERNAL_EVENT_KEY_PREFIX}:controlled-interrupt:{turn_id}"
-                ),
+                idempotency_key=(f"{INTERNAL_EVENT_KEY_PREFIX}:controlled-interrupt:{turn_id}"),
             )
             return True
 
@@ -364,6 +362,12 @@ class SessionLedger:
         generation = self._process_generation(event)
         self._turn_outcomes[turn_id] = (outcome, generation)
         if outcome == PRODUCT_TURN_OUTCOME_UNKNOWN:
+            uncertainty = self._catalog.uncertainty(self.id, UncertaintyKind.TURN, turn_id)
+            if uncertainty is not None and uncertainty.state is UncertaintyState.CONFIRMED:
+                self._unknown_admission.pop(turn_id, None)
+                self._active_vendor_turn_id = ""
+                self._release_terminal_waiters(turn_id, outcome)
+                return
             incident = event_incident(event)
             incident_id = incident.incident_id if incident is not None else ""
             self._unknown_admission[turn_id] = (generation, incident_id)
@@ -683,10 +687,17 @@ class SessionLedger:
         }.get(event.kind)
         if terminal is not None:
             status, product_kind, outcome = terminal
+            retry_attempts = payload.get("automatic_retry_attempts")
             if not await self._accept_terminal(event, outcome):
+                if self._turn_outcomes.get(self._terminal_turn_id(event), ("", 0))[0] == outcome:
+                    self._active_vendor_turn_id = ""
                 return True
             key = self._terminal_key(event)
             turn_id = self._terminal_turn_id(event)
+            confirmed_unknown = outcome == PRODUCT_TURN_OUTCOME_UNKNOWN and bool(
+                (uncertainty := self._catalog.uncertainty(self.id, UncertaintyKind.TURN, turn_id))
+                and uncertainty.state is UncertaintyState.CONFIRMED
+            )
             if outcome != PRODUCT_TURN_OUTCOME_UNKNOWN:
                 finish_messages(turn_id)
             resolved = self._release_resolved_unknown(event)
@@ -699,6 +710,7 @@ class SessionLedger:
                     "status": str(payload.get("status") or outcome),
                     "message": self._terminal_safe_error(event),
                     "resolved_incident_ids": list(resolved),
+                    **({"confirmed": True} if confirmed_unknown else {}),
                     **(
                         {
                             "code": str(payload.get("error_code") or RUNTIME_LEGACY_ERROR),
@@ -711,15 +723,11 @@ class SessionLedger:
                         else {}
                     ),
                     **(
-                        {
-                            "automatic_retry_attempts": payload[
-                                "automatic_retry_attempts"
-                            ]
-                        }
+                        {"automatic_retry_attempts": retry_attempts}
                         if outcome == PRODUCT_TURN_OUTCOME_FAILED
-                        and isinstance(payload.get("automatic_retry_attempts"), int)
-                        and not isinstance(payload.get("automatic_retry_attempts"), bool)
-                        and payload["automatic_retry_attempts"] > 1
+                        and isinstance(retry_attempts, int)
+                        and not isinstance(retry_attempts, bool)
+                        and retry_attempts > 1
                         else {}
                     ),
                 },
@@ -731,7 +739,7 @@ class SessionLedger:
                 self.id,
                 status,
                 turn_id=turn_id or event.correlation_id,
-                turn_status=outcome,
+                turn_status=(PRODUCT_TURN_OUTCOME_CONFIRMED if confirmed_unknown else outcome),
             )
             self._remember_terminal(event, outcome)
             self._active_vendor_turn_id = ""

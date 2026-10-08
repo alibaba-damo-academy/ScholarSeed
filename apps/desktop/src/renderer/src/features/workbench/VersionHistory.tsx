@@ -138,6 +138,7 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
   const open = controlledOpen ?? localOpen
   const setOpen = (next: boolean): void => { setLocalOpen(next); onOpenChange?.(next) }
   const [gitManaged, setGitManaged] = React.useState(false)
+  const [pendingReview, setPendingReview] = React.useState<boolean | null>(null)
   const [fileCanPreview, setFileCanPreview] = React.useState(false)
   const [fileCanDiff, setFileCanDiff] = React.useState(false)
   const [versions, setVersions] = React.useState<ResourceVersion[]>([])
@@ -162,6 +163,7 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
     loadSequence.current += 1
     setLocalOpen(false)
     setGitManaged(false)
+    setPendingReview(null)
     setFileCanPreview(false)
     setFileCanDiff(false)
     setVersions([])
@@ -197,8 +199,9 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
     }) : null
     if (sequence !== loadSequence.current) return false
     setGitManaged(capability?.management_state === 'git')
+    setPendingReview(capability ? Boolean(capability.pending?.review) : null)
     setFileId(resolvedFileId ?? null)
-    setCurrentVersionId(capability?.version_id ?? null)
+    setCurrentVersionId(capability?.snapshot_state === 'saved' && !capability.drifted ? capability.version_id : null)
     setFileCanPreview(historyAccess(capability).canPreview)
     setFileCanDiff(capability?.can_diff === true)
     if (history !== null) {
@@ -215,7 +218,7 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
     if (!available || !open) return undefined
     const timer = window.setTimeout(() => { void load() }, SEARCH_DELAY_MS)
     return () => window.clearTimeout(timer)
-  }, [available, open, query, origin, order, sourcePath, sourceFileId])
+  }, [available, open, query, origin, order, sourcePath, sourceFileId, session?.versioning])
 
   if (!available) return null
 
@@ -356,8 +359,9 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
         </div>
         {!canPreview && <Alert tone="info"><AlertDescription>{t('history.previewUnavailable')}</AlertDescription></Alert>}
         {notice && <Alert tone="info"><AlertTitle>{t('history.status')}</AlertTitle><AlertDescription><HistoryNoticeText notice={notice} /></AlertDescription></Alert>}
-        {(session || file) && <SnapshotReview session={session} file={file} onResolved={() => load()} />}
-        {conflict && <Alert tone="warning"><AlertTitle>{t('history.diskChanged')}</AlertTitle><AlertDescription>{t('history.diskChangedDescription')}</AlertDescription><div className="vds-version-actions flex gap-2 pt-2"><Button variant="danger" size="sm" onClick={() => void apply(conflict.version, conflict.token, true, conflict.previousPath)}>{t('history.forceRestore')}</Button><Button variant="secondary" size="sm" onClick={() => setConflict(null)}>{t('history.cancelRestore')}</Button></div></Alert>}
+        {pendingReview === true && <Badge tone="neutral" className="self-start" data-testid="version-history-pending-review">{t('history.pendingReview')}</Badge>}
+        {pendingReview === false && (session || file) && <SnapshotReview session={session} file={file} onResolved={() => load()} />}
+        {conflict && <Alert action={<div className="vds-version-actions flex gap-2"><Button variant="danger" size="sm" onClick={() => void apply(conflict.version, conflict.token, true, conflict.previousPath)}>{t('history.forceRestore')}</Button><Button variant="secondary" size="sm" onClick={() => setConflict(null)}>{t('history.cancelRestore')}</Button></div>} description={t('history.diskChangedDescription')} layout="stacked" title={t('history.diskChanged')} tone="warning" />}
         {preview && <Preview preview={preview} />}
         <div className="vds-version-list min-h-0 flex-1 overflow-y-auto" aria-busy={loading}>
           {loading && versions.length === 0 && <span className="text-sm text-[var(--vds-text-secondary)]">{t('history.loading')}</span>}
@@ -371,7 +375,7 @@ export function VersionHistory({ session, file, open: controlledOpen, onOpenChan
                 <span className="ml-2 flex size-8 items-center justify-center rounded-full bg-[var(--vds-bg-component)] text-[var(--vds-text-secondary)]">{originIcon(version)}</span>
                 <Button unstyled className="min-w-0 cursor-pointer rounded px-1 py-0.5 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--vds-border-brand)] disabled:cursor-default" data-testid="version-history-row-action" disabled={disabled} onClick={() => void inspect(version)}>
                   <span className="flex min-w-0 items-center gap-1.5 text-sm font-semibold"><strong>v{version.sequence}</strong>{version.alias && <span className="truncate">· {version.alias}</span>}{current && <Badge tone="success">{t('history.current')}</Badge>}</span>
-                  <small className="block truncate text-xs text-[var(--vds-text-secondary)]">{Object.prototype.hasOwnProperty.call(ORIGIN_LABEL, version.origin) ? t(ORIGIN_LABEL[version.origin as keyof typeof ORIGIN_LABEL]) : version.origin}{' · '}{new Date(version.created_at_ms).toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}</small>
+                  <small className="block truncate text-xs text-[var(--vds-text-secondary)]">{version.review_backup ? t('history.reviewBackup') : Object.prototype.hasOwnProperty.call(ORIGIN_LABEL, version.origin) ? t(ORIGIN_LABEL[version.origin as keyof typeof ORIGIN_LABEL]) : version.origin}{' · '}{new Date(version.created_at_ms).toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}</small>
                   <small className="block truncate text-xs text-[var(--vds-text-tertiary)]">{version.restored_from_sequence ? t('history.restoredFrom', { sequence: version.restored_from_sequence }) : version.turn_id ? t('history.agentTurn', { id: version.turn_id }) : version.path}</small>
                 </Button>
                 <Button data-testid="version-history-restore" variant="secondary" size="sm" disabled={readOnly || current} title={readOnly ? t('history.gitReadOnly') : current ? t('history.currentRestoreDisabled') : undefined} onClick={() => void restore(version)}>{t('history.restore')}</Button>

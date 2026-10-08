@@ -38,13 +38,32 @@ from service.platform.bridge import (
     PdfMaterialize,
     PdfQuery,
 )
-from service.platform.citations import PdfMaterialization, PdfMaterializerPort
+from service.platform.citations import (
+    MANAGED_STORAGE_SCOPE,
+    CitationDocument,
+    PdfMaterialization,
+    PdfMaterializerPort,
+)
 
 PDF_RETRIEVED_EVENT = "pdf.retrieved"
 PDF_MATERIALIZED_EVENT = "pdf.materialized"
 LITERATURE_RETRIEVED_EVENT = "literature.retrieved"
 PDF_METADATA_OPERATIONS = frozenset(("list", "library"))
 LITERATURE_CONTENT_OPERATIONS = frozenset(("read", ANNOTATIONS_OPERATION))
+MANAGED_MATERIALIZE_DENIED = "fulltext_materialize_denied"
+
+
+def ensure_materializable(document: CitationDocument) -> None:
+    """Managed full texts are read in pages, never copied whole into the workspace.
+
+    Materializing one would leave a plaintext copy of serve-held bytes on a disk the
+    sandbox can read, which is the one landing surface the read-side gate cannot undo.
+    """
+
+    if document.storage_scope == MANAGED_STORAGE_SCOPE:
+        raise ValueError(
+            f"{MANAGED_MATERIALIZE_DENIED}; read the pages with the pdf read operation"
+        )
 
 
 async def _request_body(request: Request) -> bytes:
@@ -118,6 +137,7 @@ def register_citation_bridge(
                     PdfQuery(ref_id=query.ref_id, path=query.path, retry=query.retry),
                     turn_id,
                 )
+                ensure_materializable(resolved.document)
                 materialized = await asyncio.to_thread(materializer.prepare, resolved.document)
             elif policy is not None and operation == "library":
                 if not isinstance(query, PdfQuery):

@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import scholarseedLogoMark from '../assets/logo.svg'
 import { viewRequiresProject } from '../app/composition'
+import { ErrorBoundary } from '../app/Error'
 import { Button, Popover, PopoverContent, PopoverTrigger, ResizablePanel } from '../components/ui'
 import { AiPanel } from '../features/assistant/AiPanel'
 import {
@@ -9,7 +11,7 @@ import {
   LinkedCreateConfirm,
   LinkSupersedeConfirm,
   MoveDialog,
-  UnlinkConfirm
+  UnlinkConfirm,
 } from '../features/resources/Dialogs'
 import { ImportDialog } from '../features/resources/ImportDialog'
 import { NodeMenu } from '../features/resources/NodeMenu'
@@ -31,7 +33,7 @@ import {
   MODULE_PANEL_WIDTH_UNIT,
   modulePanelWidthCss,
   parseModulePanelWidth,
-  topBarLeftWidth
+  topBarLeftWidth,
 } from './geometry'
 
 const MODULE_PANEL_WIDTH_STORAGE_KEY = 'scholarseed.modulePanel.width'
@@ -40,7 +42,7 @@ const AI_PANEL_DEFAULT_WIDTH = '26vw'
 const AI_PANEL_MIN_WIDTH = 320
 const AI_PANEL_MAX_WIDTH_PERCENT = 55
 const MAIN_WORKBENCH_MIN_WIDTH = 160
-const WORKBENCH_SPLIT_CLASS_NAME = String.raw`min-h-0 flex-1 [--vds-resizable-handle-active-guide-color:var(--vds-border-default)] [--vds-resizable-handle-active-guide-edge-color:var(--vds-border-default)] [--vds-resizable-handle-current-guide-color:var(--vds-border-default)] [--vds-resizable-handle-current-guide-edge-color:var(--vds-border-default)] [--vds-resizable-handle-drag-guide-color:var(--vds-border-default)] [--vds-resizable-handle-drag-guide-edge-color:var(--vds-border-default)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-content-toolbar-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-content-toolbar-height),transparent_0)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-position:right_top] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-repeat:no-repeat] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-size:50%_100%] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:left-1/2 [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:translate-x-0 [&>.vds-resizable-split\_\_panel]:flex [&>.vds-resizable-split\_\_panel]:min-h-0 [&>.vds-resizable-split\_\_panel]:overflow-hidden [&>.vds-resizable-split\_\_panel--left]:shrink-0`
+const WORKBENCH_SPLIT_CLASS_NAME = String.raw`min-h-0 flex-1 [--vds-resizable-handle-active-guide-color:var(--vds-divider-default)] [--vds-resizable-handle-active-guide-edge-color:var(--vds-divider-default)] [--vds-resizable-handle-current-guide-color:var(--vds-divider-default)] [--vds-resizable-handle-current-guide-edge-color:var(--vds-divider-default)] [--vds-resizable-handle-drag-guide-color:var(--vds-divider-default)] [--vds-resizable-handle-drag-guide-edge-color:var(--vds-divider-default)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-image:linear-gradient(to_bottom,transparent_calc(var(--vds-workbench-content-toolbar-height)_-_var(--vds-border-width-1)),var(--vds-border-default)_0_var(--vds-workbench-content-toolbar-height),transparent_0)] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-position:right_top] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-repeat:no-repeat] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-size:50%_100%] [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:left-1/2 [&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:before:translate-x-0 [&>.vds-resizable-split\_\_panel]:flex [&>.vds-resizable-split\_\_panel]:min-h-0 [&>.vds-resizable-split\_\_panel]:overflow-hidden [&>.vds-resizable-split\_\_panel--left]:shrink-0`
 
 function readStoredModulePanelWidth(): number {
   const raw = window.localStorage.getItem(MODULE_PANEL_WIDTH_STORAGE_KEY)
@@ -62,9 +64,11 @@ function parseAiPanelWidth(width: string): number {
 
 function renderMainWorkbench(): React.JSX.Element {
   return (
-    <main className="vds-workbench-main h-full min-h-0">
+    <main className="vds-workbench-main h-full min-h-0" id="main-content">
       <div className="vds-workbench-pane flex-1 min-h-0 overflow-hidden bg-[var(--vds-bg-gray-default)]">
-        <Workbench />
+        <ErrorBoundary embedded>
+          <Workbench />
+        </ErrorBoundary>
       </div>
     </main>
   )
@@ -111,7 +115,7 @@ function renderMainSurface(
   onAiPanelWidthChangeEnd: (width: string) => void
 ): React.JSX.Element {
   const mainColumn = (
-    <div className="vds-workbench-main-column" data-vds-toast-viewport>
+    <div className="vds-workbench-main-column">
       {topBar}
       {body}
     </div>
@@ -147,6 +151,13 @@ function renderMainSurface(
 export function WorkbenchShell(): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('shell')
+  const [macFullscreen, setMacFullscreen] = useState(
+    () => window.scholarseed?.platform === 'darwin' && Boolean(window.scholarseed.fullscreen)
+  )
+  useEffect(() => {
+    if (window.scholarseed?.platform !== 'darwin') return
+    return window.scholarseed.onFullscreenChange?.(setMacFullscreen)
+  }, [])
   const [modulePanelWidth, setModulePanelWidth] = useState(readStoredModulePanelWidth)
   const aiPanelWidthRef = useRef(readStoredAiPanelWidth())
 
@@ -187,7 +198,26 @@ export function WorkbenchShell(): React.JSX.Element {
 
   return (
     <DocumentDragProvider>
-      <div className="vds-workbench" data-testid="workbench-shell" data-platform={window.scholarseed?.platform ?? 'web'}>
+      <div
+        className="vds-workbench"
+        data-testid="workbench-shell"
+        data-platform={window.scholarseed?.platform ?? 'web'}
+      >
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-[var(--vds-space-4)] focus:top-[var(--vds-space-4)] focus:z-[var(--vds-z-overlay)] focus:rounded-md focus:bg-[var(--vds-bg-brand)] focus:px-[var(--vds-space-4)] focus:py-[var(--vds-space-2)] focus:text-[var(--vds-fg-on-brand)] focus:text-sm focus:font-medium focus:no-underline focus:outline-none focus:ring-2 focus:ring-[var(--vds-focus-brand)]"
+        >
+          {t('navigation.skipToContent')}
+        </a>
+        {macFullscreen ? (
+          <img
+            alt=""
+            aria-hidden="true"
+            className="pointer-events-none fixed left-[var(--vds-space-4)] top-[var(--vds-space-2)] z-[var(--vds-z-local-raised)] size-[var(--vds-space-8)]"
+            draggable={false}
+            src={scholarseedLogoMark}
+          />
+        ) : null}
         {state.mainView === 'home' ? (
           /* 首页空间（原型 home space）：轻量标题栏 + 活动栏 + 全览内容；工作台标签 /
              模块面板 / AI 面板一律不挂 —— 首页是全局面，不携带任何项目上下文。 */
@@ -195,8 +225,10 @@ export function WorkbenchShell(): React.JSX.Element {
             <HomeHeader />
             <div className="vds-home-body">
               <ActivityRail />
-              <main className="vds-home-main" data-vds-toast-viewport>
-                <HomeOverview />
+              <main className="vds-home-main" id="main-content">
+                <ErrorBoundary embedded>
+                  <HomeOverview />
+                </ErrorBoundary>
               </main>
             </div>
           </div>
@@ -213,31 +245,37 @@ export function WorkbenchShell(): React.JSX.Element {
                   <TopBarLeft showRightBorder={false} />
                 </div>
               ) : null}
-              <div className={`flex shrink-0${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}>
+              <div
+                className={`flex shrink-0${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}
+              >
                 <ActivityRail />
               </div>
               <ResizablePanel
                 aria-label={t('panels.resizeModule')}
                 className={WORKBENCH_SPLIT_CLASS_NAME}
                 isLeftCollapsed={!modulePanelVisible}
-                leftPanel={modulePanelVisible ? (
-                  <div className={`flex min-h-0 min-w-0 flex-1${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}>
-                    <ModulePanel />
-                  </div>
-                ) : null}
+                leftPanel={
+                  modulePanelVisible ? (
+                    <div
+                      className={`flex min-h-0 min-w-0 flex-1${assistantExpanded ? ' pt-[var(--vds-workbench-header-height)]' : ''}`}
+                    >
+                      <ModulePanel />
+                    </div>
+                  ) : null
+                }
                 leftWidth={modulePanelResizeWidth}
                 leftWidthStep={MODULE_PANEL_WIDTH_STEP}
                 maxLeftWidth={MODULE_PANEL_MAX_WIDTH}
                 minLeftWidth={MODULE_PANEL_DEFAULT_WIDTH}
                 onWidthChange={persistModulePanelWidth}
-                rightPanel={(
+                rightPanel={
                   <div className="flex min-h-0 min-w-0 flex-1">
                     <div className={assistantExpanded ? 'hidden' : 'min-h-0 min-w-0 flex-1'}>
                       {renderMainWorkbench()}
                     </div>
-                    {assistantExpanded ? <AiPanel /> : null}
+                    {assistantExpanded ? <AiPanel sidebarVisible={modulePanelVisible} /> : null}
                   </div>
-                )}
+                }
               />
             </div>,
             state.aiPanel.open,

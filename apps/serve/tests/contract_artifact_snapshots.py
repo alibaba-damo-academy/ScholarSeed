@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 import unittest
@@ -27,6 +28,81 @@ from service.platform.content import ArtifactScope, ArtifactScopeKind
 
 
 class ArtifactSnapshotContract(unittest.TestCase):
+    def test_snapshot_failure_classification(self):
+        cases = (
+            (errno.EACCES, snapshot.ArtifactSnapshotFailure.ACCESS_DENIED),
+            (errno.ENOSPC, snapshot.ArtifactSnapshotFailure.DISK_FULL),
+            (errno.ENOTSUP, snapshot.ArtifactSnapshotFailure.UNSUPPORTED),
+            (errno.EIO, snapshot.ArtifactSnapshotFailure.UNAVAILABLE),
+        )
+        for number, expected in cases:
+            with self.subTest(number=number):
+                self.assertEqual(snapshot._failure_code(OSError(number, "failure")), expected.value)
+
+    @unittest.skipUnless(os.name == "nt", "Windows error contract")
+    def test_windows_sharing_error_keeps_busy_classification(self):
+        for number in (snapshot.WINDOWS_SHARING_VIOLATION, snapshot.WINDOWS_LOCK_VIOLATION):
+            failure = OSError(None, "locked", None, number)
+            self.assertEqual(
+                snapshot._failure_code(failure), snapshot.ArtifactSnapshotFailure.BUSY.value
+            )
+
+    def test_capture_retries_only_busy_and_stops_at_limit(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"report")
+        for code, attempts in (
+            (snapshot.ArtifactSnapshotFailure.BUSY.value, len(snapshot.CAPTURE_RETRY_DELAYS) + 1),
+            (snapshot.ArtifactSnapshotFailure.ACCESS_DENIED.value, 1),
+            (snapshot.UNAVAILABLE, 1),
+        ):
+            with self.subTest(code=code):
+                with (
+                    patch.object(
+                        snapshot, "_capture_once", side_effect=ContentError(code)
+                    ) as capture_once,
+                    patch.object(snapshot.time, "sleep") as sleep,
+                ):
+                    with self.assertRaisesRegex(ContentError, code):
+                        self.content.capture_artifact(self.scope, source.name)
+                    self.assertEqual(capture_once.call_count, attempts)
+                    self.assertEqual(sleep.call_count, attempts - 1)
+
+    def test_capture_recovers_after_transient_busy(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"report")
+        original = snapshot._capture_once
+        attempts = []
+
+        def capture_once(*args, **kwargs):
+            attempts.append(None)
+            if len(attempts) == 1:
+                raise ContentError(snapshot.ArtifactSnapshotFailure.BUSY.value)
+            return original(*args, **kwargs)
+
+        with (
+            patch.object(snapshot, "_capture_once", side_effect=capture_once),
+            patch.object(snapshot.time, "sleep") as sleep,
+        ):
+            content = self.content.capture_artifact(self.scope, source.name)
+        self.assertEqual(len(attempts), 2)
+        sleep.assert_called_once_with(snapshot.CAPTURE_RETRY_DELAYS[0])
+        self.assertEqual(self.content.read_artifact(content), b"report")
+
+    def test_capture_failure_logs_original_system_error(self):
+        source = self.workspace / "report.md"
+        source.write_bytes(b"report")
+        failure = PermissionError(errno.EACCES, "snapshot access denied")
+        with patch.object(snapshot, "directory", side_effect=failure):
+            with self.assertLogs(snapshot.logger, level="ERROR") as captured:
+                with self.assertRaisesRegex(
+                    ContentError, snapshot.ArtifactSnapshotFailure.ACCESS_DENIED.value
+                ) as caught:
+                    self.content.capture_artifact(self.scope, source.name)
+        self.assertIs(caught.exception.__cause__, failure)
+        self.assertIs(captured.records[0].exc_info[1], failure)
+        self.assertIn("artifact_snapshot_capture_failed", captured.output[0])
+        self.assertIn(f"errno={errno.EACCES}", captured.output[0])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="artifact-snapshot-")
         self.addCleanup(self.temporary.cleanup)

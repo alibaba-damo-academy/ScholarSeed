@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import asdict, replace
 
@@ -112,6 +113,7 @@ from service.platform.inference import ModelInvocationStatus
 from service.resources.domain.model import IMPORT_CONFLICT, IMPORT_UNAVAILABLE, ResourceLocationRef
 
 ASSISTANT_ROUTE_PREFIX = "/api/assistant"
+logger = logging.getLogger(__name__)
 HTTP_UNPROCESSABLE_CONTENT = 422
 HTTP_ACCEPTED = 202
 HTTP_SERVICE_UNAVAILABLE = 503
@@ -231,6 +233,7 @@ def _selection_payload(
         "project_policy": selection.project_policy.value,
         "search_scope": selection.search_scope.value,
         "refs": [asdict(ref) for ref in selection.refs],
+        "claimed_ref_ids": list(selection.claimed_ref_ids),
         "updated_at": selection.updated_at,
         "capabilities": [asdict(capability) for capability in service.capabilities()],
     }
@@ -502,7 +505,9 @@ def register_assistant_routes(app: FastAPI) -> None:
                 label_fallback=ref.label_fallback,
                 selection_source_label=ref.selection_source_label,
                 anchor=(
-                    SelectionAnchor(**ref.anchor.model_dump()) if ref.anchor is not None else None
+                    SelectionAnchor(**ref.anchor.model_dump(mode="json"))
+                    if ref.anchor is not None
+                    else None
                 ),
                 retention=ref.retention,
                 origin=ref.origin,
@@ -519,12 +524,26 @@ def register_assistant_routes(app: FastAPI) -> None:
             )
         except AssistantRevisionConflictError as exc:
             return_data = _selection_payload(exc.latest, service)
+            logger.warning(
+                "assistant_context_conflict session_id=%s error=%s expected_revision=%s revision=%s",
+                session_id,
+                "assistant_context_revision_conflict",
+                body.expected_revision,
+                exc.latest.revision,
+            )
             raise HTTPException(
                 status_code=HTTP_409_CONFLICT,
                 detail={"error": "assistant_context_revision_conflict", "latest": return_data},
             ) from exc
         except AssistantStateConflictError as exc:
             latest = _selection_payload(service.selection(session_id), service)
+            logger.warning(
+                "assistant_context_conflict session_id=%s error=%s expected_revision=%s revision=%s",
+                session_id,
+                str(exc),
+                body.expected_revision,
+                latest["revision"],
+            )
             raise HTTPException(
                 status_code=HTTP_409_CONFLICT,
                 detail={"error": str(exc), "latest": latest},

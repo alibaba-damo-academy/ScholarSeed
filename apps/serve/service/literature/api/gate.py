@@ -18,6 +18,7 @@ from service.assistant.service.authorization import (
 from service.chat.constants import (
     PRODUCT_EVENT_SESSION_STATE,
     PRODUCT_SESSION_STATE_IDLE,
+    PRODUCT_TURN_OUTCOME_COMPLETED,
     PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
 )
@@ -29,6 +30,7 @@ from service.literature.service.checkpoint import (
     CheckpointContent,
     PreparedCheckpoint,
     discover_triggers,
+    policy_for,
     read_checkpoint,
 )
 from service.literature.service.result import ARTIFACT_REFERENCE_FIELDS, SEARCH_CARD
@@ -55,6 +57,10 @@ CONTINUATION_REJECTED = (
 )
 
 logger = logging.getLogger(__name__)
+BridgeAuthorizationKey = tuple[str, str, str, str, tuple[str, ...], int]
+BridgeAuthorizationResult = tuple[
+    FulltextAuthorization, AuthorizationDisposition, Mapping[str, Any] | None
+]
 
 
 async def authorize_sources(
@@ -65,6 +71,7 @@ async def authorize_sources(
     snapshot_id: str,
     authorization_type: str,
     refs: tuple[str, ...],
+    papers: tuple[Mapping[str, str], ...] = (),
 ) -> tuple[FulltextAuthorization, AuthorizationDisposition, Mapping[str, Any] | None]:
     """Ask once per exact source set; an earlier durable allow in this Session is reused.
 
@@ -78,12 +85,21 @@ async def authorize_sources(
         authorization_type=authorization_type,
         refs=refs,
     )
-    if authorizer.granted(challenge) or authorizer.granted_scope(
-        session_id=live.id, authorization_type=authorization_type, refs=refs
-    ):
+    # Reuse only a grant this turn can actually spend: `require` and the derived subset
+    # are turn-scoped, so an answer given in an earlier turn must produce a fresh card
+    # instead of reporting authorized with nothing granted.
+    reusable = authorizer.turn_granted_refs(
+        session_id=live.id,
+        snapshot_id=snapshot_id,
+        turn_id=turn_id,
+        authorization_type=authorization_type,
+        refs=refs,
+        client_turn_id=getattr(live, "active_product_turn_id", ""),
+    )
+    if set(refs) <= set(reusable):
         return challenge, AuthorizationDisposition.AUTHORIZED, None
     decision = await live.interactions.request_product_input(
-        authorization_question(challenge), turn_id=turn_id
+        authorization_question(challenge, papers), turn_id=turn_id
     )
     return challenge, decision_disposition(challenge, decision), decision
 
@@ -105,6 +121,104 @@ class FulltextGate:
         self._watchers: dict[str, asyncio.Task[None]] = {}
         self._dirty: set[str] = set()
         self._asked: set[tuple[str, str, str, str]] = set()
+        self._bridge_tasks: set[asyncio.Task[Any]] = set()
+        self._bridge_inflight: dict[
+            BridgeAuthorizationKey, asyncio.Task[BridgeAuthorizationResult]
+        ] = {}
+
+    async def authorize_sources(
+        self,
+        live: LiveSession,
+        *,
+        turn_id: str,
+        snapshot_id: str,
+        authorization_type: str,
+        refs: tuple[str, ...],
+        source_count: int,
+        papers: tuple[Mapping[str, str], ...] = (),
+    ) -> BridgeAuthorizationResult:
+        key = (live.id, turn_id, snapshot_id, authorization_type, refs, source_count)
+        task = self._bridge_inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                self._authorize_bridge(
+                    live,
+                    turn_id=turn_id,
+                    snapshot_id=snapshot_id,
+                    authorization_type=authorization_type,
+                    refs=refs,
+                    source_count=source_count,
+                    papers=papers,
+                    submission_id=live.last_submission_id,
+                    task_type=live.active_task_type,
+                    context_revision=live.active_assistant_revision,
+                    origin_task=live.current_task,
+                    interrupt_generation=live.interrupt_generation,
+                )
+            )
+            self._bridge_inflight[key] = task
+            self._bridge_tasks.add(task)
+
+            def clear(completed: asyncio.Task[BridgeAuthorizationResult]) -> None:
+                self._bridge_tasks.discard(completed)
+                if self._bridge_inflight.get(key) is completed:
+                    del self._bridge_inflight[key]
+
+            task.add_done_callback(clear)
+        return await asyncio.shield(task)
+
+    async def _authorize_bridge(
+        self,
+        live: LiveSession,
+        *,
+        turn_id: str,
+        snapshot_id: str,
+        authorization_type: str,
+        refs: tuple[str, ...],
+        source_count: int,
+        papers: tuple[Mapping[str, str], ...],
+        submission_id: str,
+        task_type: str,
+        context_revision: int | None,
+        origin_task: asyncio.Task[Any] | None,
+        interrupt_generation: int,
+    ) -> tuple[FulltextAuthorization, AuthorizationDisposition, Mapping[str, Any] | None]:
+        challenge, disposition, decision = await authorize_sources(
+            live,
+            self._authorizer,
+            turn_id=turn_id,
+            snapshot_id=snapshot_id,
+            authorization_type=authorization_type,
+            refs=refs,
+            papers=papers,
+        )
+        result = (challenge, disposition, decision)
+        if decision is None or decision.get(GATE_DECISION_CANCELLED):
+            return result
+        if live.ledger.active_turn_id == turn_id:
+            return result
+        record = live.catalog.get(live.id)
+        if (
+            record is None
+            or record.last_turn_id != turn_id
+            or record.last_turn_status != PRODUCT_TURN_OUTCOME_COMPLETED
+        ):
+            return result
+        if origin_task is not None and not origin_task.done():
+            await asyncio.wait({origin_task})
+        policy = policy_for(authorization_type)
+        await self._continue(
+            live,
+            challenge,
+            disposition,
+            task_type=task_type,
+            context_revision=context_revision,
+            count=source_count,
+            continue_on_reject=policy.continue_on_reject,
+            expected_submission_id=submission_id,
+            expected_interrupt_generation=interrupt_generation,
+        )
+        return result
 
     def observe(self, live: LiveSession) -> None:
         """Schedule one serialized scan; called synchronously from runtime projection."""
@@ -219,16 +333,18 @@ class FulltextGate:
         task_type = live.active_task_type or checkpoint.policy.task_type.value
         # Turn state is cleared when the interrupted turn ends; the continuation keeps its context.
         context_revision = live.active_assistant_revision
+        interrupt_generation = live.interrupt_generation
         if not turn_id or live.interrupting or live.terminating or live.terminated:
             return
-        self._asked.add(self._ask_key(live, checkpoint))
         terminal_outcome: str | None = None
         if live.running:
             task = live.current_task
-            await live.interrupt()
+            await live.interrupt(cleanup_background_processes=True)
+            interrupt_generation = live.interrupt_generation
             terminal_outcome = await live.ledger.wait_terminal(turn_id)
             if task is not None:
                 await asyncio.wait({task})
+        self._asked.add(self._ask_key(live, checkpoint))
         await self._publish_card(live, checkpoint, turn_id)
         challenge, disposition, decision = await authorize_sources(
             live,
@@ -243,13 +359,44 @@ class FulltextGate:
             await self._settle(live, turn_id, terminal_outcome)
         if cancelled or live.terminating or live.terminated:
             return
+        await self._continue(
+            live,
+            challenge,
+            disposition,
+            task_type=task_type,
+            context_revision=context_revision,
+            count=len(checkpoint.content.sources),
+            continue_on_reject=checkpoint.policy.continue_on_reject,
+            expected_submission_id=client_turn_id,
+            expected_interrupt_generation=interrupt_generation,
+        )
+
+    async def _continue(
+        self,
+        live: LiveSession,
+        challenge: FulltextAuthorization,
+        disposition: AuthorizationDisposition,
+        *,
+        task_type: str,
+        context_revision: int | None,
+        count: int,
+        continue_on_reject: bool,
+        expected_submission_id: str,
+        expected_interrupt_generation: int,
+    ) -> None:
+        if (
+            live.terminating
+            or live.terminated
+            or live.interrupt_generation != expected_interrupt_generation
+        ):
+            return
         if disposition is AuthorizationDisposition.AUTHORIZED:
-            text = CONTINUATION_AUTHORIZED.format(count=len(checkpoint.content.sources))
-        elif checkpoint.policy.continue_on_reject:
+            text = CONTINUATION_AUTHORIZED.format(count=count)
+        elif continue_on_reject:
             text = CONTINUATION_REJECTED
         else:
             return
-        continuation_id = uuid.uuid4().hex
+        continuation_id = uuid.uuid5(uuid.NAMESPACE_URL, challenge.question_id).hex
         if disposition is AuthorizationDisposition.AUTHORIZED:
             self._authorizer.bind_continuation(challenge, continuation_id)
         body: dict[str, Any] = {
@@ -259,7 +406,13 @@ class FulltextGate:
         }
         if context_revision is not None:
             body["assistant_context_revision"] = context_revision
-        payload, _status = await self._turns.post(live.id, body, side=False)
+        payload, _status = await self._turns.post(
+            live.id,
+            body,
+            side=False,
+            expected_submission_id=expected_submission_id,
+            expected_interrupt_generation=expected_interrupt_generation,
+        )
         if not payload.get("ok"):
             logger.warning(
                 "fulltext_gate_continuation_rejected session_id=%s error=%s",
@@ -267,9 +420,7 @@ class FulltextGate:
                 payload.get("error"),
             )
 
-    async def _settle(
-        self, live: LiveSession, turn_id: str, terminal_outcome: str | None
-    ) -> None:
+    async def _settle(self, live: LiveSession, turn_id: str, terminal_outcome: str | None) -> None:
         """The paused turn has already ended; resolving its product question must not look live."""
 
         if live.running:

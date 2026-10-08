@@ -5,15 +5,17 @@ import i18next, { createInstance } from 'i18next'
 
 import type { ConvItem } from '../../model.ts'
 import { latestDisplayCardItems } from '../../transcript.ts'
-import { literatureRetrievalAuthorization, literatureReviewInteraction } from './interaction.ts'
+import { literatureRetrievalAuthorization, literatureReviewInteraction, preciseFulltextSubsetAuthorization } from './interaction.ts'
 import { parseReview, reviewStatus, reviewSupersessionKey, REVIEW_VERDICTS } from './projection.ts'
 
 const engine = createInstance()
+const englishEngine = createInstance()
 const resources = {
   zh: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/zh/literature.json', import.meta.url), 'utf8')) },
   en: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/en/literature.json', import.meta.url), 'utf8')) }
 }
 await engine.init({ lng: 'zh', fallbackLng: false, resources })
+await englishEngine.init({ lng: 'en', fallbackLng: false, resources })
 await i18next.init({ lng: 'zh', fallbackLng: false, resources })
 
 const snapshot = {
@@ -31,6 +33,17 @@ test('review preserves unknown coverage and original artifact identities', () =>
   assert.equal(parseReview(snapshot)?.fulltext, null)
   assert.equal(parseReview(snapshot)?.artifacts[0].artifact_id, 'outline')
   assert.equal(parseReview({ ...snapshot, schema_version: '2.0' }), null)
+})
+
+test('review accepts GB/T 7714 alongside existing styles at both checkpoints', () => {
+  for (const checkpoint of ['outline', 'result']) {
+    for (const style of ['numeric', 'author_year', 'ieee', 'acm', 'gbt7714_2025', null]) {
+      const review = parseReview({ ...snapshot, checkpoint, output: { ...snapshot.output, citation_style: style } })
+      assert.ok(review)
+      assert.equal(review.output.citation_style, style)
+    }
+  }
+  assert.equal(parseReview({ ...snapshot, output: { ...snapshot.output, citation_style: 'unsupported' } }), null)
 })
 
 test('the settled review replaces its outline while other workspaces remain visible', () => {
@@ -106,6 +119,13 @@ test('all literature fulltext headers reuse the exact two-option one-click inter
       header
     )
     assert.equal(literatureReviewInteraction.matches(authorization), false, header)
+    if (header === '综述检索授权') {
+      assert.equal(literatureRetrievalAuthorization.replyText?.(authorization[0], '一键授权', engine), '用户已授权 AI 读取本次检索到的文献全文，用于继续生成文献综述')
+      assert.equal(literatureRetrievalAuthorization.replyTitle?.(authorization[0], '一键授权', engine), '用户授权读取文献')
+      assert.equal(literatureRetrievalAuthorization.replyTitle?.(authorization[0], '拒绝', engine), undefined)
+      assert.equal(literatureRetrievalAuthorization.replyText?.(authorization[0], '拒绝', engine), '暂不授权阅读文献全文。')
+      assert.equal(literatureRetrievalAuthorization.replyText?.(authorization[0], '一键授权', englishEngine), 'The user has authorized AI to read the full text of the papers retrieved in this search to continue generating the literature review.')
+    }
     assert.equal(literatureRetrievalAuthorization.matches([{
       ...authorization[0],
       options: [{ label: '一键授权 (Recommended)' }]
@@ -126,6 +146,54 @@ test('all literature fulltext headers reuse the exact two-option one-click inter
   )
 })
 
+test('fulltext authorization localizes presentation without changing durable decision values', async () => {
+  const scenarios = [
+    ['precise-search-fulltext:', '精准检索授权', 'Allow downloading, reading, and using the full text of the displayed papers as evidence?'],
+    ['literature-review-fulltext:', '综述检索授权', 'Allow reading the full text of the displayed papers to continue the literature review?'],
+    ['research-idea-fulltext:', '想法原文授权', 'Allow reading the full text of the displayed papers to generate evidence-grounded research ideas?']
+  ]
+  await engine.changeLanguage('en')
+  try {
+    for (const [prefix, header, expectedQuestion] of scenarios) {
+      const question = {
+        id: `${prefix}challenge`, header, question: '产品授权问题',
+        options: [
+          { label: '一键授权 (Recommended)', description: '允许在本次任务和已展示文献范围内读取全文。' },
+          { label: '拒绝', description: '不读取全文，并停止本次全文处理。' }
+        ]
+      }
+      const original = structuredClone(question)
+      const presentation = literatureRetrievalAuthorization.presentQuestion?.(question, engine)
+      assert.equal(presentation?.question, expectedQuestion)
+      assert.deepEqual(presentation?.options.map(option => option.label), ['Authorize', 'Deny'])
+      assert.notEqual(presentation?.header, header)
+      assert.deepEqual(presentation?.options.map(option => option.description), [
+        'Allow reading full text within this task and the displayed papers.',
+        'Do not read full text, and stop full-text processing for this task.'
+      ])
+      assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, '一键授权', engine), 'Authorize')
+      assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, '拒绝', engine), 'Deny')
+      assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, 'custom answer', engine), 'custom answer')
+      assert.equal(literatureRetrievalAuthorization.optionLabel?.(question.options[0]), '一键授权')
+      assert.equal(literatureRetrievalAuthorization.optionLabel?.(question.options[1]), '拒绝')
+      assert.deepEqual(question, original)
+      await engine.changeLanguage('zh')
+      assert.equal(literatureRetrievalAuthorization.presentQuestion?.(question, engine).header, header)
+      assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, '一键授权', engine), '一键授权')
+      assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, '拒绝', engine), '拒绝')
+      await engine.changeLanguage('en')
+    }
+  } finally {
+    await engine.changeLanguage('zh')
+  }
+})
+
+test('authorization presentation does not translate an unrelated question or user answer', () => {
+  const question = { id: 'ordinary-question', header: '精准检索授权', question: '用户原文', options: [{ label: '一键授权' }, { label: '拒绝' }] }
+  assert.deepEqual(literatureRetrievalAuthorization.presentQuestion?.(question, engine), question)
+  assert.equal(literatureRetrievalAuthorization.presentAnswer?.(question, '一键授权', engine), '一键授权')
+})
+
 test('review display translates snapshots, producer generation and verdicts without changing evidence', () => {
   const review = parseReview(snapshot)!
   const before = structuredClone(review)
@@ -137,4 +205,35 @@ test('review display translates snapshots, producer generation and verdicts with
   }
   for (const key of Object.values(REVIEW_VERDICTS)) { assert.notEqual(zh(key), en(key)); assert.notEqual(en(key), key) }
   assert.deepEqual(review, before)
+})
+
+test('precise fulltext card with a paper subset uses the dedicated subset policy', () => {
+  const papers = [
+    { id: 'paper:p1', label: 'A-MEM', description: 'dynamic notes' },
+    { id: 'paper:p2', label: 'Mem0', description: 'extract then merge' }
+  ]
+  const withSubset = [
+    {
+      id: 'precise-search-fulltext:abc',
+      header: '精准检索授权',
+      question: '是否允许下载、读取并使用已展示文献的全文作为证据？',
+      options: [
+        { label: '一键授权 (Recommended)', description: '允许在本次任务和已展示文献范围内读取全文。' },
+        { label: '拒绝', description: '不读取全文，并停止本次全文处理。' }
+      ],
+      papers
+    }
+  ] as const
+  const withoutSubset = withSubset.map(question => ({ ...question, papers: undefined }))
+  assert.equal(preciseFulltextSubsetAuthorization.matches(withSubset as never), true)
+  assert.equal(preciseFulltextSubsetAuthorization.matches(withoutSubset as never), false)
+  // 无子集的旧形态仍走通用授权 policy，不被子集 policy 抢占。
+  assert.equal(literatureRetrievalAuthorization.matches(withoutSubset as never), true)
+  assert.equal(preciseFulltextSubsetAuthorization.directDecision?.(withSubset[0] as never, withSubset[0].options[0] as never), 'respond')
+  assert.equal(preciseFulltextSubsetAuthorization.directPresentation, 'primary-secondary')
+  const presented = preciseFulltextSubsetAuthorization.presentQuestion?.(withSubset[0] as never, engine)
+  assert.equal(presented?.header, engine.t('review.authorization.preciseHeader', { ns: 'literature' }))
+  // 组合顺序：子集 policy 必须先于通用授权 policy 命中。
+  const featureSource = readFileSync(new URL('./feature.tsx', import.meta.url), 'utf8')
+  assert.match(featureSource, /interactionPolicies: \[preciseFulltextSubsetAuthorization, literatureRetrievalAuthorization/)
 })

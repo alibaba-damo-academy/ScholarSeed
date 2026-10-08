@@ -23,6 +23,7 @@ desktop = [
     "jieba==0.42.1",
     "matplotlib==3.10.8",
     "pysbd==0.3.4",
+    "socksio==1.0.0",
     "paper-fulltext-dl",
 ]
 

@@ -79,6 +79,55 @@ class BudgetContract(unittest.TestCase):
         )
         self.assertEqual(RETENTION_SECONDS, 14 * 24 * 60 * 60)
 
+    def test_batch_preserves_sequential_budget_policy(self) -> None:
+        results = []
+        for batched in (False, True):
+            root = self.root / str(batched)
+            writer = EvidenceWriter(
+                root / "one.jsonl", budget=ContentBudget(root, pattern="*.jsonl", limit=LIMIT)
+            )
+            if batched:
+                with writer.batch():
+                    for value in (VALUE, VALUE, "oversize" * LIMIT, VALUE):
+                        emit(writer, value, captured_at=time.time())
+            else:
+                for value in (VALUE, VALUE, "oversize" * LIMIT, VALUE):
+                    emit(writer, value, captured_at=time.time())
+            rows = self.rows(root)
+            results.append(
+                [
+                    (block.get("data"), block.get("missing_reason"))
+                    for row in rows
+                    for block in row["outputs"]["blocks"]
+                ]
+            )
+        self.assertEqual(results[0], results[1])
+
+    def test_batch_refreshes_and_writes_once(self) -> None:
+        budget = ContentBudget(self.root, pattern="*.jsonl", limit=100_000)
+        writer = EvidenceWriter(self.root / "one.jsonl", budget=budget)
+        with (
+            patch.object(budget, "_refresh", wraps=budget._refresh) as refresh,
+            patch("damoatrace.recording.budget.make_private") as private,
+        ):
+            with writer.batch():
+                for _ in range(64):
+                    emit(writer)
+            self.assertEqual(refresh.call_count, 1)
+            self.assertEqual(private.call_count, 1)
+        self.assertEqual(len(self.rows()), 64)
+
+    def test_batch_failure_is_not_silently_committed(self) -> None:
+        writer = EvidenceWriter(self.root / "one.jsonl")
+        with (
+            self.assertRaises(OSError),
+            patch.object(writer, "_append_many", side_effect=OSError("full")),
+        ):
+            with writer.batch():
+                emit(writer)
+        emit(writer)
+        self.assertEqual(len(self.rows()), 1)
+
     def test_oldest_block_not_file_and_warm_cache(self) -> None:
         budget = ContentBudget(self.root, pattern="*.jsonl", limit=LIMIT)
         first = EvidenceWriter(self.root / "first.jsonl", budget=budget)

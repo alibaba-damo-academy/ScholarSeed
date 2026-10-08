@@ -743,10 +743,8 @@ class ResourceVersionService:
             pending = store.pending(identity[0]) if identity is not None else None
             automatically_seal = automatic_version and (
                 pending is None
-                or (
-                    not pending.needs_review
-                    and pending.origin in {PendingOrigin.USER, PendingOrigin.RESTORE}
-                )
+                or pending.needs_review
+                or pending.origin in {PendingOrigin.USER, PendingOrigin.RESTORE}
             )
             effective_seal_version = seal_version or automatically_seal
             try:
@@ -845,7 +843,11 @@ class ResourceVersionService:
                 self._retention.enforce(project_id)
                 emit(
                     _log,
-                    ResourceVersionEvent.VERSION_CREATED,
+                    (
+                        ResourceVersionEvent.VERSION_UPDATED
+                        if sealed.replaced
+                        else ResourceVersionEvent.VERSION_CREATED
+                    ),
                     project_id=project_id,
                     file_id=sealed.version.file_id,
                     version_id=sealed.version.id,
@@ -926,7 +928,11 @@ class ResourceVersionService:
                     self._retention.enforce(project_id)
                     emit(
                         _log,
-                        ResourceVersionEvent.VERSION_CREATED,
+                        (
+                            ResourceVersionEvent.VERSION_UPDATED
+                            if sealed.replaced
+                            else ResourceVersionEvent.VERSION_CREATED
+                        ),
                         project_id=project_id,
                         file_id=sealed.version.file_id,
                         version_id=sealed.version.id,

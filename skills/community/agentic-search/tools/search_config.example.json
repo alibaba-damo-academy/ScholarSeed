@@ -2,7 +2,7 @@
   "_comment": "Copy this to ~/.config/agentic-search/search_config.json or point AGENTIC_SEARCH_CONFIG at it. To enable the optional PaperHub enhancement, set SCHOLARSEED_API_KEY separately in the environment; without it the skill uses Web-only fallback. Real env vars override these settings. For an SSH tunnel, set paperhub_url to http://localhost:18000.",
   "paperhub_url": "https://scholarseed.damo.alibaba.com/paperhub",
   "paperhub_proxy_mode": "auto",
-  "extra_no_proxy": ["scholarseed.damo.alibaba.com"],
+  "extra_no_proxy": [],
   "cache_dir": "",
   "cache_mode": "off",
   "cache_replay_timing": "instant"

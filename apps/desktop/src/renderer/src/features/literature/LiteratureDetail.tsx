@@ -1,5 +1,12 @@
 import { FileText, Info, Paperclip, SquarePen, StickyNote, Trash } from 'lucide-react'
-import React, { useEffect, useId, useRef, useState } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { createFormatters } from '../../../../localization/format'
@@ -15,10 +22,12 @@ import attachmentIconVideo from '../../assets/icon-video.png'
 import attachmentIconWord from '../../assets/icon-word.png'
 import attachmentIconXls from '../../assets/icon-xls.png'
 import attachmentIconZip from '../../assets/icon-zip.png'
+import type {
+  LiteratureDetail as Detail
+} from '../../contracts/literature'
 import {
   isAttachmentAvailable,
   type LiteratureAttachmentSummary,
-  LiteratureDetail as Detail,
   type LiteratureFacet,
   type LiteratureUpdate
 } from '../../contracts/literature'
@@ -75,7 +84,11 @@ import {
   uploadLiteratureAttachment
 } from './api'
 import { catalogue, useCatalogue } from './catalog'
-import { literatureErrorMessage, type LiteratureErrorMessage } from './error'
+import {
+  fulltextFailureMessageKey,
+  literatureErrorMessage,
+  type LiteratureErrorMessage
+} from './error'
 import {
   classifyPaperMetaFailure,
   canSyncMetadata,
@@ -88,11 +101,13 @@ import {
   requiresConfirmation,
   selectPaperMetaQuery,
   type PaperMetaDiffRow,
-  type PaperMetaMatch
+  type PaperMetaMatch,
+  type PaperMetaPayload
 } from './metadata'
 import { LiteratureNotes } from './Notes'
 import { AttachmentImportDialog } from './Import'
-import { latestLiteratureSummary } from './projection'
+import { latestLiteratureSummary, literatureCollections } from './projection'
+import { literatureTasks } from './tasks'
 import {
   loadPdfRecords,
   subscribePdfRecords,
@@ -169,6 +184,15 @@ const DETAIL_TAB = {
   notes: 'notes'
 } as const
 type DetailTab = (typeof DETAIL_TAB)[keyof typeof DETAIL_TAB]
+/**
+ * 打开详情时附带的一次性意图: 直接进新建笔记, 或直接唤起附件选择器。
+ *
+ * nonce 让「面板已经开着同一条文献」时也能重新触发 —— 那时 id 不变, 只有 nonce 变。
+ */
+export interface LiteratureDetailIntent {
+  action: 'attachment' | 'note'
+  nonce: number
+}
 type DetailFailureKind = 'fulltext' | 'upload'
 type IdentifierField = 'doi' | 'arxiv'
 const DETAIL_TAB_TRIGGER_CLASS =
@@ -1018,12 +1042,17 @@ function TagSection({
 export function LiteratureDetail({
   id,
   attachmentId,
+  intent,
   onClose,
+  onIntentConsumed,
   onItemUpdated
 }: {
   id: string | null
   attachmentId: string | null
+  intent?: LiteratureDetailIntent | null
   onClose: () => void
+  /** 意图已落地 (选择器已唤起 / 新笔记已开); 列表据此回收它那份意图。 */
+  onIntentConsumed?: () => void
   onItemUpdated: (item: Detail) => void
 }): React.JSX.Element | null {
   const { t: literature } = useTranslation('literature')
@@ -1040,7 +1069,9 @@ export function LiteratureDetail({
     'projects' | 'collections' | 'tags' | null
   >(null)
   const [error, setError] = useState<LiteratureErrorMessage | null>(null)
-  const [fetchingArxiv, setFetchingArxiv] = useState(false)
+  // 忙状态来自进程内登记表而不是本地 state: 关掉面板再打开时组件会重挂, 但请求还在飞,
+  // 按钮必须继续显示忙, 也不能让用户再点一次把同一个 DOI 重复下载一遍。
+  useSyncExternalStore(literatureTasks.subscribe, literatureTasks.getSnapshot)
   const [arxivError, setArxivError] = useState<LiteratureErrorMessage | null>(null)
   const [failureKind, setFailureKind] = useState<DetailFailureKind>('fulltext')
   const [uploading, setUploading] = useState<'primary' | 'attachment' | null>(
@@ -1051,6 +1082,9 @@ export function LiteratureDetail({
   const [deleteTarget, setDeleteTarget] =
     useState<LiteratureAttachmentSummary | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>(DETAIL_TAB.info)
+  // 待落地的意图: 目标 tab 与 (笔记场景) 编辑器都挂好之后才算消费完。
+  const [pendingIntent, setPendingIntent] =
+    useState<LiteratureDetailIntent | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [syncMatch, setSyncMatch] = useState<PaperMetaMatch | null>(null)
   const [syncPicked, setSyncPicked] = useState<Set<string>>(new Set())
@@ -1066,6 +1100,17 @@ export function LiteratureDetail({
   const updateQueue = useRef<Promise<void>>(Promise.resolve())
   const detailIdentity = useRef({ id, projectId })
   detailIdentity.current = { id, projectId }
+  const itemRef = useRef<Detail | null>(null)
+  itemRef.current = item
+  // 本实例已经负责收尾的任务: 自己发起的、以及重开面板时续接上的, 都不再重复处理结果。
+  const ownedTasks = useRef(new Set<Promise<unknown>>())
+  // 结果收尾函数定义在下面那个早返回之后, 所以渲染期挂到 ref 上 (与 detailIdentity 同形),
+  // 续接用的 effect 才能在早返回之前声明。成功和失败都要接: 只接成功的话, 重开面板后
+  // 任务失败就只剩一个悄悄变回可点的按钮, 用户不知道发生过什么。
+  const resumeFulltext = useRef<(detail: Detail) => void>(() => {})
+  const resumeMetadata = useRef<(payload: PaperMetaPayload) => void>(() => {})
+  const failFulltext = useRef<(reason: unknown) => void>(() => {})
+  const failMetadata = useRef<(reason: unknown) => void>(() => {})
   const { reload } = useCatalogue()
   const syncedReload = useRef(reload)
   useEffect(() => {
@@ -1073,7 +1118,6 @@ export function LiteratureDetail({
     setItem(null)
     setDetailTab(DETAIL_TAB.info)
     setError(null)
-    setFetchingArxiv(false)
     setArxivError(null)
     setFailureKind('fulltext')
     setSyncing(false)
@@ -1137,7 +1181,61 @@ export function LiteratureDetail({
       active = false
     }
   }, [id, projectId, reload])
+  // 换文献/换项目时, 上一个条目遗留的续接登记不再有意义。
+  useEffect(() => {
+    ownedTasks.current.clear()
+  }, [id, projectId])
+  /**
+   * 接住列表右键菜单递来的意图: 先把 tab 切到位, 再登记待落地动作。
+   *
+   * 必须排在载入 effect 之后 —— 换文献时那个 effect 会把 tab 复位成基本信息,
+   * 同一轮提交里后声明者胜出, 意图才不会被复位盖掉。
+   */
+  useEffect(() => {
+    if (!id || !intent) return
+    setDetailTab(
+      intent.action === 'note' ? DETAIL_TAB.notes : DETAIL_TAB.attachments
+    )
+    setPendingIntent(intent)
+  }, [id, intent])
+  const consumeIntent = useCallback((): void => {
+    setPendingIntent(null)
+    onIntentConsumed?.()
+  }, [onIntentConsumed])
+  // 附件意图要等 tab 真正挂上: 隐藏的 file input 只活在附件页里, 早一步 click 打在空 ref 上。
+  useEffect(() => {
+    if (pendingIntent?.action !== 'attachment' || !item) return
+    if (detailTab !== DETAIL_TAB.attachments || !attachmentInput.current) return
+    attachmentInput.current.click()
+    consumeIntent()
+  }, [pendingIntent, item, detailTab, consumeIntent])
+  /**
+   * 重开面板时续接仍在飞的任务: 忙状态由登记表驱动, 所以按钮接着显示忙; 结果也不丢 ——
+   * attach 只挂到已有请求上, 不会为了续接再打一次后端。等 item 载入后再挂, 元数据收尾
+   * 要用它算逐字段差异。
+   */
+  useEffect(() => {
+    if (!id || !item) return
+    const fulltext = literatureTasks.attach<Detail>(id, 'fulltext')
+    if (fulltext && !ownedTasks.current.has(fulltext)) {
+      ownedTasks.current.add(fulltext)
+      void fulltext.then(
+        (detail) => resumeFulltext.current(detail),
+        (reason) => failFulltext.current(reason)
+      )
+    }
+    const metadata = literatureTasks.attach<PaperMetaPayload>(id, 'metadata')
+    if (metadata && !ownedTasks.current.has(metadata)) {
+      ownedTasks.current.add(metadata)
+      void metadata.then(
+        (payload) => resumeMetadata.current(payload),
+        (reason) => failMetadata.current(reason)
+      )
+    }
+  }, [id, projectId, item])
   if (!id) return null
+  const fetchingArxiv = literatureTasks.isRunning(id, 'fulltext')
+  const metadataRunning = literatureTasks.isRunning(id, 'metadata') || literatureTasks.isRunning(id, 'metadata-batch')
   const acceptUpdatedItem = (updated: Detail): void => {
     setItem((current) =>
       current ? latestLiteratureSummary(current, updated) : updated
@@ -1213,18 +1311,37 @@ export function LiteratureDetail({
       )
     }
   }
+  /** 全文收尾: 自己点的那次与重开面板续接上的那次走同一条路径。 */
+  const acceptFulltext = (detail: Detail): void => {
+    if (!isCurrentDetail()) return
+    setItem(detail)
+    catalogue.reload()
+  }
+  resumeFulltext.current = acceptFulltext
+  /** 全文失败收尾: 自己点的那次与重开面板续接上的那次给出同一条错误。 */
+  const rejectFulltext = (reason: unknown): void => {
+    if (!isCurrentDetail()) return
+    // 获取全文只报三种结果, 文案完全由本地 i18n 决定: 服务端诊断不再上屏 (它只有中文,
+    // 而且会把「获取全文失败」拆成十几种说法)。续接路径也要认这是全文失败。
+    setFailureKind('fulltext')
+    setArxivError({
+      key: fulltextFailureMessageKey(
+        reason instanceof LiteratureApiError ? reason.failure.code : undefined
+      )
+    })
+  }
+  failFulltext.current = rejectFulltext
   const fetchArxiv = async (): Promise<void> => {
     if (fetchingArxiv) return
-    setFetchingArxiv(true)
     setArxivError(null)
     setFailureKind('fulltext')
+    // 登记在进程内: 面板关掉再打开, 按钮仍是忙态, 且不会重复下载同一个 DOI。
+    const task = literatureTasks.run(id, 'fulltext', () => fetchArxivFulltext(id))
+    ownedTasks.current.add(task)
     try {
-      setItem(await fetchArxivFulltext(id))
-      catalogue.reload()
+      acceptFulltext(await task)
     } catch (reason) {
-      setArxivError(literatureErrorMessage(reason instanceof LiteratureApiError ? reason.failure.code : undefined, reason instanceof Error ? reason.message : undefined, 'detail.fulltextFailed'))
-    } finally {
-      setFetchingArxiv(false)
+      rejectFulltext(reason)
     }
   }
   /** 把勾选的命中字段写回文献并刷新详情; 失败时保留待确认项, 让用户能重试而不是白跑一次检索。 */
@@ -1258,40 +1375,59 @@ export function LiteratureDetail({
    * 因为 serve 侧三腿同形返回 `{ success, fields, bib_type? }`。上游限流单独提示
    * (用户能行动), 未命中给出补充标识入口, 其余失败一律「同步元数据失败」。
    */
+  /**
+   * 检索结果收尾: 无命中给补标识入口, 模糊维度弹逐字段确认, 其余直接落库。自己点的那次
+   * 与重开面板续接上的那次共用这条路径, 所以确认框在续接后也照常弹出。
+   */
+  const acceptPaperMeta = async (payload: PaperMetaPayload): Promise<void> => {
+    const current = itemRef.current
+    if (!current || !isCurrentDetail()) return
+    const query = selectPaperMetaQuery(current)
+    if (!query) return
+    const fields = paperMetaFields(payload)
+    if (!Object.keys(fields).length) {
+      setSyncMissed(true)
+      toast({ title: literature('detail.sync.missed'), tone: 'error' })
+      return
+    }
+    if (requiresConfirmation(query.dimension)) {
+      setSyncPicked(
+        new Set(
+          paperMetaDiff(fields, current)
+            .filter((row) => row.current !== row.next)
+            .map((row) => row.field)
+        )
+      )
+      setSyncMatch({ fields, bibType: payload.bib_type })
+      return
+    }
+    await applyMetadata(fields, payload.bib_type)
+  }
+  resumeMetadata.current = (payload) => {
+    void acceptPaperMeta(payload)
+  }
+  /** 检索失败收尾: 限流/未命中/网络各自有可行动的提示, 续接后也必须给出。 */
+  const rejectMetadata = (reason: unknown): void => {
+    if (!isCurrentDetail()) return
+    const kind = classifyPaperMetaFailure(reason instanceof LiteratureApiError ? reason.failure : null)
+    toast({
+      title: literature(PAPER_META_FAILURE_KEYS[kind]),
+      tone: 'error'
+    })
+  }
+  failMetadata.current = rejectMetadata
   const syncMetadata = async (): Promise<void> => {
-    if (!item || syncing) return
+    if (!item || syncing || metadataRunning) return
     const query = selectPaperMetaQuery(item)
     if (!query) return
-    setSyncing(true)
     setError(null)
+    // 只把「打注册库」这段登记进进程内: 它是慢的那一段, 也是重开面板后需要续接的那一段。
+    const task = literatureTasks.run(id, 'metadata', () => fetchPaperMeta(query))
+    ownedTasks.current.add(task)
     try {
-      const payload = await fetchPaperMeta(query)
-      const fields = paperMetaFields(payload)
-      if (!Object.keys(fields).length) {
-        setSyncMissed(true)
-        toast({ title: literature('detail.sync.missed'), tone: 'error' })
-        return
-      }
-      if (requiresConfirmation(query.dimension)) {
-        setSyncPicked(
-          new Set(
-            paperMetaDiff(fields, item)
-              .filter((row) => row.current !== row.next)
-              .map((row) => row.field)
-          )
-        )
-        setSyncMatch({ fields, bibType: payload.bib_type })
-        return
-      }
-      await applyMetadata(fields, payload.bib_type)
+      await acceptPaperMeta(await task)
     } catch (reason) {
-      const kind = classifyPaperMetaFailure(reason instanceof LiteratureApiError ? reason.failure : null)
-      toast({
-        title: literature(PAPER_META_FAILURE_KEYS[kind]),
-        tone: 'error'
-      })
-    } finally {
-      setSyncing(false)
+      rejectMetadata(reason)
     }
   }
   /** 补充标识入口: 切回基本信息并把对应字段推进编辑态 + 短暂高亮。 */
@@ -1351,7 +1487,7 @@ export function LiteratureDetail({
               : literature('detail.noFulltext')
         }
         failure={
-          failure ? (failure.detail ?? literature(failure.key)) : undefined
+          failure ? literature(failure.key) : undefined
         }
         reason={
           failure
@@ -1682,9 +1818,13 @@ export function LiteratureDetail({
             <LiteratureNotes
               itemId={item.id}
               notes={item.notes ?? []}
+              startNew={
+                pendingIntent?.action === 'note' ? pendingIntent.nonce : 0
+              }
               onReload={async () => {
                 setItem(await getLiterature(item.id, projectId))
               }}
+              onStartNew={consumeIntent}
             />
           ) : null}
         </TabsContent>
@@ -1900,7 +2040,7 @@ export function LiteratureDetail({
                     <Button
                       size="sm"
                       variant="outline"
-                      loading={syncing}
+                      loading={syncing || metadataRunning}
                       icon={<Icon name="refresh" size={14} />}
                       onClick={() => void syncMetadata()}
                     >
@@ -2010,12 +2150,8 @@ export function LiteratureDetail({
                   onClick={() => setRelation('collections')}
                 >
                   <div>
-                    {(projectId ? item.project_collections : item.collections)
-                      .length ? (
-                      (projectId
-                        ? item.project_collections
-                        : item.collections
-                      ).map((value) => (
+                    {literatureCollections(item, projectId).length ? (
+                      literatureCollections(item, projectId).map((value) => (
                         <Tag key={value.id} size="small">
                           {value.name}
                         </Tag>

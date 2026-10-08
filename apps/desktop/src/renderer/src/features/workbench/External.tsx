@@ -119,7 +119,7 @@ async function saveDocumentCopy(
 }
 
 export function DocumentExternalOpen({ session }: { session: DocumentSession }): React.JSX.Element | null {
-  const { t } = useTranslation('workbench')
+  const { t } = useTranslation(['workbench', 'resources'])
   const { toast } = useToast()
   const workspace = useWorkspaceController()
   const [externalOpening, setExternalOpening] = useState(false)

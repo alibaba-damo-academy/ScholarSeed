@@ -28,6 +28,25 @@ CitationAnswerFilter = Callable[[str, str, str], str]
 
 
 @dataclass(frozen=True)
+class WebEvidencePage:
+    url: str
+    final_url: str
+    text: str
+    revision: str
+    fetched_at: str
+    origin: str = "page"
+
+
+class WebEvidenceReader(Protocol):
+    async def fetch_page(self, url: str) -> WebEvidencePage: ...
+
+
+#: Bytes serve holds on the product's behalf (acquired full texts). Readable through
+#: the bridge only; never copied whole into an agent workspace.
+MANAGED_STORAGE_SCOPE = "managed"
+
+
+@dataclass(frozen=True)
 class CitationDocument:
     project_id: str
     path: str
@@ -154,6 +173,14 @@ class PdfAttachmentPort(Protocol):
     ) -> CitationDocument: ...
 
 
+class ManagedFulltextPort(Protocol):
+    """Bytes acquired by the product on behalf of an authorized precise search."""
+
+    def managed_fulltext_document(
+        self, project_id: str, paper_id: str
+    ) -> CitationDocument | None: ...
+
+
 class LiteratureEvidencePort(Protocol):
     def locate(self, document: CitationDocument, text: str) -> list[dict]: ...
     def discover(self, project_id: str, query: str, offset: int, limit: int) -> dict: ...
@@ -161,10 +188,17 @@ class LiteratureEvidencePort(Protocol):
     def catalog(self, project_id: str, offset: int, limit: int) -> dict: ...
     def metadata(self, project_id: str, source_id: str) -> dict: ...
     def read_pages(
-        self, project_id: str, source_id: str, start_page: int, end_page: int
+        self,
+        project_id: str,
+        source_id: str,
+        start_page: int,
+        end_page: int,
+        attachment_id: str | None = None,
     ) -> LiteraturePageRead: ...
     def annotations(self, project_id: str, source_id: str, offset: int, limit: int) -> dict: ...
-    def document(self, project_id: str, source_id: str) -> CitationDocument: ...
+    def document(
+        self, project_id: str, source_id: str, attachment_id: str | None = None
+    ) -> CitationDocument: ...
     def preferred(
         self, document: CitationDocument, source_id: str = "", *, retry: bool = False
     ) -> dict: ...

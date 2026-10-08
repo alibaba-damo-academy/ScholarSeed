@@ -37,6 +37,7 @@ ERROR_BODY_LIMIT = 8192
 ERROR_SUMMARY_LIMIT = 400
 ERROR_SECRET_PATTERN = re.compile(r"(?i)bearer\s+\S+|\beyJ[\w-]+\.[\w-]+\.[\w-]+|\bsk-[\w-]+")
 GENERATION_ERROR = "generation_failed"
+TOOL_FREE_UNSUPPORTED = "tool_free_generation_unsupported"
 LOGGER = logging.getLogger(__name__)
 LITERATURE_PURPOSE_PREFIX = "literature."
 
@@ -116,6 +117,7 @@ def responses_body(
         "instructions": request.instructions,
         "input": [{"role": "user", "content": content}],
         "max_output_tokens": request.limits.max_output_tokens,
+        **({"tool_choice": "none"} if request.require_tool_free else {}),
         "stream": True,
         **thinking,
         **({"text": {"format": {"type": "json_object"}}} if request.json_output else {}),
@@ -140,6 +142,7 @@ def chat_body(
             {"role": "user", "content": content},
         ],
         "max_tokens": request.limits.max_output_tokens,
+        **({"tool_choice": "none"} if request.require_tool_free else {}),
         "stream": True,
         "stream_options": {"include_usage": True},
         **thinking,
@@ -250,6 +253,13 @@ class InferenceProvider:
                 if not connection[capability]:
                     raise ValueError(f"model_{capability}_unsupported")
             if connection["billing"] == SUBSCRIPTION_BILLING:
+                if request.require_tool_free:
+                    return ModelInvocationResult(
+                        request.invocation_id,
+                        ModelInvocationStatus.FAILED,
+                        request.model_key,
+                        error_code=TOOL_FREE_UNSUPPORTED,
+                    )
                 return await self._temporary.invoke(request, observer=observer)
             if observer:
                 await observer(
@@ -259,11 +269,12 @@ class InferenceProvider:
             body = encoded_body(request, connection, thinking.parameters)
             started = time.monotonic()
             LOGGER.info(
-                "pdf_inference_request invocation_id=%s model=%s requests=1 attachments=%s thinking=%s protocol=%s purpose=%s",
+                "pdf_inference_request invocation_id=%s model=%s requests=1 attachments=%s thinking=%s controls=%s protocol=%s purpose=%s",
                 request.invocation_id,
                 request.model_key,
                 len(request.attachments),
                 thinking.effort or thinking.reason or "provider_default",
+                json.dumps(thinking.parameters, ensure_ascii=True, sort_keys=True),
                 connection["wire_api"],
                 request.purpose,
             )

@@ -334,7 +334,7 @@ def minimum_parameters(
     protocol: str,
     family: str,
 ) -> ThinkingParameters:
-    """「尽量关掉思考」的阶梯：显式 none 档 → off 档 → 开关置否 → 最低可用档 → 不发。
+    """尽量关闭思考：none → off → 关闭开关 → 最低档 → 最低预算 → 不发。
 
     阶梯只读声明，所以同一份数据同时决定「能不能关」和「怎么关」；未声明形态的模型一律
     不发厂商扩展参数（fail-open 到 provider 默认），与目录层的 fail-closed 方向一致。
@@ -372,4 +372,16 @@ def minimum_parameters(
                 adjusted=True,
                 reason=MINIMUM_CLAMPED,
             )
+    budget_option = reasoning_option(options, BUDGET_FORM)
+    budget_name = option_wire(budget_option, protocol, family)
+    if budget_name:
+        minimum = (budget_option or {}).get("min")
+        maximum = (budget_option or {}).get("max")
+        if minimum is None or maximum is None:
+            return ThinkingParameters({}, adjusted=True, reason=BUDGET_RANGE_UNDECLARED)
+        return ThinkingParameters(
+            wire_parameters(budget_name, int(minimum)),
+            effort=str(minimum),
+            reason=MINIMUM_APPLIED,
+        )
     return ThinkingParameters({}, adjusted=True, reason=MINIMUM_UNAVAILABLE)

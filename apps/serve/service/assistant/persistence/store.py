@@ -41,6 +41,7 @@ ASSISTANT_ANNOTATION_TABLE = "assistant_answer_annotation"
 MIGRATION_SUFFIX = "_migration"
 DEFAULT_SELECTION_REVISION = 0
 DEFAULT_SEARCH_SCOPE = SearchScope.WEB
+ASSISTANT_CLAIMED_REFS_IMMUTABLE = "assistant_claimed_refs_immutable"
 
 SELECTION_COLUMNS = (
     "session_id",
@@ -434,6 +435,7 @@ class AssistantStore:
             ),
             selected_text_hash=str(value.get("selected_text_hash") or ""),
             preview_text=str(value.get("preview_text") or ""),
+            snapshot_text=str(value.get("snapshot_text") or ""),
             document_id=(str(value["document_id"]) if value.get("document_id") else None),
         )
 
@@ -532,6 +534,7 @@ class AssistantStore:
             search_scope=SearchScope(str(row["search_scope"])),
             refs=tuple(cls._ref(ref) for ref in refs),
             updated_at=float(row["updated_at"]),
+            claimed_ref_ids=tuple(str(ref["ref_id"]) for ref in refs if ref["claim_turn_id"]),
         )
 
     def selection(self, session_id: str) -> AssistantContextSelection:
@@ -653,14 +656,12 @@ class AssistantStore:
                     existing = self._annotation(existing_row)
                     if (
                         existing.answer_id,
-                        existing.answer_revision,
                         existing.start_utf16,
                         existing.end_utf16,
                         existing.selected_text_hash,
                         existing.comment,
                     ) != (
                         annotation.answer_id,
-                        annotation.answer_revision,
                         annotation.start_utf16,
                         annotation.end_utf16,
                         annotation.selected_text_hash,
@@ -1088,7 +1089,7 @@ class AssistantStore:
                 if incoming_claimed != tuple(item for item, _turn in claimed):
                     # claim 是 Turn 与队列之间的并发所有权；PATCH 可以改其它项，
                     # 但不能让页面在模型执行期间删改或重排这批一次性引用。
-                    raise AssistantStateConflictError("assistant claimed refs are immutable")
+                    raise AssistantStateConflictError(ASSISTANT_CLAIMED_REFS_IMMUTABLE)
                 claim_ids = {item.ref_id: turn for item, turn in claimed}
                 revision = current.revision + 1
                 connection.execute(
@@ -1149,6 +1150,7 @@ class AssistantStore:
             search_scope=search_scope,
             refs=refs,
             updated_at=timestamp,
+            claimed_ref_ids=tuple(ref.ref_id for ref in refs if ref.ref_id in claim_ids),
         )
 
     def claim_for_turn(
@@ -1237,6 +1239,8 @@ class AssistantStore:
             item.ref.ref_id
             for item in snapshot.items
             if item.ref.retention is ContextRetention.NEXT_TURN
+            and item.ref.origin
+            not in (ContextOrigin.CURRENT_DOCUMENT, ContextOrigin.CURRENT_SELECTION)
         }
         if not expected:
             return

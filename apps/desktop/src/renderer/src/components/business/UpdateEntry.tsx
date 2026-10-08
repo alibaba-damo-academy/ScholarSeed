@@ -4,11 +4,12 @@ import { useTranslation } from 'react-i18next'
 import rocketGlyph from '../../assets/update-rocket.png'
 import {
   isUpdateEntryVisible,
-  updateFailureOf,
+  updateEntryBadgeOf,
   useUpdateAnnouncement,
   useUpdateState
 } from '../../features/updates/state'
 import { IconButton, Popover, PopoverContent, PopoverTrigger, ProgressBar, Tooltip } from '../ui'
+import { IconFont } from '../primitive'
 import { UpdatePanel } from './UpdatePanel'
 
 // UpdateEntry.tsx — 活动栏底部的「更新」入口（PRD 第 1-7 条）。
@@ -18,9 +19,6 @@ import { UpdatePanel } from './UpdatePanel'
 //
 // 表达方式与活动栏其它条目一致：一枚设计系统的 IconButton（lg 档 = 栏内 40px 命中区），
 //
-// 首次检测到新版本时弹窗与卡片一起打开（PRD 第 1 条的「右侧打开状态」+「更新内容」
-// 行的「默认先给弹窗」）；用户关掉弹窗后卡片留在原位，之后只剩这个常驻入口。
-
 // z 高于 tooltip：活动栏在 tooltip 打开时会把自身抬到 --vds-z-tooltip（见 ActivityRail），
 // 本弹层仍挂在栏上触发，若停在 popover 带会被栏盖掉一角。
 //
@@ -37,8 +35,11 @@ const ENTRY_BUTTON_CLASS_NAME = 'no-drag relative flex-none overflow-hidden'
 // object-contain 保证非方形素材也不被拉变形。
 const ENTRY_GLYPH_CLASS_NAME = 'size-full object-contain'
 const ENTRY_DOT_CLASS_NAME =
-  'absolute right-[var(--vds-update-ready-dot-offset)] top-[var(--vds-update-ready-dot-offset)] size-[var(--vds-update-ready-dot-size)] rounded-[var(--vds-radius-circle)] border-[length:var(--vds-update-ready-dot-border)] border-solid border-[var(--vds-bg-white-default)] bg-[var(--vds-brand-gold-highlight)]'
-const ENTRY_DOT_ALERT_CLASS_NAME = 'bg-[var(--vds-error-bg-default)]'
+  'absolute right-[var(--vds-update-ready-dot-offset)] top-[var(--vds-update-ready-dot-offset)] size-[var(--vds-update-ready-dot-size)] rounded-[var(--vds-radius-circle)] border-[length:var(--vds-update-ready-dot-border)] border-solid border-[var(--vds-bg-white-default)] bg-[var(--vds-error-bg-default)]'
+const ENTRY_BADGE_CLASS_NAME = 'absolute right-[var(--vds-update-entry-badge-offset)] top-[var(--vds-update-entry-badge-offset)] grid size-[var(--vds-update-entry-badge-size)] place-items-center rounded-[var(--vds-radius-circle)] leading-none'
+const ENTRY_WARNING_CLASS_NAME = `${ENTRY_BADGE_CLASS_NAME} bg-[var(--vds-surface-raised)] text-[var(--vds-error-bg-default)]`
+const ENTRY_READY_CLASS_NAME = `${ENTRY_BADGE_CLASS_NAME} bg-[var(--vds-surface-raised)] text-[var(--vds-success-bg-default)]`
+const ENTRY_BADGE_GLYPH_STYLE = { fontSize: 'var(--vds-update-entry-badge-size)', lineHeight: '1' }
 
 export function UpdateEntry(): React.JSX.Element | null {
   const { t } = useTranslation('components')
@@ -46,14 +47,8 @@ export function UpdateEntry(): React.JSX.Element | null {
   const announcement = useUpdateAnnouncement()
   const [open, setOpen] = React.useState(false)
 
-  // 首次检测到新版本时自动展开浮窗（PRD 第 1 条）；用户收起后不再自动弹，只留常驻入口。
-  React.useEffect(() => {
-    if (announcement.pending) setOpen(true)
-  }, [announcement.pending])
-
   if (!isUpdateEntryVisible(state)) return null
 
-  // 收起就是「稍后」：记一次已处理，之后不再自动弹，但入口与下载任务都留着。
   const close = (): void => {
     announcement.acknowledge()
     setOpen(false)
@@ -61,9 +56,10 @@ export function UpdateEntry(): React.JSX.Element | null {
 
   const phase = state?.phase ?? 'idle'
   const percent = state?.percent ?? 0
-  const downloading = phase === 'downloading'
+  const downloading = phase === 'downloading' || phase === 'verifying'
   // 与浮窗同一份判据：安装失败时相位停在 ready，入口不能继续报「待重启」的正常态。
-  const failed = updateFailureOf(state) !== null
+  const badge = updateEntryBadgeOf(state, announcement.pending)
+  const failed = badge === 'warning'
   const label = downloading
     ? t('update.entryPercent', { percent })
     : failed
@@ -74,7 +70,7 @@ export function UpdateEntry(): React.JSX.Element | null {
 
   return (
     <>
-      <Popover open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Tooltip content={label} side="right">
             <IconButton
@@ -86,27 +82,26 @@ export function UpdateEntry(): React.JSX.Element | null {
               // 这里清掉 IconButton 默认的原生 title，免得两个提示叠着出。
               title={undefined}
               data-testid="activity-update"
+              onClick={announcement.acknowledge}
               icon={
                 <>
                   {downloading
-                    ? <ProgressBar shape="circle" className="size-full" value={percent} label={label} />
+                    ? <ProgressBar shape="circle" className="size-full" value={percent} indeterminate={phase === 'verifying'} label={label} />
                     : <img alt="" className={ENTRY_GLYPH_CLASS_NAME} src={rocketGlyph} />}
-                  {(phase === 'ready' || failed) && (
-                    <span
-                      className={
-                        failed
-                          ? `${ENTRY_DOT_CLASS_NAME} ${ENTRY_DOT_ALERT_CLASS_NAME}`
-                          : ENTRY_DOT_CLASS_NAME
-                      }
-                    />
-                  )}
+                  {badge === 'unread' && <span aria-hidden="true" data-testid="update-entry-unread" className={ENTRY_DOT_CLASS_NAME} />}
+                  {badge === 'warning' && <span aria-hidden="true" data-testid="update-entry-warning" className={ENTRY_WARNING_CLASS_NAME}>
+                    <IconFont type="icon-fill-status-warning" style={ENTRY_BADGE_GLYPH_STYLE} />
+                  </span>}
+                  {badge === 'ready' && <span aria-hidden="true" data-testid="update-entry-ready" className={ENTRY_READY_CLASS_NAME}>
+                    <IconFont type="icon-chart-up-circle" style={ENTRY_BADGE_GLYPH_STYLE} />
+                  </span>}
                 </>
               }
             />
           </Tooltip>
         </PopoverTrigger>
         {/* 浮窗在按钮右侧、底部与按钮底部对齐（side=right + align=end）。 */}
-        <PopoverContent align="end" className={ENTRY_POPOVER_CLASS_NAME} side="right">
+        <PopoverContent align="end" className={ENTRY_POPOVER_CLASS_NAME} side="right" onClickCapture={announcement.acknowledge}>
           <UpdatePanel onDismiss={close} />
         </PopoverContent>
       </Popover>

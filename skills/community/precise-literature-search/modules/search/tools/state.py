@@ -15,6 +15,7 @@ SKILL_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from io_utils import atomic_write_json, read_json, utc_now  # noqa: E402
+from filesystem import filesystem_path, path_exists
 
 
 QUERY_STATUSES = {
@@ -72,15 +73,15 @@ def initial_state() -> dict[str, Any]:
 
 
 def initialize(work_dir: Path) -> dict[str, Any]:
-    work_dir.mkdir(parents=True, exist_ok=True)
+    filesystem_path(work_dir).mkdir(parents=True, exist_ok=True)
     path = state_path(work_dir)
-    if path.exists():
+    if path_exists(path):
         return read_json(path)
     value = initial_state()
     atomic_write_json(path, value)
-    if not (work_dir / "pool.json").exists():
+    if not path_exists(work_dir / "pool.json"):
         atomic_write_json(work_dir / "pool.json", {"schema_version": "1.0", "papers": []})
-    if not (work_dir / "query-log.json").exists():
+    if not path_exists((work_dir / "query-log.json")):
         atomic_write_json(work_dir / "query-log.json", {"schema_version": "1.0", "queries": []})
     return value
 

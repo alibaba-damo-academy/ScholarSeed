@@ -92,6 +92,79 @@ def file_ref(
 
 
 class AssistantContextContract(unittest.TestCase):
+    def test_default_turn_omits_model_card_but_preserves_snapshot(self) -> None:
+        service = AssistantService(self.store)
+        result = service.freeze(
+            session_id=SESSION_A,
+            client_turn_id="greeting-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        self.assertIsNone(result.failure)
+        self.assertIsNotNone(result.context)
+        context = result.context
+        self.assertEqual(context.model_context, "")
+        self.assertEqual(context.snapshot.search_scope, SearchScope.WEB)
+        self.assertEqual(self.store.snapshot_for_turn(SESSION_A, "greeting-turn"), context.snapshot)
+        cold = AssistantService(AssistantStore(self.database))
+        replay = cold.freeze(
+            session_id=SESSION_A,
+            client_turn_id="greeting-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        self.assertEqual(replay.context, context)
+
+    def test_changed_model_card_hash_still_rejects_replay(self) -> None:
+        service = AssistantService(self.store)
+        arguments = dict(
+            session_id=SESSION_A,
+            client_turn_id="old-renderer-turn",
+            expected_revision=None,
+            question="你好",
+        )
+        frozen = service.freeze(**arguments).context
+        self.assertIsNotNone(frozen)
+        old_hash = hashlib.sha256(b"previous renderer model card").hexdigest()
+        with sqlite3.connect(self.database) as connection:
+            connection.execute(
+                f"UPDATE {ASSISTANT_SNAPSHOT_TABLE} SET model_card_hash = ? WHERE snapshot_id = ?",
+                (old_hash, frozen.snapshot.snapshot_id),
+            )
+        replay = AssistantService(AssistantStore(self.database)).freeze(**arguments)
+        self.assertIsNone(replay.context)
+        self.assertEqual(replay.failure.kind, AssistantContextFailureKind.IDEMPOTENCY_CONFLICT)
+        self.assertIn("model card hash mismatch", replay.failure.detail)
+        self.assertEqual(
+            self.store.snapshot_for_turn(SESSION_A, "old-renderer-turn").model_card_hash, old_hash
+        )
+
+    def test_search_overrides_are_compact_and_reset_to_default(self) -> None:
+        service = AssistantService(self.store)
+        for scope in (SearchScope.DISABLED, SearchScope.WEB, SearchScope.ACADEMIC, SearchScope.WEB):
+            selection = service.replace_selection(
+                session_id=SESSION_A,
+                expected_revision=self.store.selection(SESSION_A).revision,
+                project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+                search_scope=scope,
+                refs=(),
+            )
+            result = service.freeze(
+                session_id=SESSION_A,
+                client_turn_id=f"scope-{selection.revision}",
+                expected_revision=selection.revision,
+                question="你好",
+            )
+            self.assertIsNone(result.failure)
+            self.assertIsNotNone(result.context)
+            if scope is SearchScope.WEB:
+                self.assertEqual(result.context.model_context, "")
+            else:
+                self.assertEqual(
+                    json.loads(result.context.model_context.splitlines()[1]),
+                    {"search_scope": scope.value},
+                )
+
     def test_metadata_only_freeze_never_resolves_selected_source_bytes(self) -> None:
         class ByteReadingProvider:
             def __init__(self) -> None:
@@ -820,7 +893,10 @@ class AssistantContextContract(unittest.TestCase):
         )
         with ProductEventStore(self.database).transaction() as connection:
             self.assertFalse(self.store.clear_for_relocation(SESSION_A, connection))
-        self.assertEqual(self.store.selection(SESSION_A), selected)
+        self.assertEqual(
+            self.store.selection(SESSION_A),
+            replace(selected, claimed_ref_ids=("queued",)),
+        )
 
     def test_snapshot_is_idempotent_and_cascades_with_session(self) -> None:
         ref = file_ref()
@@ -906,17 +982,20 @@ class AssistantContextContract(unittest.TestCase):
             expected_revision=selected.revision,
         )
         self.assertEqual(claimed.refs, (persistent, transient))
+        self.assertEqual(self.store.selection(SESSION_A).claimed_ref_ids, (transient.ref_id,))
         with self.assertRaises(AssistantStateConflictError):
             self.replace(selected.revision, refs=(persistent,))
 
         next_ref = file_ref("next-round")
         edited = self.replace(selected.revision, refs=(persistent, transient, next_ref))
+        self.assertEqual(edited.claimed_ref_ids, (transient.ref_id,))
         consumed = self.store.consume_claim(
             session_id=SESSION_A,
             client_turn_id="turn-claim",
         )
         self.assertEqual(consumed.revision, edited.revision + 1)
         self.assertEqual(consumed.refs, (persistent, next_ref))
+        self.assertEqual(consumed.claimed_ref_ids, ())
 
     def test_rejected_turn_releases_next_turn_ref(self) -> None:
         transient = file_ref("transient", ContextRetention.NEXT_TURN)
@@ -933,6 +1012,7 @@ class AssistantContextContract(unittest.TestCase):
         )
 
         self.assertEqual(released, selected)
+        self.assertEqual(released.claimed_ref_ids, ())
 
     def test_snapshot_replay_rejects_a_different_question(self) -> None:
         selected = self.replace(0)
@@ -1071,6 +1151,44 @@ class AssistantContextContract(unittest.TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.json()["detail"]["latest"]["revision"], 1)
 
+    def test_session_api_exposes_claim_without_mislabeling_immutable_conflict(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_A}/context"
+        patch = {
+            "expected_revision": 0,
+            "project_policy": "explicit_only",
+            "search_scope": "web",
+            "refs": [
+                {
+                    "ref_id": "claimed-file",
+                    "kind": "file",
+                    "source_id": "paper.pdf",
+                    "label": "paper.pdf",
+                    "retention": "next_turn",
+                }
+            ],
+        }
+        selected = client.patch(endpoint, json=patch)
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.json()["claimed_ref_ids"], [])
+
+        self.store.claim_for_turn(
+            session_id=SESSION_A,
+            client_turn_id="running-turn",
+            expected_revision=selected.json()["revision"],
+        )
+        self.assertEqual(client.get(endpoint).json()["claimed_ref_ids"], ["claimed-file"])
+        rejected = client.patch(endpoint, json={**patch, "expected_revision": 1, "refs": []})
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["detail"]["error"], "assistant_claimed_refs_immutable")
+        self.assertEqual(rejected.json()["detail"]["latest"]["claimed_ref_ids"], ["claimed-file"])
+
     def test_session_api_validates_and_round_trips_selection_locator(self) -> None:
         service = AssistantService(self.store)
         app = FastAPI()
@@ -1186,7 +1304,6 @@ class AssistantContextContract(unittest.TestCase):
             accepted_pdf.json()["refs"][0]["anchor"]["locator"]["text_shape_hash"],
             "sha256:" + "b" * 64,
         )
-
         invalid_pdf_shape = {
             **pdf_ref,
             "anchor": {
@@ -1207,6 +1324,152 @@ class AssistantContextContract(unittest.TestCase):
             },
         )
         self.assertEqual(rejected_pdf_shape.status_code, 422)
+
+    def test_session_api_round_trips_frozen_pdf_selection_text(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        endpoint = f"/api/assistant/sessions/{SESSION_A}/context"
+        snapshot = "As scientific literature grows rapidly"
+
+        accepted = client.patch(
+            endpoint,
+            json={
+                "expected_revision": 0,
+                "project_policy": "explicit_only",
+                "search_scope": "disabled",
+                "refs": [
+                    {
+                        "kind": "selection",
+                        "source_id": "paper.pdf",
+                        "source_revision": "sha256:" + "1" * 64,
+                        "label": "paper.pdf · 划词",
+                        "retention": "next_turn",
+                        "origin": "explicit",
+                        "anchor": {
+                            "locator": {
+                                "kind": "pdf",
+                                "page": 1,
+                                "quads": [[0.1, 0.2, 0.4, 0.3]],
+                                "text_length": len(snapshot),
+                            },
+                            "selected_text_hash": "sha256:" + "2" * 64,
+                            "preview_text": snapshot,
+                            "snapshot_text": snapshot,
+                        },
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(accepted.json()["refs"][0]["anchor"]["snapshot_text"], snapshot)
+        restored = self.store.selection(SESSION_A)
+        self.assertEqual(restored.refs[0].anchor.snapshot_text, snapshot)
+
+    def test_session_api_appends_pdf_quote_while_first_quote_is_claimed(self) -> None:
+        service = AssistantService(self.store)
+        app = FastAPI()
+        app.state.auth_enabled = False
+        app.state.session_catalog = self.catalog
+        app.state.assistant = service
+        register_assistant_routes(app)
+        client = TestClient(app)
+        for kind, session_id in (("selection", SESSION_A), ("literature", SESSION_B)):
+            with self.subTest(kind=kind):
+                endpoint = f"/api/assistant/sessions/{session_id}/context"
+                first_ref = {
+                    "ref_id": "first-quote",
+                    "kind": kind,
+                    "source_id": "paper.pdf",
+                    "source_revision": "sha256:" + "1" * 64,
+                    "label": "paper.pdf · 划词",
+                    "selection_source_label": "paper.pdf",
+                    "retention": "next_turn",
+                    "origin": "explicit",
+                    "anchor": {
+                        "document_id": "pdf-attachment" if kind == "literature" else None,
+                        "locator": {
+                            "kind": "pdf",
+                            "page": 1,
+                            "quads": [[0.1, 0.2, 0.4, 0.3]],
+                            "text_length": 7,
+                            "text_shape_hash": "sha256:" + "2" * 64,
+                        },
+                        "selected_text_hash": "sha256:" + "3" * 64,
+                        "preview_text": "quote A",
+                        "snapshot_text": "quote A",
+                    },
+                }
+                patch = {
+                    "expected_revision": 0,
+                    "project_policy": "explicit_only",
+                    "search_scope": "web",
+                    "refs": [first_ref],
+                }
+                selected = client.patch(endpoint, json=patch)
+                self.assertEqual(selected.status_code, 200)
+                frozen = self.store.claim_for_turn(
+                    session_id=session_id,
+                    client_turn_id="first-turn",
+                    expected_revision=selected.json()["revision"],
+                )
+                second_ref = {
+                    **first_ref,
+                    "ref_id": "second-quote",
+                    "anchor": {
+                        **first_ref["anchor"],
+                        "locator": {
+                            **first_ref["anchor"]["locator"],
+                            "quads": [[0.1, 0.4, 0.4, 0.5]],
+                        },
+                        "selected_text_hash": "sha256:" + "4" * 64,
+                        "preview_text": "quote B",
+                        "snapshot_text": "quote B",
+                    },
+                }
+                appended = client.patch(
+                    endpoint,
+                    json={
+                        **patch,
+                        "expected_revision": selected.json()["revision"],
+                        "refs": [*selected.json()["refs"], second_ref],
+                    },
+                )
+                self.assertEqual(appended.status_code, 200, appended.text)
+                selection = appended.json()
+                self.assertEqual(selection["claimed_ref_ids"], ["first-quote"])
+                self.assertEqual(selection["refs"][0], selected.json()["refs"][0])
+                self.assertEqual(self.store.selection(session_id).refs[0], frozen.refs[0])
+
+                modified = {**selection["refs"][0], "label": "changed claimed quote"}
+                rejected = client.patch(
+                    endpoint,
+                    json={
+                        **patch,
+                        "expected_revision": selection["revision"],
+                        "refs": [modified, selection["refs"][1]],
+                    },
+                )
+                self.assertEqual(rejected.status_code, 409)
+                self.assertEqual(
+                    rejected.json()["detail"]["error"], "assistant_claimed_refs_immutable"
+                )
+                remaining = self.store.consume_claim(
+                    session_id=session_id, client_turn_id="first-turn"
+                )
+                self.assertEqual([ref.ref_id for ref in remaining.refs], ["second-quote"])
+                next_turn = self.store.claim_for_turn(
+                    session_id=session_id,
+                    client_turn_id="second-turn",
+                    expected_revision=remaining.revision,
+                )
+                self.assertEqual([ref.ref_id for ref in next_turn.refs], ["second-quote"])
+                self.assertEqual(next_turn.refs[0].anchor.snapshot_text, "quote B")
 
     def test_session_reference_preview_is_snapshot_scoped_and_does_not_resume_target(self) -> None:
         history_entries = (

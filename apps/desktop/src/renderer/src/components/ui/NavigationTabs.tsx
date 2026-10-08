@@ -56,7 +56,7 @@ const DOCUMENT_TAB_MIN_WIDTH = 118
 const DOCUMENT_TAB_MAX_WIDTH = 190
 
 const navigationTabsRootClassName =
-  'vds-navigation-tabs relative flex h-[var(--vds-workbench-header-height)] w-full min-w-0 items-end overflow-x-auto overflow-y-hidden pt-[6px] [background:linear-gradient(to_bottom,transparent_calc(100%_-_1px),var(--vds-border-default)_0),var(--vds-bg-gray-default)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+  'vds-navigation-tabs relative flex h-[var(--vds-workbench-header-height)] w-full min-w-0 items-end overflow-x-auto overflow-y-hidden pt-[6px] [background:linear-gradient(to_bottom,transparent_calc(100%_-_1px),var(--vds-divider-default)_0),var(--vds-bg-gray-default)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
 
 const navigationTabsTrackClassName =
   'relative z-[var(--vds-z-local-raised)] flex w-full shrink-0 items-end pr-[var(--vds-navigation-tab-foot-size)]'
@@ -68,10 +68,10 @@ const navigationTabClassName =
   'no-drag group relative mb-[6px] inline-flex h-9 items-center gap-2 border border-transparent px-2 py-2 text-[14px] font-normal leading-5 tracking-normal text-[var(--vds-icon-fill-default)] outline-none transition-colors data-[state=inactive]:hover:rounded-[var(--vds-navigation-tab-radius)] data-[state=inactive]:hover:bg-[var(--vds-bg-gray-hover)] data-[state=inactive]:hover:text-[var(--vds-text-secondary)] focus-visible:z-[var(--vds-z-elevated)] focus-visible:shadow-[var(--vds-focus-brand)] data-[state=active]:z-[var(--vds-z-elevated)] data-[state=active]:mb-0 data-[state=active]:h-[42px] data-[state=active]:rounded-t-[var(--vds-navigation-tab-radius)] data-[state=active]:bg-[var(--vds-bg-gray-default)] data-[state=active]:text-[var(--vds-text-primary)]'
 
 const navigationTabOutlineClassName =
-  'pointer-events-none absolute -inset-x-[var(--vds-navigation-tab-outline-width)] -top-[var(--vds-navigation-tab-outline-width)] bottom-[var(--vds-navigation-tab-radius)] rounded-t-[var(--vds-navigation-tab-radius)] border-[length:var(--vds-navigation-tab-outline-width)] border-b-0 border-[var(--vds-border-default)]'
+  'pointer-events-none absolute -inset-x-[var(--vds-navigation-tab-outline-width)] -top-[var(--vds-navigation-tab-outline-width)] bottom-[var(--vds-navigation-tab-radius)] rounded-t-[var(--vds-navigation-tab-radius)] border-[length:var(--vds-navigation-tab-outline-width)] border-b-0 border-[var(--vds-divider-default)]'
 
 const navigationTabFootClassName =
-  'pointer-events-none absolute -bottom-[var(--vds-navigation-tab-outline-width)] size-[var(--vds-navigation-tab-foot-size)] border-b-[length:var(--vds-navigation-tab-outline-width)] border-[var(--vds-border-default)] bg-[var(--vds-bg-gray-default)] [clip-path:inset(0)]'
+  'pointer-events-none absolute -bottom-[var(--vds-navigation-tab-outline-width)] size-[var(--vds-navigation-tab-foot-size)] border-b-[length:var(--vds-navigation-tab-outline-width)] border-[var(--vds-divider-default)] bg-[var(--vds-bg-gray-default)] [clip-path:inset(0)]'
 
 const navigationTabLeftFootClassName =
   '-left-[var(--vds-navigation-tab-foot-size)] rounded-br-[var(--vds-navigation-tab-radius)] border-r-[length:var(--vds-navigation-tab-outline-width)] [box-shadow:var(--vds-navigation-tab-radius)_var(--vds-navigation-tab-radius)_0_var(--vds-navigation-tab-radius)_var(--vds-bg-gray-default)]'
@@ -96,7 +96,7 @@ const navigationTabCloseClassName =
   'no-drag flex h-4 w-4 shrink-0 items-center justify-center rounded-[var(--vds-radius-1)] border-0 bg-transparent p-0 text-[14px] leading-none text-current opacity-80 outline-none group-data-[state=active]:-translate-y-[3px] hover:bg-[var(--vds-bg-white-hover)] hover:opacity-100 focus-visible:shadow-[var(--vds-focus-brand)]'
 
 const navigationTabDividerClassName =
-  'pointer-events-none absolute right-0 top-1/2 h-5 w-px -translate-y-1/2 bg-[var(--vds-border-default)]'
+  'pointer-events-none absolute right-0 top-1/2 h-5 w-px -translate-y-1/2 bg-[var(--vds-divider-default)]'
 
 const navigationTabActiveMaskClassName =
   'pointer-events-none absolute -bottom-[var(--vds-navigation-tab-outline-width)] -inset-x-[var(--vds-navigation-tab-outline-width)] h-[var(--vds-navigation-tab-outline-width)] bg-[var(--vds-bg-gray-default)]'

@@ -2,7 +2,7 @@ import React from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Icon } from '../../icons'
-import { ComposerReference } from '../../store'
+import type { ComposerReference } from '../../store'
 import { ComposerRefChip } from './RefChip'
 
 export const SKILL_REF_KIND = 'skill'

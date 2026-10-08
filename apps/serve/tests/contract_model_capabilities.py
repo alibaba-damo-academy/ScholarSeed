@@ -51,6 +51,7 @@ from service.chat.runtime.evidence import SessionTrace  # noqa: E402
 from service.chat.runtime.live import LiveSession  # noqa: E402
 from service.chat.service.models import ModelService, _runtime_capabilities  # noqa: E402
 from service.inference.reasoning import (  # noqa: E402
+    BUDGET_RANGE_UNDECLARED,
     MINIMUM_APPLIED,
     MINIMUM_CLAMPED,
     NO_REASONING_FORM,
@@ -655,6 +656,52 @@ def test_minimum_ladder_follows_the_declared_form() -> None:
     )
 
 
+def test_minimum_budget_follows_declared_range() -> None:
+    minimum_budget = 128
+    maximum_budget = 1024
+    options = [
+        {
+            "kind": "budget",
+            "min": minimum_budget,
+            "max": maximum_budget,
+            "wire": {
+                CHAT_COMPLETIONS_PROTOCOL: "thinking_budget",
+                RESPONSES_PROTOCOL: "reasoning.budget",
+            },
+        }
+    ]
+    for protocol, expected in (
+        (CHAT_COMPLETIONS_PROTOCOL, {"thinking_budget": minimum_budget}),
+        (RESPONSES_PROTOCOL, {"reasoning": {"budget": minimum_budget}}),
+    ):
+        result = minimum_parameters(options, protocol, "openai")
+        check(
+            f"budget-only model uses its declared minimum on {protocol}",
+            result.parameters == expected and result.reason == MINIMUM_APPLIED,
+            str(result),
+        )
+    for missing_bound in ("min", "max"):
+        incomplete = [{**options[0], missing_bound: None}]
+        result = minimum_parameters(incomplete, RESPONSES_PROTOCOL, "openai")
+        check(
+            f"budget-only model never invents its missing {missing_bound}",
+            result.parameters == {} and result.reason == BUDGET_RANGE_UNDECLARED,
+            str(result),
+        )
+    toggle = {"kind": "toggle", "wire": {RESPONSES_PROTOCOL: "enable_thinking"}}
+    check(
+        "disabling thinking takes priority over reducing its budget",
+        minimum_parameters([*options, toggle], RESPONSES_PROTOCOL, "openai").parameters
+        == {"enable_thinking": False},
+    )
+    zero_budget = [{**options[0], "min": 0}]
+    check(
+        "an explicitly declared zero budget is not treated as missing",
+        minimum_parameters(zero_budget, CHAT_COMPLETIONS_PROTOCOL, "openai").parameters
+        == {"thinking_budget": 0},
+    )
+
+
 def test_effort_mapping_and_clamping() -> None:
     """档位解析：在集内直发；没选或越界都落到确定默认档（default，未声明取最低档）。"""
     options = [
@@ -1085,6 +1132,7 @@ TESTS = (
     test_execution_config_reads_the_same_declaration,
     test_profiles_projection_offers_the_vendor_hint,
     test_minimum_ladder_follows_the_declared_form,
+    test_minimum_budget_follows_declared_range,
     test_effort_mapping_and_clamping,
     test_reasoning_forms_merge_by_kind,
     test_modality_flags_have_one_derivation,

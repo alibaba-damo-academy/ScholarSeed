@@ -78,10 +78,13 @@ important limitations into the synthesis when the evidence establishes them.
 Apply the following section functions only where they belong to the requested
 scope and confirmed outline; do not add excluded sections or override user
 structure, titles, language choices or explicit omissions:
-- Abstract: state the question, scope, principal synthesis and relevant limits.
-  Keep its coverage, organizing dimensions and conclusions consistent with the
-  completed manuscript. Do not promise analyses or
-  contributions absent from the body. This needs no separate rewrite request.
+- Abstract: write one compact prose paragraph stating the question and scope,
+  principal synthesis, conclusions and only the relevant limits. Integrate these
+  elements into a coherent overview rather than a chapter-by-chapter roadmap or
+  a sequence of "first/second/then" topic summaries. Keep its coverage,
+  organizing dimensions and conclusions consistent with the completed manuscript.
+  Do not promise analyses or contributions absent from the body. This needs no
+  separate rewrite request.
 - Introduction: motivate the specific question, delimit the review's scope and
   explain the value of its organization. Compare prior surveys only when their
   coverage and limitations are supported by supplied evidence; do not invent
@@ -105,5 +108,6 @@ Maintain consistent terminology, abbreviations and notation. Avoid repeated
 definitions and echo sentences unless a distinct local purpose or qualification
 requires them. Let transitions express real conceptual connections; omit forced
 bridges and use concrete subjects instead of stock paragraph openings. These
-are writing principles, not sentence, paragraph, citation-density or length
-quotas. Preserve user-requested lists and other scoped presentation choices.'''
+are writing principles, not general sentence, paragraph, citation-density or
+length quotas; the abstract's single-paragraph form is its default genre contract.
+Preserve user-requested lists and other scoped presentation choices.'''

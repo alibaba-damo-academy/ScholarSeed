@@ -10,6 +10,7 @@ const { runInNewContext } = require('node:vm')
 const ts = require('typescript')
 const { TARGETS } = require('./target.cjs')
 const { verifyInputs, verifyNotices, stageNotices } = require('./notices.cjs')
+const { skillLockProblems } = require('../../../scripts/skills.cjs')
 const PACKAGE = require('../package.json')
 const {
   options,
@@ -24,14 +25,14 @@ const {
   localDmgbuild,
   writeBuilderConfiguration,
   resolveNsisConfiguration,
-  payloadStatistics
+  payloadStatistics,
 } = require('./build.cjs')
 const {
   adHocOptions,
   preserveReviewedRuntime,
   shouldIgnore,
   countSignableFiles,
-  trackSignProgress
+  trackSignProgress,
 } = require('./sign.cjs')
 const { isMachO, isBundle, isSignable, signableIgnore } = require('./macho.cjs')
 const { credentials, waitForNotarization } = require('./notarize.cjs')
@@ -42,7 +43,7 @@ const {
   productPath,
   RUNTIME_PROBE_SCRIPT,
   unsignedPackageCheck,
-  bestEffortRemoveTemporary
+  bestEffortRemoveTemporary,
 } = require('./verify.cjs')
 const { sha256, sha512, executableDigest } = require('./digest.cjs')
 const { OFFICE_BUILD_DIRECTORY, verifyOfficeAssets } = require('./office-assets.cjs')
@@ -52,9 +53,93 @@ const {
   developmentDisplayName,
   resolveGitIdentity,
   registerMacDevelopmentBundle,
-  updateMacBundleName
+  updateMacBundleName,
 } = require('./identity.cjs')
 const REPO_ROOT = path.join(__dirname, '..', '..', '..')
+
+test('Windows handshake writer checks each file operation independently', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../resources/installer.nsh'), 'utf8')
+  const writer = source.match(/    Function ssWriteReady\r?\n([\s\S]*?)    FunctionEnd/)[1]
+  assert.match(writer, /ClearErrors\s+\$\{if\} \$ssReadyResult/)
+  const writes = writer.match(/FileWriteUTF16LE[^\r\n]*\r?\n\s*IfErrors ss_ready_close_failed/g) || []
+  assert.equal(writes.length, 7)
+  assert.match(writer, /FileClose \$R2\s+IfErrors ss_ready_failed/)
+  assert.match(writer, /ss_ready_close_failed:\s+FileClose \$R2\s+ss_ready_failed:\s+SetErrors/)
+})
+
+test('Windows handshake writer isolates prior errors and reports file failures', {
+  skip: process.platform !== 'win32' || !process.env.NSISDIR
+    ? 'Requires Windows and NSISDIR pointing to the packaging NSIS toolchain'
+    : false,
+}, async (context) => {
+  const source = fs.readFileSync(path.join(__dirname, '../resources/installer.nsh'), 'utf8')
+  const writer = source.match(/    Function ssWriteReady\r?\n[\s\S]*?    FunctionEnd/)
+  assert.ok(writer, 'The test must execute the production handshake writer')
+  const compiler = path.join(process.env.NSISDIR, 'makensis.exe')
+  const failureCode = 13
+  for (const result of ['elevation-required', 'ready']) {
+    for (const scenario of ['clean', 'prior-error', 'blocked-file']) {
+      await context.test(`${result}: ${scenario}`, () => {
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-handshake-'))
+        context.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+        const executable = path.join(directory, 'writer.exe')
+        const outputName = result === 'ready' ? 'ready.ini' : 'elevation.ini'
+        const output = path.join(directory, outputName)
+        if (scenario === 'blocked-file') fs.mkdirSync(output)
+        const script = `
+Unicode true
+RequestExecutionLevel user
+SilentInstall silent
+OutFile "${executable}"
+!include "LogicLib.nsh"
+!define SS_ELEVATION_REQUIRED "elevation-required"
+!define SS_ELEVATION_FILE "elevation.ini"
+!define SS_READY_FILE "ready.ini"
+!define SS_HANDSHAKE_SCHEMA 1
+Var ssReadyResult
+Var ssUpdateId
+Var ssNonce
+Var ssInstallerPid
+${writer[0]}
+Section
+  StrCpy $R1 "${directory}"
+  StrCpy $ssReadyResult "${result}"
+  StrCpy $ssUpdateId "regression-update"
+  StrCpy $ssNonce "regression-nonce"
+  System::Call 'kernel32::GetCurrentProcessId() i .r0'
+  StrCpy $ssInstallerPid $0
+  ${scenario === 'prior-error' ? 'SetErrors' : 'ClearErrors'}
+  Call ssWriteReady
+  IfErrors failed
+  SetErrorLevel 0
+  Quit
+failed:
+  SetErrorLevel ${failureCode}
+SectionEnd
+`
+        const compiled = spawnSync(compiler, ['/V2', '/WX', '-'], {
+          input: script, encoding: 'utf8', timeout: 30_000,
+        })
+        assert.equal(compiled.status, 0, `${compiled.error || ''}${compiled.stdout}${compiled.stderr}`)
+        const executed = spawnSync(executable, [], { stdio: 'ignore', timeout: 15_000 })
+        assert.equal(executed.status, scenario === 'blocked-file' ? failureCode : 0,
+          `${executed.error || ''}${executed.stdout}${executed.stderr}`)
+        if (scenario === 'blocked-file') return
+        const record = fs.readFileSync(output, 'utf16le')
+        assert.equal(record.charCodeAt(0), 0xfeff)
+        const fields = Object.fromEntries(record.slice(1).trim().split('\r\n').map(line => line.split('=')))
+        assert.deepEqual(Object.keys(fields), ['schemaVersion', 'updateId', 'nonce', 'installerPid',
+          'installerCreationLow', 'installerCreationHigh', 'result'])
+        assert.equal(fields.schemaVersion, '1')
+        assert.equal(fields.updateId, 'regression-update')
+        assert.equal(fields.nonce, 'regression-nonce')
+        assert.equal(fields.result, result)
+        assert.ok(Number(fields.installerPid) > 0)
+        assert.ok(Number(fields.installerCreationLow) !== 0 || Number(fields.installerCreationHigh) !== 0)
+      })
+    }
+  }
+})
 test('packaging targets preserve independent macOS and Windows artwork', () => {
   const desktopRoot = path.join(__dirname, '..')
   assert.notEqual(PACKAGE.build.mac.icon, PACKAGE.build.win.icon)
@@ -70,29 +155,24 @@ test('packaging targets preserve independent macOS and Windows artwork', () => {
   )
 })
 test('repository skill locks include manifests matching the reviewed dependency policy', () => {
-  const skillsRoot = path.join(REPO_ROOT, 'skills')
-  const sourceRoot = path.join(skillsRoot, 'community')
-  const lock = JSON.parse(fs.readFileSync(path.join(skillsRoot, 'skills.lock.json')))
-  const registry = JSON.parse(fs.readFileSync(path.join(skillsRoot, 'registry.json')))
-  const packageManifest = '.scholarseed-package.json'
-  const sourceNames = fs.readdirSync(sourceRoot).filter(name =>
-    fs.existsSync(path.join(sourceRoot, name, 'SKILL.md'))).sort()
-  assert.deepEqual(lock.skills.map(skill => skill.slug).sort(), sourceNames)
-  for (const skill of lock.skills) {
-    const inventory = skill.files.find(file => file.path === packageManifest)
-    assert.ok(inventory, `${skill.slug} is missing its package manifest from the lock`)
-    const payload = fs.readFileSync(path.join(sourceRoot, skill.slug, packageManifest))
-    assert.equal(crypto.createHash('sha256').update(payload).digest('hex'), inventory.sha256)
-    assert.equal(payload.length, inventory.size)
-    const manifest = JSON.parse(payload)
-    assert.equal(manifest.name, skill.slug)
-    assert.equal(manifest.version, skill.version)
-    assert.deepEqual(manifest.dependencies, registry.dependencies[skill.slug])
-  }
+  const sourceRoot = path.join(REPO_ROOT, 'skills', 'community')
+  const lock = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'skills', 'skills.lock.json')))
+  // 三方一致性（源码清单 / lock 行 / registry 依赖政策）由 scripts/skills.cjs 单独持有，
+  // 与 .husky/pre-push 共用同一实现。它收集全部违规而不是逐条 assert：单个坏技能
+  // 不得遮蔽排在它之后的技能。
+  const problems = [...skillLockProblems(REPO_ROOT)]
+
   const publicationOracle = 'scripts/smoke_publication.py'
-  const literatureReview = lock.skills.find(skill => skill.slug === 'literature-review')
-  assert.ok(literatureReview.files.some(file => file.path === publicationOracle))
-  assert.ok(fs.statSync(path.join(sourceRoot, 'literature-review', publicationOracle)).size > 0)
+  const oracleSkill = 'literature-review'
+  const oraclePath = path.join(sourceRoot, oracleSkill, publicationOracle)
+  const literatureReview = lock.skills.find((skill) => skill.slug === oracleSkill)
+  if (!literatureReview || !literatureReview.files.some((file) => file.path === publicationOracle)) {
+    problems.push(`${oracleSkill} is missing ${publicationOracle} from the lock`)
+  } else if (!fs.existsSync(oraclePath) || fs.statSync(oraclePath).size <= 0) {
+    problems.push(`${oracleSkill} ${publicationOracle} is missing or empty in the source tree`)
+  }
+
+  assert.deepEqual(problems, [])
 })
 test('macOS development protocol registration uses a stable checkout-specific bundle identity', () => {
   const calls = []
@@ -125,33 +205,87 @@ test('backend bundling uses current runtime and product configuration owners', (
 })
 const VERIFY_SOURCE = fs.readFileSync(path.join(__dirname, 'verify.cjs'), 'utf8')
 const BUILD_SOURCE = fs.readFileSync(path.join(__dirname, 'build.cjs'), 'utf8')
-const DESKTOP_BACKEND_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'backend.ts'), 'utf8')
-const UPDATER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'updater.ts'), 'utf8')
-const UPDATE_CONTRACT_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'updates.ts'), 'utf8')
-const AUTHENTICODE_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'authenticode.ts'), 'utf8')
-const INSTALLER_NSH = fs.readFileSync(path.join(__dirname, '..', 'resources', 'installer.nsh'), 'utf8')
-const COMPONENTS_CJS_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'runtime', 'components.cjs'), 'utf8')
+const DESKTOP_BACKEND_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'backend.ts'),
+  'utf8'
+)
+const STORAGE_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'storage.ts'),
+  'utf8'
+)
+const UPDATER_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'updater.ts'),
+  'utf8'
+)
+const SUBPROCESS_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'subprocess.ts'),
+  'utf8'
+)
+const UPDATE_CONTRACT_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'updates.ts'),
+  'utf8'
+)
+const AUTHENTICODE_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'main', 'authenticode.ts'),
+  'utf8'
+)
+const INSTALLER_NSH = fs.readFileSync(
+  path.join(__dirname, '..', 'resources', 'installer.nsh'),
+  'utf8'
+)
+const COMPONENTS_CJS_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'runtime', 'components.cjs'),
+  'utf8'
+)
 const SHELL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'index.ts'), 'utf8')
 const UPDATE_FEATURE_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'updates', 'state.ts'), 'utf8')
-const PRELOAD_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'preload', 'index.ts'), 'utf8')
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'updates', 'state.ts'),
+  'utf8'
+)
+const PRELOAD_SOURCE = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'preload', 'index.ts'),
+  'utf8'
+)
 const BRIDGE_TYPES_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'), 'utf8')
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'),
+  'utf8'
+)
 const BROWSER_BRIDGE_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'), 'utf8')
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'),
+  'utf8'
+)
 const UPDATE_PANEL_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'UpdatePanel.tsx'), 'utf8')
+  path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'UpdatePanel.tsx'),
+  'utf8'
+)
 const ACCOUNT_PANEL_SOURCE = fs.readFileSync(
-  path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'AccountPanel.tsx'), 'utf8')
-const PRODUCT_POLICY = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'resources', 'product.json')))
+  path.join(
+    __dirname,
+    '..',
+    'src',
+    'renderer',
+    'src',
+    'components',
+    'business',
+    'AccountPanel.tsx'
+  ),
+  'utf8'
+)
+const PRODUCT_POLICY = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', 'resources', 'product.json'))
+)
 const DEFAULT_RUNTIME_POLICY = PRODUCT_POLICY.runtimes[PRODUCT_POLICY.default_runtime]
 const REVIEWED_BINARIES = {
   codex: {
     executable_sha256: 'a'.repeat(64),
     reported_version: '0.999.0',
-    source: { package: '@openai/codex', distribution: 'verified-download',
-      archive_sha256: 'b'.repeat(64), integrity: 'sha512-fixture' }
-  }
+    source: {
+      package: '@openai/codex',
+      distribution: 'verified-download',
+      archive_sha256: 'b'.repeat(64),
+      integrity: 'sha512-fixture',
+    },
+  },
 }
 
 function noticesFixture(context) {
@@ -161,43 +295,61 @@ function noticesFixture(context) {
   const desktop = path.join(repo, 'apps', 'desktop')
   fs.mkdirSync(desktop, { recursive: true })
   fs.copyFileSync(path.join(original, 'uv.lock'), path.join(repo, 'uv.lock'))
-  fs.copyFileSync(path.join(original, 'apps', 'desktop', 'package-lock.json'), path.join(desktop, 'package-lock.json'))
+  fs.copyFileSync(
+    path.join(original, 'apps', 'desktop', 'package-lock.json'),
+    path.join(desktop, 'package-lock.json')
+  )
   const notices = path.join(desktop, 'resources', 'notices')
-  fs.cpSync(path.join(original, 'apps', 'desktop', 'resources', 'notices'), notices, { recursive: true })
+  fs.cpSync(path.join(original, 'apps', 'desktop', 'resources', 'notices'), notices, {
+    recursive: true,
+  })
   return { repo, desktop, notices, resources: path.join(repo, 'staged') }
 }
 
-test('reviewed notices match locked Python and build dependencies and stage without network', context => {
+test('reviewed notices match locked Python and build dependencies and stage without network', (context) => {
   const fixture = noticesFixture(context)
   const expected = verifyInputs(fixture.repo)
   assert.deepEqual(stageNotices(fixture.repo, fixture.resources), expected)
   assert.deepEqual(verifyNotices(fixture.resources, expected), expected)
-  assert.ok(expected.some(file => file.path === 'README.md'))
+  assert.ok(expected.some((file) => file.path === 'README.md'))
   const manifest = JSON.parse(fs.readFileSync(path.join(fixture.notices, 'manifest.json')))
-  const pillow = manifest.components.find(component => component.name === 'pillow')
-  assert.deepEqual(pillow.artifacts.map(artifact => artifact.platform).sort(), Object.keys(TARGETS).sort())
+  const pillow = manifest.components.find((component) => component.name === 'pillow')
+  assert.deepEqual(
+    pillow.artifacts.map((artifact) => artifact.platform).sort(),
+    Object.keys(TARGETS).sort()
+  )
   for (const name of ['pypdf', 'pycparser']) {
-    const component = manifest.components.find(item => item.name === name)
+    const component = manifest.components.find((item) => item.name === name)
     assert.equal(component.license, 'BSD-3-Clause')
     assert.equal(component.artifacts[0].platform, 'any')
-    const license = fs.readFileSync(path.join(fixture.notices, component.artifacts[0].licenseFile), 'utf8')
+    const license = fs.readFileSync(
+      path.join(fixture.notices, component.artifacts[0].licenseFile),
+      'utf8'
+    )
     assert.match(license, /Redistribution and use in source and binary forms/)
     assert.match(license, /ANY EXPRESS OR IMPLIED WARRANTIES/)
   }
-  assert.ok(PACKAGE.build.extraResources.some(entry => entry.from === 'resources/notices' && entry.to === 'notices'))
+  assert.ok(
+    PACKAGE.build.extraResources.some(
+      (entry) => entry.from === 'resources/notices' && entry.to === 'notices'
+    )
+  )
 })
 
-test('notice input verification rejects Python version drift with CRLF lockfiles', context => {
+test('notice input verification rejects Python version drift with CRLF lockfiles', (context) => {
   const fixture = noticesFixture(context)
   const filename = path.join(fixture.repo, 'uv.lock')
   const text = fs.readFileSync(filename, 'utf8')
   fs.writeFileSync(filename, text.replaceAll('\n', '\r\n'))
   assert.doesNotThrow(() => verifyInputs(fixture.repo))
-  fs.writeFileSync(filename, text.replace('name = "certifi"\nversion = "2026.6.17"', 'name = "certifi"\nversion = "0.0.0"'))
+  fs.writeFileSync(
+    filename,
+    text.replace('name = "certifi"\nversion = "2026.6.17"', 'name = "certifi"\nversion = "0.0.0"')
+  )
   assert.throws(() => verifyInputs(fixture.repo), /notice version differs from lock: certifi/)
 })
 
-test('notice input verification rejects npm version and integrity drift', context => {
+test('notice input verification rejects npm version and integrity drift', (context) => {
   const fixture = noticesFixture(context)
   const filename = path.join(fixture.desktop, 'package-lock.json')
   const lock = JSON.parse(fs.readFileSync(filename))
@@ -211,7 +363,7 @@ test('notice input verification rejects npm version and integrity drift', contex
   assert.throws(() => verifyInputs(fixture.repo), /notice artifact differs from lock/)
 })
 
-test('notice input verification rejects missing license and source evidence', context => {
+test('notice input verification rejects missing license and source evidence', (context) => {
   const fixture = noticesFixture(context)
   const filename = path.join(fixture.notices, 'manifest.json')
   const manifest = JSON.parse(fs.readFileSync(filename))
@@ -224,10 +376,12 @@ test('notice input verification rejects missing license and source evidence', co
   assert.throws(() => verifyInputs(fixture.repo), /notice license missing or changed/)
 })
 
-test('notice artifact verification rejects missing, changed and extra files on either platform layout', context => {
+test('notice artifact verification rejects missing, changed and extra files on either platform layout', (context) => {
   const fixture = noticesFixture(context)
-  for (const resources of [path.join(fixture.repo, 'Application.app', 'Contents', 'Resources'),
-    path.join(fixture.repo, 'windows-unpacked', 'resources')]) {
+  for (const resources of [
+    path.join(fixture.repo, 'Application.app', 'Contents', 'Resources'),
+    path.join(fixture.repo, 'windows-unpacked', 'resources'),
+  ]) {
     const expected = stageNotices(fixture.repo, resources)
     const filename = path.join(resources, 'notices', 'README.md')
     const original = fs.readFileSync(filename)
@@ -242,7 +396,7 @@ test('notice artifact verification rejects missing, changed and extra files on e
   assert.throws(() => verifyNotices(fixture.resources), /missing frozen notices inventory/)
 })
 
-test('notice input verification requires the source guide and the liblzma correction', context => {
+test('notice input verification requires the source guide and the liblzma correction', (context) => {
   const fixture = noticesFixture(context)
   const guide = path.join(fixture.notices, 'README.md')
   const original = fs.readFileSync(guide)
@@ -253,7 +407,7 @@ test('notice input verification requires the source guide and the liblzma correc
   assert.throws(() => verifyInputs(fixture.repo), /notice supplement missing or changed/)
 })
 
-test('notice input verification rejects Python source and artifact hash drift', context => {
+test('notice input verification rejects Python source and artifact hash drift', (context) => {
   const fixture = noticesFixture(context)
   const filename = path.join(fixture.notices, 'manifest.json')
   const manifest = JSON.parse(fs.readFileSync(filename))
@@ -269,7 +423,16 @@ test('notice input verification rejects Python source and artifact hash drift', 
 
 test('product version identifiers are retained and no Skillhub baseline is required', () => {
   // 开源版技能源码随仓库开源: 不再需要 --previous/--initial 声明交付基线。
-  const parsed = options(['--version', '0.1.1', '--platform', 'darwin', '--arch', 'arm64', '--stage', 'dir'])
+  const parsed = options([
+    '--version',
+    '0.1.1',
+    '--platform',
+    'darwin',
+    '--arch',
+    'arm64',
+    '--stage',
+    'dir',
+  ])
   assert.equal(parsed.version, '0.1.1')
   assert.equal(parsed.stage, 'dir')
   assert.equal(options([]).stage, options([]).target.installer)
@@ -284,32 +447,52 @@ test('the build stamp is a separate field, never folded into the version', () =>
   // 否则服务端无法按 SemVer 排序，客户端也无法与 app.getVersion() 对上。
   assert.throws(() => options(['--version', 'v0.1_202608261200']), /x\.y\.z/)
   assert.throws(() => options(['--version', '0.1']), /x\.y\.z/)
-  assert.throws(() => options(['--version', '0.1.1', '--build-number', '2026082612']), /build-number/)
-  assert.equal(options(['--version', '0.1.1', '--build-number', '202608261200'])['build-number'],
-    '202608261200')
+  assert.throws(
+    () => options(['--version', '0.1.1', '--build-number', '2026082612']),
+    /build-number/
+  )
+  assert.equal(
+    options(['--version', '0.1.1', '--build-number', '202608261200'])['build-number'],
+    '202608261200'
+  )
 })
 test('build number defaults to the Beijing stamp of the built commit', () => {
   assert.equal(buildNumberOf({ 'build-number': '202601010000' }, 'not-a-commit'), '202601010000')
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout.trim()
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }).stdout.trim()
   const stamp = buildNumberOf({ 'build-number': '' }, head)
   assert.match(stamp, /^\d{12}$/)
   // Cross-check against an independent derivation: China has no DST, so Beijing
   // wall-clock is always the committer instant shifted by +8h.
-  const epoch = Number(spawnSync('git', ['show', '-s', '--format=%ct', head],
-    { cwd: REPO_ROOT, encoding: 'utf8' }).stdout.trim())
-  const expected = new Date((epoch + 8 * 3600) * 1000).toISOString().slice(0, 16).replace(/[-T:]/g, '')
+  const epoch = Number(
+    spawnSync('git', ['show', '-s', '--format=%ct', head], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    }).stdout.trim()
+  )
+  const expected = new Date((epoch + 8 * 3600) * 1000)
+    .toISOString()
+    .slice(0, 16)
+    .replace(/[-T:]/g, '')
   assert.equal(stamp, expected)
 })
 test('result artifacts are keyed by the installer extension', () => {
   assert.deepEqual(installerArtifacts(null), {})
-  assert.deepEqual(installerArtifacts({ path: '/out/scholarseed-0.1.1-darwin-arm64.dmg' }),
-    { dmg: { path: '/out/scholarseed-0.1.1-darwin-arm64.dmg' } })
-  assert.deepEqual(installerArtifacts({ path: 'C:/out/scholarseed-0.1.1-windows-amd64.exe' }),
-    { exe: { path: 'C:/out/scholarseed-0.1.1-windows-amd64.exe' } })
+  assert.deepEqual(installerArtifacts({ path: '/out/scholarseed-0.1.1-darwin-arm64.dmg' }), {
+    dmg: { path: '/out/scholarseed-0.1.1-darwin-arm64.dmg' },
+  })
+  assert.deepEqual(installerArtifacts({ path: 'C:/out/scholarseed-0.1.1-windows-amd64.exe' }), {
+    exe: { path: 'C:/out/scholarseed-0.1.1-windows-amd64.exe' },
+  })
 })
 test('packaging reads the Serve-owned default configuration', () => {
   assert.match(BUILD_SOURCE, /apps\/serve\/service\/settings\/default\.json/)
-  assert.doesNotMatch(BUILD_SOURCE, /packages\/damoagent\/damoagent\/surface\/config\/default\.json/)
+  assert.doesNotMatch(
+    BUILD_SOURCE,
+    /packages\/damoagent\/damoagent\/surface\/config\/default\.json/
+  )
 })
 test('builds reject bypass flags and malformed identifiers', () => {
   assert.throws(() => options(['--no-preflight', 'yes']))
@@ -340,8 +523,16 @@ test('build output directory is stable per type, platform, and architecture', ()
   )
 })
 test('Windows x64 uses NSIS and requires signing inputs unless explicitly candidate', () => {
-  const base = ['--platform', 'win32', '--arch', 'x86_64', '--type', 'preview',
-    '--update-base-url', 'https://updates.example.test']
+  const base = [
+    '--platform',
+    'win32',
+    '--arch',
+    'x86_64',
+    '--type',
+    'preview',
+    '--update-base-url',
+    'https://updates.example.test',
+  ]
   assert.throws(() => options(base), /windows-publisher|signing environment/i)
   const parsed = options([...base, '--candidate'])
   assert.equal(parsed.stage, 'nsis')
@@ -363,19 +554,25 @@ test('Windows signer changes only ScholarSeed-owned executables', () => {
 // 构造来解释「为什么不用」，对整文件 doesNotMatch 会被注释误触发（上一轮就踩过同名陷阱）。
 function windowsVerifyScript() {
   const source = ts.createSourceFile('updater.ts', UPDATER_SOURCE, ts.ScriptTarget.Latest, true)
-  const verifier = source.statements.find(statement =>
-    ts.isFunctionDeclaration(statement) && statement.name?.text === 'verifyWindowsInstaller')
+  const verifier = source.statements.find(
+    (statement) =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === 'verifyWindowsInstaller'
+  )
   assert.ok(verifier, 'verifyWindowsInstaller not found')
   const declaration = verifier.body.statements
     .filter(ts.isVariableStatement)
-    .flatMap(statement => [...statement.declarationList.declarations])
-    .find(declaration => declaration.name.getText(source) === 'script')
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((declaration) => declaration.name.getText(source) === 'script')
   assert.ok(declaration?.initializer, 'script literal not found')
   return runInNewContext(declaration.initializer.getText(source), {
     WINDOWS_INSTALLER_ENV: 'SCHOLARSEED_UPDATE_INSTALLER',
     WINDOWS_VERIFY_REPORT_ENV: 'SCHOLARSEED_UPDATE_VERIFY_REPORT',
     // 报告契约值在 authenticode.ts 只存一份；这里的字面量必须与它一致，下面单独钉死。
-    AUTHENTICODE_REPORT_KEYS: { languageMode: 'LanguageMode', status: 'Status', subject: 'Subject' }
+    AUTHENTICODE_REPORT_KEYS: {
+      languageMode: 'LanguageMode',
+      status: 'Status',
+      subject: 'Subject',
+    },
   })
 }
 test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdlet, no shell', () => {
@@ -437,28 +634,37 @@ test('Windows updater verifies Authenticode with a ConstrainedLanguage-safe cmdl
   // 这里替换为同等强度的新不变量：参数形态、env 交接、commit 前置、以及「新客户端永不再传
   // /S、--force-run」的否定断言（带引号字面量形态，避开中文注释里的提及）。
   assert.match(UPDATER_SOURCE, /WINDOWS_UPDATE_ARGUMENT = '--updated'/)
-  assert.match(UPDATER_SOURCE, /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT, `\$\{UPDATE_ID_ARGUMENT_PREFIX\}\$\{updateId\}`\]/)
+  assert.match(
+    UPDATER_SOURCE,
+    /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT, `\$\{UPDATE_ID_ARGUMENT_PREFIX\}\$\{updateId\}`\]/
+  )
   assert.match(UPDATER_SOURCE, /\[HANDSHAKE_HOME_ENV\]: desktopHome\(\)/)
   assert.match(UPDATER_SOURCE, /\[HANDSHAKE_NONCE_ENV\]: request\.nonce/)
-  assert.match(UPDATER_SOURCE, /publishHandshakeDecision\(directory, request, DECISION_COMMIT, log\)/)
+  assert.match(
+    UPDATER_SOURCE,
+    /publishHandshakeDecision\(directory, request, DECISION_COMMIT, log\)/
+  )
   assert.doesNotMatch(UPDATER_SOURCE, /'\/S'/)
   assert.doesNotMatch(UPDATER_SOURCE, /'--force-run'/)
-  assert.match(UPDATER_SOURCE, /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/)
+  assert.match(
+    UPDATER_SOURCE,
+    /verifyWindowsInstaller\(installer, config\.expectedWindowsPublisher, log\)/
+  )
   assert.doesNotMatch(UPDATER_SOURCE, /spawn\(installer,[\s\S]{0,160}shell:/)
 })
 test('Windows subprocess output is decoded by console code page, not blindly as UTF-8', () => {
   // bug 87042987 次生缺陷：中文 Windows 的 powershell.exe 按 GBK(936) 输出，无条件 toString('utf8')
   // 会把错误原文解成乱码。改为探测活动代码页（chcp.com 是原生 exe、不经 PowerShell，不受 CLM 影响）
   // 后用 TextDecoder 按对应标签解码；并收齐字节再整体解码，避免逐块 toString 截断跨块多字节字符。
-  assert.match(UPDATER_SOURCE, /chcp\.com/)
-  assert.match(UPDATER_SOURCE, /new TextDecoder\(/)
-  assert.match(UPDATER_SOURCE, /WINDOWS_CODE_PAGE_ENCODINGS/)
-  assert.match(UPDATER_SOURCE, /'936': 'gbk'/)
-  assert.doesNotMatch(UPDATER_SOURCE, /chunk\.toString\('utf8'\)/)
+  assert.match(SUBPROCESS_SOURCE, /chcp\.com/)
+  assert.match(SUBPROCESS_SOURCE, /new TextDecoder\(/)
+  assert.match(SUBPROCESS_SOURCE, /WINDOWS_CODE_PAGE_ENCODINGS/)
+  assert.match(SUBPROCESS_SOURCE, /'936': 'gbk'/)
+  assert.doesNotMatch(SUBPROCESS_SOURCE, /chunk\.toString\('utf8'\)/)
   // 探测只服务日志/stderr 可读性：判定输入走 ASCII-only JSON 报告，与探测结果无关。探测有两条静默
   // 回退（chcp 没跑成、TextDecoder 不认标签），87108457 现场因此无法定论是哪一条 —— 实际选用的编码
   // 必须落进 update.log。
-  assert.match(UPDATER_SOURCE, /encoding: string/)
+  assert.match(SUBPROCESS_SOURCE, /encoding: string/)
   assert.match(UPDATER_SOURCE, /stdoutEncoding=\$\{result\.encoding\}/)
 })
 test('Windows install failures are classified and never surface raw stderr to the user', () => {
@@ -470,7 +676,10 @@ test('Windows install failures are classified and never surface raw stderr to th
   assert.match(UPDATER_SOURCE, /install_signature_indeterminate/)
   assert.match(UPDATE_FEATURE_SOURCE, /install_signature_indeterminate/)
   assert.match(UPDATER_SOURCE, /class WindowsVerifyError extends Error/)
-  assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: windowsInstallFallback\(error\) \}/)
+  assert.match(
+    UPDATER_SOURCE,
+    /return \{ ok: false, errorFallback: windowsInstallFallback\(error\) \}/
+  )
 })
 test('the updater never blocks the main process with a synchronous spawn', () => {
   // Electron 主进程与 macOS AppKit 主线程是同一个：任何 spawnSync 都会冻住事件循环，期间原生
@@ -478,9 +687,20 @@ test('the updater never blocks the main process with a synchronous spawn', () =>
   // stapler 十几秒，都曾让客户端在安装期无响应（最小化/关闭失灵）。所有子进程一律走异步 runCommandAsync。
   assert.match(UPDATER_SOURCE, /runCommandAsync/)
   assert.doesNotMatch(UPDATER_SOURCE, /spawnSync\s*\(/)
+  assert.doesNotMatch(SUBPROCESS_SOURCE, /spawnSync\s*\(/)
   // 安全校验必须 await：漏掉会让安装先于签名校验完成（fail-open 安全洞），比卡住更糟。
-  assert.match(UPDATER_SOURCE, /await requireCommandAsync\('codesign', \['--verify', '--deep', '--strict'/)
-  assert.match(UPDATER_SOURCE, /await verifyMountedApplication\(stage, meta, config\)/)
+  assert.match(
+    UPDATER_SOURCE,
+    /await runLoggedCommand\(\s*log,\s*'application signature',\s*'codesign',\s*\['--verify', '--deep', '--strict', appPath\]/
+  )
+  assert.match(UPDATER_SOURCE, /await verifyMountedApplication\(stage, meta, config, log, installation, 'staged'\)/)
+  // bug 87253073：外部命令挂起不允许把安装变成无限等待。超时/取消的强制层在唯一收口点
+  // subprocess.ts —— 超时 SIGKILL 子进程并 reject，准备链每一步都声明上限。
+  assert.match(SUBPROCESS_SOURCE, /timeoutMs/)
+  assert.match(SUBPROCESS_SOURCE, /child\.kill\('SIGKILL'\)/)
+  assert.match(UPDATER_SOURCE, /MACOS_MOUNT_COMMAND_TIMEOUT_MS/)
+  assert.match(UPDATER_SOURCE, /MACOS_SIGNATURE_COMMAND_TIMEOUT_MS/)
+  assert.match(UPDATER_SOURCE, /MACOS_STAGE_COPY_TIMEOUT_MS/)
 })
 test('Windows update recreates a missing desktop shortcut (customInstall safety net)', () => {
   // 更新时 electron-builder 的 addDesktopLink 在 $keepShortcuts=="true" 下只把旧名快捷方式 Rename 成
@@ -513,14 +733,17 @@ test('Windows installer.nsh carries the update handshake contract (proposal 108 
   // reparse 拒绝走 FileFunc 宏形式（原生指令形式在真机上不成立）。
   assert.match(INSTALLER_NSH, /\$\{GetFileAttributes\} "\$R1" "REPARSE_POINT" \$R6/)
   // 4. cancel 与决策超时都必须在卸载前 Quit（绝不带活流程进 installSection）。
-  assert.match(INSTALLER_NSH, /ss_decision_cancel:[\s\S]{0,400}?Quit/)
-  assert.match(INSTALLER_NSH, /ss_decision_timeout:[\s\S]{0,600}?Quit/)
+  assert.match(INSTALLER_NSH, /ss_decision_cancel:[\s\S]{0,400}?Goto ss_exchange_failed/)
+  assert.match(INSTALLER_NSH, /ss_decision_timeout:[\s\S]{0,600}?Goto ss_exchange_failed/)
   // 5. 旧进程退出超时必须中止且不强杀：等待循环里不得出现任何 kill 原语。
-  assert.match(INSTALLER_NSH, /ss_init_fail_oldproc:[\s\S]{0,600}?Quit/)
+  assert.match(INSTALLER_NSH, /ss_exchange_oldproc:[\s\S]{0,600}?SS_HANDOFF_REJECTED/)
   assert.doesNotMatch(INSTALLER_NSH, /nsProcess|taskkill|TerminateProcess/)
   // 6. 自动拉起唯一所有者：ssLaunchUpdatedAppOnce（单次守卫 + ExecShellAsUser 降权拉起真实 exe）。
   assert.match(INSTALLER_NSH, /StrCmp \$ssLaunchAttempted "1" ss_launch_done/)
-  assert.match(INSTALLER_NSH, /\$\{StdUtils\.ExecShellAsUser\} \$0 "\$appExe" "open" "--updated --scholarseed-update-id=\$ssUpdateId"/)
+  assert.match(
+    INSTALLER_NSH,
+    /\$\{StdUtils\.ExecShellAsUser\} \$0 "\$appExe" "open" "--updated --scholarseed-update-id=\$ssUpdateId"/
+  )
   assert.match(INSTALLER_NSH, /!define MUI_PAGE_CUSTOMFUNCTION_PRE ssFinishPre/)
   // 7. customInstall 只置成功标志，绝不自己拉起（否则出现第二个启动者）。
   // 行首锚定：文件头注释里也提到 "!macro customInstall" 字样，不能抢先命中。
@@ -529,7 +752,7 @@ test('Windows installer.nsh carries the update handshake contract (proposal 108 
   assert.match(customInstall[1], /StrCpy \$ssInstallComplete "1"/)
   assert.doesNotMatch(customInstall[1], /Exec/)
   // 8. install.log 行是 ASCII JSON、与 update.log 共享 updateId。
-  assert.match(INSTALLER_NSH, /"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampUtc":"/)
+  assert.match(INSTALLER_NSH, /"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampLocal":"/)
   assert.match(INSTALLER_NSH, /FileWrite \$ssLogHandle "\$ssUpdateId"/)
   // 8b. 2026-09-22 真机 install.log 恒 0 字节后的加固形态（运行时待 Windows 出包验证）：
   // 句柄用具名 Var 不借 $9；20 个寄存器全自保存（GetTime 会扫 $0-$9/$R0-$R9，扫掉调用方的
@@ -541,47 +764,154 @@ test('Windows installer.nsh carries the update handshake contract (proposal 108 
   assert.match(ssLogEvent[1], /FileWrite \$ssLogHandle /)
   assert.doesNotMatch(ssLogEvent[1], /FileOpen \$9 |FileWrite \$9 |FileClose \$9/)
   assert.match(ssLogEvent[1], /Push \$R9/)
-  assert.match(ssLogEvent[1], /Pop \$0\s*\r?\n\s*FunctionEnd|Pop \$0\s*$/)
+  assert.match(ssLogEvent[1], /Pop \$0\s*\r?\n\s*(;[^\n]*\r?\n\s*)?FunctionEnd|Pop \$0\s*$/)
   assert.match(ssLogEvent[1], /IfFileExists "\$ssHome\\logs" ss_log_dir_ok/)
   assert.doesNotMatch(ssLogEvent[1], /\$ssTimeDayT|\$ssTimeSecondZ/)
+  // 行头先落盘再 GetTime，且 GetTime 后立刻 ClearErrors：第四轮真机定论 NSIS 3.0.4.1 的
+  // FileFunc GetTime 写不出输出变量（"U" 选项无效）且留错误标志，标志残留既让 FileOpen 后的
+  // IfErrors 误跳（三轮 0 字节真凶），也让 log-dir 检查误判 log-dir-unavailable。
+  // 旧顺序（GetTime 在 FileOpen 前）与残留标志都禁止回归；时间戳改本地时间字段 timestampLocal。
+  assert.doesNotMatch(ssLogEvent[1], /\$\{GetTime\}[\s\S]*?FileOpen \$ssLogHandle/)
+  assert.match(ssLogEvent[1], /\$\{GetTime\} "" "L" [^\n]*\r?\n\s*ClearErrors/)
+  assert.match(
+    ssLogEvent[1],
+    /FileWrite \$ssLogHandle '\{"schemaVersion":\$\{SS_HANDSHAKE_SCHEMA\},"timestampLocal":"'/
+  )
+  assert.match(
+    ssLogEvent[1],
+    /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" w\r?\n\s*IfErrors ss_log_done\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*;[^\n]*\r?\n\s*FileWrite \$ssLogHandle '\{"schemaVersion":/
+  )
   // 第二轮真机证明 'a'+FileSeek 组合仍 0 字节（ready.ini 的 'w'+UTF16LE 每轮成功）：弃用 append，
   // 首条日志前轮转旧文件（崩溃轮证据保留一代），本体 'w' 写；轮转每轮只发生一次。
   assert.doesNotMatch(ssLogEvent[1], /FileSeek/)
   assert.match(ssLogEvent[1], /StrCmp \$ssLogRotated "1" ss_log_open/)
   assert.match(ssLogEvent[1], /Delete "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/)
-  assert.match(ssLogEvent[1], /Rename "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/)
+  assert.match(
+    ssLogEvent[1],
+    /Rename "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" "\$ssHome\\logs\\\$\{SS_INSTALL_PREV_LOG\}"/
+  )
   assert.match(ssLogEvent[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_INSTALL_LOG\}" w/)
-  // 8c. boot 探针矩阵：四种写原语组合各写独立文件，home 一可用就跑（后续校验失败/崩溃也留证据）。
-  const probe = INSTALLER_NSH.match(/\n\s*Function ssProbeWritePrimitives\r?\n([\s\S]*?)\n\s*FunctionEnd/)
-  assert.ok(probe, 'ssProbeWritePrimitives function not found')
-  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_APPEND_ANSI_LOG\}" a/)
-  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_WRITE_ANSI_LOG\}" w/)
-  assert.match(probe[1], /FileOpen \$ssLogHandle "\$ssHome\\logs\\\$\{SS_PROBE_APPEND_UTF16_LOG\}" a/)
-  assert.match(probe[1], /FileWriteUTF16LE \$ssLogHandle 'probe-u16/)
-  assert.match(probe[1], /nsExec::Exec `cmd\.exe \/c echo probe-x>>/)
-  assert.match(INSTALLER_NSH, /ReadEnvStr \$ssHome \$\{SS_HOME_ENV\}\r?\n\s*StrCmp \$ssHome "" ss_init_fail_home\r?\n\s*;[^\n]*\r?\n\s*Call ssProbeWritePrimitives/)
-  // 8d. Node 侧把六个文件尺寸落进 update.log：安装器日志静默与坏原语指认都从现场日志可见。
-  assert.match(UPDATER_SOURCE, /installer log sizes: \$\{installerLogSizes\(\)\}/)
-  assert.match(UPDATER_SOURCE, /'install-probe-a\.log'/)
-  assert.match(UPDATER_SOURCE, /'install-prev\.log'/)
+  // 8c. 探针矩阵与 Node 尺寸探针已完成使命（第四轮定根因、第五轮验收全绿）并全撤：
+  // install.log 自身（本轮最后完成相位一行 + install-prev 上一轮同义）就是之后的证据通道；
+  // 崩溃归因靠「崩溃前最后完成相位」足够 confine。禁止探针设施回归。
+  assert.doesNotMatch(INSTALLER_NSH, /ssProbeWritePrimitives|SS_PROBE_|install-probe-/)
+  assert.doesNotMatch(UPDATER_SOURCE, /installerLogSizes|INSTALLER_LOG_PROBE_FILES|install-probe-/)
   // 9. 协议模式跳掉 assisted 非静默必弹的「安装模式」选择页（2026-09-22 真机事故：只不传 /S
   //    而不跳页时，自动更新停在该页等人工点击，安装始终没发生）。模板在页 PRE 里给的钩子
   //    customInstallMode 置 isForceCurrentInstall 走 setInstallModePerUser+Abort 跳页分支；
   //    仅当确有 per-user 旧安装时才强制（否则回退模板默认页），卸载器构建不得引用握手 Var。
-  const customInstallMode = INSTALLER_NSH.match(/\n\s*!macro customInstallMode\r?\n([\s\S]*?)\n\s*!macroend/)
+  const customInstallMode = INSTALLER_NSH.match(
+    /\n\s*!macro customInstallMode\r?\n([\s\S]*?)\n\s*!macroend/
+  )
   assert.ok(customInstallMode, 'customInstallMode macro not found')
   assert.match(customInstallMode[1], /!ifndef BUILD_UNINSTALLER/)
   assert.match(customInstallMode[1], /\$ssHandshakeMode == "protocol"/)
-  assert.match(customInstallMode[1], /\$hasPerUserInstallation == "1"/)
+  assert.match(customInstallMode[1], /\$ssInstallScope == "\$\{SS_SCOPE_USER\}"/)
   assert.match(customInstallMode[1], /StrCpy \$isForceCurrentInstall "1"/)
+  const ssHandshakeInit = INSTALLER_NSH.match(
+    /\n\s*Function ssHandshakeInit\r?\n([\s\S]*?)\n\s*FunctionEnd/
+  )
+  assert.ok(ssHandshakeInit, 'ssHandshakeInit function not found')
+  assert.doesNotMatch(ssHandshakeInit[1], /per-machine-unsupported/)
+  assert.match(ssHandshakeInit[1], /UAC_RunElevated/)
+  assert.match(ssHandshakeInit[1], /UAC_AsUser_Call Function ssHandshakeExchange/)
+  assert.match(ssHandshakeInit[1], /ReadRegStr \$ssTargetDir HKLM/)
+  assert.match(ssHandshakeInit[1], /StrCmp \$INSTDIR \$ssTargetDir 0 ss_init_inner_fail/)
+  const exchange = INSTALLER_NSH.match(
+    /\n\s*Function ssHandshakeExchange\r?\n([\s\S]*?)\n\s*FunctionEnd/
+  )
+  assert.ok(exchange)
+  // A missing HKLM key is normal for per-user installs. Its sticky error must
+  // not turn a successful ready-file open into a rejected handoff (87319861).
+  const writeReady = INSTALLER_NSH.match(/\n\s*Function ssWriteReady\r?\n([\s\S]*?)\n\s*FunctionEnd/)[1]
+  assert.match(writeReady, /ClearErrors\s+\$\{if\} \$ssReadyResult/)
+  assert.match(writeReady, /FileClose \$R2\s+IfErrors ss_ready_failed/)
+  assert.match(exchange[1], /"ready-write-failed"[\s\S]*?Call ssWriteReady/)
+  assert.match(exchange[1], /ss_exchange_failed:[\s\S]*?Call ssLogEvent/)
+  assert.doesNotMatch(exchange[1], /\bQuit\b/)
+  assert.match(exchange[1], /StrCpy \$R9 "\$\{SS_HANDOFF_REJECTED\}"/)
+  assert.match(exchange[1], /Call ssWaitOldProcessExit/)
+  assert.match(exchange[1], /StrCpy \$R9 "\$\{SS_HANDOFF_COMMITTED\}"/)
+  assert.match(INSTALLER_NSH, /UAC_AsUser_Call Function ssLaunchUpdatedAppOnce/)
+  assert.match(INSTALLER_NSH, /UAC_AsUser_Call Function ssCompleteUserInstall/)
+  assert.match(INSTALLER_NSH, /Call ssWaitAllProcessesExit/)
+  // 10. 协议 spawn 不得带窗口隐藏旗标：GUI 子系统无控制台可藏，而该旗标的 SW_HIDE 会隐掉安装器
+  //     第一个窗口，把任何「等用户」状态变成看不见的模态挂死（同事故）。
+  const protocolSpawn = UPDATER_SOURCE.match(
+    /spawn\(installer, \[WINDOWS_UPDATE_ARGUMENT[\s\S]*?\n    \}\)/
+  )
+  assert.ok(protocolSpawn, 'protocol spawn block not found')
+  assert.doesNotMatch(protocolSpawn[0], /windowsHide/)
+  assert.doesNotMatch(UPDATER_SOURCE, /windowsInstallModeProbe|per-machine-install-manual/)
+  assert.match(UPDATER_SOURCE, /new InstallerReadiness/)
+  assert.match(UPDATER_SOURCE, /if \(!publishHandshakeDecision\(directory, request, DECISION_COMMIT, log\)\)/)
+
 })
-test('runtime store root resolves through the single owner, env override first', () => {
-  // store 根唯一解析口在 components.cjs（.cmd 前导的 batch 三档与它同档同序）；backend 不得再
-  // 自己拼 join(home, 'runtime')，否则首装自定义 store 会被主进程静默忽略、与 .cmd 走岔。
-  assert.match(DESKTOP_BACKEND_SOURCE, /resolveRuntimeStoreRoot\(process\.env, desktopHome\(\), process\.platform\)/)
-  assert.doesNotMatch(DESKTOP_BACKEND_SOURCE, /join\(desktopHome\(\), RUNTIME_DIRNAME\)/)
-  assert.match(COMPONENTS_CJS_SOURCE, /const RUNTIME_STORE_ENV = 'SCHOLARSEED_RUNTIME_STORE'/)
-  assert.match(COMPONENTS_CJS_SOURCE, /if defined \$\{RUNTIME_STORE_ENV\} \(set "SS_RUNTIME=%\$\{RUNTIME_STORE_ENV\}%"\) else \(if defined \$\{HOME_ENV\}/)
+test('legacy Windows install waits for the old app to exit before touching files', () => {
+  // 真实用户场景：旧版本仍在运行，用户运行新安装器 → 旧卸载器关不掉进程（其取消路径退出码 0
+  // 被 handleUninstallResult 当成卸载成功），安装继续覆盖被占用文件，报「不能打开要写入的文件
+  // Uninstall ScholarSeed.exe」。默认 CHECK_APP_RUNNING 在 per-machine 内层提权实例被
+  // ${UAC_IsInnerInstance} 守卫整体跳过，legacy 又不受 proposal 108 握手保护，于是没有闸门。
+  // 修法：legacy 进入页面序列前 fail-closed 等待 —— 检测到运行就提示手动退出并轮询，彻底退出
+  // 才继续，取消/静默超时即中止；全程只查询、绝不强杀。
+  assert.match(INSTALLER_NSH, /!macro ssDetectAppRunning _RETURN/)
+  // 纯查询：tasklist + findstr 管道按镜像名锚定，不依赖 PowerShell 语言模式。
+  assert.match(INSTALLER_NSH, /\/C tasklist \/FI "USERNAME eq %USERNAME%"/)
+  assert.match(INSTALLER_NSH, /findstr\.exe" \/B \/I \/C:/)
+  const enforce = INSTALLER_NSH.match(
+    /\n\s*Function ssEnforceAppClosed\r?\n([\s\S]*?)\n\s*FunctionEnd/
+  )
+  assert.ok(enforce, 'ssEnforceAppClosed function not found')
+  assert.match(enforce[1], /!insertmacro ssDetectAppRunning \$R0/)
+  // ssDetectAppRunning 的返回语义：0 = 仍在运行，非 0（含 nsExec 的 "error"）= 未检测到。
+  // 极性必须写成「非 0 才继续」——单标签形式 StrCmp $R0 "0" ss_eac_closed 会把 0（在跑）
+  // 当成已关闭，导致在跑的放行、没跑的反而空等超时。真机探针抓到的正是这个反极性。
+  assert.equal((enforce[1].match(/StrCmp \$R0 "0" 0 ss_eac_closed/g) || []).length, 2)
+  assert.doesNotMatch(enforce[1], /StrCmp \$R0 "0" ss_eac_closed/)
+  // 手动关闭提示：Retry 重新检测，Cancel 中止；静默不弹窗、限时等待。
+  assert.match(enforce[1], /!insertmacro ssLocalizedMessage \$R9 "ScholarSeed is still running\./)
+  assert.match(enforce[1], /MessageBox MB_RETRYCANCEL\|MB_ICONEXCLAMATION "\$R9"/)
+  assert.match(enforce[1], /\/SD IDCANCEL IDRETRY ss_eac_ui_wait/)
+  assert.match(enforce[1], /ss_eac_ui_wait:\r?\n\s*Goto ss_eac_ui_loop/)
+  assert.doesNotMatch(enforce[1], /StrCmp \$R2 "1" ss_eac_ui_wait/)
+  assert.match(INSTALLER_NSH, /StrCpy \$\{_OUTPUT\} "\$\{_ENGLISH\}"/)
+  assert.match(INSTALLER_NSH, /\$LANGUAGE == \$\{LANG_SIMPCHINESE\}/)
+  assert.match(INSTALLER_NSH, /\$LANGUAGE == \$\{LANG_TRADCHINESE\}/)
+  assert.equal((INSTALLER_NSH.match(/!insertmacro ssLocalizedMessage \$R9 /g) || []).length, 8)
+  assert.equal(
+    (
+      INSTALLER_NSH.match(
+        /MessageBox MB_(?:RETRYCANCEL\|MB_ICONEXCLAMATION|OK\|MB_ICONSTOP) "\$R9"/g
+      ) || []
+    ).length,
+    8
+  )
+  assert.match(enforce[1], /IfSilent ss_eac_silent_setup/)
+  assert.match(enforce[1], /IntCmp \$R1 \$\{SS_OLDPROC_WAIT_ROUNDS\} ss_eac_silent_abort/)
+  // 取消与静默超时都必须中止安装，只有「确认已退出」才落回 Pop 继续。
+  assert.match(enforce[1], /ss_eac_ui_loop:[\s\S]*?MessageBox[\s\S]*?Quit/)
+  assert.match(enforce[1], /ss_eac_silent_abort:[\s\S]{0,200}?Quit/)
+  assert.match(enforce[1], /ss_eac_closed:/)
+  // 与 proposal 108 同纪律：闸门内不得出现任何强杀原语。
+  assert.doesNotMatch(enforce[1], /nsProcess|taskkill|TerminateProcess/)
+  // legacy 分支必须调用它；协议分支继续由 ssWaitOldProcessExit 按 callerPid 收敛。
+  assert.match(INSTALLER_NSH, /IfErrors ss_init_legacy/)
+  assert.match(INSTALLER_NSH, /ss_init_legacy:[\s\S]{0,200}?Call ssEnforceAppClosed/)
+})
+
+test('runtime store 收敛为 <home>/runtime，独立覆盖轴已删除（proposal 112）', () => {
+  // store 根唯一解析口在 components.cjs（.cmd 前导的 batch 两档与它同源）；backend 经
+  // runtimeStoreRoot(desktopHome()) 取 <home>/runtime，不再有 SCHOLARSEED_RUNTIME_STORE 覆盖档。
+  assert.match(DESKTOP_BACKEND_SOURCE, /computeRuntimeStoreRoot\(desktopHome\(\)\)/)
+  assert.doesNotMatch(DESKTOP_BACKEND_SOURCE, /resolveRuntimeStoreRoot/)
+  assert.doesNotMatch(COMPONENTS_CJS_SOURCE, /SCHOLARSEED_RUNTIME_STORE/)
+  assert.doesNotMatch(COMPONENTS_CJS_SOURCE, /RUNTIME_STORE_ENV/)
+  assert.match(
+    COMPONENTS_CJS_SOURCE,
+    /function runtimeStoreRoot\(home\) \{\s*return path\.join\(home, RUNTIME_DIRNAME\)/
+  )
+  // .cmd 两档前导的真实输出由 components.test.cjs 对 windowsComponentPreamble() 钉死，
+  // 此处只保证源码不再残留覆盖档常量。
 })
 test('uninstaller clears re-acquirable caches: transient-only on update, full sweep on real uninstall', () => {
   // 用户目录残留的是「可再获取」缓存（组件 store 数 GB + 暂存包），不是用户数据；NSIS 卸载器
@@ -591,55 +921,176 @@ test('uninstaller clears re-acquirable caches: transient-only on update, full sw
   // 新安装器正从其中那个 exe 运行。
   const customUnInstall = INSTALLER_NSH.match(/\n!macro customUnInstall\r?\n([\s\S]*?)\n!macroend/)
   assert.ok(customUnInstall, 'customUnInstall macro not found')
-  // store 根与 Node/.cmd 同源三档：env 登记优先，否则默认路径。
-  assert.match(customUnInstall[1], /ReadEnvStr \$R0 "SCHOLARSEED_RUNTIME_STORE"/)
-  assert.match(customUnInstall[1], /StrCpy \$R0 "\$PROFILE\\\.scholarseed\\runtime"/)
-  assert.match(customUnInstall[1], /\$\{if\} \$\{isUpdated\}\r?\n\s*RMDir \/r "\$R0\\staging"\r?\n\s*RMDir \/r "\$R0\\locks"\r?\n\s*\$\{else\}\r?\n\s*RMDir \/r "\$R0"\r?\n\s*DeleteRegValue HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"\r?\n\s*System::Call 'user32::SendMessageTimeout[^\n]*\r?\n\s*RMDir \/r "\$LOCALAPPDATA\\scholarseed-update"\r?\n\s*\$\{endIf\}/)
+  // store 根 = <home>\runtime；home 取注册表 SCHOLARSEED_HOME（收敛后唯一数据根），否则默认。
+  assert.match(customUnInstall[1], /ReadRegStr \$R0 HKCU "Environment" "SCHOLARSEED_HOME"/)
+  assert.match(customUnInstall[1], /StrCpy \$R0 "\$PROFILE\\\.scholarseed"/)
+  assert.match(customUnInstall[1], /StrCpy \$R0 "\$R0\\runtime"/)
+  assert.match(customUnInstall[1], /DeleteRegValue HKCU "Environment" "SCHOLARSEED_HOME"/)
+  assert.doesNotMatch(customUnInstall[1], /SCHOLARSEED_RUNTIME_STORE/)
+  assert.match(
+    customUnInstall[1],
+    /\$\{if\} \$\{isUpdated\}\r?\n\s*RMDir \/r "\$R0\\staging"\r?\n\s*RMDir \/r "\$R0\\locks"\r?\n\s*\$\{else\}\r?\n\s*RMDir \/r "\$R0"/
+  )
   // 不得整删用户 home 或 .scholarseed 根（用户数据）：只允许删 $R0（store 根）与暂存包缓存。
   assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$PROFILE"/)
   assert.doesNotMatch(customUnInstall[1], /RMDir \/r "\$R0\\(?!staging|locks)/)
   // 目录名与 TS 事实源逐字对齐，防 nsh 手抄走样。
-  assert.match(DESKTOP_BACKEND_SOURCE, /SCHOLARSEED_HOME_DIRNAME = '\.scholarseed'/)
+  assert.match(STORAGE_SOURCE, /SCHOLARSEED_HOME_DIRNAME = '\.scholarseed'/)
   assert.match(COMPONENTS_CJS_SOURCE, /const RUNTIME_DIRNAME = 'runtime'/)
   assert.match(COMPONENTS_CJS_SOURCE, /const STAGING_DIRNAME = 'staging'/)
   assert.match(COMPONENTS_CJS_SOURCE, /const LOCKS_DIRNAME = 'locks'/)
   assert.match(UPDATER_SOURCE, /UPDATE_CACHE_DIRNAME = 'scholarseed-update'/)
 })
-test('runtime store path is exposed read-only through the bridge for the about page', () => {
-  // 展示链路四层齐全：主进程 handle（解析口收 null 不甩异常给渲染层）→ preload → 桥类型 →
-  // web 形态 stub；关于页只读展示、不给改（改 = 数 GB 重解压，入口锁在首装向导）。
-  assert.match(SHELL_SOURCE, /ipcMain\.handle\('scholarseed:runtime-store-path', \(\) => runtimeStoreRoot\(\)\)/)
+test('data location is runtime read-only; container root is the only runtime-mutable axis (proposal 112)', () => {
+  // 桥：storage-config 只读概览（含首启门控 firstLaunchEligible）+ commit-data-home 仅首启一次性
+  // 「高级」消费；设置页「数据存储」home 只读 + 容器根可改；关于页不承载任何设置。
+  assert.match(SHELL_SOURCE, /ipcMain\.handle\('scholarseed:storage-config'/)
+  assert.match(SHELL_SOURCE, /firstLaunchEligible: isFirstLaunchEligible\(\)/)
+  assert.match(SHELL_SOURCE, /ipcMain\.handle\('scholarseed:commit-data-home'/)
   assert.match(DESKTOP_BACKEND_SOURCE, /export function runtimeStoreRoot\(\): string \| null/)
-  assert.match(PRELOAD_SOURCE, /ipcRenderer\.invoke\('scholarseed:runtime-store-path'\)/)
-  const GLOBAL_D_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'), 'utf8')
-  assert.match(GLOBAL_D_SOURCE, /runtimeStorePath: \(\) => Promise<string \| null>/)
-  const BROWSER_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'), 'utf8')
-  assert.match(BROWSER_SOURCE, /runtimeStorePath: async \(\) => null/)
-  const ACCOUNT_PANEL_SOURCE = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'src', 'components', 'business', 'AccountPanel.tsx'), 'utf8')
-  assert.match(ACCOUNT_PANEL_SOURCE, /data-testid="about-runtime-store"/)
-  assert.match(ACCOUNT_PANEL_SOURCE, /runtimeStore \?\? t\('accountPanel\.about\.runtimeStoreUnavailable'\)/)
-  // 只读：关于页不得出现改路径的控件（pick-dir 只允许出现在首装侧/其它既有面）。
+  assert.match(PRELOAD_SOURCE, /ipcRenderer\.invoke\('scholarseed:storage-config'\)/)
+  assert.match(PRELOAD_SOURCE, /ipcRenderer\.invoke\('scholarseed:commit-data-home', parent\)/)
+  const GLOBAL_D_SOURCE = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'src', 'global.d.ts'),
+    'utf8'
+  )
+  assert.match(GLOBAL_D_SOURCE, /storageConfig: \(\) => Promise<StorageConfig>/)
+  assert.match(
+    GLOBAL_D_SOURCE,
+    /commitDataHome: \(parent: string\) => Promise<CommitDataHomeResult>/
+  )
+  const BROWSER_SOURCE = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'src', 'browser.ts'),
+    'utf8'
+  )
+  assert.match(BROWSER_SOURCE, /storageConfig: async \(\)/)
+  assert.match(BROWSER_SOURCE, /firstLaunchEligible: false/)
+  const ACCOUNT_PANEL_SOURCE = fs.readFileSync(
+    path.join(
+      __dirname,
+      '..',
+      'src',
+      'renderer',
+      'src',
+      'components',
+      'business',
+      'AccountPanel.tsx'
+    ),
+    'utf8'
+  )
+  // 关于页只读：版本/官方入口/引导，不得承载数据位置设置或任何改路径控件。
   const aboutPage = ACCOUNT_PANEL_SOURCE.match(/function AboutPage\(\)[\s\S]*?\nfunction /)
   assert.ok(aboutPage, 'AboutPage function not found')
-  assert.doesNotMatch(aboutPage[0], /pickDir|NSD_CreateDirRequest|runtimeStorePath\(\)\.then\([^)]*set.*[Ee]dit/)
+  assert.doesNotMatch(aboutPage[0], /storageConfig|commitDataHome|pickDir|dataHome/)
+  // 「数据存储」页：home 行只读（无更改按钮）+ 安装期说明；容器根行可改 + 重启/失败提示。
+  const storagePage = ACCOUNT_PANEL_SOURCE.match(/function DataStoragePage\(\)[\s\S]*?\nfunction /)
+  assert.ok(storagePage, 'DataStoragePage function not found')
+  assert.match(storagePage[0], /data-testid="storage-data-home"/)
+  assert.match(storagePage[0], /t\('accountPanel\.storage\.dataHomeDescription'\)/)
+  assert.doesNotMatch(storagePage[0], /commitDataHome/)
+  assert.match(storagePage[0], /t\('accountPanel\.storage\.installTimeNoteWin'\)/)
+  assert.match(storagePage[0], /data-testid="storage-container-root-change"/)
+  assert.match(storagePage[0], /saveWorkspaceRoot\(picked\)/)
+  assert.match(storagePage[0], /data-testid="storage-container-root-restart"/)
+  assert.match(storagePage[0], /data-testid="storage-container-root-failed"/)
+  // 首启一次性「高级」入口：独立组件，四条件门控 + storageFirstLaunchSeen 消费一次。
+  const FIRST_LAUNCH_SOURCE = fs.readFileSync(
+    path.join(
+      __dirname,
+      '..',
+      'src',
+      'renderer',
+      'src',
+      'components',
+      'business',
+      'StorageFirstLaunch.tsx'
+    ),
+    'utf8'
+  )
+  assert.match(FIRST_LAUNCH_SOURCE, /storage\.firstLaunchEligible/)
+  assert.match(FIRST_LAUNCH_SOURCE, /window\.scholarseed\.commitDataHome/)
+  assert.match(FIRST_LAUNCH_SOURCE, /storageFirstLaunchSeen: true/)
+  const APP_SOURCE = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'src', 'App.tsx'),
+    'utf8'
+  )
+  assert.match(APP_SOURCE, /<StorageFirstLaunchDialog \/>/)
+  // 容器根入口不再埋在项目侧栏（原 bug 痛点），设置页为唯一配置面。
+  const PROJECT_PANEL_SOURCE = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'renderer', 'src', 'features', 'project', 'ProjectPanel.tsx'),
+    'utf8'
+  )
+  assert.doesNotMatch(
+    PROJECT_PANEL_SOURCE,
+    /project-root-browse|project-root-input|saveWorkspaceRoot/
+  )
 })
 test('first-install wizard offers an optional component store location, skipped otherwise', () => {
   // 首装高级步骤：留空 = 默认（透明），仅非空且校验通过才登记 env；非首装场景全部 PRE 跳页。
-  assert.match(INSTALLER_NSH, /!macro customPageAfterChangeDir\r?\n\s*!insertmacro MUI_PAGE_INIT\r?\n\s*PageEx custom\r?\n\s*PageCallbacks ssStorePagePre ssStorePageLeave/)
+  assert.match(
+    INSTALLER_NSH,
+    /!macro customPageAfterChangeDir\r?\n\s*!insertmacro MUI_PAGE_INIT\r?\n\s*PageEx custom\r?\n\s*PageCallbacks ssStorePagePre ssStorePageLeave/
+  )
   const pre = INSTALLER_NSH.match(/\n\s*Function ssStorePagePre\r?\n([\s\S]*?)\n\s*FunctionEnd/)
   assert.ok(pre, 'ssStorePagePre function not found')
   assert.match(pre[1], /\$\{if\} \$\{isUpdated\}\r?\n\s*Abort/)
   assert.match(pre[1], /\$\{if\} \$hasPerUserInstallation == "1"\r?\n\s*Abort/)
   assert.match(pre[1], /\$\{if\} \$hasPerMachineInstallation == "1"\r?\n\s*Abort/)
-  assert.match(pre[1], /ReadEnvStr \$R0 "SCHOLARSEED_RUNTIME_STORE"\r?\n\s*StrCmp \$R0 "" ss_store_show\r?\n\s*Abort/)
+  // 触发判据读注册表（升级路径 env 恒非空），且默认 home 已有数据时不引导（防 orphan）。
+  assert.match(pre[1], /ReadRegStr \$R0 HKCU "Environment" "\$\{SS_HOME_ENV\}"/)
+  assert.match(pre[1], /StrCmp \$R0 "" ss_store_check_data\r?\n\s*Abort/)
+  assert.match(pre[1], /\$\{if\} \$\{FileExists\} "\$PROFILE\\\.scholarseed\\\*\.\*"\r?\n\s*Abort/)
+  assert.doesNotMatch(pre[1], /SCHOLARSEED_RUNTIME_STORE/)
   const leave = INSTALLER_NSH.match(/\n\s*Function ssStorePageLeave\r?\n([\s\S]*?)\n\s*FunctionEnd/)
   assert.ok(leave, 'ssStorePageLeave function not found')
   assert.match(leave[1], /StrCmp \$R4 "" ss_leave_done/)
   assert.match(leave[1], /StrCmp \$R5 "\\\\" ss_store_valid/)
   assert.match(leave[1], /CreateDirectory "\$R4\\ScholarSeedWriteProbe"/)
   assert.match(leave[1], /RMDir "\$R4\\ScholarSeedWriteProbe"/)
-  assert.match(leave[1], /WriteRegStr HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE" "\$R4"/)
+  // 用户选父目录 P → home = P\.scholarseed；写注册表 + 同步安装器进程 env（自动拉起继承）。
+  assert.match(leave[1], /WriteRegStr HKCU "Environment" "\$\{SS_HOME_ENV\}" "\$R4\\\.scholarseed"/)
+  assert.match(
+    leave[1],
+    /System::Call 'kernel32::SetEnvironmentVariable\(t "\$\{SS_HOME_ENV\}", t "\$R4\\\.scholarseed"\)'/
+  )
+  assert.doesNotMatch(leave[1], /SCHOLARSEED_RUNTIME_STORE/)
   assert.match(leave[1], /SendMessageTimeout\(i 0xffff, i 0x001A/)
+  // 页回调必须住在 customHeader 宏内：installer.nsh 被拼进 sharedHeader、先于模板各 include，
+  // 顶层代码解析时 LogicLib/nsDialogs 未加载，${if}/${NSD_*} 直接 Invalid command（CI 真机踩过）。
+  const header = INSTALLER_NSH.match(/!macro customHeader\r?\n([\s\S]*?)\n\s*!endif\r?\n!macroend/)
+  assert.ok(header, 'customHeader macro not found')
+  assert.match(header[1], /Function ssStorePagePre/)
+  assert.match(header[1], /Function ssStorePageLeave/)
+  assert.match(header[1], /Function ssStoreBrowse/)
+  assert.doesNotMatch(INSTALLER_NSH, /^Function /m)
+})
+test('customInstall reconciles a legacy component-store registration into SCHOLARSEED_HOME once', () => {
+  // proposal 112 §6.E：升级期把 legacy 组件仓库轴协调进 home。触发判据必须读注册表
+  // （升级路径 env 恒非空），分支 1 持久化 home + SetEnvironmentVariable，分支 2 不动 home
+  // 仅写告知值（Software\${APP_ID}，非 Environment），两分支都撤旧轴。
+  const customInstall = INSTALLER_NSH.match(/\n!macro customInstall\r?\n([\s\S]*?)\n!macroend/)
+  assert.ok(customInstall, 'customInstall macro not found')
+  assert.match(customInstall[1], /UAC_AsUser_Call Function ssCompleteUserInstall/)
+  const completion = INSTALLER_NSH.match(/\n\s*Function ssCompleteUserInstall\r?\n([\s\S]*?)\n\s*FunctionEnd/)
+  assert.ok(completion, 'ssCompleteUserInstall function not found')
+  const body = completion[1]
+  assert.match(body, /ReadRegStr \$R0 HKCU "Environment" "\$\{SS_HOME_ENV\}"/)
+  assert.match(body, /ReadRegStr \$R1 HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"/)
+  // 分支 2 门：默认 home 有数据则不动 home。
+  assert.match(body, /\$\{if\} \$\{FileExists\} "\$PROFILE\\\.scholarseed\\\*\.\*"/)
+  // 分支 1：写 home + 同步进程 env，使自动拉起的新 app 继承（NEW-6）。
+  assert.match(body, /WriteRegStr HKCU "Environment" "\$\{SS_HOME_ENV\}" "\$R2"/)
+  assert.match(
+    body,
+    /System::Call 'kernel32::SetEnvironmentVariable\(t "\$\{SS_HOME_ENV\}", t "\$R2"\)'/
+  )
+  // WM_SETTINGCHANGE 的 lParam 必须为 "Environment"，否则 explorer 不刷新 env，
+  // 快捷方式启动的新进程读不到注册表 home → 数据分裂（评审 MAJOR-2）。
+  assert.match(body, /SendMessageTimeout\(i 0xffff, i 0x001A, p 0, t "Environment"/)
+  // 「旧 store 可删」告知延后到后续里程碑：本里程碑不写悬空的 notice 注册表值。
+  assert.doesNotMatch(body, /LegacyRuntimeStoreNotice/)
+  // 收尾撤旧轴。
+  assert.match(body, /DeleteRegValue HKCU "Environment" "SCHOLARSEED_RUNTIME_STORE"/)
 })
 test('the updater refuses to spawn a second installer while a previous one is alive', () => {
   // 2026-09-22 真机事故：重拉的客户端对着还挂着的安装器再 spawn 一个，被模板
@@ -648,32 +1099,48 @@ test('the updater refuses to spawn a second installer while a previous one is al
   // ready.ini 的 installerPid + 创建时刻双判据（PID 被复用即视为已退，见 handshake.ts），
   // 命中时回报独立分类，而不是笼统失败诱导用户对着互斥量重试。
   assert.match(UPDATER_SOURCE, /async function findRunningProtocolInstaller/)
-  assert.match(UPDATER_SOURCE, /readyPointsToLiveProcess\(record, Number\(record\.installerPid\), low, high\)/)
+  assert.match(
+    UPDATER_SOURCE,
+    /readyPointsToLiveProcess\(record, Number\(record\.installerPid\), low, high\)/
+  )
   assert.match(UPDATER_SOURCE, /event: 'concurrent-installer'/)
   assert.match(UPDATER_SOURCE, /return \{ ok: false, errorFallback: 'install_already_running' \}/)
   // 分类三层齐全：契约类型、主进程标注、渲染层文案映射，缺一层就退回笼统「安装失败」。
   assert.match(UPDATE_CONTRACT_SOURCE, /\| 'install_already_running'/)
   assert.match(UPDATE_FEATURE_SOURCE, /install_already_running/)
 })
-test('Windows updater command parses as PowerShell before signature verification', {
-  skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser'
-}, () => {
-  // Syntax gate on the actual command expression (shared extractor catches script assembly
-  // regressions), not packaged application/update acceptance.
-  const script = windowsVerifyScript()
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', [
-    '$tokens = $null;',
-    '$errors = $null;',
-    '[void][System.Management.Automation.Language.Parser]::ParseInput(',
-    '$env:SCHOLARSEED_TEST_UPDATE_SCRIPT, [ref]$tokens, [ref]$errors);',
-    'if ($errors.Count) { $errors | Out-String | Write-Output; exit 1 }'
-  ].join(' ')], {
-    encoding: 'utf8',
-    env: { ...process.env, SCHOLARSEED_TEST_UPDATE_SCRIPT: script }
-  })
-  assert.ifError(result.error)
-  assert.equal(result.status, 0, result.stderr || result.stdout)
-})
+test(
+  'Windows updater command parses as PowerShell before signature verification',
+  {
+    skip: process.platform !== 'win32' && 'requires the Windows PowerShell parser',
+  },
+  () => {
+    // Syntax gate on the actual command expression (shared extractor catches script assembly
+    // regressions), not packaged application/update acceptance.
+    const script = windowsVerifyScript()
+    const result = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        [
+          '$tokens = $null;',
+          '$errors = $null;',
+          '[void][System.Management.Automation.Language.Parser]::ParseInput(',
+          '$env:SCHOLARSEED_TEST_UPDATE_SCRIPT, [ref]$tokens, [ref]$errors);',
+          'if ($errors.Count) { $errors | Out-String | Write-Output; exit 1 }',
+        ].join(' '),
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, SCHOLARSEED_TEST_UPDATE_SCRIPT: script },
+      }
+    )
+    assert.ifError(result.error)
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+  }
+)
 // ── 更新面三条不变量（bug 86968393）─────────────────────────────────────────
 // updater.ts / index.ts 都导不进 node --test（依赖 electron 与无扩展名相对导入），
 // 所以这三条按源码形状钉住；行为本身由渲染层纯函数测试与真实产品验收覆盖。
@@ -690,18 +1157,25 @@ test('a staged package never pins the client to a superseded build', () => {
   // 「已就绪」是等用户挑时间重启的**等待**态，不是下载/安装那种进行中态：等待期间线上还会
   // 继续发布，检查发现更新的构建必须能推进过去。把 ready 当成进行中，界面就被钉死在当初
   // 暂存的那一个包上 —— 用户装完还不是最新，只能一级一级升（Aone 87009973）。
-  const inFlight = /const UPDATE_IN_FLIGHT_PHASES = new Set<UpdatePhase>\(\[([\s\S]*?)\]\)/
-    .exec(SHELL_SOURCE)
+  const inFlight = /const UPDATE_IN_FLIGHT_PHASES = new Set<UpdatePhase>\(\[([\s\S]*?)\]\)/.exec(
+    SHELL_SOURCE
+  )
   assert.ok(inFlight, 'UPDATE_IN_FLIGHT_PHASES not found')
   // 断言集合本体而不是子串：注释里点名 'ready' 解释「为什么不在其中」不该让断言通过。
-  const phases = [...inFlight[1].matchAll(/'([a-z-]+)'/g)].map(match => match[1]).sort()
+  const phases = [...inFlight[1].matchAll(/'([a-z-]+)'/g)].map((match) => match[1]).sort()
   assert.deepEqual(phases, ['downloading', 'installing', 'manual', 'restarting', 'verifying'])
 
   // 推进判定只此一份：启动期检查、周期复查、手动「检查更新」三个入口共用，才不会一个能
   // 推进另一个不能。
   assert.match(SHELL_SOURCE, /function publishUpdateCheckResult\(result: UpdateCheckResult\)/)
-  assert.match(SHELL_SOURCE, /const result = await updater\.checkForUpdate\(pushLog\)\n      return publishUpdateCheckResult\(result\)/)
-  assert.match(SHELL_SOURCE, /void updater\.checkForUpdate\(pushLog\)\.then\(\(result\) => \{\n    publishUpdateCheckResult\(result\)/)
+  assert.match(
+    SHELL_SOURCE,
+    /const result = await updater\.checkForUpdate\(pushLog\)\n      return publishUpdateCheckResult\(result\)/
+  )
+  assert.match(
+    SHELL_SOURCE,
+    /void updater\n\s*\.checkForUpdate\(pushLog\)\n\s*\.then\(\(result\) => \{\n\s*publishUpdateCheckResult\(result\)/
+  )
 
   // 只有线上候选**严格**新于暂存包才推进；排不出先后（身份串不合契约，isNewerRelease 回 null）
   // 一律不动，已经下好并校验过的那一个继续有效。
@@ -709,7 +1183,10 @@ test('a staged package never pins the client to a superseded build', () => {
   assert.match(UPDATER_SOURCE, /if \(newer !== true\) return false/)
   // 取代时记录与包体一起回收：只清记录会让几百 MB 一直躺在磁盘上，只删包体会让下一次启动
   // 因为记录还在而重新认领它。
-  assert.match(UPDATER_SOURCE, /function dropStagedUpdate\(staged: ReadyState, log: LogSink\): void \{\n  clearReadyState\(\)\n  removeStaleInstaller\(staged\.path, log\)/)
+  assert.match(
+    UPDATER_SOURCE,
+    /function dropStagedUpdate\(staged: ReadyState, log: LogSink\): void \{\n  clearReadyState\(\)\n  removeStaleInstaller\(staged\.path, log\)/
+  )
   assert.match(UPDATER_SOURCE, /dropStagedUpdate\(staged, log\)\n  return true/)
 
   // 安装失败把相位留在 ready 并带上错误（bug 86968393）：那是唯一的结果表面，检查不得用
@@ -720,14 +1197,20 @@ test('a staged package never pins the client to a superseded build', () => {
 test('the renderer holds no cross-restart update state', () => {
   // 窗口 origin 含后端随机端口（listen(0)），localStorage 按 origin 分区：写在渲染层的
   // 「弹窗已收起」每次启动都读不回来，更新内容弹窗会反复自动弹。
-  assert.doesNotMatch(UPDATE_FEATURE_SOURCE, /localStorage\s*\.\s*(getItem|setItem|removeItem|clear)/)
+  assert.doesNotMatch(
+    UPDATE_FEATURE_SOURCE,
+    /localStorage\s*\.\s*(getItem|setItem|removeItem|clear)/
+  )
   assert.match(UPDATE_FEATURE_SOURCE, /state\?\.announcedKey === key/)
   assert.match(UPDATER_SOURCE, /ANNOUNCED_STATE_FILE = 'announced\.json'/)
 })
 
 test('every snapshot the shell publishes carries the announcement acknowledgement', () => {
   // 部分发布点是新构造的对象而不是展开当前快照；漏盖一次就等于把用户的确认丢掉。
-  assert.match(SHELL_SOURCE, /function publishUpdateSnapshot\(next: UpdateSnapshot\): UpdateSnapshot \{\n  const stamped = withAnnouncedKey\(next\)/)
+  assert.match(
+    SHELL_SOURCE,
+    /function publishUpdateSnapshot\(next: UpdateSnapshot\): UpdateSnapshot \{\n  const stamped = withAnnouncedKey\(next\)/
+  )
   assert.match(SHELL_SOURCE, /updateSnapshot = withAnnouncedKey\(/)
   assert.match(SHELL_SOURCE, /scholarseed:update-announce-ack/)
 })
@@ -737,7 +1220,8 @@ test('progress publication clears the previous failure so a retry is not shown a
   // errorOrigin 漏清不会立刻出错，但会让下一次失败沿用上一次的动作来源、报错误的文案。
   assert.match(
     SHELL_SOURCE,
-    /function publishUpdateProgress[\s\S]{0,500}error: undefined,\n    errorFallback: undefined,\n    errorOrigin: undefined,\n    resumable: undefined/)
+    /function publishUpdateProgress[\s\S]{0,500}error: undefined,\n    errorFallback: undefined,\n    errorOrigin: undefined,\n    resumable: undefined/
+  )
   // 三个动作各自标注来源，展示侧不从相位或 error 文本反推。安装动作的来源由
   // failure.ts:updateInstallFailure 与 updater.ts 的回滚快照给出，failure.test.ts 直接钉住。
   assert.match(SHELL_SOURCE, /errorOrigin: 'check'/)
@@ -757,13 +1241,15 @@ test('opening an update surface refreshes silently through the background check 
   // supersede、announcedKey 保留全部生效），刷新天然安全。
   assert.match(
     SHELL_SOURCE,
-    /ipcMain\.handle\('scholarseed:update-refresh', \(\): void => \{\n    runBackgroundUpdateCheck\(\)\n  \}\)/)
+    /ipcMain\.handle\('scholarseed:update-refresh', \(\): void => \{\n    runBackgroundUpdateCheck\(\)\n  \}\)/
+  )
 
   // 三个安装入口一个都不能漏。UpdatePanel 挂载 == 卡片被打开：工作台活动栏火箭与 0.1 侧栏
   // 药丸两个入口表面都只在展开时渲染它，挂这一处即同时覆盖；AccountPanel 关于页自带
   // 「重启安装」按钮且不渲染 UpdatePanel，必须单独挂。空依赖数组钉住「只在挂载时刷一次」，
   // 每次 render 都发一遍检查不是本不变量的语义。
-  const mountRefresh = /React\.useEffect\(\(\) => \{\n    void window\.scholarseed\.refreshUpdate\(\)\n  \}, \[\]\)/
+  const mountRefresh =
+    /React\.useEffect\(\(\) => \{\n    void window\.scholarseed\.refreshUpdate\(\)\n  \}, \[\]\)/
   assert.match(UPDATE_PANEL_SOURCE, mountRefresh)
   assert.match(ACCOUNT_PANEL_SOURCE, mountRefresh)
 
@@ -775,22 +1261,49 @@ test('opening an update surface refreshes silently through the background check 
 })
 
 test('macOS candidates do not require signing credentials', () => {
-  const parsed = options(['--platform', 'darwin', '--arch', 'arm64', '--type', 'preview',
-    '--candidate', '--update-base-url', 'https://updates.example.test'])
+  const parsed = options([
+    '--platform',
+    'darwin',
+    '--arch',
+    'arm64',
+    '--type',
+    'preview',
+    '--candidate',
+    '--update-base-url',
+    'https://updates.example.test',
+  ])
   assert.equal(parsed.signed, false)
   assert.equal(parsed.candidate, true)
 })
 
 test('macOS candidate dir checks stop before codesigning', () => {
-  assert.equal(unsignedPackageCheck({
-    platform: 'darwin', stage: 'dir', candidate: true, signingRequired: false
-  }), true)
-  assert.equal(unsignedPackageCheck({
-    platform: 'darwin', stage: 'dmg', candidate: true, signingRequired: false
-  }), false)
-  assert.equal(unsignedPackageCheck({
-    platform: 'win32', stage: 'dir', candidate: true, signingRequired: false
-  }), false)
+  assert.equal(
+    unsignedPackageCheck({
+      platform: 'darwin',
+      stage: 'dir',
+      candidate: true,
+      signingRequired: false,
+    }),
+    true
+  )
+  assert.equal(
+    unsignedPackageCheck({
+      platform: 'darwin',
+      stage: 'dmg',
+      candidate: true,
+      signingRequired: false,
+    }),
+    false
+  )
+  assert.equal(
+    unsignedPackageCheck({
+      platform: 'win32',
+      stage: 'dir',
+      candidate: true,
+      signingRequired: false,
+    }),
+    false
+  )
 })
 
 test('npm package check maps to unsigned dir build without signing credentials', () => {
@@ -831,19 +1344,43 @@ test('npm release build requires CI-injected update and signing metadata', () =>
 
 test('distribution inputs require only an update URL', () => {
   const base = [
-    '--type', 'release', '--candidate', '--update-base-url', 'https://updates.example.test'
+    '--type',
+    'release',
+    '--candidate',
+    '--update-base-url',
+    'https://updates.example.test',
   ]
   const parsed = options(base)
   assert.equal(parsed.lane, 'distribution')
   assert.equal(Object.hasOwn(parsed, 'verification'), false)
   assert.equal(parsed.candidate, true)
-  assert.throws(() => options(base.map((value) => value === 'https://updates.example.test' ? 'http://updates.example.test' : value)), /HTTPS/)
-  assert.throws(() => options(base.filter((value, index) => base[index - 1] !== '--update-base-url' && value !== '--update-base-url')), /require/)
+  assert.throws(
+    () =>
+      options(
+        base.map((value) =>
+          value === 'https://updates.example.test' ? 'http://updates.example.test' : value
+        )
+      ),
+    /HTTPS/
+  )
+  assert.throws(
+    () =>
+      options(
+        base.filter(
+          (value, index) => base[index - 1] !== '--update-base-url' && value !== '--update-base-url'
+        )
+      ),
+    /require/
+  )
 })
 test('credentials do not reach offline child builds', () => {
-  const source = { PATH: '/bin', SCHOLARSEED_SKILLHUB_TOKEN: 'fixture',
-    SCHOLARSEED_SKILLHUB_TOKEN_FILE: '/fixture', SCHOLARSEED_WINDOWS_SIGN_KEY: 'signing-secret',
-    SCHOLARSEED_HOME: '/runtime' }
+  const source = {
+    PATH: '/bin',
+    SCHOLARSEED_SKILLHUB_TOKEN: 'fixture',
+    SCHOLARSEED_SKILLHUB_TOKEN_FILE: '/fixture',
+    SCHOLARSEED_WINDOWS_SIGN_KEY: 'signing-secret',
+    SCHOLARSEED_HOME: '/runtime',
+  }
   assert.deepEqual(credentialFreeEnv(source), { PATH: '/bin', SCHOLARSEED_HOME: '/runtime' })
   assert.equal(source.SCHOLARSEED_SKILLHUB_TOKEN, 'fixture')
   assert.equal(source.SCHOLARSEED_WINDOWS_SIGN_KEY, 'signing-secret')
@@ -857,13 +1394,18 @@ test('DMG builds require the locked local executable and never fall back to a do
     if (process.platform !== 'win32') fs.chmodSync(executable, 0o755)
     assert.throws(() => localDmgbuild(directory, '1.6.6'), /not the locked/)
     assert.equal(localDmgbuild(directory, '1.6.7'), executable)
-  } finally { fs.rmSync(directory, { recursive: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true })
+  }
 })
 test('Electron Builder template rendering remains compatible with the EJS override', () => {
   const { compile } = require('ejs')
   const builder = path.dirname(require.resolve('app-builder-lib/package.json'))
   const source = fs.readFileSync(path.join(builder, 'templates', 'msi', 'template.xml'), 'utf8')
-  const template = source.replace(/{{/g, '<%').replace(/}}/g, '%>').replace(/\${([^}]+)}/g, '<%=$1%>')
+  const template = source
+    .replace(/{{/g, '<%')
+    .replace(/}}/g, '%>')
+    .replace(/\${([^}]+)}/g, '<%=$1%>')
   assert.equal(typeof compile(template), 'function')
 })
 test('installed dependency probes receive only product and system executable roots', () => {
@@ -871,10 +1413,15 @@ test('installed dependency probes receive only product and system executable roo
     const joined = productPath('/app/python/bin', '/app/bin')
     const parts = joined.split(path.delimiter)
     assert.deepEqual(parts.slice(0, 2), ['/app/python/bin', '/app/bin'])
-    const system = String(process.env.PATH || '').split(path.delimiter).filter(Boolean)
+    const system = String(process.env.PATH || '')
+      .split(path.delimiter)
+      .filter(Boolean)
     assert.deepEqual(parts.slice(2), system)
   } else {
-    assert.equal(productPath('/app/python/bin', '/app/bin'), '/app/python/bin:/app/bin:/usr/bin:/bin:/usr/sbin:/sbin')
+    assert.equal(
+      productPath('/app/python/bin', '/app/bin'),
+      '/app/python/bin:/app/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+    )
   }
 })
 test('bundled workspace distributions are installed only from immutable wheels', () => {
@@ -897,7 +1444,12 @@ test('bundled workspace distributions are installed only from immutable wheels',
   assert.doesNotMatch(BUNDLE_BACKEND_SOURCE, /shell: process\.platform/)
 })
 test('artifact verification imports the packaged runtime and starts its real health endpoint', () => {
-  for (const moduleName of ['scholarseed_runtime', 'damoatrace', 'service.cli.serve', 'scholarseed_codex']) {
+  for (const moduleName of [
+    'scholarseed_runtime',
+    'damoatrace',
+    'service.cli.serve',
+    'scholarseed_codex',
+  ]) {
     assert.match(RUNTIME_PROBE_SCRIPT, new RegExp(moduleName.replaceAll('.', '\\.')))
   }
   assert.match(RUNTIME_PROBE_SCRIPT, /is_relative_to/)
@@ -911,25 +1463,32 @@ test('package-check diagnostics preserve process output and failure metadata', (
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-package-check-log-'))
   try {
     const filename = packageCheckLog({ runDirectory: directory }, 'unpacked', 'ScholarSeed.exe', {
-      status: null, signal: 'SIGTERM',
-      error: new Error('spawn timeout'), stdout: '[shell] backend exited\n',
-      stderr: 'AttributeError: AF_UNIX\n'
+      status: null,
+      signal: 'SIGTERM',
+      error: new Error('spawn timeout'),
+      stdout: '[shell] backend exited\n',
+      stderr: 'AttributeError: AF_UNIX\n',
     })
     const output = fs.readFileSync(filename, 'utf8')
     assert.match(output, /ScholarSeed\.exe/)
     assert.match(output, /spawn timeout/)
     assert.match(output, /backend exited/)
     assert.match(output, /AttributeError: AF_UNIX/)
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 test('package-check temporary cleanup is best-effort after successful verification', () => {
   const warn = console.warn
   const rmSync = fs.rmSync
-  const directory = path.join(os.tmpdir(), `scholarseed-package-check-locked-${crypto.randomUUID()}`)
+  const directory = path.join(
+    os.tmpdir(),
+    `scholarseed-package-check-locked-${crypto.randomUUID()}`
+  )
   try {
     const warnings = []
-    console.warn = message => warnings.push(message)
-    fs.rmSync = candidate => {
+    console.warn = (message) => warnings.push(message)
+    fs.rmSync = (candidate) => {
       if (candidate === directory) {
         const error = new Error('EPERM: operation not permitted')
         error.code = 'EPERM'
@@ -967,18 +1526,16 @@ test('desktop projects the immutable product manifest into its Python child', ()
 })
 test('packaged default runtime carries the complete Serve product metadata', () => {
   const runtime = PRODUCT_POLICY.runtimes[PRODUCT_POLICY.default_runtime]
-  for (const field of [
-    'display_name',
-    'client_name',
-    'client_title',
-    'service_name'
-  ]) {
+  for (const field of ['display_name', 'client_name', 'client_title', 'service_name']) {
     assert.equal(typeof runtime[field], 'string')
     assert.ok(runtime[field].trim(), `${field} must be non-empty`)
   }
   for (const field of ['sandbox', 'approval_policy', 'full_access_sandbox', 'no_approval_policy']) {
     assert.equal(typeof runtime.default_permission[field], 'string')
-    assert.ok(runtime.default_permission[field].trim(), `default_permission.${field} must be non-empty`)
+    assert.ok(
+      runtime.default_permission[field].trim(),
+      `default_permission.${field} must be non-empty`
+    )
   }
 })
 test('developer entry points share locked dependency installation', () => {
@@ -999,21 +1556,23 @@ const POST_INSTALL_LOADER = /function loadDependencies\(\) \{[\s\S]*?\n\}/
 const REQUIRED_SPECIFIER = /require\(\s*['"]([^'"]+)['"]\s*\)/g
 
 function requiredSpecifiers(source) {
-  return [...source.matchAll(REQUIRED_SPECIFIER)].map(match => match[1])
+  return [...source.matchAll(REQUIRED_SPECIFIER)].map((match) => match[1])
 }
 
 function loadTimeModuleGraph(entry, source) {
   const graph = new Set()
   const pending = requiredSpecifiers(source)
-    .filter(name => name.startsWith('.'))
-    .map(name => path.resolve(path.dirname(entry), name))
+    .filter((name) => name.startsWith('.'))
+    .map((name) => path.resolve(path.dirname(entry), name))
   while (pending.length) {
     const file = pending.pop()
     if (graph.has(file)) continue
     graph.add(file)
-    pending.push(...requiredSpecifiers(fs.readFileSync(file, 'utf8'))
-      .filter(name => name.startsWith('.'))
-      .map(name => path.resolve(path.dirname(file), name)))
+    pending.push(
+      ...requiredSpecifiers(fs.readFileSync(file, 'utf8'))
+        .filter((name) => name.startsWith('.'))
+        .map((name) => path.resolve(path.dirname(file), name))
+    )
   }
   return [...graph]
 }
@@ -1023,25 +1582,34 @@ test('packaging entry loads third-party modules only after installing locked dep
   const headSource = entrySource.replace(POST_INSTALL_LOADER, '')
   assert.notEqual(headSource, entrySource, `${PACKAGING_ENTRY} must keep its post-install loader`)
   for (const file of [PACKAGING_ENTRY, ...loadTimeModuleGraph(PACKAGING_ENTRY, headSource)]) {
-    const loaded = file === PACKAGING_ENTRY
-      ? headSource : fs.readFileSync(file, 'utf8').replace(POST_INSTALL_LOADER, '')
-    const thirdParty = requiredSpecifiers(loaded)
-      .filter(name => !name.startsWith('node:') && !name.startsWith('.'))
+    const loaded =
+      file === PACKAGING_ENTRY
+        ? headSource
+        : fs.readFileSync(file, 'utf8').replace(POST_INSTALL_LOADER, '')
+    const thirdParty = requiredSpecifiers(loaded).filter(
+      (name) => !name.startsWith('node:') && !name.startsWith('.')
+    )
     assert.deepEqual(thirdParty, [], `${path.relative(REPO_ROOT, file)} is required before npm ci`)
   }
   const body = entrySource.slice(entrySource.indexOf('async function main('))
   const installed = body.indexOf('ensureNodeDependencies()')
   const loaded = body.indexOf('loadDependencies()')
-  assert.ok(installed >= 0 && loaded > installed,
-    'main() must install locked dependencies before loading third-party modules')
+  assert.ok(
+    installed >= 0 && loaded > installed,
+    'main() must install locked dependencies before loading third-party modules'
+  )
   const clean = body.indexOf('assertCleanWorktree()')
-  assert.ok(clean >= 0 && installed > clean,
-    'main() must verify a clean worktree before installing locked dependencies')
+  assert.ok(
+    clean >= 0 && installed > clean,
+    'main() must verify a clean worktree before installing locked dependencies'
+  )
 })
 
 test('desktop development identity uses the branch name and detached HEAD fallback', () => {
-  const branchGit = (_command, args) => args.includes('--show-current') ? 'feature/branch-label\n' : 'unused\n'
-  const detachedGit = (_command, args) => args.includes('--show-current') ? '\n' : '86aa803b1234\n'
+  const branchGit = (_command, args) =>
+    args.includes('--show-current') ? 'feature/branch-label\n' : 'unused\n'
+  const detachedGit = (_command, args) =>
+    args.includes('--show-current') ? '\n' : '86aa803b1234\n'
 
   assert.equal(resolveGitIdentity(REPO_ROOT, branchGit), 'feature/branch-label')
   assert.equal(resolveGitIdentity(REPO_ROOT, detachedGit), '86aa803b1234')
@@ -1051,12 +1619,46 @@ test('desktop development identity updates only macOS bundle display keys', () =
   const calls = []
   const run = (command, args) => calls.push([command, args])
 
-  assert.equal(updateMacBundleName('/tmp/Electron.app/Contents/Info.plist', '书深 · feature/one', 'linux', run), false)
+  assert.equal(
+    updateMacBundleName(
+      '/tmp/Electron.app/Contents/Info.plist',
+      '书深 · feature/one',
+      'linux',
+      run
+    ),
+    false
+  )
   assert.deepEqual(calls, [])
-  assert.equal(updateMacBundleName('/tmp/Electron.app/Contents/Info.plist', '书深 · feature/one', 'darwin', run), true)
+  assert.equal(
+    updateMacBundleName(
+      '/tmp/Electron.app/Contents/Info.plist',
+      '书深 · feature/one',
+      'darwin',
+      run
+    ),
+    true
+  )
   assert.deepEqual(calls, [
-    ['/usr/bin/plutil', ['-replace', 'CFBundleName', '-string', '书深 · feature/one', '/tmp/Electron.app/Contents/Info.plist']],
-    ['/usr/bin/plutil', ['-replace', 'CFBundleDisplayName', '-string', '书深 · feature/one', '/tmp/Electron.app/Contents/Info.plist']]
+    [
+      '/usr/bin/plutil',
+      [
+        '-replace',
+        'CFBundleName',
+        '-string',
+        '书深 · feature/one',
+        '/tmp/Electron.app/Contents/Info.plist',
+      ],
+    ],
+    [
+      '/usr/bin/plutil',
+      [
+        '-replace',
+        'CFBundleDisplayName',
+        '-string',
+        '书深 · feature/one',
+        '/tmp/Electron.app/Contents/Info.plist',
+      ],
+    ],
   ])
 })
 test('replay input is an exclusive frozen copy, not a later read of the external lock', async () => {
@@ -1069,7 +1671,9 @@ test('replay input is an exclusive frozen copy, not a later read of the external
     fs.writeFileSync(source, '{"input":"B"}')
     assert.equal(fs.readFileSync(frozen, 'utf8'), '{"input":"A"}')
     await assert.rejects(() => freezeFile(source, frozen), /EEXIST/)
-  } finally { fs.rmSync(directory, { recursive: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true })
+  }
 })
 test('release evidence uses SHA-256 and SHA-512 over the same immutable bytes', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-hash-contract-'))
@@ -1078,17 +1682,22 @@ test('release evidence uses SHA-256 and SHA-512 over the same immutable bytes', 
     fs.writeFileSync(artifact, 'book-depth')
     assert.match(await sha256(artifact), /^[a-f0-9]{64}$/)
     assert.match(await sha512(artifact), /^[a-f0-9]{128}$/)
-  } finally { fs.rmSync(directory, { recursive: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true })
+  }
 })
 test('frozen distribution product policy is product-scoped and HTTPS-only', () => {
-  const product = frozenProductConfiguration({
-    type: 'release',
-    lane: 'distribution',
-    channel: 'release',
-    buildNumber: '202608271200',
-    'update-base-url': 'https://updates.example.test/',
-    'team-id': 'A1B2C3D4E5'
-  }, REVIEWED_BINARIES)
+  const product = frozenProductConfiguration(
+    {
+      type: 'release',
+      lane: 'distribution',
+      channel: 'release',
+      buildNumber: '202608271200',
+      'update-base-url': 'https://updates.example.test/',
+      'team-id': 'A1B2C3D4E5',
+    },
+    REVIEWED_BINARIES
+  )
   assert.equal(product.product_id, 'scholarseed')
   assert.equal(product.bundle_id, 'com.scholarseed.desktop')
   assert.equal(product.release_lane, 'distribution')
@@ -1103,20 +1712,29 @@ test('frozen distribution product policy is product-scoped and HTTPS-only', () =
   assert.equal(product.default_runtime, 'codex')
   assert.equal(product.runtimes.dsh, undefined)
   assert.throws(
-    () => frozenProductConfiguration({ lane: 'local', type: 'preview', channel: 'preview' }, {
-      ...REVIEWED_BINARIES,
-      codex: { ...REVIEWED_BINARIES.codex, source: undefined }
-    }),
+    () =>
+      frozenProductConfiguration(
+        { lane: 'local', type: 'preview', channel: 'preview' },
+        {
+          ...REVIEWED_BINARIES,
+          codex: { ...REVIEWED_BINARIES.codex, source: undefined },
+        }
+      ),
     /lacks verified official release evidence/
   )
 })
 test('frozen Windows product policy carries the Authenticode publisher', () => {
-  const product = frozenProductConfiguration({
-    type: 'release', lane: 'distribution', channel: 'release',
-    buildNumber: '202608271200',
-    'update-base-url': 'https://updates.example.test/',
-    'windows-publisher': 'CN=ScholarSeed Test Publisher'
-  }, REVIEWED_BINARIES)
+  const product = frozenProductConfiguration(
+    {
+      type: 'release',
+      lane: 'distribution',
+      channel: 'release',
+      buildNumber: '202608271200',
+      'update-base-url': 'https://updates.example.test/',
+      'windows-publisher': 'CN=ScholarSeed Test Publisher',
+    },
+    REVIEWED_BINARIES
+  )
   assert.equal(product.expected_team_id, '')
   assert.equal(product.build_number, '202608271200')
   assert.equal(product.expected_windows_publisher, 'CN=ScholarSeed Test Publisher')
@@ -1124,26 +1742,41 @@ test('frozen Windows product policy carries the Authenticode publisher', () => {
 test('electron-builder receives one frozen resource set instead of merging package resources twice', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-builder-config-'))
   try {
-    const filename = writeBuilderConfiguration({
-      runDirectory: directory,
-      resourceRoot: path.join(directory, 'resources'),
-      output: path.join(directory, 'artifacts'),
-      productName: 'ScholarSeed'
-    }, { version: '0.1.1', type: 'dev', platform: 'darwin', arch: 'arm64', lane: 'local', signed: false,
-      candidate: false, target: require('./target.cjs').target('darwin', 'arm64') })
+    const filename = writeBuilderConfiguration(
+      {
+        runDirectory: directory,
+        resourceRoot: path.join(directory, 'resources'),
+        output: path.join(directory, 'artifacts'),
+        productName: 'ScholarSeed',
+      },
+      {
+        version: '0.1.1',
+        type: 'dev',
+        platform: 'darwin',
+        arch: 'arm64',
+        lane: 'local',
+        signed: false,
+        candidate: false,
+        target: require('./target.cjs').target('darwin', 'arm64'),
+      }
+    )
     const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
     const backend = config.extraResources.filter((entry) => entry.to === 'backend')
     assert.equal(backend.length, 1)
     assert.equal(backend[0].from, path.join(directory, 'resources', 'backend'))
-    assert.equal(config.extraResources.find(entry => entry.to === 'notices').from,
-      path.join(directory, 'resources', 'notices'))
+    assert.equal(
+      config.extraResources.find((entry) => entry.to === 'notices').from,
+      path.join(directory, 'resources', 'notices')
+    )
     assert.equal(config.directories.output, path.join(directory, 'artifacts'))
     assert.equal(config.productName, 'ScholarSeed')
     assert.equal(config.artifactName, 'scholarseed-0.1.1-darwin-arm64.${ext}')
-    assert.ok([
-      directory,
-      path.join(REPO_ROOT, 'apps', 'desktop', 'node_modules', 'electron', 'dist')
-    ].includes(config.electronDist))
+    assert.ok(
+      [
+        directory,
+        path.join(REPO_ROOT, 'apps', 'desktop', 'node_modules', 'electron', 'dist'),
+      ].includes(config.electronDist)
+    )
     assert.equal(config.mac.identity, null)
     assert.equal(Object.hasOwn(config.mac, 'sign'), false)
     assert.equal(config.mac.hardenedRuntime, true)
@@ -1153,27 +1786,69 @@ test('electron-builder receives one frozen resource set instead of merging packa
     assert.equal(config.mac.extendInfo.CFBundleSpokenName, '书深')
     assert.equal(config.mac.extendInfo.LSHasLocalizedDisplayName, true)
     assert.ok(config.mac.extendInfo.MDItemKeywords.includes('书深'))
-    assert.deepEqual(config.extraResources.find((entry) => entry.to === 'zh_CN.lproj'), {
-      from: 'resources/mac/zh_CN.lproj',
-      to: 'zh_CN.lproj',
-      filter: ['InfoPlist.strings']
-    })
-    assert.deepEqual(config.extraResources.find((entry) => entry.to === 'en.lproj'), {
-      from: 'resources/mac/en.lproj',
-      to: 'en.lproj',
-      filter: ['InfoPlist.strings']
-    })
+    assert.deepEqual(
+      config.extraResources.find((entry) => entry.to === 'zh_CN.lproj'),
+      {
+        from: 'resources/mac/zh_CN.lproj',
+        to: 'zh_CN.lproj',
+        filter: ['InfoPlist.strings'],
+      }
+    )
+    assert.deepEqual(
+      config.extraResources.find((entry) => entry.to === 'en.lproj'),
+      {
+        from: 'resources/mac/en.lproj',
+        to: 'en.lproj',
+        filter: ['InfoPlist.strings'],
+      }
+    )
     assert.equal(config.nsis.shortcutName, '书深')
+    assert.deepEqual(config.electronLanguages, PACKAGE.build.electronLanguages)
+    assert.equal(config.dmg.format, PACKAGE.build.dmg.format)
     assert.deepEqual(config.mac.signIgnore, [
       '/Contents/Resources/backend/bin/codex$',
       '/Contents/Resources/backend/browser/node$',
-      '/Contents/Resources/backend/codex-runtime(?:/|$)'
+      '/Contents/Resources/backend/codex-runtime(?:/|$)',
     ])
     assert.equal(config.afterPack, path.join(__dirname, 'sign.cjs'))
     assert.equal(config.afterAllArtifactBuild, path.join(__dirname, 'verify.cjs'))
     assert.equal(config.afterSign, path.join(__dirname, 'notarize.cjs'))
     assert.ok(config.files.includes('!out/renderer/**/*'))
-  } finally { fs.rmSync(directory, { recursive: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true })
+  }
+})
+// app-builder-lib 的 removeUnusedLanguagesIfNeeded 也作用于 Contents/Resources，那里有
+// 产品经 extraResources 放进去的 InfoPlist.strings（承载本地化显示名）：白名单漏掉哪个
+// locale，删掉的就是显示名而不是冗余翻译。
+test('electronLanguages 覆盖产品自己交付的每个 .lproj', () => {
+  const shipped = PACKAGE.build.extraResources
+    .map((entry) => entry.to)
+    .filter((to) => typeof to === 'string' && to.endsWith('.lproj'))
+    .map((to) => to.slice(0, -'.lproj'.length).toLowerCase().replace(/_/g, '-'))
+  assert.ok(shipped.length > 0, '产品不再交付任何本地化 .lproj；本守卫失去对象')
+  const wanted = PACKAGE.build.electronLanguages.map((language) =>
+    language.toLowerCase().replace(/_/g, '-')
+  )
+  assert.ok(wanted.length > 0, 'electronLanguages 为空时 app-builder-lib 不做裁剪')
+  for (const locale of shipped) {
+    assert.ok(wanted.includes(locale), `electronLanguages 会删掉产品的 ${locale}.lproj`)
+  }
+  // CFBundleDevelopmentRegion 指向的区域必须留下，否则 Finder 显示名回退到 bundle 名。
+  const development = PACKAGE.build.mac.extendInfo.CFBundleDevelopmentRegion.toLowerCase()
+  assert.ok(
+    wanted.some((language) => language === development || language.startsWith(`${development}-`)),
+    `electronLanguages 丢掉了 CFBundleDevelopmentRegion=${development}`
+  )
+})
+// 格式是实测算出来的，不是偏好：同一份 401 MB 代表性载荷（Node Mach-O + soffice.wasm +
+// Electron Framework 切片 + 490 个 renderer 资产）hdiutil 实测 UDZO 174,891,556 B、
+// ULFO 158,249,713 B、UDBZ 145,201,041 B、ULMO 118,333,086 B。ULMO 最小，但
+// electron-builder 26.15.7 的 dmg.format 枚举只收 UDBZ|UDCO|UDRO|UDRW|UDZO|ULFO，
+// 写 ULMO 会在配置校验阶段直接失败，因此取可用里最小的 UDBZ（−17.0%，9s → 38s）。
+// 换格式必须重新量这组数；升级 electron-builder 后先确认枚举是否已放开 ULMO。
+test('DMG 使用实测选定且 electron-builder 接受的压缩格式', () => {
+  assert.equal(PACKAGE.build.dmg.format, 'UDBZ')
 })
 test('Intel macOS uses the x64 Electron Builder architecture and the Intel runtime triple', () => {
   const selected = require('./target.cjs').target('darwin', 'x86_64')
@@ -1192,11 +1867,19 @@ test('the frozen Office runtime asset set is complete and digest-verified', asyn
     'soffice.data',
     'soffice.data.js.metadata',
     'soffice.js',
-    'soffice.wasm'
+    'soffice.wasm',
   ])
 })
 test('Office bilingual overlay contains contiguous verified native resources for every editor', () => {
-  const root = path.join(__dirname, '..', 'src', 'renderer', 'public', 'office', OFFICE_BUILD_DIRECTORY)
+  const root = path.join(
+    __dirname,
+    '..',
+    'src',
+    'renderer',
+    'public',
+    'office',
+    OFFICE_BUILD_DIRECTORY
+  )
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'locales.json'), 'utf8'))
   const data = fs.readFileSync(path.join(root, manifest.data.file))
   assert.deepEqual(manifest.locales, ['en-US', 'zh-CN'])
@@ -1207,12 +1890,19 @@ test('Office bilingual overlay contains contiguous verified native resources for
   for (const file of manifest.files) {
     assert.equal(file.start, end)
     assert.ok(file.end > file.start && file.end <= data.length)
-    assert.equal(crypto.createHash('sha256').update(data.subarray(file.start, file.end)).digest('hex'), file.sha256)
+    assert.equal(
+      crypto.createHash('sha256').update(data.subarray(file.start, file.end)).digest('hex'),
+      file.sha256
+    )
     end = file.end
   }
   assert.equal(end, data.length)
   for (const domain of ['sc', 'sw', 'sd', 'sfx', 'svx']) {
-    assert.ok(manifest.files.some(file => file.path === `/instdir/program/resource/zh_CN/LC_MESSAGES/${domain}.mo`))
+    assert.ok(
+      manifest.files.some(
+        (file) => file.path === `/instdir/program/resource/zh_CN/LC_MESSAGES/${domain}.mo`
+      )
+    )
   }
   assert.ok(fs.statSync(path.join(root, manifest.residuals)).size > 0)
 })
@@ -1220,7 +1910,12 @@ test('local signing preserves only reviewed upstream signed runtimes', () => {
   const app = '/Applications/fixture.app'
   assert.equal(adHocOptions(app).ignore, shouldIgnore)
   assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/bin/codex`), true)
-  assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/codex-runtime/bin/codex-code-mode-host`), true)
+  assert.equal(
+    preserveReviewedRuntime(
+      `${app}/Contents/Resources/backend/codex-runtime/bin/codex-code-mode-host`
+    ),
+    true
+  )
   assert.equal(preserveReviewedRuntime(`${app}/Contents/Resources/backend/bin/rg`), false)
 })
 test('NSIS useZip 与 differentialPackage 必须成对，缺一半拒绝构建（proposal 108 §6）', () => {
@@ -1234,18 +1929,22 @@ test('NSIS useZip 与 differentialPackage 必须成对，缺一半拒绝构建�
   assert.equal(zip.differentialPackage, false)
   assert.equal(zip.shortcutName, PACKAGE.build.nsis.shortcutName)
   // 开关取值非法
-  assert.throws(() => resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: 'yes' }),
-    /accepts only "1"/)
-  // 单独 useZip = 不可安装产物（7z 字节被命名成 app-64.zip），必须拒绝
   assert.throws(
-    () => resolveNsisConfiguration({ nsis: { useZip: true } }, {}),
-    /app-64\.zip/)
+    () => resolveNsisConfiguration(PACKAGE.build, { SCHOLARSEED_NSIS_USE_ZIP: 'yes' }),
+    /accepts only "1"/
+  )
+  // 单独 useZip = 不可安装产物（7z 字节被命名成 app-64.zip），必须拒绝
+  assert.throws(() => resolveNsisConfiguration({ nsis: { useZip: true } }, {}), /app-64\.zip/)
   // differentialPackage:true 视同缺失
   assert.throws(
     () => resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: true } }, {}),
-    /app-64\.zip/)
+    /app-64\.zip/
+  )
   // 成对出现放行；显式关闭 useZip 不受影响
-  assert.equal(resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: false } }, {}).useZip, true)
+  assert.equal(
+    resolveNsisConfiguration({ nsis: { useZip: true, differentialPackage: false } }, {}).useZip,
+    true
+  )
   assert.equal(resolveNsisConfiguration({ nsis: { useZip: false } }, {}).useZip, false)
 })
 
@@ -1256,17 +1955,25 @@ test('生成的 electron-builder.json 携带解析后的 NSIS 配置且不引入
       runDirectory: directory,
       resourceRoot: path.join(directory, 'resources'),
       output: path.join(directory, 'artifacts'),
-      productName: 'ScholarSeed'
+      productName: 'ScholarSeed',
     }
     const filename = writeBuilderConfiguration(context, {
-      version: '0.1.1', type: 'dev', platform: 'win32', arch: 'x86_64', lane: 'local',
-      signed: false, candidate: false, target: require('./target.cjs').target('win32', 'x86_64')
+      version: '0.1.1',
+      type: 'dev',
+      platform: 'win32',
+      arch: 'x86_64',
+      lane: 'local',
+      signed: false,
+      candidate: false,
+      target: require('./target.cjs').target('win32', 'x86_64'),
     })
     const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
     assert.equal(Object.hasOwn(config.nsis, 'useZip'), false)
     assert.equal(config.nsis.shortcutName, PACKAGE.build.nsis.shortcutName)
     assert.deepEqual(context.nsis, config.nsis)
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('Windows 载荷统计只数 win-unpacked 的常规文件', () => {
@@ -1277,12 +1984,23 @@ test('Windows 载荷统计只数 win-unpacked 的常规文件', () => {
     fs.writeFileSync(path.join(unpacked, 'ScholarSeed.exe'), 'x'.repeat(10))
     fs.writeFileSync(path.join(unpacked, 'resources', 'backend', 'python.exe'), 'y'.repeat(7))
     const args = { platform: 'win32', stage: 'nsis' }
-    assert.deepEqual(payloadStatistics({ output: directory }, args),
-      { root: 'win-unpacked', files: 2, bytes: 17 })
-    assert.equal(payloadStatistics({ output: directory }, { platform: 'darwin', stage: 'dmg' }), null)
-    assert.equal(payloadStatistics({ output: directory }, { platform: 'win32', stage: 'backend' }), null)
+    assert.deepEqual(payloadStatistics({ output: directory }, args), {
+      root: 'win-unpacked',
+      files: 2,
+      bytes: 17,
+    })
+    assert.equal(
+      payloadStatistics({ output: directory }, { platform: 'darwin', stage: 'dmg' }),
+      null
+    )
+    assert.equal(
+      payloadStatistics({ output: directory }, { platform: 'win32', stage: 'backend' }),
+      null
+    )
     assert.equal(payloadStatistics({ output: path.join(directory, 'missing') }, args), null)
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('Windows 组件化载荷链路接线契约（proposal 108 §7，P2a）', () => {
@@ -1290,6 +2008,7 @@ test('Windows 组件化载荷链路接线契约（proposal 108 §7，P2a）', ()
   assert.match(BUNDLE_BACKEND_SOURCE, /writeProductLibraries\(run, python, wheels, pylibs\)/)
   assert.match(BUNDLE_BACKEND_SOURCE, /derivePythonContentId\(/)
   assert.match(BUNDLE_BACKEND_SOURCE, /deriveTexliveContentId\(/)
+  assert.match(BUNDLE_BACKEND_SOURCE, /derivePowerShellContentId\(/)
   assert.match(BUNDLE_BACKEND_SOURCE, /context\.runtime\.sha256/)
   // 组件树纯净性探针：产品发行物泄漏进 site-packages 必须构建失败
   assert.match(BUNDLE_BACKEND_SOURCE, /SCHOLARSEED_PRODUCT_LIBS: pylibs/)
@@ -1297,44 +2016,71 @@ test('Windows 组件化载荷链路接线契约（proposal 108 §7，P2a）', ()
   // 打包顺序：packWindowsComponents 只在 dependencies verify 与锁拷贝之后被调用
   const packCall = BUILD_SOURCE.indexOf('context.components = packWindowsComponents')
   const verifierCall = BUILD_SOURCE.indexOf("'verify',")
-  assert.ok(packCall > -1 && verifierCall > -1 && packCall > verifierCall,
-    'component packing must run after the dependency verifier')
+  assert.ok(
+    packCall > -1 && verifierCall > -1 && packCall > verifierCall,
+    'component packing must run after the dependency verifier'
+  )
   // 产品步骤在 win32 换 -s -B + PYTHONPATH（-I 会忽略 PYTHONPATH，产品模块将不可导入）
-  assert.match(BUILD_SOURCE, /const productFlags = args\.platform === 'win32' \? \['-s', '-B'\] : \['-I', '-B'\]/)
+  assert.match(
+    BUILD_SOURCE,
+    /const productFlags = args\.platform === 'win32' \? \['-s', '-B'\] : \['-I', '-B'\]/
+  )
   // 包内验证：组件布局走摘要链 + 松散树必须不存在
   assert.match(VERIFY_SOURCE, /verifyComponentContent/)
   assert.match(VERIFY_SOURCE, /must not keep a loose/)
   assert.match(VERIFY_SOURCE, /appComponentsSha256/)
   // 启动侧：provision 先于 python 存在性检查；TeX 目录来自组件仓库；PYTHONPATH 注入 pylibs；
-  // 失败 fail-closed（startupFailed），不得回落宿主 Python。
+  // PowerShell 载荷暂不进入 Agent PATH；失败 fail-closed（startupFailed），不得回落宿主 Python。
   const backendProvision = DESKTOP_BACKEND_SOURCE.indexOf('await ensureComponents(')
   const backendExists = DESKTOP_BACKEND_SOURCE.indexOf('if (!existsSync(python)) {')
-  assert.ok(backendProvision > -1 && backendExists > -1 && backendProvision < backendExists,
-    'component provisioning must complete before the python existence gate')
+  assert.ok(
+    backendProvision > -1 && backendExists > -1 && backendProvision < backendExists,
+    'component provisioning must complete before the python existence gate'
+  )
   assert.match(DESKTOP_BACKEND_SOURCE, /provisionedComponents\.texliveBinDirectory/)
+  assert.doesNotMatch(DESKTOP_BACKEND_SOURCE, /powershellExecutableDirectory/)
   assert.match(DESKTOP_BACKEND_SOURCE, /\[PYTHONPATH_ENV\]: join\(cwd, PYLIBS_DIRNAME\)/)
   assert.match(DESKTOP_BACKEND_SOURCE, /component provisioning failed/)
   // SCHOLARSEED_PYTHON 显式覆盖优先于组件寻址（既有逃生门语义不变）
-  assert.match(DESKTOP_BACKEND_SOURCE, /!process\.env\[SCHOLARSEED_PYTHON_ENV\] && existsSync\(manifestPath\)/)
+  assert.match(
+    DESKTOP_BACKEND_SOURCE,
+    /!process\.env\[SCHOLARSEED_PYTHON_ENV\]\s*&&\s*existsSync\(manifestPath\)/
+  )
 })
 
 test('distribution builder configuration never downgrades Developer ID discovery to ad-hoc signing', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'scholarseed-builder-distribution-'))
   try {
-    const filename = writeBuilderConfiguration({
-      runDirectory: directory,
-      resourceRoot: path.join(directory, 'resources'),
-      output: path.join(directory, 'artifacts'),
-      productName: 'ScholarSeed'
-    }, { version: '0.1.1', type: 'release', platform: 'darwin', arch: 'arm64', lane: 'distribution', signed: true,
-      candidate: false, target: require('./target.cjs').target('darwin', 'arm64') })
-const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
+    const filename = writeBuilderConfiguration(
+      {
+        runDirectory: directory,
+        resourceRoot: path.join(directory, 'resources'),
+        output: path.join(directory, 'artifacts'),
+        productName: 'ScholarSeed',
+      },
+      {
+        version: '0.1.1',
+        type: 'release',
+        platform: 'darwin',
+        arch: 'arm64',
+        lane: 'distribution',
+        signed: true,
+        candidate: false,
+        target: require('./target.cjs').target('darwin', 'arm64'),
+      }
+    )
+    const config = JSON.parse(fs.readFileSync(filename, 'utf8'))
     assert.equal(Object.hasOwn(config.mac, 'identity'), false)
     assert.equal(config.mac.sign, path.join(__dirname, 'signer.cjs'))
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 test('distribution verification requires Developer ID trust for signed ripgrep', () => {
-  assert.match(VERIFY_SOURCE, /verifySignedRuntime\(current\.rg, frozen\.product\.config\.expected_team_id\)/)
+  assert.match(
+    VERIFY_SOURCE,
+    /verifySignedRuntime\(current\.rg, frozen\.product\.config\.expected_team_id\)/
+  )
   assert.match(VERIFY_SOURCE, /flags=0x10000\(runtime\)/)
   assert.match(VERIFY_SOURCE, /TeamIdentifier=/)
   assert.match(VERIFY_SOURCE, /Timestamp=/)
@@ -1366,21 +2112,26 @@ test('macOS signing progress counts the same list osx-sign walks and prefixes ea
   const lines = []
   try {
     assert.equal(await countSignableFiles(app, () => false), 2)
-    process.stdout.write = (chunk) => { lines.push(String(chunk)); return true }
+    process.stdout.write = (chunk) => {
+      lines.push(String(chunk))
+      return true
+    }
     const restore = await trackSignProgress(app, () => false)
     try {
       process.stdout.write('electron-osx-sign Skipped... /resource +0ms\n')
       process.stdout.write('electron-osx-sign Signing... /one +0ms\n')
       process.stdout.write('electron-osx-sign Skipped... /another +0ms\n')
       process.stdout.write('electron-osx-sign Signing... /two +0ms\n')
-    } finally { restore() }
+    } finally {
+      restore()
+    }
   } finally {
     process.stdout.write = originalWrite
     fs.rmSync(directory, { recursive: true, force: true })
   }
   assert.deepEqual(lines, [
     'electron-osx-sign [1/2] Signing... /one +0ms\n',
-    'electron-osx-sign [2/2] Signing... /two +0ms\n'
+    'electron-osx-sign [2/2] Signing... /two +0ms\n',
   ])
 })
 test('macOS signing targets Mach-O images and bundle directories only', () => {
@@ -1399,35 +2150,50 @@ test('macOS signing targets Mach-O images and bundle directories only', () => {
     assert.equal(isSignable(bundle), true)
     assert.equal(isSignable(binary), true)
     assert.equal(isSignable(resource), false)
-    const ignore = signableIgnore(filename => filename === resource)
+    const ignore = signableIgnore((filename) => filename === resource)
     assert.equal(ignore(binary), false)
     assert.equal(ignore(bundle), false)
     assert.equal(ignore(resource), true)
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 test('notary credentials prefer the keychain profile and reject partial API keys', () => {
-  assert.deepEqual(credentials({ SCHOLARSEED_NOTARY_KEYCHAIN_PROFILE: 'profile' }),
-    ['--keychain-profile', 'profile'])
-  assert.deepEqual(credentials({
-    SCHOLARSEED_APPLE_API_KEY: '/key', SCHOLARSEED_APPLE_API_KEY_ID: 'key-id',
-    SCHOLARSEED_APPLE_API_ISSUER: 'issuer'
-  }), ['--key', '/key', '--key-id', 'key-id', '--issuer', 'issuer'])
+  assert.deepEqual(credentials({ SCHOLARSEED_NOTARY_KEYCHAIN_PROFILE: 'profile' }), [
+    '--keychain-profile',
+    'profile',
+  ])
+  assert.deepEqual(
+    credentials({
+      SCHOLARSEED_APPLE_API_KEY: '/key',
+      SCHOLARSEED_APPLE_API_KEY_ID: 'key-id',
+      SCHOLARSEED_APPLE_API_ISSUER: 'issuer',
+    }),
+    ['--key', '/key', '--key-id', 'key-id', '--issuer', 'issuer']
+  )
   assert.throws(() => credentials({ SCHOLARSEED_APPLE_API_KEY: '/key' }), /required/)
 })
 test('notary polling reports progress and returns once the submission settles', () => {
   const statuses = ['In Progress', 'In Progress', 'Accepted']
   const polls = []
   const receipt = waitForNotarization('submission-id', [], {
-    request: (submissionId) => { polls.push(submissionId); return { id: submissionId, status: statuses.shift() } },
-    wait: () => {}
+    request: (submissionId) => {
+      polls.push(submissionId)
+      return { id: submissionId, status: statuses.shift() }
+    },
+    wait: () => {},
   })
   assert.equal(receipt.status, 'Accepted')
   assert.equal(polls.length, 3)
 })
 test('notary polling fails instead of waiting forever', () => {
-  assert.throws(() => waitForNotarization('submission-id', [], {
-    request: (submissionId) => ({ id: submissionId, status: 'In Progress' }),
-    wait: () => {},
-    maxPolls: 3
-  }), /did not settle/)
+  assert.throws(
+    () =>
+      waitForNotarization('submission-id', [], {
+        request: (submissionId) => ({ id: submissionId, status: 'In Progress' }),
+        wait: () => {},
+        maxPolls: 3,
+      }),
+    /did not settle/
+  )
 })

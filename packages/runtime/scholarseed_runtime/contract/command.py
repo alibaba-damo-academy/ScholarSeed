@@ -12,6 +12,7 @@ from scholarseed_runtime.contract.capability import RuntimeCapabilityName
 from scholarseed_runtime.contract.event import RuntimeValue
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.history import HistoryEntry
+from scholarseed_runtime.contract.interaction import RuntimeServiceTool
 from scholarseed_runtime.contract.model import ModelCredentialPort, ModelIntent
 from scholarseed_runtime.contract.permission import PermissionIntent
 from scholarseed_runtime.contract.secret import LaunchSecretIntent, RuntimeSecretPort
@@ -63,6 +64,7 @@ class OpenSessionRequest:
     permission: PermissionIntent = PermissionIntent()
     base_instructions: str = ""
     developer_instructions: str = ""
+    service_tools: tuple[RuntimeServiceTool, ...] = ()
     skill_roots: tuple[Path, ...] = ()
     skill_configurations: tuple[SkillConfiguration, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
@@ -70,6 +72,7 @@ class OpenSessionRequest:
     ephemeral: bool = False
     reservation_id: str = ""
     initial_history: tuple[HistoryEntry, ...] = ()
+    execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
@@ -84,10 +87,12 @@ class ResumeSessionRequest:
     permission: PermissionIntent = PermissionIntent()
     base_instructions: str = ""
     developer_instructions: str = ""
+    service_tools: tuple[RuntimeServiceTool, ...] = ()
     skill_roots: tuple[Path, ...] = ()
     skill_configurations: tuple[SkillConfiguration, ...] = ()
     artifact_directives: tuple[ArtifactDirectiveSpec, ...] = ()
     reservation_id: str = ""
+    execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 
@@ -110,6 +115,7 @@ class SteerRequest:
 class InterruptRequest:
     command_id: str
     expected_turn_id: str = ""
+    cleanup_background_processes: bool = False
 
 
 @dataclass(frozen=True)

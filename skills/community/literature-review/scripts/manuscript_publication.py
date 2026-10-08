@@ -26,6 +26,7 @@ from bibliography_contract import inspect_bibliography, duplicate_citation_defin
 from platform_io import file_lock
 from publication_pages import TRACKING_TEX
 from publication_pages import inspection_plan
+from publication_style import synchronize, metadata_check
 
 PAGE_RENDER_LONG_EDGE=1400
 
@@ -196,7 +197,9 @@ def publish(ws):
 
 def _publish(ws,env):
     started=time.monotonic();source=publication_source(ws);gen=source.parent
+    settings = synchronize(ws, source)
     rules=content_report(ws)
+    rules['checks'].extend(metadata_check(source, settings))
     if rules['blocking']:
         result={**rules,'code':'BIBLIOGRAPHY_CONFLICT','stage':'generation_publish',
                 'source':str(source),'duration_sec':round(time.monotonic()-started,3),
@@ -206,7 +209,6 @@ def _publish(ws,env):
     if source.suffix=='.md':
         out=_export(ws,source);deliverable=out/'survey.md'
         from citation_formats import CitationResolver,parse_bib_file
-        settings=read(gen/'publication.json') if (gen/'publication.json').exists() else {}
         entries=parse_bib_file(gen/'citations.bib')
         resolver=CitationResolver(entries,settings.get('citation_style','numeric'),settings.get('language','english'))
         raw=source.read_text();resolver.collect(raw)
@@ -244,8 +246,11 @@ def _publish(ws,env):
         command=[engine,'-interaction=nonstopmode','-halt-on-error','-jobname='+source.stem,
                  r'\input{_internal/publication_page_tracking.tex}\input{'+source.name+'}']
         logs=[];first=_run(command,gen,env);logs.append(first.stdout+first.stderr)
-        if (gen/(source.stem+'.aux')).exists() and r'\bibliography{' in text and shutil.which('bibtex'):
+        bibliography_required = r'\bibliography{' in text
+        bibliography_ok = not bibliography_required
+        if (gen/(source.stem+'.aux')).exists() and bibliography_required and shutil.which('bibtex'):
             bib=_run(['bibtex',source.stem],gen,env);logs.append(bib.stdout+bib.stderr)
+            bibliography_ok = bib.returncode == 0
         final=first
         for _ in range(2):
             final=_run(command,gen,env);logs.append(final.stdout+final.stderr)
@@ -255,12 +260,13 @@ def _publish(ws,env):
         log_lines=log.splitlines()
         fatal=[line for line in log_lines if line.startswith('!')]
         contexts=['\n'.join(log_lines[i:i+7]) for i,line in enumerate(log_lines) if line.startswith('!')]
-        clean=final.returncode==0 and pdf.exists() and not fatal
+        clean=final.returncode==0 and pdf.exists() and not fatal and bibliography_ok
         duplicate_definitions=duplicate_citation_definitions(log)
         if duplicate_definitions:clean=False
         diagnosis={'verdict':'bibliography_conflict' if duplicate_definitions else 'clean' if clean else 'compile_failed','final_pass_rc':final.returncode,
                    'fatal_errors':fatal,'log_path':str(source.with_suffix('.log')),
                    'error_contexts':contexts,
+                   'bibliography_ok': bibliography_ok,
                    'log_warnings':[line for line in log.splitlines() if 'Warning' in line or 'Overfull' in line]}
         save(record,{'status':'SUCCESS' if clean else 'FAILED','source':str(source),'diagnosis':diagnosis})
         result={'status':'SUCCESS' if clean else 'FAILED','source':str(source),
@@ -291,7 +297,7 @@ def audit(ws,render=False):
     previous=read(ws/'05_generation/generation_report.json') if (ws/'05_generation/generation_report.json').exists() else {}
     result.update(status='FAILED' if result['blocking'] else previous.get('status','FAILED'),visual_review_required=source.suffix=='.tex',
                   visual_review_complete=False,pages_to_read=[],render_error=None)
-    result['checks'] += [c for c in previous.get('checks',[]) if c['id'] in ('compilation','bibliography_definitions')]
+    result['checks'] += [c for c in previous.get('checks',[]) if c['id'] in ('compilation','bibliography_definitions','citation_metadata','citation_fidelity')]
     if render and source.suffix=='.tex' and result['status']=='SUCCESS':
         result['pages_to_read'],result['render_error'],result['inspection_scope']=render_pages(
             ws,previous.get('deliverable'),include_scope=True)

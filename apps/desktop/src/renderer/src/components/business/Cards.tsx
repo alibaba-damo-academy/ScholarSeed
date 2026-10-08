@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 
 import type { DisplayCardContribution } from '../../contracts/features'
 import type { ConvItem, DisplayCardData } from '../../model'
+import { cardArtifactIds } from '../../activity'
 import { latestDisplayCardItems } from '../../transcript'
 import { Alert, AlertDescription, AlertTitle } from '../ui'
 import { DisplayCardsContext } from './displayCardsContext'
@@ -34,8 +35,7 @@ export function DisplayCardView({ card }: { card: DisplayCardData }): React.JSX.
 
 export function useCardArtifacts(items: readonly ConvItem[]): ReadonlySet<string> {
   const cards = useContext(DisplayCardsContext)
-  return new Set(items.flatMap(item => item.kind === 'display_card'
-    ? cards.get(item.card.type)?.presentedArtifacts?.(item.card.content) ?? [] : []))
+  return cardArtifactIds(items, (card) => cards.get(card.type)?.presentedArtifacts?.(card.content) ?? [])
 }
 
 export function useLatestDisplayCards(items: readonly ConvItem[]): ConvItem[] {

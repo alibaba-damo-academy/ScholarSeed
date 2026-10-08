@@ -46,14 +46,7 @@ from service.literature.schema import (
     PublicationType,
     new_item_id,
 )
-from service.literature.service.arxiv import (
-    ARXIV_DOWNLOAD_FAILED,
-    ARXIV_INVALID,
-    ARXIV_INVALID_PDF,
-    ARXIV_NOT_FOUND,
-    ARXIV_TOO_LARGE,
-    ArxivDownloadError,
-)
+from service.literature.service.arxiv import ARXIV_INVALID, ArxivDownloadError
 from service.literature.service.attachment import (
     ATTACHMENT_INVALID,
     ATTACHMENT_TYPE_MISMATCH,
@@ -64,11 +57,7 @@ from service.literature.service.attachment import (
 from service.literature.service.catalog import is_recent
 from service.literature.service.extractor import InvalidPdfError, extract_pdf_metadata
 from service.literature.service.fulltext import (
-    DOI_DOWNLOAD_FAILED,
     DOI_INVALID,
-    DOI_NO_ACCESSIBLE_PDF,
-    DOI_NOT_FOUND,
-    DOI_TOO_LARGE,
     FULLTEXT_IDENTIFIER_MISSING,
     FulltextDownloadError,
     fetch_identifier_pdf,
@@ -78,6 +67,13 @@ from service.literature.service.importer import (
     parse_import,
 )
 from service.literature.service.library import LiteratureService
+from service.literature.service.outcome import (
+    FULLTEXT_NO_ACCESS,
+    FULLTEXT_NOT_FOUND,
+    FULLTEXT_RATE_LIMITED,
+    OUTCOME_STATUS,
+    PRECONDITION_STATUS,
+)
 from service.literature.service.zotero import (
     ZoteroImportError,
     import_zotero,
@@ -129,19 +125,17 @@ BULK_REMOVE_TAGS = "remove_tags"
 BULK_MARK_READ = "mark_read"
 BULK_LINK_PROJECT = "link_project"
 BULK_UNLINK_PROJECT = "unlink_project"
+# 获取全文只报三类结果 (未找到全文 / 无法访问 / 请求被限流), 三条文案与前端 i18n 的
+# detail.fulltext* 逐字一致; 这份中文是给 API 消费方与日志看的, 渲染层用自己的双语 key。
+# 三类之外只剩前置校验问题, 它们不是「获取失败」, 各自保留可行动的提示。
 FULLTEXT_ERROR_MESSAGES = {
+    FULLTEXT_NOT_FOUND: "未找到全文",
+    FULLTEXT_NO_ACCESS: "无法访问",
+    FULLTEXT_RATE_LIMITED: "请求被限流",
     ARXIV_INVALID: "arXiv 标识无效",
-    ARXIV_NOT_FOUND: "arXiv 上没有该文献的可访问全文",
-    ARXIV_DOWNLOAD_FAILED: "无法从 arXiv 获取全文，请稍后重试",
-    ARXIV_TOO_LARGE: "arXiv 全文文件过大",
-    ARXIV_INVALID_PDF: "arXiv 返回的内容不是有效 PDF",
-    ARXIV_ALREADY_ATTACHED: "该文献已有主附件",
-    FULLTEXT_IDENTIFIER_MISSING: "请先补充 DOI 或 arXiv 标识",
     DOI_INVALID: "DOI 标识无效",
-    DOI_NOT_FOUND: "未找到该 DOI 对应的文献",
-    DOI_DOWNLOAD_FAILED: "网络异常，无法通过 DOI 获取全文，请稍后重试",
-    DOI_TOO_LARGE: "DOI 对应的全文文件过大",
-    DOI_NO_ACCESSIBLE_PDF: "该 DOI 未返回可访问的 PDF 全文，可从附件页签添加本地 PDF",
+    FULLTEXT_IDENTIFIER_MISSING: "请先补充 DOI 或 arXiv 标识",
+    ARXIV_ALREADY_ATTACHED: "该文献已有主附件",
 }
 EDITABLE_FIELDS = {
     "citation_key",
@@ -784,20 +778,9 @@ def register_global_routes(app: FastAPI) -> None:
         try:
             fulltext = fetch_identifier_pdf(item)
         except (ArxivDownloadError, FulltextDownloadError) as error:
-            status = (
-                400
-                if error.code
-                in {
-                    ARXIV_INVALID,
-                    DOI_INVALID,
-                    FULLTEXT_IDENTIFIER_MISSING,
-                }
-                else 502
-            )
-            if error.code in {ARXIV_TOO_LARGE, DOI_TOO_LARGE}:
-                status = 413
-            elif error.code in {ARXIV_NOT_FOUND, DOI_NOT_FOUND, DOI_NO_ACCESSIBLE_PDF}:
-                status = 404
+            # 三类获取失败各有确定状态 (404 没找到 / 403 有但不给 / 429 限流); 落到默认
+            # 分支的只可能是前置校验问题 (标识无效、缺标识), 一律 400。
+            status = OUTCOME_STATUS.get(error.code, PRECONDITION_STATUS)
             raise HTTPException(
                 status_code=status,
                 detail={

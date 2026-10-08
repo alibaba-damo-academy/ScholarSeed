@@ -176,6 +176,42 @@ async def submission_failure_releases_command() -> bool:
         await driver.close()
 
 
+async def batched_projection() -> bool:
+    session = ContractSession(auto_complete=False)
+    batches = []
+    durable = asyncio.Event()
+
+    async def observe(_event):
+        raise AssertionError("batch handler must own projection")
+
+    async def observe_batch(events):
+        batches.append(events)
+        if any(event.kind is RuntimeEventKind.TURN_COMPLETED for event in events):
+            await durable.wait()
+
+    driver = RuntimeDriver(session, observe, on_observations=observe_batch)
+    for sequence in range(1, 132):
+        session.queue.put_nowait(session.event(sequence, RuntimeEventKind.TOOL_PROGRESS, "batch"))
+    session.queue.put_nowait(session.event(132, RuntimeEventKind.TURN_COMPLETED, "batch"))
+    driver.start()
+    task = asyncio.create_task(driver.submit(TurnRequest("batch", ("hello",))))
+    while not any(
+        event.kind is RuntimeEventKind.TURN_COMPLETED for batch in batches for event in batch
+    ):
+        await asyncio.sleep(0)
+    held = not task.done()
+    durable.set()
+    result = await task
+    await driver.close()
+    return (
+        held
+        and result.outcome is RuntimeTurnOutcome.COMPLETED
+        and [event.sequence for batch in batches for event in batch] == list(range(1, 133))
+        and max(map(len, batches)) <= 64
+        and len(batches) < 10
+    )
+
+
 def main() -> int:
     result, observed, detached = asyncio.run(successful_turn())
     check("receipt and terminal remain separate", len(observed) == 4)
@@ -189,6 +225,10 @@ def main() -> int:
     check(
         "failed submission releases command state for retry",
         asyncio.run(submission_failure_releases_command()),
+    )
+    check(
+        "bounded batches keep FIFO and defer terminal until durable",
+        asyncio.run(batched_projection()),
     )
     print(f"\nPASS={PASS} FAIL={FAIL}")
     return 1 if FAIL else 0

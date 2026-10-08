@@ -6,13 +6,13 @@ import logging
 import sqlite3
 import subprocess
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from damoatrace.paths import TRACE_DIR
 from damoatrace.recording.content import CONTENT_VERSION
@@ -31,6 +31,8 @@ from service.brand import PRODUCT_SLUG
 from service.chat.constants import (
     PRODUCT_EVENT_HIL_REQUESTED,
     PRODUCT_EVENT_HIL_RESOLVED,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED,
+    PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED,
     PRODUCT_EVENT_RUNTIME_INCIDENT,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
@@ -68,6 +70,8 @@ TRACE_RUNTIME_INCIDENT_PREFIX = "runtime.incident"
 TRACE_RUNTIME_PROCESS_PREFIX = "runtime.process"
 TRACE_RUNTIME_RPC_SUCCESS = "runtime.rpc.success"
 TRACE_PRODUCT_EVENT_PREFIX = f"{PRODUCT_TRACE_NAMESPACE}.product"
+TRACE_PERMISSION_AUTO_APPROVAL = f"{PRODUCT_TRACE_NAMESPACE}.permission.auto_approval"
+TRACE_PERMISSION_STRICT_REVIEW = f"{PRODUCT_TRACE_NAMESPACE}.permission.strict_review_required"
 TRACE_INVOCATION_STARTED = f"{PRODUCT_TRACE_NAMESPACE}.invocation.started"
 TRACE_INVOCATION_COMPLETED = f"{PRODUCT_TRACE_NAMESPACE}.invocation.completed"
 TRACE_INVOCATION_FAILED = f"{PRODUCT_TRACE_NAMESPACE}.invocation.failed"
@@ -89,6 +93,30 @@ TRACE_RECOVERED_EVENT = "trace.recording.recovered"
 TRACE_FAILURES = (OSError, ValueError, TypeError, sqlite3.Error, subprocess.SubprocessError)
 TRACE_TOOL_FAILURE = "tool_execution_failed"
 TRACE_TOOL_FAILED_STATUSES = frozenset({"failed", "error", "declined", "cancelled"})
+# 无人参与的审批（safe_auto 下由机器复核者裁决）在产品事件里只是普通 native activity，
+# 因此单独立一个可检索的 trace 名与属性: 用户没看到卡片, 事后必须仍能查出「谁批的、
+# 批了什么风险级、结论是什么」。命令正文与复核理由属内容面, 走既有 capture/redaction,
+# 不复制进属性 (proposal 116 M5, 仅可观测, 不是强制点)。
+APPROVAL_REVIEW_ACTIVITY = "approval_review"
+STRICT_REVIEW_ACTIVITY = "approval_strict_review"
+PERMISSION_ACTIVITY_TRACE_NAMES = {
+    APPROVAL_REVIEW_ACTIVITY: TRACE_PERMISSION_AUTO_APPROVAL,
+    STRICT_REVIEW_ACTIVITY: TRACE_PERMISSION_STRICT_REVIEW,
+}
+NATIVE_ACTIVITY_PRODUCT_EVENTS = frozenset(
+    {PRODUCT_EVENT_NATIVE_ACTIVITY_STARTED, PRODUCT_EVENT_NATIVE_ACTIVITY_COMPLETED}
+)
+# 只收可判定的语义标量: 风险级、裁决来源、复核者对「用户授权到什么程度」的判断、
+# 被裁决的动作类型、它针对哪个 item、机器复核耗时。缺任一项都意味着事后无法回答
+# 「这次无人参与的放行到底批了什么」。
+APPROVAL_REVIEW_DETAIL_FIELDS = (
+    "risk_level",
+    "decision_source",
+    "user_authorization",
+    "action_type",
+    "target_item_id",
+    "review_duration_ms",
+)
 TRACE_PRODUCT_OUTCOMES = {
     PRODUCT_EVENT_TURN_COMPLETED: TRACE_STATUS_OK,
     PRODUCT_EVENT_TURN_FAILED: TRACE_STATUS_ERROR,
@@ -255,7 +283,7 @@ class SessionTrace:
         self._writer: EvidenceWriter | None = None
         self._degraded = False
         self._failure_count = 0
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._timing_lock = threading.Lock()
         self._turn_preparations: dict[str, TurnPreparationStart] = {}
         self._capture = (
@@ -385,6 +413,36 @@ class SessionTrace:
             },
         )
 
+    def _recording_writer(self) -> EvidenceWriter:
+        if self._writer is None:
+            self._writer = EvidenceWriter(
+                self.path,
+                budget=self._recording.budget(self.path.parent) if self._recording else None,
+            )
+        return self._writer
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Flush an ordered projection batch before it can be published."""
+        with self._recording.guard if self._recording else nullcontext(), self._lock:
+            failures = self._failure_count
+            try:
+                with (
+                    self._capture.batch() if self._capture else nullcontext(),
+                    self._recording_writer().batch(),
+                ):
+                    yield
+                    if self._failure_count != failures:
+                        raise OSError("trace batch contains incomplete evidence")
+            except TRACE_FAILURES as failure:
+                if self._failure_count == failures:
+                    self._capture_failure(failure)
+                self._degraded = True
+                if self._writer is not None:
+                    self._writer.close()
+                    self._writer = None
+                raise
+
     def _emit(
         self,
         *,
@@ -404,15 +462,8 @@ class SessionTrace:
             try:
                 if self._capture and not self._capture.allowed():
                     inputs, outputs = None, None
-                if self._writer is None:
-                    self._writer = EvidenceWriter(
-                        self.path,
-                        budget=(
-                            self._recording.budget(self.path.parent) if self._recording else None
-                        ),
-                    )
                 turn_id = attributes.get("vendor_turn_id")
-                self._writer.emit(
+                self._recording_writer().emit(
                     session_id=self.session_id,
                     kind=kind.value,
                     name=name,
@@ -973,9 +1024,28 @@ class SessionTrace:
                 "code": str(record.payload.get("code") or PRODUCT_EVENT_TURN_FAILED),
                 "message": TRACE_RUNTIME_FAILURE_MESSAGE,
             }
+        name = f"{TRACE_PRODUCT_EVENT_PREFIX}.{record.kind}"
+        permission_trace_name = PERMISSION_ACTIVITY_TRACE_NAMES.get(
+            str(record.payload.get("activity_type") or "")
+        )
+        if record.kind in NATIVE_ACTIVITY_PRODUCT_EVENTS and permission_trace_name is not None:
+            trace_kind = TraceKind.MODE_TRANSITION
+            name = permission_trace_name
+            details = record.payload.get("details")
+            details = details if isinstance(details, Mapping) else {}
+            diagnostics = {
+                field: value
+                for field, value in (
+                    ("activity_id", record.payload.get("activity_id")),
+                    ("activity_type", record.payload.get("activity_type")),
+                    ("approval_status", record.payload.get("status")),
+                    *((field, details.get(field)) for field in APPROVAL_REVIEW_DETAIL_FIELDS),
+                )
+                if value is not None
+            }
         self._emit(
             kind=trace_kind,
-            name=f"{TRACE_PRODUCT_EVENT_PREFIX}.{record.kind}",
+            name=name,
             inputs=inputs,
             attributes={
                 "runtime_id": record.runtime_id,

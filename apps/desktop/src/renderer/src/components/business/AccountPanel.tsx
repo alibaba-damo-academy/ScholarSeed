@@ -3,14 +3,34 @@ import { VersionScope } from './VersionScope'
 import {
   DEFAULT_SELECTION_PROMPTS,
   MAX_SELECTION_PROMPT_CHARS,
-  SELECTION_PROMPT_ACTIONS
+  SELECTION_PROMPT_ACTIONS,
 } from '../../../../prompts'
-import { profileFailureText, providerPresetText } from './profile'
+import {
+  PROBE_REASON_KEYS,
+  PROBE_SUGGESTION_KEYS,
+  PROBE_TITLE_KEYS,
+  probeFailureDetail,
+  profileFailureText,
+  providerPresetText,
+} from './profile'
+import type { ProbeFailureDetail, ProbeFailureTitle } from './profile'
 import { modelDefaultEffort, reasoningLabel } from '../../reasoning'
-import type { PersonalApiFailure, ModelInfo } from '../../api'
+import type {
+  PersonalApiFailure,
+  ModelInfo,
+  ModelProviderPreset,
+  PersonalApiInput,
+  PersonalApiModel,
+  PersonalApiProfile,
+  PersonalApiProfilesResp,
+  PersonalApiProbeResult,
+  PersonalApiWireApi,
+  ModelSelectionResp,
+} from '../../api'
 import { DEFAULT_LANGUAGE, LOCALES } from '../../../../localization/catalog'
 import { createFormatters } from '../../../../localization/format'
 import type { PreferenceLanguage } from '../../../../preferences'
+import type { StorageConfig } from '../../../../storage'
 import { SubscriptionConnections } from './SubscriptionConnections'
 import React from 'react'
 import {
@@ -22,6 +42,7 @@ import {
   CircleCheck,
   CircleQuestionMark,
   Files,
+  HardDrive,
   // Keyboard,
   Mail,
   Plug,
@@ -29,7 +50,7 @@ import {
   TriangleAlert,
   UserShield,
   Zap,
-  type LucideIcon
+  type LucideIcon,
 } from 'lucide-react'
 // 暂时隐藏「账号」「偏好设置」入口，恢复时一并恢复 UserRound / Palette
 // import { Bell, BrainCircuit, Mail, Palette, UserRound, Zap, type LucideIcon } from 'lucide-react'
@@ -40,20 +61,22 @@ import type { TFunction } from 'i18next'
 import type {
   SystemPermissionId,
   SystemPermissionRecord,
-  SystemPermissionStatus
+  SystemPermissionStatus,
 } from '../../../../permissions'
+import type {
+  AccountLogoutResult,
+  AccountProfile,
+  ApiKeyCreated,
+  ApiKeySummary,
+} from '../../account'
 import {
   CODE_COOLDOWN_SECONDS,
   CODE_PURPOSES,
   ERR_UNAUTHENTICATED,
   PASSWORD_MIN_LENGTH,
-  AccountLogoutResult,
   type AccountFailure,
   accountFailureText,
   apiKeyDisplayName,
-  AccountProfile,
-  ApiKeyCreated,
-  ApiKeySummary,
   accountBase,
   accountMe,
   changePhone,
@@ -64,16 +87,9 @@ import {
   revokeApiKey,
   rotateApiKey,
   sendCode,
-  updateNickname
+  updateNickname,
 } from '../../account'
 import {
-  ModelProviderPreset,
-  PersonalApiInput,
-  PersonalApiModel,
-  PersonalApiProfile,
-  PersonalApiProfilesResp,
-  PersonalApiWireApi,
-  ModelSelectionResp,
   createPersonalApiProfile,
   deletePersonalApiProfile,
   ensureSkillCredential,
@@ -87,15 +103,13 @@ import {
   refreshSkillCredential,
   setPersonalApiModelVisibility,
   setPersonalApiProfileEnabled,
-  updatePersonalApiProfile
+  updatePersonalApiProfile,
 } from '../../api'
-import {
-  CODE_LENGTH,
-  RESET_PASSWORD_DIALOG,
-  resetPasswordSubmitReady
-} from '../../dialogs'
-import { Icon, IconName } from '../../icons'
-import { AccountSettingsPage, useApp } from '../../store'
+import { CODE_LENGTH, RESET_PASSWORD_DIALOG, resetPasswordSubmitReady } from '../../dialogs'
+import type { IconName } from '../../icons'
+import { Icon } from '../../icons'
+import type { AccountSettingsPage } from '../../store'
+import { useApp } from '../../store'
 import {
   FILE_VERSION_MAX_SIZE_MB,
   FILE_VERSION_MIN_SIZE_MB,
@@ -105,7 +119,7 @@ import {
   loadFileVersionSettings,
   saveFileVersionSettings,
   type FileVersionPolicy,
-  type FileVersionScanSummary
+  type FileVersionScanSummary,
 } from '../../features/resources/settings'
 import {
   formatInstallerSize,
@@ -113,7 +127,7 @@ import {
   updateActionOf,
   updateFailureOf,
   updateFailureText,
-  useUpdateState
+  useUpdateState,
 } from '../../features/updates/state'
 import {
   Alert,
@@ -136,6 +150,13 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
   CopyButton,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPortal,
+  DialogTitle,
   EllipsisText,
   IconButton,
   Input,
@@ -158,7 +179,7 @@ import {
   TabsList,
   TabsTrigger,
   Textarea,
-  useToast
+  useToast,
 } from '../ui'
 import { cx } from '../ui/utils'
 import { writeClipboard } from '../primitive/clipboard'
@@ -170,7 +191,10 @@ import type { ProjectRef } from '../../contracts/content'
 import {
   forgetProject,
   listProjects as listProjectListings,
-  setProjectArchived
+  loadWorkspaceRoot,
+  saveWorkspaceRoot,
+  setProjectArchived,
+  type WorkspaceRootState,
 } from '../../features/project/api'
 
 const PHONE_PATTERN = /^1[3-9]\d{9}$/
@@ -196,7 +220,7 @@ const FILE_VERSION_ERROR_KEYS = {
   retention_preview_stale: 'fileSettings.previewStale',
   retention_preview_required: 'fileSettings.previewRequired',
   settings_request_failed: 'fileSettings.serviceUnavailable',
-  invalid_max_file_size: 'fileSettings.fileSizeError'
+  invalid_max_file_size: 'fileSettings.fileSizeError',
 } as const
 type FileVersionNoticeKey =
   | 'fileSettings.loadFailed'
@@ -206,9 +230,7 @@ type FileVersionNoticeKey =
   | 'fileSettings.notLoaded'
   | 'fileSettings.emptyInclude'
   | 'fileSettings.unchanged'
-type RendererUpdateDiagnosis = Awaited<
-  ReturnType<ScholarSeedBridge['diagnoseUpdate']>
->
+type RendererUpdateDiagnosis = Awaited<ReturnType<ScholarSeedBridge['diagnoseUpdate']>>
 
 // 诊断输出是协议对照（字段名即契约字段），按本地化规范不翻译。
 function formatUpdateDiagnosis(diagnosis: RendererUpdateDiagnosis): string {
@@ -220,7 +242,7 @@ function formatUpdateDiagnosis(diagnosis: RendererUpdateDiagnosis): string {
     server
       ? `server: version=${server.version} build=${server.buildNumber} product_id=${server.productId || '-'} bundle_id=${server.bundleId || '-'} team_id=${server.teamId || '-'} channel=${server.channel} arch=${server.archType}`
       : 'server: no newer published build',
-    `mismatches: ${diagnosis.mismatches.length ? diagnosis.mismatches.join(', ') : 'none'}`
+    `mismatches: ${diagnosis.mismatches.length ? diagnosis.mismatches.join(', ') : 'none'}`,
   ]
   if (diagnosis.error) lines.push(`error: ${diagnosis.error}`)
   return lines.join('\n')
@@ -235,13 +257,11 @@ type AccountPanelNavKey =
   | 'skills'
   | 'developer'
   | 'files'
+  | 'storage'
   | 'archives'
   | 'about'
 
-function accountPanelNavLabel(
-  key: AccountPanelNavKey,
-  t: TFunction<'components'>
-): string {
+function accountPanelNavLabel(key: AccountPanelNavKey, t: TFunction<'components'>): string {
   switch (key) {
     case 'prompts':
       return t('accountPanel.nav.prompts')
@@ -259,6 +279,8 @@ function accountPanelNavLabel(
       return t('accountPanel.nav.developer')
     case 'files':
       return t('accountPanel.nav.files')
+    case 'storage':
+      return t('accountPanel.nav.storage')
     case 'archives':
       return t('accountPanel.nav.archives')
     case 'about':
@@ -281,24 +303,23 @@ const NAV_ITEMS: {
   { id: 'skills', labelKey: 'skills', lucideIcon: Plug },
   { id: 'developer', labelKey: 'developer', lucideIcon: UserShield },
   { id: 'files', labelKey: 'files', lucideIcon: Files },
+  { id: 'storage', labelKey: 'storage', lucideIcon: HardDrive },
   // TODO: 暂时隐藏「键盘快捷键」页面，恢复时一并恢复 Keyboard / Shortcuts。
   // { id: 'shortcuts', labelKey: null, lucideIcon: Keyboard },
   { id: 'archives', labelKey: 'archives', lucideIcon: Archive },
-  { id: 'about', labelKey: 'about', lucideIcon: CircleQuestionMark }
+  { id: 'about', labelKey: 'about', lucideIcon: CircleQuestionMark },
 ]
 
 function visiblePage(page: AccountSettingsPage): AccountSettingsPage {
   if (page === 'model-settings') return 'models'
   // 隐藏页与未知页统一回落到第一个可见入口，保证侧栏选中项与右侧内容一致
-  return NAV_ITEMS.some((item) => item.id === page)
-    ? page
-    : (NAV_ITEMS[0]?.id ?? 'account')
+  return NAV_ITEMS.some((item) => item.id === page) ? page : (NAV_ITEMS[0]?.id ?? 'account')
 }
 
 function SettingsNavIcon({
   icon,
   lucideIcon: LucideIconComponent,
-  size
+  size,
 }: {
   icon?: IconName
   lucideIcon?: LucideIcon
@@ -313,7 +334,7 @@ function SettingsNavIcon({
 function SettingsPageHeader({
   action,
   description,
-  title
+  title,
 }: {
   action?: React.ReactNode
   description: string
@@ -325,9 +346,7 @@ function SettingsPageHeader({
         <h1 className={SETTINGS_H1_CLASS_NAME}>{title}</h1>
         <p className={SETTINGS_LEAD_CLASS_NAME}>{description}</p>
       </div>
-      {action && (
-        <div className={SETTINGS_PAGE_HEADER_ACTION_CLASS_NAME}>{action}</div>
-      )}
+      {action && <div className={SETTINGS_PAGE_HEADER_ACTION_CLASS_NAME}>{action}</div>}
     </header>
   )
 }
@@ -336,22 +355,21 @@ const SELECTION_PROMPT_LABELS = {
   explain: 'accountPanel.prompts.explain',
   translate: 'accountPanel.prompts.translate',
   polish: 'accountPanel.prompts.polish',
-  figure: 'accountPanel.prompts.figure'
+  figure: 'accountPanel.prompts.figure',
 } as const
 
 function PromptsPage(): React.JSX.Element {
   const { t } = useTranslation('components')
   const { state, act } = useApp()
   const [draft, setDraft] = React.useState(() => ({
-    ...state.selectionPrompts
+    ...state.selectionPrompts,
   }))
   const [saving, setSaving] = React.useState(false)
   const changed = SELECTION_PROMPT_ACTIONS.some(
     (action) => draft[action] !== state.selectionPrompts[action]
   )
   const valid = SELECTION_PROMPT_ACTIONS.every(
-    (action) =>
-      draft[action].trim() && draft[action].length <= MAX_SELECTION_PROMPT_CHARS
+    (action) => draft[action].trim() && draft[action].length <= MAX_SELECTION_PROMPT_CHARS
   )
   const save = async (): Promise<void> => {
     setSaving(true)
@@ -385,7 +403,7 @@ function PromptsPage(): React.JSX.Element {
                   onChange={(event) =>
                     setDraft((current) => ({
                       ...current,
-                      [action]: event.target.value
+                      [action]: event.target.value,
                     }))
                   }
                 />
@@ -399,17 +417,15 @@ function PromptsPage(): React.JSX.Element {
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={
-                  saving || draft[action] === DEFAULT_SELECTION_PROMPTS[action]
-                }
+                disabled={saving || draft[action] === DEFAULT_SELECTION_PROMPTS[action]}
                 aria-label={t('accountPanel.prompts.restoreAction', {
-                  action: t(SELECTION_PROMPT_LABELS[action])
+                  action: t(SELECTION_PROMPT_LABELS[action]),
                 })}
                 data-testid={`selection-prompt-restore-${action}`}
                 onClick={() =>
                   setDraft((current) => ({
                     ...current,
-                    [action]: DEFAULT_SELECTION_PROMPTS[action]
+                    [action]: DEFAULT_SELECTION_PROMPTS[action],
                   }))
                 }
               >
@@ -444,10 +460,7 @@ function PreferencesPage(): React.JSX.Element {
   const { t } = useTranslation('components')
 
   return (
-    <div
-      className={SETTINGS_CONTENT_CLASS_NAME}
-      data-testid="account-settings-preferences"
-    >
+    <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-preferences">
       <SettingsPageHeader
         title={t('accountPanel.preferences.title')}
         description={t('accountPanel.preferences.description')}
@@ -468,28 +481,117 @@ function siteHostLabel(base: string): string {
   }
 }
 
-function AboutPage(): React.JSX.Element {
-  const { t: accountUpdateText } = useTranslation('account')
+function DataStoragePage(): React.JSX.Element {
   const { t } = useTranslation('components')
-  const { set, act } = useApp()
-  const update = useUpdateState()
-  const [diagnosis, setDiagnosis] =
-    React.useState<RendererUpdateDiagnosis | null>(null)
-  const [mailCopied, setMailCopied] = React.useState(false)
-  const [siteBase, setSiteBase] = React.useState(
-    () => accountBase() || SITE_FALLBACK_BASE_URL
-  )
-  const [runtimeStore, setRuntimeStore] = React.useState<string | null>(null)
+  const [storage, setStorage] = React.useState<StorageConfig | null>(null)
+  const [workspace, setWorkspace] = React.useState<WorkspaceRootState | null>(null)
+  const [rootBusy, setRootBusy] = React.useState(false)
+  const [rootNotice, setRootNotice] = React.useState<'restart' | 'failed' | null>(null)
 
   React.useEffect(() => {
     let cancelled = false
-    void window.scholarseed.runtimeStorePath().then((value) => {
-      if (!cancelled) setRuntimeStore(value)
+    void window.scholarseed.storageConfig().then((value) => {
+      if (!cancelled) setStorage(value)
+    })
+    void loadWorkspaceRoot().then((value) => {
+      if (!cancelled) setWorkspace(value)
     })
     return () => {
       cancelled = true
     }
   }, [])
+
+  // 容器根是运行期唯一可改的数据轴：走既有 PUT /api/serve/workspace-root，重启生效、
+  // 仅新项目跟随。home 运行期只读（Win 安装期选定；mac 仅首启一次性「高级」）。
+  const changeContainerRoot = async (): Promise<void> => {
+    const picked = await window.scholarseed.pickDir()
+    if (!picked) return
+    setRootBusy(true)
+    setRootNotice(null)
+    const result = await saveWorkspaceRoot(picked)
+    setRootBusy(false)
+    if (result.ok && result.state) {
+      setWorkspace(result.state)
+      setRootNotice(result.state.restartRequired ? 'restart' : null)
+    } else {
+      setRootNotice('failed')
+    }
+  }
+
+  return (
+    <SettingsPage
+      data-testid="account-settings-storage"
+      title={t('accountPanel.storage.title')}
+      description={t('accountPanel.storage.description')}
+    >
+      <div className={SECURITY_CARD_CLASS_NAME} data-testid="storage-card">
+        <div className={SETTINGS_ROW_CLASS_NAME} data-testid="storage-data-home">
+          <div className={SETTINGS_ROW_COPY_CLASS_NAME}>
+            <div className={NOTIFICATION_ROW_TITLE_CLASS_NAME}>
+              {t('accountPanel.storage.dataHomeTitle')}
+            </div>
+            <div className={NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME}>
+              {t('accountPanel.storage.dataHomeDescription')}
+            </div>
+            <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-data-home-value">
+              {storage?.home ?? t('accountPanel.storage.dataHomeUnavailable')}
+            </div>
+          </div>
+        </div>
+        <div className={SETTINGS_ROW_CLASS_NAME} data-testid="storage-container-root">
+          <div className={SETTINGS_ROW_COPY_CLASS_NAME}>
+            <div className={NOTIFICATION_ROW_TITLE_CLASS_NAME}>
+              {t('accountPanel.storage.containerRootTitle')}
+            </div>
+            <div className={NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME}>
+              {t('accountPanel.storage.containerRootDescription')}
+            </div>
+            <div className={STORAGE_PATH_CLASS_NAME} data-testid="storage-container-root-value">
+              {workspace
+                ? workspace.configured || workspace.root
+                : t('accountPanel.storage.containerRootUnavailable')}
+            </div>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={rootBusy}
+            data-testid="storage-container-root-change"
+            onClick={() => void changeContainerRoot()}
+          >
+            {t('accountPanel.storage.changeContainerRoot')}
+          </Button>
+        </div>
+        <div className={STORAGE_FOOTNOTE_CLASS_NAME}>
+          <p data-testid="storage-install-time-note">
+            {storage?.canChangeDataHome
+              ? t('accountPanel.storage.installTimeNoteMac')
+              : t('accountPanel.storage.installTimeNoteWin')}
+          </p>
+          {rootNotice === 'restart' ? (
+            <p data-testid="storage-container-root-restart">
+              {t('accountPanel.storage.containerRootRestart')}
+            </p>
+          ) : null}
+          {rootNotice === 'failed' ? (
+            <p data-testid="storage-container-root-failed">
+              {t('accountPanel.storage.containerRootFailed')}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </SettingsPage>
+  )
+}
+
+function AboutPage(): React.JSX.Element {
+  const { t: accountUpdateText } = useTranslation('account')
+  const { t } = useTranslation('components')
+  const { set, act } = useApp()
+  const update = useUpdateState()
+  const [diagnosis, setDiagnosis] = React.useState<RendererUpdateDiagnosis | null>(null)
+  const [mailCopied, setMailCopied] = React.useState(false)
+  const [siteBase, setSiteBase] = React.useState(() => accountBase() || SITE_FALLBACK_BASE_URL)
 
   React.useEffect(() => {
     let cancelled = false
@@ -513,10 +615,7 @@ function AboutPage(): React.JSX.Element {
 
   React.useEffect(() => {
     if (!mailCopied) return
-    const timer = window.setTimeout(
-      () => setMailCopied(false),
-      MAIL_COPIED_HINT_MS
-    )
+    const timer = window.setTimeout(() => setMailCopied(false), MAIL_COPIED_HINT_MS)
     return () => window.clearTimeout(timer)
   }, [mailCopied])
 
@@ -573,10 +672,7 @@ function AboutPage(): React.JSX.Element {
           : CircleCheck
   const versionIconTone = failure
     ? ABOUT_VERSION_ICON_ALERT_CLASS_NAME
-    : phase === 'available' ||
-        downloading ||
-        phase === 'verifying' ||
-        phase === 'ready'
+    : phase === 'available' || downloading || phase === 'verifying' || phase === 'ready'
       ? ABOUT_VERSION_ICON_NEW_CLASS_NAME
       : ''
 
@@ -584,31 +680,19 @@ function AboutPage(): React.JSX.Element {
   // 失败呈现独立于相位：failed / rolled-back / ready+error 三种情形共用这一块。
   const failureSub: React.ReactNode = failure ? (
     <>
-      <span
-        className={ABOUT_VERSION_ERROR_CLASS_NAME}
-        data-testid="version-status"
-      >
+      <span className={ABOUT_VERSION_ERROR_CLASS_NAME} data-testid="version-status">
         {updateFailureText(failure, t, accountUpdateText)}
       </span>
       {failure.rolledBack && (
-        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>
-          {t('update.rolledBack')}
-        </span>
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>{t('update.rolledBack')}</span>
       )}
       {candidate && phase === 'failed' && (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-resumable"
-        >
-          {update?.resumable === false
-            ? t('update.failedDiscarded')
-            : t('update.failedRetained')}
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-resumable">
+          {update?.resumable === false ? t('update.failedDiscarded') : t('update.failedRetained')}
         </span>
       )}
       {phase === 'ready' && (
-        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>
-          {t('update.installRetryHint')}
-        </span>
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>{t('update.installRetryHint')}</span>
       )}
     </>
   ) : null
@@ -617,20 +701,14 @@ function AboutPage(): React.JSX.Element {
     case 'available':
       versionSub = (
         <span className={ABOUT_VERSION_SUB_CLASS_NAME}>
-          <span
-            className={ABOUT_VERSION_CHIP_CLASS_NAME}
-            data-testid="version-chip"
-          >
+          <span className={ABOUT_VERSION_CHIP_CLASS_NAME} data-testid="version-chip">
             {t('update.newVersionChip', {
               version: candidate?.version ?? '',
-              size: formatInstallerSize(candidate?.file_size)
+              size: formatInstallerSize(candidate?.file_size),
             })}
           </span>
           {candidate?.release_notes && (
-            <span
-              className={ABOUT_VERSION_SUMMARY_CLASS_NAME}
-              data-testid="version-summary"
-            >
+            <span className={ABOUT_VERSION_SUMMARY_CLASS_NAME} data-testid="version-summary">
               {candidate.release_notes}
             </span>
           )}
@@ -639,52 +717,35 @@ function AboutPage(): React.JSX.Element {
       break
     case 'downloading':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.downloadingSub', { version: candidate?.version ?? '' })}
         </span>
       )
       break
     case 'verifying':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.verifying')}
         </span>
       )
       break
     case 'ready':
       versionSub = failureSub ?? (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.readySub', { version: candidate?.version ?? '' })}
         </span>
       )
       break
     case 'installing':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
-          {update?.installStage === 'copying'
-            ? t('update.preparingApp')
-            : t('update.installing')}
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
+          {update?.installStage === 'copying' ? t('update.preparingApp') : t('update.installing')}
         </span>
       )
       break
     case 'restarting':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.restarting')}
         </span>
       )
@@ -692,15 +753,10 @@ function AboutPage(): React.JSX.Element {
     case 'manual':
       versionSub = (
         <>
-          <span
-            className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-            data-testid="version-status"
-          >
+          <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
             {t('update.manual')}
           </span>
-          <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>
-            {t('update.manualHint')}
-          </span>
+          <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}>{t('update.manualHint')}</span>
         </>
       )
       break
@@ -710,20 +766,14 @@ function AboutPage(): React.JSX.Element {
       break
     case 'unsupported':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.unsupported')}
         </span>
       )
       break
     case 'idle':
       versionSub = (
-        <span
-          className={ABOUT_ROW_DESCRIPTION_CLASS_NAME}
-          data-testid="version-status"
-        >
+        <span className={ABOUT_ROW_DESCRIPTION_CLASS_NAME} data-testid="version-status">
           {t('update.idle')}
         </span>
       )
@@ -749,13 +799,10 @@ function AboutPage(): React.JSX.Element {
     )
   } else if (downloading) {
     versionControl = (
-      <span
-        className={ABOUT_VERSION_PROGRESS_CLASS_NAME}
-        data-testid="version-progress"
-      >
+      <span className={ABOUT_VERSION_PROGRESS_CLASS_NAME} data-testid="version-progress">
         <ProgressBar
           aria-label={t('update.downloadingSub', {
-            version: candidate?.version ?? ''
+            version: candidate?.version ?? '',
           })}
           value={percent}
         />
@@ -763,40 +810,27 @@ function AboutPage(): React.JSX.Element {
           {t('update.downloadProgress', {
             percent,
             received: formatInstallerSize(update?.receivedBytes ?? 0),
-            total: formatInstallerSize(candidate?.file_size)
+            total: formatInstallerSize(candidate?.file_size),
           })}
         </span>
       </span>
     )
   } else if (phase === 'checking') {
     versionControl = (
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        disabled
-        data-testid="version-check"
-      >
+      <Button type="button" size="sm" variant="outline" disabled data-testid="version-check">
         <span className={ABOUT_VERSION_CHECKING_CLASS_NAME}>
           <Spinner size="sm" />
           {t('update.checking')}
         </span>
       </Button>
     )
-  } else if (
-    phase === 'verifying' ||
-    phase === 'installing' ||
-    phase === 'restarting'
-  ) {
+  } else if (phase === 'verifying' || phase === 'installing' || phase === 'restarting') {
     versionControl = <Spinner size="sm" />
   } else if (action !== 'none') {
     versionControl = (
       <>
         {phase === 'up-to-date' && (
-          <span
-            className={ABOUT_VERSION_MUTED_CLASS_NAME}
-            data-testid="version-status"
-          >
+          <span className={ABOUT_VERSION_MUTED_CLASS_NAME} data-testid="version-status">
             {t('update.upToDate')}
           </span>
         )}
@@ -838,19 +872,14 @@ function AboutPage(): React.JSX.Element {
               <VersionIcon size={15} strokeWidth={1.6} />
             </span>
             <div className={ABOUT_COPY_CLASS_NAME}>
-              <strong
-                className={ABOUT_ROW_TITLE_CLASS_NAME}
-                data-testid="version-current"
-              >
+              <strong className={ABOUT_ROW_TITLE_CLASS_NAME} data-testid="version-current">
                 {t('accountPanel.about.currentVersion', {
-                  version: currentVersionLabel
+                  version: currentVersionLabel,
                 })}
               </strong>
               {versionSub}
             </div>
-            <div className={ABOUT_VERSION_CONTROL_CLASS_NAME}>
-              {versionControl}
-            </div>
+            <div className={ABOUT_VERSION_CONTROL_CLASS_NAME}>{versionControl}</div>
           </div>
           {diagnosis ? (
             <pre
@@ -873,29 +902,13 @@ function AboutPage(): React.JSX.Element {
               <Icon name="globe" size={15} />
             </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
-              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
-                {t('accountPanel.about.site')}
-              </strong>
+              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>{t('accountPanel.about.site')}</strong>
             </span>
             <span className={ABOUT_VALUE_CLASS_NAME}>
               {siteLabel}
               <Icon name="external" size={13} />
             </span>
           </Button>
-          {/* 组件 store 根只读展示：入口锁在首装向导（改 = 数 GB 重解压），这里不给改。 */}
-          <div className={ABOUT_ROW_CLASS_NAME} data-testid="about-runtime-store">
-            <span className={ABOUT_ICON_CLASS_NAME}>
-              <Icon name="folder" size={15} />
-            </span>
-            <span className={ABOUT_COPY_CLASS_NAME}>
-              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
-                {t('accountPanel.about.runtimeStore')}
-              </strong>
-            </span>
-            <span className={ABOUT_VALUE_CLASS_NAME}>
-              {runtimeStore ?? t('accountPanel.about.runtimeStoreUnavailable')}
-            </span>
-          </div>
           <Button
             type="button"
             size="content"
@@ -908,16 +921,11 @@ function AboutPage(): React.JSX.Element {
               <Mail size={15} strokeWidth={1.6} />
             </span>
             <span className={ABOUT_COPY_CLASS_NAME}>
-              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>
-                {t('accountPanel.about.mail')}
-              </strong>
+              <strong className={ABOUT_ROW_TITLE_CLASS_NAME}>{t('accountPanel.about.mail')}</strong>
             </span>
             <span className={ABOUT_VALUE_CLASS_NAME}>
               {mailCopied ? (
-                <em
-                  className={ABOUT_COPIED_CLASS_NAME}
-                  data-testid="about-mail-copied"
-                >
+                <em className={ABOUT_COPIED_CLASS_NAME} data-testid="about-mail-copied">
                   {t('accountPanel.about.copied')}
                 </em>
               ) : (
@@ -1013,16 +1021,14 @@ function FileVersionPage(): React.JSX.Element {
   const [ignores, setIgnores] = React.useState('')
   const [commonPatterns, setCommonPatterns] = React.useState<string[]>([])
   const [saved, setSaved] = React.useState<FileVersionPolicy | null>(null)
-  const [scanSummary, setScanSummary] =
-    React.useState<FileVersionScanSummary | null>(null)
+  const [scanSummary, setScanSummary] = React.useState<FileVersionScanSummary | null>(null)
 
   const refreshSettings = React.useCallback(async (): Promise<void> => {
     const settings = await loadFileVersionSettings()
     if (!settings) {
       toast({
-        duration: false,
         title: t('fileSettings.loadFailed'),
-        tone: 'error'
+        tone: 'error',
       })
       return
     }
@@ -1038,7 +1044,7 @@ function FileVersionPage(): React.JSX.Element {
       max_versions_per_file: settings.max_versions_per_file,
       max_file_size_kb: settings.max_file_size_kb,
       include_patterns: settings.include_patterns,
-      ignore_patterns: settings.ignore_patterns
+      ignore_patterns: settings.ignore_patterns,
     })
     setScanSummary(settings.scan_summary)
   }, [t, toast])
@@ -1054,18 +1060,12 @@ function FileVersionPage(): React.JSX.Element {
 
   React.useEffect(() => {
     if (scanSummary?.status !== 'scanning') return
-    const timer = window.setTimeout(
-      () => void refreshScan(),
-      FILE_VERSION_SCAN_REFRESH_MS
-    )
+    const timer = window.setTimeout(() => void refreshScan(), FILE_VERSION_SCAN_REFRESH_MS)
     return () => window.clearTimeout(timer)
   }, [refreshScan, scanSummary?.status])
 
   const errorMessage = (code: string): string => {
-    const reason = Object.prototype.hasOwnProperty.call(
-      FILE_VERSION_ERROR_KEYS,
-      code
-    )
+    const reason = Object.prototype.hasOwnProperty.call(FILE_VERSION_ERROR_KEYS, code)
       ? t(FILE_VERSION_ERROR_KEYS[code as keyof typeof FILE_VERSION_ERROR_KEYS])
       : t('fileSettings.requestFailed')
     return t('fileSettings.errorDetail', { reason, code })
@@ -1100,7 +1100,7 @@ function FileVersionPage(): React.JSX.Element {
         description: errorMessage(result.error),
         duration: false,
         title: t('fileSettings.requestFailed'),
-        tone: 'error'
+        tone: 'error',
       })
       return
     }
@@ -1111,14 +1111,11 @@ function FileVersionPage(): React.JSX.Element {
       max_versions_per_file: result.result.max_versions_per_file,
       max_file_size_kb: result.result.max_file_size_kb,
       include_patterns: result.result.include_patterns,
-      ignore_patterns: result.result.ignore_patterns
+      ignore_patterns: result.result.ignore_patterns,
     })
   }
 
-  const inspect = async (
-    nextLimit = limit,
-    nextMaxFileSize = maxFileSize
-  ): Promise<void> => {
+  const inspect = async (nextLimit = limit, nextMaxFileSize = maxFileSize): Promise<void> => {
     const value = Number(nextLimit)
     if (
       !Number.isInteger(value) ||
@@ -1132,22 +1129,12 @@ function FileVersionPage(): React.JSX.Element {
       toast({ title: t('fileSettings.notLoaded'), tone: 'warning' })
       return
     }
-    const fileSizeValue = fileVersionSizeKb(
-      nextMaxFileSize,
-      saved.max_file_size_kb
-    )
+    const fileSizeValue = fileVersionSizeKb(nextMaxFileSize, saved.max_file_size_kb)
     if (fileSizeValue === null) {
       toast({ title: t('fileSettings.fileSizeError'), tone: 'error' })
       return
     }
-    const changes = fileVersionSettingsChanges(
-      saved,
-      value,
-      fileSizeValue,
-      includes,
-      ignores,
-      mode
-    )
+    const changes = fileVersionSettingsChanges(saved, value, fileSizeValue, includes, ignores, mode)
     if (
       !migrationRequired &&
       !changes.modeChanged &&
@@ -1167,13 +1154,9 @@ function FileVersionPage(): React.JSX.Element {
     limitValue < FILE_VERSION_MIN_COUNT ||
     limitValue > FILE_VERSION_MAX_COUNT
   const fileSizeInvalid =
-    saved !== null &&
-    fileVersionSizeKb(maxFileSize, saved.max_file_size_kb) === null
+    saved !== null && fileVersionSizeKb(maxFileSize, saved.max_file_size_kb) === null
 
-  const saveAutomatically = (
-    nextLimit: string,
-    nextMaxFileSize: string
-  ): void => {
+  const saveAutomatically = (nextLimit: string, nextMaxFileSize: string): void => {
     if (busyRef.current || !saved) return
     busyRef.current = true
     setBusy(true)
@@ -1192,9 +1175,7 @@ function FileVersionPage(): React.JSX.Element {
       <PageBody data-testid="file-version-settings-stack">
         {migrationRequired && (
           <Alert tone="warning">
-            <AlertDescription>
-              {t('fileSettings.migrationRequired')}
-            </AlertDescription>
+            <AlertDescription>{t('fileSettings.migrationRequired')}</AlertDescription>
           </Alert>
         )}
         <Card
@@ -1248,9 +1229,7 @@ function FileVersionPage(): React.JSX.Element {
               disabled={busy || !saved}
               invalid={limitInvalid}
               onChange={(event) => setLimit(event.target.value)}
-              onBlur={(event) =>
-                saveAutomatically(event.currentTarget.value, maxFileSize)
-              }
+              onBlur={(event) => saveAutomatically(event.currentTarget.value, maxFileSize)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') event.currentTarget.blur()
               }}
@@ -1276,9 +1255,7 @@ function FileVersionPage(): React.JSX.Element {
                 disabled={busy || !saved}
                 invalid={fileSizeInvalid}
                 onChange={(event) => setMaxFileSize(event.target.value)}
-                onBlur={(event) =>
-                  saveAutomatically(limit, event.currentTarget.value)
-                }
+                onBlur={(event) => saveAutomatically(limit, event.currentTarget.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') event.currentTarget.blur()
                 }}
@@ -1289,20 +1266,14 @@ function FileVersionPage(): React.JSX.Element {
             </div>
           </SettingsRow>
           {FILE_VERSION_ADVANCED_CONFIGURATION_ENABLED && (
-            <Collapsible
-              open={advancedOpen}
-              onOpenChange={setAdvancedOpen}
-              disabled={busy}
-            >
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} disabled={busy}>
               <SettingsRow
                 title={t('fileSettings.advancedConfiguration')}
                 description={t('fileSettings.advancedConfigurationHelp')}
                 testid="file-version-advanced-row"
               >
                 <CollapsibleTrigger data-testid="file-version-configuration-toggle">
-                  {advancedOpen
-                    ? t('fileSettings.collapse')
-                    : t('fileSettings.expand')}
+                  {advancedOpen ? t('fileSettings.collapse') : t('fileSettings.expand')}
                 </CollapsibleTrigger>
               </SettingsRow>
               <CollapsibleContent>
@@ -1339,39 +1310,39 @@ const PERMISSIONS: {
     id: 'full-disk',
     title: '项目文件访问',
     description: '读写由你选择的项目目录',
-    icon: 'folder'
+    icon: 'folder',
   },
   {
     id: 'screen',
     title: '录屏与系统录音',
     description: '内容识别与反馈截图',
-    icon: 'eye'
+    icon: 'eye',
   },
   {
     id: 'accessibility',
     title: '辅助功能',
     description: '全局快捷键与快速唤醒',
-    icon: 'hand'
+    icon: 'hand',
   },
   { id: 'microphone', title: '麦克风', description: '语音输入', icon: 'talk' },
   {
     id: 'automation',
     title: '自动化',
     description: '与提醒事项、日历、备忘录等系统应用协作',
-    icon: 'plug'
+    icon: 'plug',
   },
   {
     id: 'notifications',
     title: '通知',
     description: '桌面通知、任务完成与等待提醒',
-    icon: 'bell'
+    icon: 'bell',
   },
   {
     id: 'location',
     title: '位置服务',
     description: '处理与地理位置相关的任务',
-    icon: 'wayfinder'
-  }
+    icon: 'wayfinder',
+  },
 ]
 
 const PERMISSION_TITLE_KEYS: Record<SystemPermissionId, string> = {
@@ -1381,13 +1352,13 @@ const PERMISSION_TITLE_KEYS: Record<SystemPermissionId, string> = {
   microphone: 'accountPanel.permissions.microphone',
   automation: 'accountPanel.permissions.automation',
   notifications: 'accountPanel.permissions.notifications',
-  location: 'accountPanel.permissions.location'
+  location: 'accountPanel.permissions.location',
 }
 const PERMISSION_DETAIL_KEYS = {
   'project-scoped': 'permissionDetails.projectScoped',
   'system-settings': 'permissionDetails.systemSettings',
   'notifications-unavailable': 'permissionDetails.notificationsUnavailable',
-  'not-implemented': 'permissionDetails.notImplemented'
+  'not-implemented': 'permissionDetails.notImplemented',
 } as const
 const PERMISSION_DESCRIPTION_KEYS: Record<SystemPermissionId, string> = {
   'full-disk': 'accountPanel.permissions.fullDiskDesc',
@@ -1396,7 +1367,7 @@ const PERMISSION_DESCRIPTION_KEYS: Record<SystemPermissionId, string> = {
   microphone: 'accountPanel.permissions.microphoneDesc',
   automation: 'accountPanel.permissions.automationDesc',
   notifications: 'accountPanel.permissions.notificationsDesc',
-  location: 'accountPanel.permissions.locationDesc'
+  location: 'accountPanel.permissions.locationDesc',
 }
 const PERMISSION_STATUS_KEYS: Record<SystemPermissionStatus, string> = {
   granted: 'accountPanel.permissions.granted',
@@ -1406,7 +1377,7 @@ const PERMISSION_STATUS_KEYS: Record<SystemPermissionStatus, string> = {
   unavailable: 'accountPanel.permissions.unavailable',
   'system-managed': 'accountPanel.permissions.system-managed',
   'project-scoped': 'accountPanel.permissions.project-scoped',
-  'query-error': 'accountPanel.permissions.query-error'
+  'query-error': 'accountPanel.permissions.query-error',
 }
 
 const STATUS_LABELS: Record<SystemPermissionStatus, string> = {
@@ -1417,14 +1388,13 @@ const STATUS_LABELS: Record<SystemPermissionStatus, string> = {
   unavailable: '不可用',
   'system-managed': '需系统检查',
   'project-scoped': '按项目授权',
-  'query-error': '查询失败'
+  'query-error': '查询失败',
 }
 
 const SETTINGS_SHELL_CLASS_NAME =
   'relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--paper)] [--vds-card-radius:var(--vds-settings-card-radius)] [&_.vds-card]:!shadow-none'
 const SETTINGS_DIALOG_SHELL_CLASS_NAME = `${SETTINGS_SHELL_CLASS_NAME} h-full rounded-[inherit]`
-const SETTINGS_DRAG_CLASS_NAME =
-  'absolute inset-x-0 top-[var(--vds-space-0)] z-[3] h-[38px]'
+const SETTINGS_DRAG_CLASS_NAME = 'absolute inset-x-0 top-[var(--vds-space-0)] z-[3] h-[38px]'
 const SETTINGS_NAV_CLASS_NAME =
   'relative z-[4] w-[210px] flex-none border-r border-[var(--border-soft)] bg-[var(--sidebar-surface)] px-[10px] pb-[18px] pt-[0px] max-[760px]:w-[168px]'
 const SETTINGS_DIALOG_NAV_CLASS_NAME =
@@ -1450,10 +1420,8 @@ const SETTINGS_PAGE_HEADER_COPY_CLASS_NAME =
 const SETTINGS_PAGE_HEADER_ACTION_CLASS_NAME = 'flex flex-none items-center'
 const SETTINGS_H1_CLASS_NAME =
   'm-[var(--vds-space-0)] flex-none text-[14px] font-[var(--vds-fw-medium)] leading-[22px] text-[var(--vds-text-primary)]'
-const SETTINGS_H2_CLASS_NAME =
-  'mb-[10px] mt-[6px] text-[12.5px] font-[650] text-[var(--text-2)]'
-const SETTINGS_HEADING_ROW_CLASS_NAME =
-  'flex items-center justify-between gap-[var(--vds-space-4)]'
+const SETTINGS_H2_CLASS_NAME = 'mb-[10px] mt-[6px] text-[12.5px] font-[650] text-[var(--text-2)]'
+const SETTINGS_HEADING_ROW_CLASS_NAME = 'flex items-center justify-between gap-[var(--vds-space-4)]'
 const SETTINGS_LEAD_CLASS_NAME =
   'm-[var(--vds-space-0)] min-w-0 truncate text-[11.5px] leading-[18px] text-[var(--vds-text-tertiary)]'
 const SETTINGS_CARD_CLASS_NAME =
@@ -1463,8 +1431,7 @@ const PROFILE_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} flex min-h-[108px] 
 const PROFILE_AVATAR_CLASS_NAME =
   'grid size-[72px] flex-none place-items-center overflow-hidden rounded-[13px] bg-[radial-gradient(circle_at_70%_74%,#d3c49b_0_7%,transparent_8%),linear-gradient(145deg,#4b8768,#184b39_58%,#d9d0b9_59%_70%,#32644e_71%)] text-lg font-[650] text-white [text-shadow:0_1px_5px_rgb(0_0_0_/_0.32)]'
 const PROFILE_COPY_CLASS_NAME = 'grid min-w-0 gap-[var(--vds-space-1)]'
-const PROFILE_CAPTION_CLASS_NAME =
-  'pl-[var(--vds-space-4)] text-[10px] text-[var(--text-3)]'
+const PROFILE_CAPTION_CLASS_NAME = 'pl-[var(--vds-space-4)] text-[10px] text-[var(--text-3)]'
 const PROFILE_NAME_CLASS_NAME =
   '!inline-flex !h-auto !w-max !min-h-0 !gap-[6px] !border-0 !bg-transparent !p-[var(--vds-space-0)] !text-base !font-[650] !text-[var(--text)] hover:!bg-transparent disabled:!cursor-not-allowed disabled:!opacity-45'
 const NAME_EDITOR_CLASS_NAME = 'flex items-center gap-[var(--vds-space-2)]'
@@ -1475,8 +1442,7 @@ const SECURITY_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} px-[18px]`
 const SETTINGS_ROW_CLASS_NAME =
   'flex min-h-[72px] items-center gap-[18px] border-b border-[var(--border-soft)] last:border-b-0 max-[760px]:gap-[10px]'
 const SETTINGS_ROW_COPY_CLASS_NAME = 'min-w-0 flex-1'
-const SETTINGS_ROW_TITLE_CLASS_NAME =
-  'text-[12.5px] font-semibold text-[var(--text)]'
+const SETTINGS_ROW_TITLE_CLASS_NAME = 'text-[12.5px] font-semibold text-[var(--text)]'
 const SETTINGS_ROW_DESCRIPTION_CLASS_NAME =
   'mt-[2px] text-[10.5px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]'
 const DEVELOPER_SECTION_HEADING_CLASS_NAME =
@@ -1486,25 +1452,21 @@ const DEVELOPER_ROW_TITLE_CLASS_NAME =
   'text-[14px] font-semibold leading-[20px] text-[var(--vds-text-primary)]'
 const DEVELOPER_ROW_DESCRIPTION_CLASS_NAME =
   'mt-[2px] text-[12px] leading-[18px] text-[var(--vds-text-tertiary)] [overflow-wrap:anywhere]'
-const NOTIFICATION_ROW_TITLE_CLASS_NAME =
-  'text-[14px] font-semibold text-[var(--text)]'
+const NOTIFICATION_ROW_TITLE_CLASS_NAME = 'text-[14px] font-semibold text-[var(--text)]'
 const NOTIFICATION_ROW_DESCRIPTION_CLASS_NAME =
   'mt-[2px] text-[12px] leading-[1.45] text-[var(--text-3)] [overflow-wrap:anywhere]'
 const SECTION_HEADING_CLASS_NAME = `${SETTINGS_H2_CLASS_NAME} !mt-[30px]`
 const INLINE_FORM_CLASS_NAME =
   'mb-[var(--vds-space-2)] rounded-[9px] bg-[color-mix(in_srgb,var(--active-bg)_42%,transparent)] p-[14px]'
-const INLINE_FORM_HEAD_CLASS_NAME =
-  'mb-[10px] flex items-center justify-between text-xs'
+const INLINE_FORM_HEAD_CLASS_NAME = 'mb-[10px] flex items-center justify-between text-xs'
 const API_KEY_SECRET_CLASS_NAME =
   'select-all rounded-[7px] border border-[var(--border)] bg-[var(--bg-2)] px-[var(--vds-space-3)] py-[10px] font-[var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)] text-[11.5px] leading-[1.5] text-[var(--text)] [overflow-wrap:anywhere]'
-const FORM_ERROR_CLASS_NAME =
-  'mt-[var(--vds-space-2)] text-[10.5px] text-[var(--c-tension)]'
+const FORM_ERROR_CLASS_NAME = 'mt-[var(--vds-space-2)] text-[10.5px] text-[var(--c-tension)]'
 const PAGE_ERROR_CLASS_NAME =
   'mt-[var(--vds-space-2)] flex items-center justify-between gap-[var(--vds-space-3)] text-[10.5px] text-[var(--c-tension)]'
 const ACCOUNT_PAGE_ERROR_CLASS_NAME =
   'flex items-center justify-between gap-[var(--vds-space-3)] text-[10.5px] text-[var(--c-tension)]'
-const FORM_NOTICE_CLASS_NAME =
-  'mt-[var(--vds-space-2)] text-[10.5px] text-[var(--c-experience)]'
+const FORM_NOTICE_CLASS_NAME = 'mt-[var(--vds-space-2)] text-[10.5px] text-[var(--c-experience)]'
 const MODAL_SCRIM_CLASS_NAME =
   'fixed inset-[var(--vds-space-0)] z-[95] grid place-items-center bg-[color-mix(in_srgb,var(--text)_24%,transparent)] p-[28px]'
 const RESET_DIALOG_CLASS_NAME =
@@ -1519,17 +1481,20 @@ const RESET_DESCRIPTION_CLASS_NAME =
   'mb-[var(--vds-space-0)] ml-[var(--vds-space-0)] mr-[34px] mt-[var(--vds-space-1)] text-xs leading-[1.45] text-[var(--text-3)]'
 const RESET_BODY_CLASS_NAME =
   'grid gap-[var(--vds-space-3)] px-[var(--vds-space-5)] pb-[var(--vds-space-2)] pt-[14px]'
-const RESET_LABEL_CLASS_NAME =
-  'grid gap-[7px] text-[11px] font-[650] text-[var(--text)]'
+const RESET_LABEL_CLASS_NAME = 'grid gap-[7px] text-[11px] font-[650] text-[var(--text)]'
 const RESET_INPUT_CLASS_NAME =
   'h-11 w-full min-w-0 rounded-[9px] border border-[var(--border)] bg-[var(--bg)] px-[var(--vds-space-3)] text-[13px] text-[var(--text)] outline-0 focus:border-[var(--c-experience)] disabled:opacity-100 disabled:text-[var(--text)] disabled:[-webkit-text-fill-color:var(--text)]'
-const RESET_CODE_ROW_CLASS_NAME =
-  'grid grid-cols-[minmax(0,1fr)_104px] gap-[var(--vds-space-2)]'
+const RESET_CODE_ROW_CLASS_NAME = 'grid grid-cols-[minmax(0,1fr)_104px] gap-[var(--vds-space-2)]'
 const RESET_BUTTON_CLASS_NAME =
   '!h-11 !rounded-[9px] !border !border-[var(--border)] !bg-[var(--bg)] !px-[var(--vds-space-0)] !text-xs !text-[var(--text-2)]'
 const RESET_ACTIONS_CLASS_NAME =
   'flex justify-end gap-[var(--vds-space-2)] px-[var(--vds-space-5)] pb-[var(--vds-space-5)] pt-[var(--vds-space-2)]'
 const NOTIFICATION_CARD_CLASS_NAME = SECURITY_CARD_CLASS_NAME
+// 路径值块：mono + bg-3 底 + 可断行；全部取 token，不引入固定视觉值（standards 棘轮）。
+const STORAGE_PATH_CLASS_NAME =
+  'mt-[var(--vds-space-2)] break-all rounded-[var(--vds-space-2)] bg-[var(--bg-3)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--vds-font-caption)] leading-[var(--vds-lh-caption)] [font-family:var(--font-mono)] [color:var(--text-2)]'
+const STORAGE_FOOTNOTE_CLASS_NAME =
+  'space-y-[var(--vds-space-1)] border-t border-[var(--border-soft)] py-[var(--vds-space-3)] text-[var(--vds-font-caption)] leading-[var(--vds-lh-caption)] text-[var(--text-3)] [overflow-wrap:anywhere]'
 const PERMISSION_CARD_CLASS_NAME = SECURITY_CARD_CLASS_NAME
 const PREFERENCE_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} grid gap-[14px] px-[18px] py-[16px]`
 const PERMISSION_ROW_CLASS_NAME =
@@ -1538,8 +1503,7 @@ const PERMISSION_ICON_CLASS_NAME =
   'grid size-[30px] flex-none place-items-center rounded-lg bg-[var(--active-bg)] text-[var(--c-experience)]'
 const PERMISSION_COPY_CLASS_NAME = 'grid min-w-0 flex-1 gap-[2px]'
 const STRONG_TEXT_CLASS_NAME = 'text-xs font-[650] text-[var(--text)]'
-const SMALL_TEXT_CLASS_NAME =
-  'text-[10.5px] leading-[1.45] text-[var(--text-3)]'
+const SMALL_TEXT_CLASS_NAME = 'text-[10.5px] leading-[1.45] text-[var(--text-3)]'
 const PERMISSION_STATUS_BASE_CLASS_NAME =
   'flex-none rounded-full bg-[var(--bg-3)] px-[var(--vds-space-2)] py-[3px] text-[10px] text-[var(--text-3)] max-[760px]:hidden'
 const PERMISSION_STATUS_GRANTED_CLASS_NAME =
@@ -1549,8 +1513,7 @@ const PERMISSION_STATUS_DENIED_CLASS_NAME =
 const SHARING_LEAD_CLASS_NAME = `${SETTINGS_LEAD_CLASS_NAME} mb-[10px]`
 const SHARING_CARD_CLASS_NAME = `${SETTINGS_CARD_CLASS_NAME} flex min-h-[78px] items-center gap-[18px] px-[var(--vds-space-4)] py-[13px]`
 const SHARING_COPY_CLASS_NAME = 'grid min-w-0 flex-1 gap-[2px]'
-const SHARING_SEGMENT_CLASS_NAME =
-  'flex flex-none rounded-lg bg-[var(--bg-3)] p-[3px]'
+const SHARING_SEGMENT_CLASS_NAME = 'flex flex-none rounded-lg bg-[var(--bg-3)] p-[3px]'
 const SHARING_SEGMENT_BUTTON_CLASS_NAME =
   'min-h-7 rounded-md border-0 bg-transparent px-[var(--vds-space-3)] text-[10.5px] text-[var(--text-3)] disabled:opacity-50'
 const SHARING_SEGMENT_ACTIVE_CLASS_NAME =
@@ -1561,14 +1524,11 @@ const ABOUT_LINK_ROW_CLASS_NAME = `${ABOUT_ROW_CLASS_NAME} !w-full !justify-star
 const ABOUT_ICON_CLASS_NAME =
   'grid size-[30px] flex-none place-items-center rounded-full bg-[var(--active-bg)] text-[var(--c-experience)]'
 const ABOUT_COPY_CLASS_NAME = 'grid min-w-0 flex-1 gap-[2px]'
-const ABOUT_ROW_TITLE_CLASS_NAME =
-  'text-[14px] font-[650] leading-[20px] text-[var(--text)]'
-const ABOUT_ROW_DESCRIPTION_CLASS_NAME =
-  'text-[12px] leading-[18px] text-[var(--text-3)]'
+const ABOUT_ROW_TITLE_CLASS_NAME = 'text-[14px] font-[650] leading-[20px] text-[var(--text)]'
+const ABOUT_ROW_DESCRIPTION_CLASS_NAME = 'text-[12px] leading-[18px] text-[var(--text-3)]'
 const ABOUT_VALUE_CLASS_NAME =
   'flex min-w-0 items-center justify-end gap-[5px] break-words text-right text-[12px] leading-[18px] text-[var(--text-3)] [overflow-wrap:anywhere] max-[760px]:justify-start max-[760px]:text-left'
-const ABOUT_COPIED_CLASS_NAME =
-  'text-[12px] not-italic leading-[18px] text-[var(--c-experience)]'
+const ABOUT_COPIED_CLASS_NAME = 'text-[12px] not-italic leading-[18px] text-[var(--c-experience)]'
 /** 「当前版本」行的状态图标色调：有新版本可下/已就绪用品牌实心，失败用错误浅色。 */
 const ABOUT_VERSION_ICON_NEW_CLASS_NAME =
   'bg-[var(--vds-brand-bg-default)] text-[var(--vds-text-on-brand)]'
@@ -1583,10 +1543,8 @@ const ABOUT_VERSION_ERROR_CLASS_NAME =
   'break-all text-[12px] leading-[18px] text-[var(--vds-error-text-primary)]'
 const ABOUT_VERSION_CONTROL_CLASS_NAME =
   'flex flex-none items-center justify-end gap-[var(--vds-space-2)]'
-const ABOUT_VERSION_MUTED_CLASS_NAME =
-  'text-[12px] text-[var(--vds-text-tertiary)]'
-const ABOUT_VERSION_PROGRESS_CLASS_NAME =
-  'grid w-[150px] justify-items-end gap-[4px]'
+const ABOUT_VERSION_MUTED_CLASS_NAME = 'text-[12px] text-[var(--vds-text-tertiary)]'
+const ABOUT_VERSION_PROGRESS_CLASS_NAME = 'grid w-[150px] justify-items-end gap-[4px]'
 const ABOUT_VERSION_CAPTION_CLASS_NAME =
   'text-[10px] leading-[var(--vds-lh-caption)] text-[var(--vds-text-tertiary)] tabular-nums'
 const ABOUT_VERSION_CHECKING_CLASS_NAME = 'flex items-center gap-[6px]'
@@ -1598,7 +1556,7 @@ function Toggle({
   disabled = false,
   testid,
   label,
-  onChange
+  onChange,
 }: {
   checked: boolean
   disabled?: boolean
@@ -1623,7 +1581,7 @@ function SettingsRow({
   children,
   titleClassName = SETTINGS_ROW_TITLE_CLASS_NAME,
   descriptionClassName = SETTINGS_ROW_DESCRIPTION_CLASS_NAME,
-  testid
+  testid,
 }: {
   title: string
   description: string
@@ -1645,7 +1603,7 @@ function SettingsRow({
 
 function ChangePhoneDialog({
   onClose,
-  onSessionInvalid
+  onSessionInvalid,
 }: {
   onClose: () => void
   onSessionInvalid: () => void
@@ -1658,16 +1616,11 @@ function ChangePhoneDialog({
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
-  const [notice, setNotice] = React.useState<
-    '' | 'accountPanel.dialog.codeSent'
-  >('')
+  const [notice, setNotice] = React.useState<'' | 'accountPanel.dialog.codeSent'>('')
 
   React.useEffect(() => {
     if (cooldown <= 0) return undefined
-    const timer = window.setTimeout(
-      () => setCooldown((left) => left - 1),
-      1_000
-    )
+    const timer = window.setTimeout(() => setCooldown((left) => left - 1), 1_000)
     return () => window.clearTimeout(timer)
   }, [cooldown])
 
@@ -1703,11 +1656,7 @@ function ChangePhoneDialog({
   }
 
   return createPortal(
-    <div
-      className={MODAL_SCRIM_CLASS_NAME}
-      role="presentation"
-      onMouseDown={onClose}
-    >
+    <div className={MODAL_SCRIM_CLASS_NAME} role="presentation" onMouseDown={onClose}>
       <section
         className={RESET_DIALOG_CLASS_NAME}
         role="dialog"
@@ -1726,10 +1675,7 @@ function ChangePhoneDialog({
           <Icon name="close" size={16} />
         </button>
         <header className={RESET_HEADER_CLASS_NAME}>
-          <h2
-            className={RESET_TITLE_CLASS_NAME}
-            id="account-change-phone-title"
-          >
+          <h2 className={RESET_TITLE_CLASS_NAME} id="account-change-phone-title">
             {t('accountPanel.dialog.changePhoneTitle')}
           </h2>
           <p className={RESET_DESCRIPTION_CLASS_NAME}>
@@ -1759,7 +1705,7 @@ function ChangePhoneDialog({
                 maxLength={CODE_LENGTH}
                 data-testid="account-phone-code"
                 placeholder={t('accountPanel.dialog.codePlaceholder', {
-                  count: CODE_LENGTH
+                  count: CODE_LENGTH,
                 })}
                 onChange={(event) => setCode(event.target.value.trim())}
               />
@@ -1779,14 +1725,10 @@ function ChangePhoneDialog({
             </div>
           </label>
           {error && (
-            <div className={FORM_ERROR_CLASS_NAME}>
-              {accountFailureText(error, accountText)}
-            </div>
+            <div className={FORM_ERROR_CLASS_NAME}>{accountFailureText(error, accountText)}</div>
           )}
           {!error && notice && (
-            <div className={FORM_NOTICE_CLASS_NAME}>
-              {t('accountPanel.dialog.codeSent')}
-            </div>
+            <div className={FORM_NOTICE_CLASS_NAME}>{t('accountPanel.dialog.codeSent')}</div>
           )}
         </div>
         <footer className={RESET_ACTIONS_CLASS_NAME}>
@@ -1808,9 +1750,7 @@ function ChangePhoneDialog({
             data-testid="account-phone-submit"
             onClick={() => void submit()}
           >
-            {busy
-              ? t('accountPanel.common.processing')
-              : t('accountPanel.dialog.confirmChange')}
+            {busy ? t('accountPanel.common.processing') : t('accountPanel.dialog.confirmChange')}
           </Button>
         </footer>
       </section>
@@ -1822,7 +1762,7 @@ function ChangePhoneDialog({
 function ResetPasswordDialog({
   phone,
   onClose,
-  onSessionInvalid
+  onSessionInvalid,
 }: {
   phone: string
   onClose: () => void
@@ -1837,16 +1777,11 @@ function ResetPasswordDialog({
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
-  const [notice, setNotice] = React.useState<
-    '' | 'accountPanel.dialog.codeSent'
-  >('')
+  const [notice, setNotice] = React.useState<'' | 'accountPanel.dialog.codeSent'>('')
 
   React.useEffect(() => {
     if (cooldown <= 0) return undefined
-    const timer = window.setTimeout(
-      () => setCooldown((left) => left - 1),
-      1_000
-    )
+    const timer = window.setTimeout(() => setCooldown((left) => left - 1), 1_000)
     return () => window.clearTimeout(timer)
   }, [cooldown])
 
@@ -1888,11 +1823,7 @@ function ResetPasswordDialog({
   }
 
   return createPortal(
-    <div
-      className={MODAL_SCRIM_CLASS_NAME}
-      role="presentation"
-      onMouseDown={onClose}
-    >
+    <div className={MODAL_SCRIM_CLASS_NAME} role="presentation" onMouseDown={onClose}>
       <section
         className={RESET_DIALOG_CLASS_NAME}
         role="dialog"
@@ -1942,7 +1873,7 @@ function ResetPasswordDialog({
                 maxLength={CODE_LENGTH}
                 data-testid={RESET_PASSWORD_DIALOG.codeTestId}
                 placeholder={t('accountPanel.dialog.codePlaceholder', {
-                  count: CODE_LENGTH
+                  count: CODE_LENGTH,
                 })}
                 onChange={(event) => setCode(event.target.value.trim())}
               />
@@ -1970,20 +1901,16 @@ function ResetPasswordDialog({
               autoComplete="new-password"
               data-testid={RESET_PASSWORD_DIALOG.passwordTestId}
               placeholder={t('accountPanel.dialog.passwordPlaceholder', {
-                count: PASSWORD_MIN_LENGTH
+                count: PASSWORD_MIN_LENGTH,
               })}
               onChange={(event) => setPassword(event.target.value)}
             />
           </label>
           {error && (
-            <div className={FORM_ERROR_CLASS_NAME}>
-              {accountFailureText(error, accountText)}
-            </div>
+            <div className={FORM_ERROR_CLASS_NAME}>{accountFailureText(error, accountText)}</div>
           )}
           {!error && notice && (
-            <div className={FORM_NOTICE_CLASS_NAME}>
-              {t('accountPanel.dialog.codeSent')}
-            </div>
+            <div className={FORM_NOTICE_CLASS_NAME}>{t('accountPanel.dialog.codeSent')}</div>
           )}
         </div>
         <footer className={RESET_ACTIONS_CLASS_NAME}>
@@ -2005,9 +1932,7 @@ function ResetPasswordDialog({
             data-testid={RESET_PASSWORD_DIALOG.submitTestId}
             onClick={() => void submit()}
           >
-            {busy
-              ? t('accountPanel.common.processing')
-              : t('accountPanel.dialog.confirmReset')}
+            {busy ? t('accountPanel.common.processing') : t('accountPanel.dialog.confirmReset')}
           </Button>
         </footer>
       </section>
@@ -2018,7 +1943,7 @@ function ResetPasswordDialog({
 
 function AccountPage({
   onLogin,
-  onLogout
+  onLogout,
 }: {
   /** 打开应用内登录层。登录不是门禁, 未登录时这一页只有这一个动作。 */
   onLogin: () => void
@@ -2033,9 +1958,9 @@ function AccountPage({
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
-  const [loadState, setLoadState] = React.useState<
-    'loading' | 'ready' | 'error' | 'anonymous'
-  >('loading')
+  const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'error' | 'anonymous'>(
+    'loading'
+  )
 
   const loadProfile = React.useCallback((): void => {
     setLoadState('loading')
@@ -2099,13 +2024,11 @@ function AccountPage({
       setError(result)
       return
     }
-    setProfile((current) =>
-      current ? { ...current, nickname: result.data.nickname } : current
-    )
+    setProfile((current) => (current ? { ...current, nickname: result.data.nickname } : current))
     setEditingName(false)
     window.dispatchEvent(
       new CustomEvent('scholarseed:account-updated', {
-        detail: { nickname: result.data.nickname }
+        detail: { nickname: result.data.nickname },
       })
     )
   }
@@ -2130,10 +2053,7 @@ function AccountPage({
   // 照常摆出来只会得到一排点不动的按钮, 外加一行骗人的「已登录」。
   if (loadState === 'anonymous') {
     return (
-      <div
-        className={SETTINGS_CONTENT_CLASS_NAME}
-        data-testid="account-settings-account"
-      >
+      <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-account">
         <SettingsPageHeader
           title={t('accountPanel.account.title')}
           description={t('accountPanel.account.anonymousDescription')}
@@ -2161,10 +2081,7 @@ function AccountPage({
   }
 
   return (
-    <div
-      className={SETTINGS_CONTENT_CLASS_NAME}
-      data-testid="account-settings-account"
-    >
+    <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-account">
       <SettingsPageHeader
         title={t('accountPanel.account.title')}
         description={t('accountPanel.account.description')}
@@ -2176,9 +2093,7 @@ function AccountPage({
             aria-label={t('accountPanel.account.avatar', { name: displayName })}
           />
           <div className={PROFILE_COPY_CLASS_NAME}>
-            <span className={PROFILE_CAPTION_CLASS_NAME}>
-              {t('accountPanel.account.nickname')}
-            </span>
+            <span className={PROFILE_CAPTION_CLASS_NAME}>{t('accountPanel.account.nickname')}</span>
             {editingName ? (
               <div className={NAME_EDITOR_CLASS_NAME}>
                 <Input
@@ -2235,9 +2150,7 @@ function AccountPage({
         <div className={SECURITY_CARD_CLASS_NAME}>
           <SettingsRow
             title={t('accountPanel.account.phoneNumber')}
-            description={
-              maskedPhone || t('accountPanel.account.phoneUnavailable')
-            }
+            description={maskedPhone || t('accountPanel.account.phoneUnavailable')}
           >
             <Button
               type="button"
@@ -2282,17 +2195,13 @@ function AccountPage({
         />
       )}
 
-      <h2 className={SECTION_HEADING_CLASS_NAME}>
-        {t('accountPanel.account.currentLogin')}
-      </h2>
+      <h2 className={SECTION_HEADING_CLASS_NAME}>{t('accountPanel.account.currentLogin')}</h2>
       <div className={ACCOUNT_SECTION_STACK_CLASS_NAME}>
         <div className={SECURITY_CARD_CLASS_NAME}>
           <SettingsRow
             title={displayName}
             description={t('accountPanel.account.loginStatus', {
-              phone:
-                maskedPhone ||
-                t('accountPanel.account.phoneTemporarilyUnavailable')
+              phone: maskedPhone || t('accountPanel.account.phoneTemporarilyUnavailable'),
             })}
           >
             <Button
@@ -2319,9 +2228,7 @@ function AccountPage({
               data-testid="account-logout"
               onClick={() => void performLogout()}
             >
-              {busy
-                ? t('accountPanel.account.loggingOut')
-                : t('accountPanel.account.logout')}
+              {busy ? t('accountPanel.account.loggingOut') : t('accountPanel.account.logout')}
             </Button>
           </SettingsRow>
         </div>
@@ -2349,7 +2256,7 @@ function AccountPage({
 /** 明文只在这里出现一次。关闭后账号服务也取不回（库里只有 sha256），所以文案要说清。 */
 function FreshKeyCard({
   created,
-  onClose
+  onClose,
 }: {
   created: ApiKeyCreated
   onClose: () => void
@@ -2360,24 +2267,15 @@ function FreshKeyCard({
   return (
     <div className={INLINE_FORM_CLASS_NAME} data-testid="api-key-fresh">
       <div className={INLINE_FORM_HEAD_CLASS_NAME}>
-        <strong className={STRONG_TEXT_CLASS_NAME}>
-          {t('accountPanel.developer.created')}
-        </strong>
-        <Button
-          type="button"
-          variant="outline"
-          data-testid="api-key-fresh-close"
-          onClick={onClose}
-        >
+        <strong className={STRONG_TEXT_CLASS_NAME}>{t('accountPanel.developer.created')}</strong>
+        <Button type="button" variant="outline" data-testid="api-key-fresh-close" onClick={onClose}>
           {accountText('actions.close')}
         </Button>
       </div>
       <div className={API_KEY_SECRET_CLASS_NAME} data-testid="api-key-secret">
         {created.token}
       </div>
-      <div className={FORM_NOTICE_CLASS_NAME}>
-        {t('accountPanel.developer.copyHint')}
-      </div>
+      <div className={FORM_NOTICE_CLASS_NAME}>{t('accountPanel.developer.copyHint')}</div>
       <CopyButton
         type="button"
         value={created.token}
@@ -2409,7 +2307,7 @@ function DeveloperPage(): React.JSX.Element {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
-          hour12: false
+          hour12: false,
         })
       : accountText('accountExtra.never')
   const t = translate as unknown as (key: string) => string
@@ -2419,9 +2317,7 @@ function DeveloperPage(): React.JSX.Element {
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
   const [error, setError] = React.useState<AccountFailure | null>(null)
-  const [loadState, setLoadState] = React.useState<
-    'loading' | 'ready' | 'error'
-  >('loading')
+  const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'error'>('loading')
 
   const load = React.useCallback((): void => {
     setLoadState('loading')
@@ -2470,9 +2366,7 @@ function DeveloperPage(): React.JSX.Element {
       return
     }
     // 被吊销的那把如果正是刚生成的，明文卡也要收掉，避免展示一个已失效的密钥
-    setFresh((current) =>
-      current && current.key_id === keyId ? null : current
-    )
+    setFresh((current) => (current && current.key_id === keyId ? null : current))
     load()
   }
 
@@ -2530,12 +2424,12 @@ function DeveloperPage(): React.JSX.Element {
                   key.managed
                     ? accountText('accountExtra.managed', {
                         prefix: key.prefix,
-                        lastUsed: formatMoment(key.last_used_at)
+                        lastUsed: formatMoment(key.last_used_at),
                       })
                     : accountText('accountExtra.keyDates', {
                         prefix: key.prefix,
                         created: formatMoment(key.created_at),
-                        lastUsed: formatMoment(key.last_used_at)
+                        lastUsed: formatMoment(key.last_used_at),
                       })
                 }
                 titleClassName={DEVELOPER_ROW_TITLE_CLASS_NAME}
@@ -2566,13 +2460,14 @@ function DeveloperPage(): React.JSX.Element {
             ))}
           </Card>
 
-          {fresh && (
-            <FreshKeyCard created={fresh} onClose={() => setFresh(null)} />
-          )}
+          {fresh && <FreshKeyCard created={fresh} onClose={() => setFresh(null)} />}
         </PageSection>
 
         <PageSection title={t('accountPanel.developer.new')}>
-          <Card padding="none" className="!rounded-[var(--vds-settings-api-key-card-radius)] px-[var(--vds-card-padding-md)]">
+          <Card
+            padding="none"
+            className="!rounded-[var(--vds-settings-api-key-card-radius)] px-[var(--vds-card-padding-md)]"
+          >
             <SettingsRow
               title={t('accountPanel.developer.name')}
               description={t('accountPanel.developer.nameDesc')}
@@ -2596,9 +2491,7 @@ function DeveloperPage(): React.JSX.Element {
                   data-testid="api-key-create"
                   onClick={() => void create()}
                 >
-                  {busy
-                    ? t('accountPanel.developer.busy')
-                    : t('accountPanel.developer.generate')}
+                  {busy ? t('accountPanel.developer.busy') : t('accountPanel.developer.generate')}
                 </Button>
               </div>
             </SettingsRow>
@@ -2627,12 +2520,9 @@ function DeveloperPage(): React.JSX.Element {
 
 const MODEL_FORM_GRID_CLASS_NAME = 'grid gap-[10px]'
 const MODEL_FIELD_CLASS_NAME = 'grid gap-[5px]'
-const MODEL_FIELD_LABEL_CLASS_NAME =
-  'text-[14px] font-[650] text-[var(--text-2)]'
-const MODEL_FIELD_HINT_CLASS_NAME =
-  'text-[12px] leading-[1.45] text-[var(--text-3)]'
-const MODEL_ROW_ACTIONS_CLASS_NAME =
-  'flex flex-none items-center gap-[var(--vds-space-2)]'
+const MODEL_FIELD_LABEL_CLASS_NAME = 'text-[14px] font-[650] text-[var(--text-2)]'
+const MODEL_FIELD_HINT_CLASS_NAME = 'text-[12px] leading-[1.45] text-[var(--text-3)]'
+const MODEL_ROW_ACTIONS_CLASS_NAME = 'flex flex-none items-center gap-[var(--vds-space-2)]'
 const MODEL_NAME_ROW_CLASS_NAME = 'flex items-center gap-[var(--vds-space-2)]'
 
 // 模型页在弹窗内分配剩余高度，订阅连接和端点内容分别滚动，操作栏保持可见。
@@ -2652,14 +2542,13 @@ const MODEL_SETTINGS_TABLE_HEADER_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLAS
 const MODEL_SETTINGS_TABLE_ROW_CLASS_NAME = `${MODEL_SETTINGS_TABLE_GRID_CLASS_NAME} items-center border-b border-[var(--vds-line-1)] px-4 py-3 last:border-b-0`
 const MODEL_SHELL_CLASS_NAME = [
   'grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)]',
-  'overflow-hidden rounded-[var(--vds-settings-model-panel-radius)] border border-[var(--border-soft)]'
+  'overflow-hidden rounded-[var(--vds-settings-model-panel-radius)] border border-[var(--border-soft)]',
 ].join(' ')
 const MODEL_PANE_CLASS_NAME =
   'flex min-h-0 flex-col border-r border-[var(--border-soft)] bg-[var(--bg-2)]'
 const MODEL_PANE_TITLE_CLASS_NAME =
   'flex items-baseline justify-between gap-[var(--vds-space-2)] px-[12px] pb-[6px] pt-[12px]'
-const MODEL_PANE_TITLE_TEXT_CLASS_NAME =
-  'text-[14px] font-[650] text-[var(--text-2)]'
+const MODEL_PANE_TITLE_TEXT_CLASS_NAME = 'text-[14px] font-[650] text-[var(--text-2)]'
 const MODEL_PANE_COUNT_CLASS_NAME = 'text-[12px] text-[var(--text-3)]'
 const MODEL_PANE_SEARCH_CLASS_NAME = 'px-[12px] pb-[8px]'
 const MODEL_PANE_LIST_CLASS_NAME =
@@ -2669,9 +2558,7 @@ const MODEL_FOOT_CLASS_NAME =
 const MODEL_CONNECTION_ROW_CLASS_NAME = (selected: boolean): string =>
   [
     'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] px-[8px] py-[6px]',
-    selected
-      ? 'bg-[var(--accent-soft)]'
-      : 'bg-transparent hover:bg-[var(--bg-3)]'
+    selected ? 'bg-[var(--accent-soft)]' : 'bg-transparent hover:bg-[var(--bg-3)]',
   ].join(' ')
 const MODEL_CONNECTION_PICK_CLASS_NAME =
   'flex min-w-0 flex-1 items-center gap-[var(--vds-space-2)] text-left'
@@ -2693,7 +2580,7 @@ const MODEL_SELECTION_ROW_CLASS_NAME = (checked: boolean): string =>
     'flex items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border px-[8px] py-[6px]',
     checked
       ? 'border-[var(--border)] bg-[var(--accent-soft)]'
-      : 'border-transparent hover:bg-[var(--bg-3)]'
+      : 'border-transparent hover:bg-[var(--bg-3)]',
   ].join(' ')
 const MODEL_SELECTION_NAME_CLASS_NAME =
   'min-w-0 flex-1 break-all font-mono text-[14px] text-[var(--text)]'
@@ -2703,8 +2590,7 @@ const MODEL_SELECTION_LIST_CLASS_NAME = 'flex flex-col gap-[2px]'
 const MODEL_DETAIL_HEAD_CLASS_NAME =
   'flex flex-none items-center gap-[var(--vds-space-2)] border-b border-[var(--border-soft)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]'
 const MODEL_DETAIL_HEAD_TEXT_CLASS_NAME = 'flex min-w-0 flex-col'
-const MODEL_STATUS_ROW_CLASS_NAME =
-  'flex flex-none items-center gap-[var(--vds-space-2)]'
+const MODEL_STATUS_ROW_CLASS_NAME = 'flex flex-none items-center gap-[var(--vds-space-2)]'
 const MODEL_STATUS_DOT_CLASS_NAME = (state: 'idle' | 'ok' | 'fail'): string =>
   [
     'size-[var(--vds-space-1)] flex-none rounded-full',
@@ -2712,10 +2598,14 @@ const MODEL_STATUS_DOT_CLASS_NAME = (state: 'idle' | 'ok' | 'fail'): string =>
       ? 'bg-[var(--c-experience)]'
       : state === 'fail'
         ? 'bg-[var(--c-tension)]'
-        : 'bg-[var(--text-3)]'
+        : 'bg-[var(--text-3)]',
   ].join(' ')
 const MODEL_PANE_ADD_CLASS_NAME =
   'flex w-full flex-none items-center gap-[var(--vds-space-1)] border-t border-[var(--border-soft)] px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[var(--text-2)] hover:bg-[var(--bg-3)] hover:text-[var(--text)]'
+// 连接测试结果弹窗嵌套在「设置」modal（--vds-z-modal:6000）内, 必须抬到 modal-nested 层级,
+// 否则被设置面板盖住而点不动关闭按钮。
+const PROBE_RESULT_OVERLAY_CLASS_NAME = 'z-[var(--vds-z-modal-nested-overlay)]'
+const PROBE_RESULT_DIALOG_CLASS_NAME = 'z-[var(--vds-z-modal-nested)]'
 
 // 头像缩写只服务显示: 优先取拉丁词首字母, 纯中文厂商标题退回首两字, 保证任何
 // 新增预设都有稳定缩写而不需要回来改表。
@@ -2741,7 +2631,7 @@ type ModelPageFailure = {
 
 const WIRE_API_CHOICES = [
   { value: 'chat_completions', labelKey: 'models.wireChatCompletions' },
-  { value: 'responses', labelKey: 'models.wireResponses' }
+  { value: 'responses', labelKey: 'models.wireResponses' },
 ] as const
 
 interface ModelEndpointForm {
@@ -2771,7 +2661,7 @@ const EMPTY_MODEL_ENDPOINT_FORM: ModelEndpointForm = {
   apiKey: '',
   selectedModels: [],
   candidates: [],
-  smallModelName: ''
+  smallModelName: '',
 }
 
 function formOf(profile: PersonalApiProfile): ModelEndpointForm {
@@ -2789,7 +2679,7 @@ function formOf(profile: PersonalApiProfile): ModelEndpointForm {
     selectedModels: profile.selected_models,
     // 已勾选的模型先进候选表, 否则进编辑态要先刷新一次才看得见自己勾了什么。
     candidates: profile.selected_models.map((model) => model.id),
-    smallModelName: profile.small_model_name
+    smallModelName: profile.small_model_name,
   }
 }
 
@@ -2805,7 +2695,7 @@ function inputOf(form: ModelEndpointForm): PersonalApiInput {
     base_url: form.baseUrl.trim(),
     api_key: form.apiKey,
     selected_models: form.selectedModels,
-    small_model_name: form.smallModelName.trim()
+    small_model_name: form.smallModelName.trim(),
     // headers 刻意不发: 本页没有自定义头编辑器, 发空对象会把已存的头删掉。
   }
 }
@@ -2816,20 +2706,15 @@ function inputOf(form: ModelEndpointForm): PersonalApiInput {
  * endpoint no longer advertises (or that the user typed by hand) is kept, because
  * dropping it would silently un-select a model the user is relying on.
  */
-function mergeCandidates(
-  upstream: string[],
-  selected: PersonalApiModel[]
-): string[] {
-  const kept = selected
-    .map((model) => model.id)
-    .filter((id) => !upstream.includes(id))
+function mergeCandidates(upstream: string[], selected: PersonalApiModel[]): string[] {
+  const kept = selected.map((model) => model.id).filter((id) => !upstream.includes(id))
   return [...upstream, ...kept]
 }
 
 function ModelEndpointField({
   label,
   hint,
-  children
+  children,
 }: {
   label: string
   hint?: string
@@ -2844,9 +2729,7 @@ function ModelEndpointField({
   )
 }
 
-function ModelServicePage({
-  embedded = false
-}: { embedded?: boolean } = {}): React.JSX.Element {
+function ModelServicePage({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const { t: accountActions } = useTranslation('account')
   const { t: subscriptionText } = useTranslation('subscription')
   const { act, state } = useApp()
@@ -2862,14 +2745,14 @@ function ModelServicePage({
   const [manualOpen, setManualOpen] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const busyRef = React.useRef(false)
-  const [error, setError] = React.useState<
-    string | PersonalApiFailure | ModelPageFailure
-  >('')
+  const [error, setError] = React.useState<string | PersonalApiFailure | ModelPageFailure>('')
   const [probe, setProbe] = React.useState('')
   const [probeOk, setProbeOk] = React.useState(false)
-  const [loadState, setLoadState] = React.useState<
-    'loading' | 'ready' | 'error'
-  >('loading')
+  // 测试连接失败的结构化弹窗: 按钮旁只留短文案, 详细原因/建议放弹窗, 不再堆在页面底部。
+  const [probeFailure, setProbeFailure] = React.useState<
+    (ProbeFailureDetail & { vendor: string; title: ProbeFailureTitle }) | null
+  >(null)
+  const [loadState, setLoadState] = React.useState<'loading' | 'ready' | 'error'>('loading')
 
   const absorb = React.useCallback(
     (payload: PersonalApiProfilesResp): void => {
@@ -2897,9 +2780,7 @@ function ModelServicePage({
   React.useEffect(() => {
     load()
     // 预置项只是填空提示, 拿不到也不该阻断本页 —— 用户照样能选「自定义」手填地址。
-    void getModelProviders().then((payload) =>
-      setPresets(payload?.providers ?? [])
-    )
+    void getModelProviders().then((payload) => setPresets(payload?.providers ?? []))
   }, [load])
 
   // 两个 tab 同时挂载(隐藏的那个只是 hidden), 所以「模型配置」页改掉某个模型的显示状态后,
@@ -2913,6 +2794,7 @@ function ModelServicePage({
   const openForm = (next: ModelEndpointForm): void => {
     setProbe('')
     setError('')
+    setProbeFailure(null)
     setManualModel('')
     setModelQuery('')
     setManualOpen(false)
@@ -2939,7 +2821,7 @@ function ModelServicePage({
       ...EMPTY_MODEL_ENDPOINT_FORM,
       providerId,
       baseUrl: preset?.base_url ?? '',
-      wireApi: preset?.wire_api || EMPTY_MODEL_ENDPOINT_FORM.wireApi
+      wireApi: preset?.wire_api || EMPTY_MODEL_ENDPOINT_FORM.wireApi,
     })
   }
 
@@ -2947,6 +2829,7 @@ function ModelServicePage({
     if (!form || busy) return
     setError('')
     setProbe('')
+    setProbeFailure(null)
     const preset = presets.find((item) => item.id === providerId)
     setForm(
       preset
@@ -2957,15 +2840,13 @@ function ModelServicePage({
             candidates: [],
             smallModelName: '',
             baseUrl: preset.base_url,
-            wireApi: preset.wire_api || 'responses'
+            wireApi: preset.wire_api || 'responses',
           }
         : { ...form, providerId }
     )
   }
 
-  const activePreset = form
-    ? presets.find((item) => item.id === form.providerId)
-    : undefined
+  const activePreset = form ? presets.find((item) => item.id === form.providerId) : undefined
 
   const selectedSubscription = profiles.find(
     (profile) => profile.id === selectedId && profile.authentication === 'oauth'
@@ -2980,13 +2861,10 @@ function ModelServicePage({
     form?.providerId === CUSTOM_PROVIDER_ID ||
     Boolean(
       form?.id &&
-        activePreset &&
-        (form.baseUrl !== activePreset.base_url ||
-          form.wireApi !== activePreset.wire_api)
+      activePreset &&
+      (form.baseUrl !== activePreset.base_url || form.wireApi !== activePreset.wire_api)
     )
-  const connectingPreset = Boolean(
-    form && !customConnection && (!form.id || form.apiKey.trim())
-  )
+  const connectingPreset = Boolean(form && !customConnection && (!form.id || form.apiKey.trim()))
 
   // 启停/删除会同时改变模型目录与当前选中项, 所以要把整份投影写回 store,
   // 否则模型选择器还停在旧的选中项上。
@@ -3004,30 +2882,33 @@ function ModelServicePage({
 
   const save = async (): Promise<void> => {
     if (!form) return
-    // 设计稿要求缺 Key 时点主按钮给红字提示, 而不是把按钮钉死在 disabled。
+    setError('')
+    setProbe('')
+    setProbeFailure(null)
+    // 缺 Key 的新预置连接: 与测试路径一致, 直接给明确弹窗, 不发必然失败的请求。
     if (connectingPreset && !form.id && !form.apiKey.trim()) {
-      setError(t('accountPanel.modelsPage.apiKeyRequired'))
+      showConnectionFailure({ kind: 'missingKey' }, 'connection')
       return
     }
     setBusy(true)
-    setError('')
-    setProbe('')
     let ready = form
     if (connectingPreset) {
       const directory = await listPersonalApiModels(inputOf(form), form.id)
-      if (
-        !directory.ok ||
-        !directory.data.ok ||
-        directory.data.models.length === 0
-      ) {
+      // ok=bool(models): 空列表即 data.ok=false, 走 noModels 分类弹窗, 不再把原文甩到底部。
+      if (!directory.ok) {
         setBusy(false)
-        setError(directory.ok ? directory.data.message : directory)
+        failProbe(directory, 'connection')
+        return
+      }
+      if (!directory.data.ok) {
+        setBusy(false)
+        failProbe(directory.data, 'connection')
         return
       }
       ready = {
         ...form,
         candidates: directory.data.models,
-        selectedModels: form.selectedModels
+        selectedModels: form.selectedModels,
       }
     }
     const result = ready.id
@@ -3035,7 +2916,8 @@ function ModelServicePage({
       : await createPersonalApiProfile(inputOf(ready))
     setBusy(false)
     if (!result.ok) {
-      setError(result)
+      // 落库失败多为后端连接校验拒绝; 走分类弹窗, 底部不再渲染原始英文/JSON。
+      failProbe(result, 'connection')
       return
     }
     absorb(result.data)
@@ -3049,19 +2931,66 @@ function ModelServicePage({
     act.applyModelCatalog(await getModels())
   }
 
+  const vendorLabelOf = (draft: ModelEndpointForm): string => {
+    if (draft.providerId === CUSTOM_PROVIDER_ID) {
+      return draft.previewName.trim() || t('accountPanel.modelsPage.customAdd')
+    }
+    const preset = presets.find((item) => item.id === draft.providerId)
+    return (
+      providerPresetText(preset, accountActions).label || draft.previewName.trim() || draft.baseUrl
+    )
+  }
+
+  // 测试/保存/刷新共用的连接失败反馈: 按钮旁留短文案, 详细分类原因/建议进居中弹窗,
+  // 底部不再堆原始英文/JSON。title 区分动作（测试连接 vs 保存/刷新连接）。
+  const showConnectionFailure = (
+    detail: ProbeFailureDetail,
+    title: ProbeFailureTitle
+  ): void => {
+    setProbeOk(false)
+    setProbe(t('accountPanel.modelsPage.probeFailed'))
+    setProbeFailure({ vendor: form ? vendorLabelOf(form) : '', title, ...detail })
+  }
+
+  const failProbe = (
+    failure: PersonalApiFailure | PersonalApiProbeResult,
+    title: ProbeFailureTitle
+  ): void => {
+    showConnectionFailure(probeFailureDetail(failure), title)
+  }
+
   const test = async (): Promise<void> => {
     if (!form) return
-    setBusy(true)
     setError('')
     setProbe('')
+    setProbeFailure(null)
+    // 与保存路径同一条件: 缺 Key 的新预置连接不发必然失败的请求, 直接给明确弹窗。
+    if (connectingPreset && !form.id && !form.apiKey.trim()) {
+      showConnectionFailure({ kind: 'missingKey' }, 'test')
+      return
+    }
+    setBusy(true)
     const result = await probePersonalApi(inputOf(form), form.id)
     setBusy(false)
     if (!result.ok) {
-      setError(result)
+      failProbe(result, 'test')
       return
     }
-    setProbeOk(result.data.ok)
-    setProbe(`${result.data.message}（${result.data.latency_ms} ms）`)
+    if (!result.data.ok) {
+      failProbe(result.data, 'test')
+      return
+    }
+    setProbeOk(true)
+    setProbe(result.data.message)
+    // probe 本来就带回模型目录: 直接填进候选, 用户不必先「添加厂商」再选模型。
+    setForm((current) =>
+      current
+        ? {
+            ...current,
+            candidates: mergeCandidates(result.data.models, current.selectedModels),
+          }
+        : current
+    )
   }
 
   const fetchModels = async (): Promise<void> => {
@@ -3071,37 +3000,36 @@ function ModelServicePage({
     setProbe('')
     const result = await listPersonalApiModels(inputOf(form), form.id)
     setBusy(false)
+    // 刷新失败保留原候选与原勾选: 清空会让用户以为自己的勾选丢了; 反馈走分类弹窗而非原文。
     if (!result.ok) {
-      // 刷新失败保留原候选与原勾选: 清空会让用户以为自己的勾选丢了。
-      setError(result)
+      failProbe(result, 'connection')
+      return
+    }
+    if (!result.data.ok) {
+      failProbe(result.data, 'connection')
       return
     }
     setForm((current) =>
       current
         ? {
             ...current,
-            candidates: mergeCandidates(
-              result.data.models,
-              current.selectedModels
-            )
+            candidates: mergeCandidates(result.data.models, current.selectedModels),
           }
         : current
     )
-    setProbeOk(result.data.ok)
+    setProbeOk(true)
     setProbe(result.data.message)
   }
 
   const toggleModel = (modelId: string): void => {
     setForm((current) => {
       if (!current) return current
-      const checked = current.selectedModels.some(
-        (model) => model.id === modelId
-      )
+      const checked = current.selectedModels.some((model) => model.id === modelId)
       return {
         ...current,
         selectedModels: checked
           ? current.selectedModels.filter((model) => model.id !== modelId)
-          : [...current.selectedModels, { id: modelId, label: '' }]
+          : [...current.selectedModels, { id: modelId, label: '' }],
       }
     })
   }
@@ -3119,18 +3047,13 @@ function ModelServicePage({
       return {
         ...current,
         selectedModels: all
-          ? current.selectedModels.filter(
-              (model) => !visibleCandidates.includes(model.id)
-            )
+          ? current.selectedModels.filter((model) => !visibleCandidates.includes(model.id))
           : [
               ...current.selectedModels,
               ...visibleCandidates
-                .filter(
-                  (id) =>
-                    !current.selectedModels.some((model) => model.id === id)
-                )
-                .map((id) => ({ id, label: '' }))
-            ]
+                .filter((id) => !current.selectedModels.some((model) => model.id === id))
+                .map((id) => ({ id, label: '' })),
+            ],
       }
     })
   }
@@ -3145,7 +3068,7 @@ function ModelServicePage({
         ...current,
         candidates: [...current.candidates, modelId],
         // 手填的模型一定是用户想用的, 加完直接勾上。
-        selectedModels: [...current.selectedModels, { id: modelId, label: '' }]
+        selectedModels: [...current.selectedModels, { id: modelId, label: '' }],
       }
     })
     setManualModel('')
@@ -3154,10 +3077,7 @@ function ModelServicePage({
   const toggleEnabled = async (profile: PersonalApiProfile): Promise<void> => {
     setBusy(true)
     setError('')
-    const result = await setPersonalApiProfileEnabled(
-      profile.id,
-      !profile.enabled
-    )
+    const result = await setPersonalApiProfileEnabled(profile.id, !profile.enabled)
     if (result.ok) {
       absorb(result.data)
       act.applyModelCatalog(result.data)
@@ -3171,7 +3091,7 @@ function ModelServicePage({
     setBusy(true)
     setError('')
     absorbSelection(await deletePersonalApiProfile(id), {
-      messageKey: 'models.deleteFailed'
+      messageKey: 'models.deleteFailed',
     })
     setBusy(false)
     setForm((current) => (current && current.id === id ? null : current))
@@ -3181,9 +3101,7 @@ function ModelServicePage({
   // 左栏以厂商为目录: 预设各占一行, 已有连接的预设按连接展开成多行, 自定义连接
   // 单独成行 —— 未添加的预设也看得见, 才能一键进入添加态。
   const presetIds = new Set(presets.map((preset) => preset.id))
-  const oauthProfiles = profiles.filter(
-    (profile) => profile.authentication === 'oauth'
-  )
+  const oauthProfiles = profiles.filter((profile) => profile.authentication === 'oauth')
   type VendorRow =
     | {
         kind: 'profile'
@@ -3195,25 +3113,23 @@ function ModelServicePage({
   const vendorRows: VendorRow[] = [
     ...presets.flatMap((preset): VendorRow[] => {
       const mine = profiles.filter(
-        (profile) =>
-          profile.authentication !== 'oauth' && profile.preset_id === preset.id
+        (profile) => profile.authentication !== 'oauth' && profile.preset_id === preset.id
       )
-      const label =
-        providerPresetText(preset, accountActions).label || preset.id
+      const label = providerPresetText(preset, accountActions).label || preset.id
       return mine.length > 0
         ? mine.map((profile) => ({
             kind: 'profile' as const,
             key: profile.id,
             label,
-            profile
+            profile,
           }))
         : [
             {
               kind: 'empty' as const,
               key: `empty-${preset.id}`,
               label,
-              providerId: preset.id
-            }
+              providerId: preset.id,
+            },
           ]
     }),
     ...(oauthProfiles.length > 0
@@ -3221,28 +3137,26 @@ function ModelServicePage({
           kind: 'profile',
           key: profile.id,
           label: accountActions('models.chatgptSubscription'),
-          profile
+          profile,
         }))
       : [
           {
             kind: 'empty',
             key: `empty-${CHATGPT_PROVIDER_ID}`,
             label: accountActions('models.chatgptSubscription'),
-            providerId: CHATGPT_PROVIDER_ID
-          } as VendorRow
+            providerId: CHATGPT_PROVIDER_ID,
+          } as VendorRow,
         ]),
     ...profiles
       .filter(
-        (profile) =>
-          profile.authentication !== 'oauth' &&
-          !presetIds.has(profile.preset_id || '')
+        (profile) => profile.authentication !== 'oauth' && !presetIds.has(profile.preset_id || '')
       )
       .map((profile): VendorRow => ({
         kind: 'profile',
         key: profile.id,
         label: profile.name || profile.base_url,
-        profile
-      }))
+        profile,
+      })),
   ]
   const needle = query.trim().toLowerCase()
   const filteredRows = vendorRows.filter((row) =>
@@ -3257,11 +3171,7 @@ function ModelServicePage({
   const checkedIds = new Set(form?.selectedModels.map((model) => model.id))
 
   const detailLabel = form
-    ? form.providerId === CUSTOM_PROVIDER_ID
-      ? form.previewName.trim() || t('accountPanel.modelsPage.customAdd')
-      : providerPresetText(activePreset, accountActions).label ||
-        form.previewName.trim() ||
-        form.baseUrl
+    ? vendorLabelOf(form)
     : selectedSubscription
       ? accountActions('models.chatgptSubscription')
       : ''
@@ -3269,9 +3179,7 @@ function ModelServicePage({
   // 上下文徽章只给已声明过窗口的模型; 候选列表只有 ID, 不猜数值。
   const contextBadgeOf = (modelId: string): string => {
     const known = form?.selectedModels.find((model) => model.id === modelId)
-    return known?.context_window
-      ? formatContextBadge(known.context_window)
-      : ''
+    return known?.context_window ? formatContextBadge(known.context_window) : ''
   }
 
   const cancelDraft = (): void => {
@@ -3293,9 +3201,7 @@ function ModelServicePage({
 
   return (
     <div
-      className={
-        embedded ? 'flex h-full min-h-0 flex-col' : MODEL_PAGE_CLASS_NAME
-      }
+      className={embedded ? 'flex h-full min-h-0 flex-col' : MODEL_PAGE_CLASS_NAME}
       data-testid="account-settings-models"
     >
       {!embedded && (
@@ -3314,7 +3220,7 @@ function ModelServicePage({
               {vendorRows.length > 0
                 ? accountActions('models.enabledCount', {
                     enabled: enabledCount,
-                    total: vendorRows.length
+                    total: vendorRows.length,
                   })
                 : t('accountPanel.modelsPage.none')}
             </span>
@@ -3335,9 +3241,7 @@ function ModelServicePage({
             )}
             {loadState === 'ready' && filteredRows.length === 0 && (
               <div className={MODEL_PANE_EMPTY_CLASS_NAME}>
-                {needle
-                  ? t('accountPanel.modelsPage.noMatch')
-                  : accountActions('models.empty')}
+                {needle ? t('accountPanel.modelsPage.noMatch') : accountActions('models.empty')}
               </div>
             )}
             {loadState === 'ready' &&
@@ -3371,15 +3275,9 @@ function ModelServicePage({
                           : startNewConnection(row.providerId)
                       }
                     >
-                      <Avatar
-                        size="sm"
-                        fallback={providerInitials(row.label)}
-                        aria-hidden={true}
-                      />
+                      <Avatar size="sm" fallback={providerInitials(row.label)} aria-hidden={true} />
                       <span className={MODEL_CONNECTION_TEXT_CLASS_NAME}>
-                        <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>
-                          {row.label}
-                        </span>
+                        <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>{row.label}</span>
                         <span className={MODEL_CONNECTION_META_CLASS_NAME}>
                           {row.kind === 'empty'
                             ? t('accountPanel.modelsPage.notAdded')
@@ -3389,8 +3287,7 @@ function ModelServicePage({
                           {row.kind === 'profile'
                             ? ` · ${t('accountPanel.modelsPage.selected', { count: row.profile.selected_models.length })}`
                             : ''}
-                          {row.kind === 'profile' &&
-                          row.profile.authentication === 'oauth'
+                          {row.kind === 'profile' && row.profile.authentication === 'oauth'
                             ? row.profile.oauth?.state === 'connected'
                               ? accountActions('models.chatgptConnected')
                               : accountActions('models.chatgptLoginRequired')
@@ -3404,7 +3301,7 @@ function ModelServicePage({
                       checked={row.kind === 'profile' && row.profile.enabled}
                       disabled={busy || row.kind === 'empty'}
                       aria-label={accountActions('models.enableNamed', {
-                        name: row.label
+                        name: row.label,
                       })}
                       data-testid={`model-connection-enabled-${row.key}`}
                       onCheckedChange={() => {
@@ -3422,9 +3319,7 @@ function ModelServicePage({
             className={MODEL_PANE_ADD_CLASS_NAME}
             disabled={busy || loadState !== 'ready'}
             data-testid="model-connection-add"
-            onClick={() =>
-              startNewConnection(presets[0]?.id || CUSTOM_PROVIDER_ID)
-            }
+            onClick={() => startNewConnection(presets[0]?.id || CUSTOM_PROVIDER_ID)}
           >
             <Icon name="plus" size={13} sw={1.8} />
             {t('accountPanel.modelsPage.customAdd')}
@@ -3434,15 +3329,9 @@ function ModelServicePage({
         <section className={MODEL_DETAIL_CLASS_NAME}>
           {(form || selectedSubscription) && (
             <div className={MODEL_DETAIL_HEAD_CLASS_NAME}>
-              <Avatar
-                size="md"
-                fallback={providerInitials(detailLabel)}
-                aria-hidden={true}
-              />
+              <Avatar size="md" fallback={providerInitials(detailLabel)} aria-hidden={true} />
               <span className={MODEL_DETAIL_HEAD_TEXT_CLASS_NAME}>
-                <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>
-                  {detailLabel}
-                </span>
+                <span className={MODEL_CONNECTION_NAME_CLASS_NAME}>{detailLabel}</span>
                 <span className={MODEL_FIELD_HINT_CLASS_NAME}>
                   {t('accountPanel.modelsPage.configureHint')}
                 </span>
@@ -3451,10 +3340,7 @@ function ModelServicePage({
           )}
           {selectedSubscription && !form && (
             <div className={MODEL_DETAIL_SCROLL_CLASS_NAME}>
-              <SubscriptionConnections
-                profiles={[selectedSubscription]}
-                refresh={load}
-              />
+              <SubscriptionConnections profiles={[selectedSubscription]} refresh={load} />
             </div>
           )}
           {!form && !selectedSubscription && (
@@ -3466,10 +3352,7 @@ function ModelServicePage({
           )}
           {form && (
             <>
-              <div
-                className={MODEL_DETAIL_SCROLL_CLASS_NAME}
-                data-testid="model-endpoint-form"
-              >
+              <div className={MODEL_DETAIL_SCROLL_CLASS_NAME} data-testid="model-endpoint-form">
                 <div className={MODEL_FORM_GRID_CLASS_NAME}>
                   {!form.id && (
                     <ModelEndpointField
@@ -3479,11 +3362,7 @@ function ModelServicePage({
                         t('accountPanel.modelsPage.providerHint')
                       }
                     >
-                      <Select
-                        value={form.providerId}
-                        disabled={busy}
-                        onValueChange={pickProvider}
-                      >
+                      <Select value={form.providerId} disabled={busy} onValueChange={pickProvider}>
                         <SelectTrigger
                           data-testid="model-endpoint-provider"
                           aria-label={t('accountPanel.modelsPage.provider')}
@@ -3517,14 +3396,12 @@ function ModelServicePage({
                           >
                             <Input
                               value={form.previewName}
-                              placeholder={t(
-                                'accountPanel.modelsPage.namePlaceholder'
-                              )}
+                              placeholder={t('accountPanel.modelsPage.namePlaceholder')}
                               data-testid="model-endpoint-name"
                               onChange={(event) =>
                                 setForm({
                                   ...form,
-                                  previewName: event.target.value
+                                  previewName: event.target.value,
                                 })
                               }
                             />
@@ -3540,23 +3417,16 @@ function ModelServicePage({
                               onValueChange={(value) =>
                                 setForm({
                                   ...form,
-                                  wireApi: value as PersonalApiWireApi
+                                  wireApi: value as PersonalApiWireApi,
                                 })
                               }
                             >
                               <SelectTrigger>
-                                <SelectValue
-                                  placeholder={accountActions(
-                                    'models.wireResponses'
-                                  )}
-                                />
+                                <SelectValue placeholder={accountActions('models.wireResponses')} />
                               </SelectTrigger>
                               <SelectContent>
                                 {WIRE_API_CHOICES.map((choice) => (
-                                  <SelectItem
-                                    key={choice.value}
-                                    value={choice.value}
-                                  >
+                                  <SelectItem key={choice.value} value={choice.value}>
                                     {accountActions(choice.labelKey)}
                                   </SelectItem>
                                 ))}
@@ -3570,8 +3440,7 @@ function ModelServicePage({
                         hint={
                           customConnection
                             ? t('accountPanel.modelsPage.base')
-                            : activePreset?.note ||
-                              t('accountPanel.modelsPage.baseUrlPresetHint')
+                            : activePreset?.note || t('accountPanel.modelsPage.baseUrlPresetHint')
                         }
                       >
                         <Input
@@ -3581,7 +3450,7 @@ function ModelServicePage({
                           onChange={(event) =>
                             setForm({
                               ...form,
-                              baseUrl: event.target.value
+                              baseUrl: event.target.value,
                             })
                           }
                         />
@@ -3591,23 +3460,16 @@ function ModelServicePage({
                         hint={
                           form.id
                             ? t('accountPanel.modelsPage.apiKeep')
-                            : providerPresetText(activePreset, accountActions)
-                                .credentialHint ||
+                            : providerPresetText(activePreset, accountActions).credentialHint ||
                               t('accountPanel.modelsPage.apiSave')
                         }
                       >
                         <PasswordInput
                           value={form.apiKey}
-                          placeholder={
-                            form.id
-                              ? t('accountPanel.modelsPage.apiNo')
-                              : 'sk-…'
-                          }
+                          placeholder={form.id ? t('accountPanel.modelsPage.apiNo') : 'sk-…'}
                           data-testid="model-endpoint-api-key"
                           disabled={busy}
-                          onChange={(event) =>
-                            setForm({ ...form, apiKey: event.target.value })
-                          }
+                          onChange={(event) => setForm({ ...form, apiKey: event.target.value })}
                         />
                       </ModelEndpointField>
 
@@ -3647,7 +3509,7 @@ function ModelServicePage({
                             onChange={(event) =>
                               setForm({
                                 ...form,
-                                smallModelName: event.target.value
+                                smallModelName: event.target.value,
                               })
                             }
                           />
@@ -3667,12 +3529,12 @@ function ModelServicePage({
                 )}
                 {!newSubscription && (
                   <>
-                    {connectingPreset && (
+                    {connectingPreset && form.candidates.length === 0 && (
                       <div role="status" className={FORM_NOTICE_CLASS_NAME}>
                         {t('accountPanel.modelsPage.connectHint')}
                       </div>
                     )}
-                    {(customConnection || !connectingPreset) && (
+                    {(customConnection || !connectingPreset || form.candidates.length > 0) && (
                       <>
                         <div className={MODEL_SECTION_HEAD_CLASS_NAME}>
                           <span className={MODEL_FIELD_LABEL_CLASS_NAME}>
@@ -3709,9 +3571,7 @@ function ModelServicePage({
                               value={manualModel}
                               placeholder={t('accountPanel.modelsPage.manual')}
                               data-testid="model-endpoint-manual-model"
-                              onChange={(event) =>
-                                setManualModel(event.target.value)
-                              }
+                              onChange={(event) => setManualModel(event.target.value)}
                             />
                             <Button
                               type="button"
@@ -3728,37 +3588,27 @@ function ModelServicePage({
 
                         <Input
                           value={modelQuery}
-                          onChange={(event) =>
-                            setModelQuery(event.target.value)
-                          }
-                          placeholder={t(
-                            'accountPanel.modelsPage.searchModels'
-                          )}
+                          onChange={(event) => setModelQuery(event.target.value)}
+                          placeholder={t('accountPanel.modelsPage.searchModels')}
                           aria-label={t('accountPanel.modelsPage.filter')}
                           data-testid="model-endpoint-model-search"
                         />
                         {form.candidates.length > 0 && (
-                          <div
-                            className={MODEL_SELECTION_ROW_CLASS_NAME(false)}
-                          >
+                          <div className={MODEL_SELECTION_ROW_CLASS_NAME(false)}>
                             <Checkbox
                               checked={
                                 visibleCandidates.length > 0 &&
-                                visibleCandidates.every((id) =>
-                                  checkedIds.has(id)
-                                )
+                                visibleCandidates.every((id) => checkedIds.has(id))
                               }
                               disabled={busy || visibleCandidates.length === 0}
-                              aria-label={t(
-                                'accountPanel.modelsPage.selectAll'
-                              )}
+                              aria-label={t('accountPanel.modelsPage.selectAll')}
                               data-testid="model-endpoint-select-all"
                               onCheckedChange={() => toggleAllModels()}
                             />
                             <span className={MODEL_FIELD_HINT_CLASS_NAME}>
                               {t('accountPanel.modelsPage.selectionSimple', {
                                 selected: form.selectedModels.length,
-                                total: form.candidates.length
+                                total: form.candidates.length,
                               })}
                             </span>
                           </div>
@@ -3773,9 +3623,7 @@ function ModelServicePage({
                           {visibleCandidates.map((modelId) => (
                             <div
                               key={modelId}
-                              className={MODEL_SELECTION_ROW_CLASS_NAME(
-                                checkedIds.has(modelId)
-                              )}
+                              className={MODEL_SELECTION_ROW_CLASS_NAME(checkedIds.has(modelId))}
                             >
                               <Checkbox
                                 checked={checkedIds.has(modelId)}
@@ -3784,9 +3632,7 @@ function ModelServicePage({
                                 data-testid={`model-endpoint-model-${modelId}`}
                                 onCheckedChange={() => toggleModel(modelId)}
                               />
-                              <span className={MODEL_SELECTION_NAME_CLASS_NAME}>
-                                {modelId}
-                              </span>
+                              <span className={MODEL_SELECTION_NAME_CLASS_NAME}>{modelId}</span>
                               {contextBadgeOf(modelId) && (
                                 <Badge size="sm" tone="neutral">
                                   {contextBadgeOf(modelId)}
@@ -3802,21 +3648,16 @@ function ModelServicePage({
                           <React.Fragment key={`${form.id}:${model.id}`}>
                             <ModelEndpointField
                               label={accountActions('models.reasoningNamed', {
-                                name: model.label || model.id
+                                name: model.label || model.id,
                               })}
                               hint={t('accountPanel.modelsPage.reasoningHint')}
                             >
                               <Input
-                                aria-label={accountActions(
-                                  'models.reasoningLevelNamed',
-                                  { name: model.id }
-                                )}
-                                defaultValue={(
-                                  model.reasoning_efforts ?? []
-                                ).join(',')}
-                                placeholder={t(
-                                  'accountPanel.modelsPage.reasoningPlaceholder'
-                                )}
+                                aria-label={accountActions('models.reasoningLevelNamed', {
+                                  name: model.id,
+                                })}
+                                defaultValue={(model.reasoning_efforts ?? []).join(',')}
+                                placeholder={t('accountPanel.modelsPage.reasoningPlaceholder')}
                                 disabled={busy}
                                 onBlur={(event) => {
                                   const values = event.target.value
@@ -3825,52 +3666,41 @@ function ModelServicePage({
                                     .filter(Boolean)
                                   setForm({
                                     ...form,
-                                    selectedModels: form.selectedModels.map(
-                                      (item) =>
-                                        item.id === model.id
-                                          ? {
-                                              ...item,
-                                              reasoning_efforts: values.length
-                                                ? values
-                                                : null
-                                            }
-                                          : item
-                                    )
+                                    selectedModels: form.selectedModels.map((item) =>
+                                      item.id === model.id
+                                        ? {
+                                            ...item,
+                                            reasoning_efforts: values.length ? values : null,
+                                          }
+                                        : item
+                                    ),
                                   })
                                 }}
                               />
                             </ModelEndpointField>
                             <div className="grid grid-cols-2 gap-3">
                               <ModelEndpointField
-                                label={accountActions(
-                                  'modelSettings.contextWindow'
-                                )}
-                                hint={accountActions(
-                                  'models.contextWindowHint'
-                                )}
+                                label={accountActions('modelSettings.contextWindow')}
+                                hint={accountActions('models.contextWindowHint')}
                               >
                                 <Input
                                   type="number"
                                   value={model.context_window ?? ''}
-                                  placeholder={accountActions(
-                                    'models.contextWindowPlaceholder'
-                                  )}
+                                  placeholder={accountActions('models.contextWindowPlaceholder')}
                                   disabled={busy}
                                   onChange={(event) =>
                                     setForm({
                                       ...form,
-                                      selectedModels: form.selectedModels.map(
-                                        (item) =>
-                                          item.id === model.id
-                                            ? {
-                                                ...item,
-                                                context_window: event.target
-                                                  .value
-                                                  ? Number(event.target.value)
-                                                  : null
-                                              }
-                                            : item
-                                      )
+                                      selectedModels: form.selectedModels.map((item) =>
+                                        item.id === model.id
+                                          ? {
+                                              ...item,
+                                              context_window: event.target.value
+                                                ? Number(event.target.value)
+                                                : null,
+                                            }
+                                          : item
+                                      ),
                                     })
                                   }
                                 />
@@ -3882,25 +3712,21 @@ function ModelServicePage({
                                 <Input
                                   type="number"
                                   value={model.max_output_tokens ?? ''}
-                                  placeholder={accountActions(
-                                    'models.maxOutputPlaceholder'
-                                  )}
+                                  placeholder={accountActions('models.maxOutputPlaceholder')}
                                   disabled={busy}
                                   onChange={(event) =>
                                     setForm({
                                       ...form,
-                                      selectedModels: form.selectedModels.map(
-                                        (item) =>
-                                          item.id === model.id
-                                            ? {
-                                                ...item,
-                                                max_output_tokens: event.target
-                                                  .value
-                                                  ? Number(event.target.value)
-                                                  : null
-                                              }
-                                            : item
-                                      )
+                                      selectedModels: form.selectedModels.map((item) =>
+                                        item.id === model.id
+                                          ? {
+                                              ...item,
+                                              max_output_tokens: event.target.value
+                                                ? Number(event.target.value)
+                                                : null,
+                                            }
+                                          : item
+                                      ),
                                     })
                                   }
                                 />
@@ -3909,17 +3735,6 @@ function ModelServicePage({
                           </React.Fragment>
                         ))}
                       </>
-                    )}
-                    {probe && (
-                      <div
-                        className={
-                          probeOk
-                            ? FORM_NOTICE_CLASS_NAME
-                            : FORM_ERROR_CLASS_NAME
-                        }
-                      >
-                        {probe}
-                      </div>
                     )}
                     {error && (
                       <div
@@ -4008,6 +3823,57 @@ function ModelServicePage({
           )}
         </div>
       )}
+
+      <Dialog
+        open={probeFailure !== null}
+        onOpenChange={(open) => {
+          if (!open) setProbeFailure(null)
+        }}
+      >
+        <DialogPortal>
+          <DialogContent
+            className={PROBE_RESULT_DIALOG_CLASS_NAME}
+            overlayClassName={PROBE_RESULT_OVERLAY_CLASS_NAME}
+            data-testid="model-endpoint-probe-result"
+          >
+            <DialogHeader>
+              <DialogTitle>
+                {probeFailure ? t(PROBE_TITLE_KEYS[probeFailure.title]) : ''}
+              </DialogTitle>
+              <DialogDescription className="flex items-center gap-[var(--vds-space-2)]">
+                <span
+                  className={MODEL_STATUS_DOT_CLASS_NAME('fail')}
+                  aria-hidden={true}
+                />
+                {probeFailure?.vendor} · {t('accountPanel.modelsPage.probeFailed')}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogDescription data-testid="model-endpoint-probe-reason">
+              {probeFailure &&
+                t(PROBE_REASON_KEYS[probeFailure.kind], {
+                  status: probeFailure.params?.status ?? 0,
+                })}
+            </DialogDescription>
+            <DialogDescription>
+              {probeFailure &&
+                t(PROBE_SUGGESTION_KEYS[probeFailure.kind], {
+                  status: probeFailure.params?.status ?? 0,
+                })}
+            </DialogDescription>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                data-testid="model-endpoint-probe-close"
+                onClick={() => setProbeFailure(null)}
+              >
+                {t('accountPanel.common.close')}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </DialogPortal>
+      </Dialog>
     </div>
   )
 }
@@ -4020,11 +3886,7 @@ function contextTickLabel(tokens: number): string {
   return tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${tokens / 1_000}k`
 }
 
-function ModelReasoningSetting({
-  model
-}: {
-  model: ModelInfo
-}): React.JSX.Element {
+function ModelReasoningSetting({ model }: { model: ModelInfo }): React.JSX.Element {
   const { state, set, act } = useApp()
   const { t } = useTranslation('account')
   const { t: conversation } = useTranslation('conversation')
@@ -4048,13 +3910,8 @@ function ModelReasoningSetting({
     try {
       // Read the latest connection so edits retain sibling models and credentials.
       const profiles = await getPersonalApiProfiles()
-      const profile = profiles?.profiles.find(
-        (item) => item.id === model.profile_id
-      )
-      if (
-        !profile ||
-        !profile.selected_models.some((item) => item.id === model.model_id)
-      ) {
+      const profile = profiles?.profiles.find((item) => item.id === model.profile_id)
+      if (!profile || !profile.selected_models.some((item) => item.id === model.model_id)) {
         setError({ messageKey: 'models.loadFailed' })
         return
       }
@@ -4064,7 +3921,7 @@ function ModelReasoningSetting({
             .split(',')
             .map((value) => value.trim().toLowerCase())
             .filter(Boolean)
-        )
+        ),
       ]
       const input = inputOf(formOf(profile))
       const result = await updatePersonalApiProfile(profile.id, {
@@ -4074,7 +3931,7 @@ function ModelReasoningSetting({
           item.id === model.model_id
             ? { ...item, reasoning_efforts: values.length ? values : null }
             : item
-        )
+        ),
       })
       if (!result.ok) {
         setError(result)
@@ -4101,11 +3958,9 @@ function ModelReasoningSetting({
             value={draft}
             disabled={busy}
             aria-label={t('models.reasoningLevelNamed', {
-              name: model.model_id || model.label
+              name: model.model_id || model.label,
             })}
-            placeholder={components(
-              'accountPanel.modelsPage.reasoningPlaceholder'
-            )}
+            placeholder={components('accountPanel.modelsPage.reasoningPlaceholder')}
             helperText={components('accountPanel.modelsPage.reasoningHint')}
             data-testid={`model-reasoning-levels-${model.key}`}
             onChange={(event) => setDraft(event.target.value)}
@@ -4136,21 +3991,19 @@ function ModelReasoningSetting({
                 set((current) => ({
                   reasoningPreferences: {
                     ...current.reasoningPreferences,
-                    [model.key]: value
-                  }
+                    [model.key]: value,
+                  },
                 }))
               }
             >
               <SelectTrigger
                 className="w-[180px]"
                 aria-label={t('models.reasoningNamed', {
-                  name: model.model_label || model.label
+                  name: model.model_label || model.label,
                 })}
                 data-testid={`model-reasoning-${model.key}`}
               >
-                <SelectValue>
-                  {reasoningLabel(selected, conversation)}
-                </SelectValue>
+                <SelectValue>{reasoningLabel(selected, conversation)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {efforts.map((effort) => (
@@ -4186,53 +4039,37 @@ function ModelReasoningSetting({
       )}
       {error && (
         <div role="alert" className={FORM_ERROR_CLASS_NAME}>
-          {'messageKey' in error
-            ? t(error.messageKey)
-            : profileFailureText(error, subscription)}
+          {'messageKey' in error ? t(error.messageKey) : profileFailureText(error, subscription)}
         </div>
       )}
     </div>
   )
 }
 
-function ModelSettingsPage({
-  embedded = false
-}: { embedded?: boolean } = {}): React.JSX.Element {
+function ModelSettingsPage({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const { t } = useTranslation('account')
   const { t: subscription } = useTranslation('subscription')
   const { state, act } = useApp()
   // 管理页必须同时列出可见与已隐藏两半, 否则「关闭显示」就成了不可逆操作。两半都由服务端
   // 同一套投影产出, 这里不自己拼厂商标签或复合 key —— 那会变成第二份真值。
   const { models, hiddenModels } = state.catalog
-  const rows = React.useMemo(
-    () => [...models, ...hiddenModels],
-    [models, hiddenModels]
-  )
+  const rows = React.useMemo(() => [...models, ...hiddenModels], [models, hiddenModels])
   const hiddenKeys = React.useMemo(
     () => new Set(hiddenModels.map((model) => model.key)),
     [hiddenModels]
   )
-  const [contextOverrides, setContextOverrides] = React.useState<
-    Record<string, number>
-  >({})
+  const [contextOverrides, setContextOverrides] = React.useState<Record<string, number>>({})
   const [saved, setSaved] = React.useState(false)
   const [busyKey, setBusyKey] = React.useState('')
   const [error, setError] = React.useState<PersonalApiFailure | null>(null)
 
   // 显示状态是即时落盘的开关, 与「模型服务」页的连接开关同一种语义, 不经「保存设置」——
   // 那个按钮只管本页尚未接后端的上下文滑杆。
-  const toggleVisibility = async (
-    model: ModelInfo,
-    hidden: boolean
-  ): Promise<void> => {
+  const toggleVisibility = async (model: ModelInfo, hidden: boolean): Promise<void> => {
     if (!model.profile_id || !model.model_id) return
     setBusyKey(model.key)
     setError(null)
-    const result = await setPersonalApiModelVisibility(
-      model.profile_id,
-      model.model_id,
-      hidden
-    )
+    const result = await setPersonalApiModelVisibility(model.profile_id, model.model_id, hidden)
     if (result.ok) {
       act.setPersonalProfiles(result.data)
       act.applyModelCatalog(result.data)
@@ -4244,9 +4081,7 @@ function ModelSettingsPage({
 
   return (
     <div
-      className={
-        embedded ? MODEL_SETTINGS_EMBEDDED_CLASS_NAME : MODEL_PAGE_CLASS_NAME
-      }
+      className={embedded ? MODEL_SETTINGS_EMBEDDED_CLASS_NAME : MODEL_PAGE_CLASS_NAME}
       data-testid="model-settings-page"
     >
       {!embedded && (
@@ -4273,18 +4108,13 @@ function ModelSettingsPage({
             const builtin = model.source === 'builtin'
             const visible = !hiddenKeys.has(model.key)
             return (
-              <div
-                key={model.key}
-                className={MODEL_SETTINGS_TABLE_ROW_CLASS_NAME}
-              >
+              <div key={model.key} className={MODEL_SETTINGS_TABLE_ROW_CLASS_NAME}>
                 <div className="min-w-0">
                   <div className="truncate text-sm font-medium">
                     {model.model_label || model.label}
                   </div>
                   <div className="truncate text-xs text-[var(--vds-text-tertiary)]">
-                    {builtin
-                      ? t('modelSettings.builtin')
-                      : model.provider_label || model.provider}
+                    {builtin ? t('modelSettings.builtin') : model.provider_label || model.provider}
                   </div>
                 </div>
                 <ModelReasoningSetting model={model} />
@@ -4301,22 +4131,20 @@ function ModelSettingsPage({
                 <div className="w-[210px]">
                   <Slider
                     aria-label={t('modelSettings.contextWindowNamed', {
-                      name: model.label
+                      name: model.label,
                     })}
                     min={0}
                     max={MODEL_CONTEXT_TICKS.length - 1}
                     step={1}
                     value={Math.max(
                       0,
-                      MODEL_CONTEXT_TICKS.findIndex(
-                        (value) => value === selected
-                      )
+                      MODEL_CONTEXT_TICKS.findIndex((value) => value === selected)
                     )}
                     onValueChange={(value: number) => {
                       setSaved(false)
                       setContextOverrides((current) => ({
                         ...current,
-                        [model.key]: MODEL_CONTEXT_TICKS[value]
+                        [model.key]: MODEL_CONTEXT_TICKS[value],
                       }))
                     }}
                   />
@@ -4351,31 +4179,20 @@ function ModelConfigurationPage(): React.JSX.Element {
       scroll="none"
     >
       <PageBody className="min-h-0 flex-1 grid-rows-[minmax(0,1fr)]">
-        <Tabs
-          className={MODEL_CONFIGURATION_TABS_CLASS_NAME}
-          defaultValue="service"
-        >
+        <Tabs className={MODEL_CONFIGURATION_TABS_CLASS_NAME} defaultValue="service">
           <TabsList
             className="w-fit justify-self-start"
             aria-label={t('accountPanel.modelsPage.tabsLabel')}
           >
-            <TabsTrigger value="service">
-              {t('accountPanel.modelsPage.serviceTab')}
-            </TabsTrigger>
+            <TabsTrigger value="service">{t('accountPanel.modelsPage.serviceTab')}</TabsTrigger>
             <TabsTrigger value="configuration">
               {t('accountPanel.modelsPage.configurationTab')}
             </TabsTrigger>
           </TabsList>
-          <TabsContent
-            className={MODEL_SERVICE_TAB_CONTENT_CLASS_NAME}
-            value="service"
-          >
+          <TabsContent className={MODEL_SERVICE_TAB_CONTENT_CLASS_NAME} value="service">
             <ModelServicePage embedded />
           </TabsContent>
-          <TabsContent
-            className={MODEL_SETTINGS_TAB_CONTENT_CLASS_NAME}
-            value="configuration"
-          >
+          <TabsContent className={MODEL_SETTINGS_TAB_CONTENT_CLASS_NAME} value="configuration">
             <ModelSettingsPage embedded />
           </TabsContent>
         </Tabs>
@@ -4395,10 +4212,10 @@ function NotificationsPage(): React.JSX.Element {
         ...Object.fromEntries(
           current.sessions.map((session) => [
             session.id,
-            session.activityAt ?? session.createdAt ?? Date.now() / 1_000
+            session.activityAt ?? session.createdAt ?? Date.now() / 1_000,
           ])
-        )
-      }
+        ),
+      },
     }))
   }
   return (
@@ -4460,16 +4277,21 @@ function ArchivedProjectsPage(): React.JSX.Element {
   const { state, set } = useApp()
   const { toast } = useToast()
   const [projects, setProjects] = React.useState<ProjectRef[]>([])
-  const [pendingDelete, setPendingDelete] = React.useState<ProjectRef | null>(
-    null
-  )
+  const [selectedIds, setSelectedIds] = React.useState<ReadonlySet<string>>(() => new Set<string>())
+  // 删除确认对单个与批量共用一条通道: 单个存一项, 批量存选中项。
+  const [deleteTargets, setDeleteTargets] = React.useState<ProjectRef[]>([])
   const [busy, setBusy] = React.useState(false)
 
   const reload = React.useCallback(async (): Promise<void> => {
     const listing = await listProjectListings(true)
-    setProjects(
-      (listing?.projects ?? []).filter((entry) => entry.archived_at != null)
-    )
+    const archived = (listing?.projects ?? []).filter((entry) => entry.archived_at != null)
+    setProjects(archived)
+    // 项目恢复/移除后会离开列表, 顺手把不再存在的选中项剔除, 免得计数虚高。
+    setSelectedIds((prev) => {
+      const alive = new Set(archived.map((entry) => entry.id))
+      const next = new Set([...prev].filter((id) => alive.has(id)))
+      return next.size === prev.size ? prev : next
+    })
   }, [])
 
   // 归档态变化会改变各处默认列表的内容, 必须回写全局项目列表:
@@ -4479,7 +4301,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
     if (active) {
       set({
         projects: active.projects,
-        defaultWorkspacePath: active.default || state.defaultWorkspacePath
+        defaultWorkspacePath: active.default || state.defaultWorkspacePath,
       })
     }
   }, [set, state.defaultWorkspacePath])
@@ -4488,14 +4310,48 @@ function ArchivedProjectsPage(): React.JSX.Element {
     void reload()
   }, [reload])
 
+  const selectedProjects = projects.filter((project) => selectedIds.has(project.id))
+  const allSelected = projects.length > 0 && selectedProjects.length === projects.length
+  const someSelected = selectedProjects.length > 0 && !allSelected
+
+  const toggleProject = (id: string, checked: boolean): void => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  const toggleAll = (checked: boolean): void => {
+    setSelectedIds(checked ? new Set(projects.map((project) => project.id)) : new Set())
+  }
+
+  // 逐项串行执行, 汇总成功/失败计数; 归档项目数一般不大, 串行避免并发压本地后端。
+  const applyToProjects = async (
+    targets: ProjectRef[],
+    op: (project: ProjectRef) => Promise<{ ok: boolean; error?: string }>
+  ): Promise<{ ok: number; fail: number }> => {
+    setBusy(true)
+    let ok = 0
+    let fail = 0
+    for (const target of targets) {
+      const result = await op(target)
+      if (result.ok) ok += 1
+      else fail += 1
+    }
+    setBusy(false)
+    return { ok, fail }
+  }
+
   const unarchive = async (project: ProjectRef): Promise<void> => {
     const result = await setProjectArchived(project.id, false)
     if (!result.ok) {
       toast({
         title: projectText('notices.unknown', {
-          code: result.error ?? 'unknown_project'
+          code: result.error ?? 'unknown_project',
         }),
-        tone: 'error'
+        tone: 'error',
       })
       return
     }
@@ -4503,23 +4359,41 @@ function ArchivedProjectsPage(): React.JSX.Element {
     await Promise.all([reload(), refreshActiveProjects()])
   }
 
+  const batchUnarchive = async (): Promise<void> => {
+    if (selectedProjects.length === 0) return
+    const { ok, fail } = await applyToProjects(selectedProjects, (project) =>
+      setProjectArchived(project.id, false)
+    )
+    toast({
+      title: t('accountPanel.archives.batchSummary', { ok, fail }),
+      tone: fail === 0 ? 'success' : 'error',
+    })
+    setSelectedIds(new Set())
+    await Promise.all([reload(), refreshActiveProjects()])
+  }
+
   const confirmDelete = async (): Promise<void> => {
-    if (!pendingDelete) return
-    const target = pendingDelete
-    setBusy(true)
-    const result = await forgetProject(target.id)
-    setBusy(false)
-    setPendingDelete(null)
-    if (!result.ok) {
+    if (deleteTargets.length === 0) return
+    const targets = deleteTargets
+    const single = targets.length === 1
+    const { ok, fail } = await applyToProjects(targets, (project) => forgetProject(project.id))
+    setDeleteTargets([])
+    if (single) {
+      if (fail > 0) {
+        toast({
+          title: projectText('notices.unknown', { code: 'unknown_project' }),
+          tone: 'error',
+        })
+        return
+      }
+      toast({ title: t('accountPanel.archives.removed'), tone: 'success' })
+    } else {
       toast({
-        title: projectText('notices.unknown', {
-          code: result.error ?? 'unknown_project'
-        }),
-        tone: 'error'
+        title: t('accountPanel.archives.batchSummary', { ok, fail }),
+        tone: fail === 0 ? 'success' : 'error',
       })
-      return
     }
-    toast({ title: t('accountPanel.archives.removed'), tone: 'success' })
+    setSelectedIds(new Set())
     await Promise.all([reload(), refreshActiveProjects()])
   }
 
@@ -4538,14 +4412,63 @@ function ArchivedProjectsPage(): React.JSX.Element {
         </div>
       ) : (
         <div className="flex min-w-0 max-w-full flex-col gap-[var(--vds-space-2)]">
+          <div
+            className="flex min-w-0 max-w-full items-center gap-[12px] px-[4px]"
+            data-testid="account-archived-batch-bar"
+          >
+            <Checkbox
+              checked={allSelected ? true : someSelected ? 'mixed' : false}
+              label={t('accountPanel.archives.selectAll')}
+              disabled={busy}
+              data-testid="account-archived-select-all"
+              onCheckedChange={(checked) => toggleAll(checked)}
+            />
+            <span
+              className="min-w-0 flex-1 text-[12px] leading-[18px] text-[var(--vds-text-tertiary)]"
+              data-testid="account-archived-selected-count"
+            >
+              {t('accountPanel.archives.selectedCount', {
+                total: selectedProjects.length,
+              })}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || selectedProjects.length === 0}
+              data-testid="account-archived-batch-unarchive"
+              onClick={() => void batchUnarchive()}
+            >
+              {t('accountPanel.archives.batchUnarchive')}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy || selectedProjects.length === 0}
+              data-testid="account-archived-batch-delete"
+              onClick={() => setDeleteTargets(selectedProjects)}
+            >
+              {t('accountPanel.archives.batchDelete')}
+            </Button>
+          </div>
           {projects.map((project) => (
             <div
               key={project.id}
               className="flex min-w-0 max-w-full items-center gap-[12px] rounded-[var(--vds-settings-card-radius)] border border-[var(--vds-border-default)] px-[16px] py-[12px] bg-[var(--vds-bg-white-default)] shadow-none"
               data-testid={`account-archived-${project.id}`}
             >
+              <Checkbox
+                checked={selectedIds.has(project.id)}
+                label={project.name}
+                disabled={busy}
+                data-testid={`account-archived-select-${project.id}`}
+                onCheckedChange={(checked) => toggleProject(project.id, checked)}
+              />
               <span className="min-w-0 flex-1">
-                <EllipsisText wrapperClassName="w-full" className="text-[14px] font-medium leading-[20px] text-[var(--vds-text-primary)]" tooltipPortalled>
+                <EllipsisText
+                  wrapperClassName="w-full"
+                  className="text-[14px] font-medium leading-[20px] text-[var(--vds-text-primary)]"
+                  tooltipPortalled
+                >
                   {project.name}
                 </EllipsisText>
                 <EllipsisText
@@ -4559,6 +4482,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
               <Button
                 type="button"
                 variant="outline"
+                disabled={busy}
                 data-testid={`account-archived-restore-${project.id}`}
                 onClick={() => void unarchive(project)}
               >
@@ -4567,8 +4491,9 @@ function ArchivedProjectsPage(): React.JSX.Element {
               <Button
                 type="button"
                 variant="destructive"
+                disabled={busy}
                 data-testid={`account-archived-delete-${project.id}`}
-                onClick={() => setPendingDelete(project)}
+                onClick={() => setDeleteTargets([project])}
               >
                 {t('accountPanel.archives.delete')}
               </Button>
@@ -4577,9 +4502,9 @@ function ArchivedProjectsPage(): React.JSX.Element {
         </div>
       )}
       <AlertDialog
-        open={pendingDelete !== null}
+        open={deleteTargets.length > 0}
         onOpenChange={(open) => {
-          if (!open && !busy) setPendingDelete(null)
+          if (!open && !busy) setDeleteTargets([])
         }}
       >
         <AlertDialogPortal>
@@ -4589,21 +4514,21 @@ function ArchivedProjectsPage(): React.JSX.Element {
           >
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {t('accountPanel.archives.deleteTitle', {
-                  name: pendingDelete?.name ?? ''
-                })}
+                {deleteTargets.length === 1
+                  ? t('accountPanel.archives.deleteTitle', {
+                      name: deleteTargets[0]?.name ?? '',
+                    })
+                  : t('accountPanel.archives.batchDeleteTitle', {
+                      total: deleteTargets.length,
+                    })}
               </AlertDialogTitle>
               <AlertDialogDescription>
                 {t('accountPanel.archives.deleteDescription')}
-                <span className="block">
-                  {t('accountPanel.archives.deleteFilesNote')}
-                </span>
+                <span className="block">{t('accountPanel.archives.deleteFilesNote')}</span>
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>
-                {t('accountPanel.archives.cancel')}
-              </AlertDialogCancel>
+              <AlertDialogCancel>{t('accountPanel.archives.cancel')}</AlertDialogCancel>
               <AlertDialogAction
                 aria-disabled={busy}
                 data-testid="account-archived-delete-confirm"
@@ -4623,8 +4548,7 @@ function ArchivedProjectsPage(): React.JSX.Element {
 
 function statusClass(status: SystemPermissionStatus): string {
   if (status === 'granted') return PERMISSION_STATUS_GRANTED_CLASS_NAME
-  if (status === 'denied' || status === 'restricted')
-    return PERMISSION_STATUS_DENIED_CLASS_NAME
+  if (status === 'denied' || status === 'restricted') return PERMISSION_STATUS_DENIED_CLASS_NAME
   return ''
 }
 
@@ -4635,9 +4559,7 @@ function PermissionsPage(): React.JSX.Element {
   const { t } = useTranslation('components') as {
     t: (key: string, options?: Record<string, unknown>) => string
   }
-  const [records, setRecords] = React.useState<
-    Record<string, SystemPermissionRecord>
-  >({})
+  const [records, setRecords] = React.useState<Record<string, SystemPermissionRecord>>({})
   const [loading, setLoading] = React.useState(true)
   const [errorCode, setErrorCode] = React.useState('')
   const error =
@@ -4656,12 +4578,7 @@ function PermissionsPage(): React.JSX.Element {
       .systemPermissions()
       .then((snapshot) => {
         setRecords(
-          Object.fromEntries(
-            snapshot.permissions.map((permission) => [
-              permission.id,
-              permission
-            ])
-          )
+          Object.fromEntries(snapshot.permissions.map((permission) => [permission.id, permission]))
         )
         setLoading(false)
       })
@@ -4696,10 +4613,7 @@ function PermissionsPage(): React.JSX.Element {
   }, [refresh])
 
   return (
-    <div
-      className={SETTINGS_CONTENT_CLASS_NAME}
-      data-testid="account-settings-permissions"
-    >
+    <div className={SETTINGS_CONTENT_CLASS_NAME} data-testid="account-settings-permissions">
       <SettingsPageHeader
         title={t('accountPanel.permissions.title')}
         description={t('accountPanel.permissions.description')}
@@ -4713,9 +4627,7 @@ function PermissionsPage(): React.JSX.Element {
             disabled={loading}
             onClick={refresh}
           >
-            {loading
-              ? t('accountPanel.permissions.checking')
-              : t('accountPanel.permissions.check')}
+            {loading ? t('accountPanel.permissions.checking') : t('accountPanel.permissions.check')}
           </Button>
         }
       />
@@ -4727,8 +4639,7 @@ function PermissionsPage(): React.JSX.Element {
       <div className={PERMISSION_CARD_CLASS_NAME}>
         {PERMISSIONS.map((permission) => {
           const record = records[permission.id]
-          const status =
-            record?.status ?? (loading ? 'not-determined' : 'query-error')
+          const status = record?.status ?? (loading ? 'not-determined' : 'query-error')
           const actionable = record?.actionable === true
           return (
             <button
@@ -4749,15 +4660,11 @@ function PermissionsPage(): React.JSX.Element {
                 <small className={SMALL_TEXT_CLASS_NAME}>
                   {record?.detailCode
                     ? permissionText(PERMISSION_DETAIL_KEYS[record.detailCode])
-                    : record?.detail ||
-                      t(PERMISSION_DESCRIPTION_KEYS[permission.id])}
+                    : record?.detail || t(PERMISSION_DESCRIPTION_KEYS[permission.id])}
                 </small>
               </span>
               <span
-                className={cx(
-                  PERMISSION_STATUS_BASE_CLASS_NAME,
-                  statusClass(status)
-                )}
+                className={cx(PERMISSION_STATUS_BASE_CLASS_NAME, statusClass(status))}
                 data-status={status}
               >
                 {t(PERMISSION_STATUS_KEYS[status])}
@@ -4768,17 +4675,11 @@ function PermissionsPage(): React.JSX.Element {
         })}
       </div>
 
-      <h2 className={SECTION_HEADING_CLASS_NAME}>
-        {t('accountPanel.permissions.sharingTitle')}
-      </h2>
-      <p className={SHARING_LEAD_CLASS_NAME}>
-        {t('accountPanel.permissions.sharingLead')}
-      </p>
+      <h2 className={SECTION_HEADING_CLASS_NAME}>{t('accountPanel.permissions.sharingTitle')}</h2>
+      <p className={SHARING_LEAD_CLASS_NAME}>{t('accountPanel.permissions.sharingLead')}</p>
       <div className={SHARING_CARD_CLASS_NAME}>
         <div className={SHARING_COPY_CLASS_NAME}>
-          <strong className={STRONG_TEXT_CLASS_NAME}>
-            {t('accountPanel.permissions.usage')}
-          </strong>
+          <strong className={STRONG_TEXT_CLASS_NAME}>{t('accountPanel.permissions.usage')}</strong>
           <small className={SMALL_TEXT_CLASS_NAME}>
             {t('accountPanel.permissions.privacyHint')}
           </small>
@@ -4791,9 +4692,7 @@ function PermissionsPage(): React.JSX.Element {
             type="button"
             className={cx(
               SHARING_SEGMENT_BUTTON_CLASS_NAME,
-              state.dataSharingMode === 'private'
-                ? SHARING_SEGMENT_ACTIVE_CLASS_NAME
-                : undefined
+              state.dataSharingMode === 'private' ? SHARING_SEGMENT_ACTIVE_CLASS_NAME : undefined
             )}
           >
             {accountText('sharing.private')}
@@ -4818,7 +4717,7 @@ export function AccountPanel({
   onPage,
   onClose,
   onLogin,
-  onLogout
+  onLogout,
 }: {
   embedded?: boolean
   page: AccountSettingsPage
@@ -4833,14 +4732,10 @@ export function AccountPanel({
   const activePage = visiblePage(page)
   return (
     <div
-      className={
-        embedded ? SETTINGS_DIALOG_SHELL_CLASS_NAME : SETTINGS_SHELL_CLASS_NAME
-      }
+      className={embedded ? SETTINGS_DIALOG_SHELL_CLASS_NAME : SETTINGS_SHELL_CLASS_NAME}
       data-testid="account-settings-shell"
     >
-      {!embedded && (
-        <div className={cx(SETTINGS_DRAG_CLASS_NAME, 'drag')} aria-hidden />
-      )}
+      {!embedded && <div className={cx(SETTINGS_DRAG_CLASS_NAME, 'drag')} aria-hidden />}
       <aside
         className={cx(
           SETTINGS_NAV_CLASS_NAME,
@@ -4848,12 +4743,7 @@ export function AccountPanel({
         )}
       >
         {embedded && (
-          <div
-            className={cx(
-              SETTINGS_DIALOG_TITLE_CLASS_NAME,
-              'max-[760px]:sr-only'
-            )}
-          >
+          <div className={cx(SETTINGS_DIALOG_TITLE_CLASS_NAME, 'max-[760px]:sr-only')}>
             {t('accountPanel.settingsTitle')}
           </div>
         )}
@@ -4869,10 +4759,7 @@ export function AccountPanel({
             {t('accountPanel.backToApp')}
           </Button>
         )}
-        <nav
-          className={SETTINGS_NAV_LIST_CLASS_NAME}
-          aria-label={t('accountPanel.navLabel')}
-        >
+        <nav className={SETTINGS_NAV_LIST_CLASS_NAME} aria-label={t('accountPanel.navLabel')}>
           {NAV_ITEMS.map((item) => (
             <Button
               type="button"
@@ -4880,9 +4767,7 @@ export function AccountPanel({
               className={cx(
                 SETTINGS_NAV_BUTTON_CLASS_NAME,
                 embedded ? SETTINGS_DIALOG_NAV_BUTTON_CLASS_NAME : undefined,
-                activePage === item.id
-                  ? SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME
-                  : undefined
+                activePage === item.id ? SETTINGS_NAV_BUTTON_ACTIVE_CLASS_NAME : undefined
               )}
               data-active={activePage === item.id ? 'true' : undefined}
               data-testid={`account-settings-nav-${item.id}`}
@@ -4907,9 +4792,7 @@ export function AccountPanel({
       >
         {activePage === 'prompts' && <PromptsPage />}
         {activePage === 'preferences' && <PreferencesPage />}
-        {activePage === 'account' && (
-          <AccountPage onLogin={onLogin} onLogout={onLogout} />
-        )}
+        {activePage === 'account' && <AccountPage onLogin={onLogin} onLogout={onLogout} />}
         {activePage === 'models' && <ModelConfigurationPage />}
         {activePage === 'skills' && (
           <Page
@@ -4928,6 +4811,7 @@ export function AccountPanel({
         )}
         {activePage === 'developer' && <DeveloperPage />}
         {activePage === 'files' && <FileVersionPage />}
+        {activePage === 'storage' && <DataStoragePage />}
         {/* {activePage === 'shortcuts' && <Shortcuts />} */}
         {activePage === 'archives' && <ArchivedProjectsPage />}
         {activePage === 'about' && <AboutPage />}

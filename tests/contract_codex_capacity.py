@@ -35,6 +35,7 @@ from scholarseed_codex.protocol.session import (
 )
 from scholarseed_codex.protocol.state import (
     AGENT_RUNTIME_STOP_TIMEOUT_SECONDS,
+    CODEX_MAX_THREADS_PER_HOST,
     AppServerError,
     CodexActivationStage,
     CodexProcessState,
@@ -46,6 +47,7 @@ from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.resource import (
     RESOURCE_LIFECYCLE_LOGGER,
     RESOURCE_QUEUE_FULL,
+    RESOURCE_THREAD_CAPACITY,
     ResourceState,
 )
 from scholarseed_runtime.contract.session import (
@@ -203,6 +205,28 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn(CodexActivationStage.PROCESS_READY_WAIT, second_timing.entered)
         self.assertNotIn(CodexActivationStage.READINESS_PROBE, second_timing.entered)
         self.assertTrue(all(failure is None for _, failure in second_timing.finished))
+        await second.close()
+
+    async def test_suspended_threads_reuse_host_before_idle_expiry(self) -> None:
+        pool = self.pool(execution_hosts=None, idle_seconds=0.05)
+        first = await pool.acquire(self.request("retained-first"))
+        host = first.host
+        await first.close(safe=True, retain=True)
+        self.assertEqual(pool.snapshot()[0].used, 1)
+        second = await pool.acquire(self.request("retained-second"))
+        self.assertIs(second.host, host)
+        self.assertEqual(host.start_calls, 1)
+        await second.close(safe=True, retain=True)
+        await asyncio.sleep(0.1)
+        self.assertEqual(host.safe_close_calls, 1)
+        self.assertEqual(pool.snapshot()[0].used, 0)
+
+    async def test_distinct_execution_scopes_never_share_process(self) -> None:
+        pool = self.pool(execution_hosts=None)
+        first = await pool.acquire(replace(self.request("account-a"), execution_scope="account-a"))
+        second = await pool.acquire(replace(self.request("account-b"), execution_scope="account-b"))
+        self.assertIsNot(first.host, second.host)
+        await first.close()
         await second.close()
 
     async def test_readiness_cache_does_not_replay_probe_timings(self) -> None:
@@ -408,7 +432,7 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
                     await asyncio.gather(waiter, return_exceptions=True)
                     await owner.close()
 
-    async def test_retry_after_unsubscribe_failure_starts_first_safe_lease_close(self) -> None:
+    async def test_retry_after_unsubscribe_failure_waits_for_writer_process_exit(self) -> None:
         pool = self.pool()
         request = self.request("unsubscribe-retry")
         reservation = await self.reserve(pool, request.request_id)
@@ -432,7 +456,13 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pool.snapshot()[0].used, 1)
         self.assertEqual(host.safe_close_calls, 0)
         self.assertEqual((await session.suspend_status(ticket)).state, SuspendState.COMMITTING)
-        receipt = await session.commit_suspend(ticket, TEST_WATERMARK)
+        host.close_gate.clear()
+        committing = asyncio.create_task(session.commit_suspend(ticket, TEST_WATERMARK))
+        await asyncio.wait_for(host.close_entered.wait(), TEST_TIMEOUT_SECONDS)
+        self.assertFalse(committing.done())
+        self.assertEqual(pool.snapshot()[0].used, 1)
+        host.close_gate.set()
+        receipt = await asyncio.wait_for(committing, TEST_TIMEOUT_SECONDS)
         self.assertEqual(receipt.state, SuspendState.RELEASED)
         self.assertEqual(pool.snapshot()[0].used, 0)
         self.assertEqual(host.safe_close_calls, 1)
@@ -702,14 +732,14 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(third.host.safe_close_calls, 1)
         self.assertEqual(self.capacity(pool, HostRole.CONTROL).used, 0)
 
-    async def test_execution_scope_and_thread_configuration_keep_writer_hosts_separate(
+    async def test_execution_scope_shares_host_but_process_environment_separates(
         self,
     ) -> None:
         pool = self.pool(execution_hosts=2)
         first_request = self.request("logical-first")
         first = await pool.acquire(first_request)
         second = await pool.acquire(self.request("logical-second"))
-        self.assertIsNot(first.host, second.host)
+        self.assertIs(first.host, second.host)
         configured = await pool.reserve(
             replace(
                 first_request,
@@ -721,19 +751,29 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
             request_id="changed-configuration",
             deadline=time() + TEST_WAIT_SECONDS,
         )
-        self.assertIs(configured.state, ResourceState.WAITING)
-        first.host.close_gate.clear()
-        closing = asyncio.create_task(first.close(safe=True))
-        await asyncio.wait_for(first.host.close_entered.wait(), TEST_TIMEOUT_SECONDS)
-        self.assertIs(configured.state, ResourceState.WAITING)
+        self.assertIs(configured.state, ResourceState.GRANTED)
+        third = await pool.consume(configured)
+        self.assertIs(third.host, first.host)
+        isolated = await pool.acquire(self.request("isolated", "different-process-environment"))
+        self.assertIsNot(isolated.host, first.host)
         self.assertEqual(self.capacity(pool).used, 2)
-        first.host.close_gate.set()
-        await closing
-        third = await asyncio.wait_for(pool.consume(configured), TEST_TIMEOUT_SECONDS)
-        self.assertTrue(first.host.closed)
-        self.assertIsNot(third.host, second.host)
-        self.assertIsNot(third.host, first.host)
-        await asyncio.gather(second.close(), third.close())
+        await asyncio.gather(first.close(), second.close(), third.close(), isolated.close())
+
+    async def test_thread_slots_are_reserved_atomically_at_128(self) -> None:
+        pool = self.pool(execution_hosts=None)
+        leases = [
+            await pool.acquire(self.request(f"thread-{index}"))
+            for index in range(CODEX_MAX_THREADS_PER_HOST)
+        ]
+        self.assertEqual({id(lease.host) for lease in leases}, {id(leases[0].host)})
+        rejected = await self.reserve(pool, "thread-overflow")
+        self.assertIs(rejected.state, ResourceState.REJECTED)
+        self.assertEqual(rejected.safe_error, RESOURCE_THREAD_CAPACITY)
+        self.assertEqual(self.capacity(pool).used, 1)
+        await leases[0].close()
+        replacement = await pool.acquire(self.request("thread-replacement"))
+        self.assertIs(replacement.host, leases[1].host)
+        await asyncio.gather(*(lease.close() for lease in (*leases[1:], replacement)))
 
     async def test_warm_control_readiness_does_not_repeat_preflight_after_cache_expiry(
         self,
@@ -1154,6 +1194,64 @@ class CapacityContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.close_calls, 1)
         self.assertEqual(self.capacity(pool).used, 0)
 
+    async def test_last_consumer_cancellation_stops_pending_startup(self) -> None:
+        pool = self.pool()
+        self.host_hook = lambda host: host.start_gate.clear()
+        timing = TimingRecorder()
+        request = replace(self.request("cancel-startup"), timing=timing)
+        consumer = asyncio.create_task(pool.acquire(request))
+        await asyncio.wait_for(
+            timing.signal(CodexActivationStage.PROCESS_READY_WAIT).wait(), TEST_TIMEOUT_SECONDS
+        )
+        await self.hosts[0].start_entered.wait()
+        consumer.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(consumer, TEST_TIMEOUT_SECONDS)
+        self.assertTrue(self.hosts[0].closed)
+        self.assertFalse(self.hosts[0].start_gate.is_set())
+        self.assertEqual(self.capacity(pool).used, 0)
+
+    async def test_cancelling_one_owner_keeps_shared_startup(self) -> None:
+        pool = self.pool()
+        self.host_hook = lambda host: host.start_gate.clear()
+        first = await self.reserve(pool, "cancel-shared-first")
+        second = await self.reserve(pool, "cancel-shared-second")
+        self.assertIs(first.slot, second.slot)
+        await self.hosts[0].start_entered.wait()
+        await pool.cancel(first)
+        self.assertFalse(self.hosts[0].closed)
+        self.assertFalse(second.slot.startup.done())
+        self.hosts[0].start_gate.set()
+        lease = await asyncio.wait_for(pool.consume(second), TEST_TIMEOUT_SECONDS)
+        await lease.close()
+
+    async def test_setup_coordination_uses_runtime_home_not_execution_identity(self) -> None:
+        pool = self.pool(execution_hosts=3)
+        home = Path(tempfile.gettempdir()) / "sandbox-contract-home"
+        first = await pool.acquire(
+            replace(self.request("sandbox-first"), process_environment={CODEX_HOME_ENV: str(home)})
+        )
+        second = await pool.acquire(
+            replace(
+                self.request("sandbox-second"),
+                process_environment={CODEX_HOME_ENV: str(home / ".")},
+            )
+        )
+        third = await pool.acquire(
+            replace(
+                self.request("sandbox-third"),
+                process_environment={CODEX_HOME_ENV: str(home / "other")},
+            )
+        )
+        self.assertIs(first.host, second.host)
+        self.assertIs(
+            first.host.arguments["sandbox_setup_lock"], second.host.arguments["sandbox_setup_lock"]
+        )
+        self.assertIsNot(
+            first.host.arguments["sandbox_setup_lock"], third.host.arguments["sandbox_setup_lock"]
+        )
+        await asyncio.gather(first.close(), second.close(), third.close())
+
     async def test_shutdown_joins_safe_close_without_escalating(self) -> None:
         pool = self.pool()
         lease = await pool.consume(await self.reserve(pool, "safe-stop"))
@@ -1318,6 +1416,11 @@ class PoolProbeOwnershipContracts(unittest.TestCase):
 
 
 class CapacityPolicyContracts(unittest.TestCase):
+    def test_process_hosts_have_no_default_numeric_limit(self) -> None:
+        policy = CapacityPolicy()
+        self.assertIsNone(policy.limit(HostRole.EXECUTION))
+        self.assertIsNone(policy.limit(HostRole.CONTROL))
+
     def test_invalid_policy_values_fail_before_any_host_is_created(self) -> None:
         invalid = (
             {"execution_hosts": True},

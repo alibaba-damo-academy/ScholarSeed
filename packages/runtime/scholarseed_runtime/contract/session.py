@@ -42,6 +42,17 @@ class SuspendState(str, Enum):
     ABORTED = "aborted"
 
 
+class RuntimeExecutionTreeBlocker(str, Enum):
+    TURN = "turn_active"
+    BACKGROUND_TASK = "background_task_active"
+
+
+@dataclass(frozen=True)
+class RuntimeExecutionThread:
+    thread_id: str
+    parent_thread_id: str
+
+
 @dataclass(frozen=True)
 class RuntimeActivitySnapshot:
     generation: str
@@ -49,10 +60,16 @@ class RuntimeActivitySnapshot:
     watermark: int
     complete: bool
     blockers: tuple[str, ...] = ()
+    execution_tree_complete: bool = False
+    execution_tree_blockers: tuple[str, ...] = ()
 
     @property
     def idle(self) -> bool:
         return self.complete and not self.blockers
+
+    @property
+    def execution_tree_idle(self) -> bool:
+        return self.execution_tree_complete and not self.execution_tree_blockers
 
 
 @dataclass(frozen=True)
@@ -127,6 +144,8 @@ class RuntimeSession(Protocol):
 __all__ = [
     "RuntimeSession",
     "RuntimeActivitySnapshot",
+    "RuntimeExecutionTreeBlocker",
+    "RuntimeExecutionThread",
     "SuspendTicket",
     "SuspendReceipt",
     "SuspendState",

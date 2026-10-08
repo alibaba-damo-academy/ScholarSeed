@@ -58,6 +58,74 @@ export function prepareMarkdownSource(source: string): string {
   return source.slice(0, partial.start) + source.slice(partial.start).replace(/[^\r\n]/g, ' ')
 }
 
+/** Translate TeX math delimiters without shifting source annotation offsets. */
+export function prepareMathSource(source: string): string {
+  const delimiters: Array<{ index: number; kind: 'inline' | 'display'; opening: boolean }> = []
+  let fenceCharacter = ''
+  let fenceLength = 0
+  let inlineTicks = 0
+  let offset = 0
+
+  for (const line of source.match(/[^\n]*\n|[^\n]+/g) ?? []) {
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (!inlineTicks && fence) {
+      const marker = fence[1]
+      if (!fenceCharacter) {
+        fenceCharacter = marker[0]
+        fenceLength = marker.length
+      } else if (marker[0] === fenceCharacter && marker.length >= fenceLength) {
+        fenceCharacter = ''
+        fenceLength = 0
+      }
+      offset += line.length
+      continue
+    }
+    if (fenceCharacter) {
+      offset += line.length
+      continue
+    }
+
+    for (let index = 0; index < line.length; index += 1) {
+      if (line[index] === '`') {
+        let end = index + 1
+        while (line[end] === '`') end += 1
+        const length = end - index
+        if (!inlineTicks) inlineTicks = length
+        else if (inlineTicks === length) inlineTicks = 0
+        index = end - 1
+        continue
+      }
+      if (inlineTicks || line[index] !== '\\' || line[index - 1] === '\\') continue
+      const marker = line[index + 1]
+      if (marker === '(' || marker === ')' || marker === '[' || marker === ']') {
+        delimiters.push({
+          index: offset + index,
+          kind: marker === '(' || marker === ')' ? 'inline' : 'display',
+          opening: marker === '(' || marker === '['
+        })
+        index += 1
+      }
+    }
+    offset += line.length
+  }
+
+  const replacements = new Set<number>()
+  const openings: Partial<Record<'inline' | 'display', number>> = {}
+  for (const delimiter of delimiters) {
+    if (delimiter.opening) openings[delimiter.kind] = delimiter.index
+    else {
+      const openingIndex = openings[delimiter.kind]
+      if (openingIndex === undefined) continue
+      replacements.add(openingIndex)
+      replacements.add(delimiter.index)
+      delete openings[delimiter.kind]
+    }
+  }
+  if (!replacements.size) return source
+  return source.replace(/\\[()[\]]/g, (delimiter, index: number) =>
+    replacements.has(index) ? '$$' : delimiter)
+}
+
 function numericCharacterReference(raw: string): string | null {
   const body = raw.slice(2, -1)
   const radix = body[0]?.toLowerCase() === 'x' ? 16 : 10

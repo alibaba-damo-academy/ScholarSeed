@@ -18,7 +18,9 @@
         "precise-literature-search",
         "agentic-search"
       ],
-      "sources": []
+      "sources": [
+        "user"
+      ]
     },
     "settings": {
       "skills": [

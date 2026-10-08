@@ -27,6 +27,8 @@ FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 FILE_ATTRIBUTE_NORMAL = 0x00000080
 FILE_READ_ATTRIBUTES = 0x00000080
+READ_CONTROL = 0x00020000
+WRITE_DAC = 0x00040000
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 SYNCHRONIZE = 0x00100000
@@ -53,10 +55,37 @@ NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 ACCESS_MODE_MASK = getattr(os, "O_ACCMODE", os.O_WRONLY | os.O_RDWR)
 PATH_CHANGE_TIME_COMPARABLE = os.name != WINDOWS_PLATFORM
+SE_FILE_OBJECT = 1
+DACL_SECURITY_INFORMATION = 0x00000004
+FILE_ALL_ACCESS = 0x001F01FF
+SET_ACCESS = 2
+NO_MULTIPLE_TRUSTEE = 0
+TRUSTEE_IS_NAME = 1
+TRUSTEE_IS_USER = 1
+SUB_CONTAINERS_AND_OBJECTS_INHERIT = 3
 
 
 class FileAttributeTagInfo(ctypes.Structure):
     _fields_ = [("file_attributes", wintypes.DWORD), ("reparse_tag", wintypes.DWORD)]
+
+
+class TrusteeW(ctypes.Structure):
+    _fields_ = [
+        ("multiple_trustee", wintypes.LPVOID),
+        ("multiple_trustee_operation", wintypes.DWORD),
+        ("trustee_form", wintypes.DWORD),
+        ("trustee_type", wintypes.DWORD),
+        ("name", wintypes.LPWSTR),
+    ]
+
+
+class ExplicitAccessW(ctypes.Structure):
+    _fields_ = [
+        ("access_permissions", wintypes.DWORD),
+        ("access_mode", wintypes.DWORD),
+        ("inheritance", wintypes.DWORD),
+        ("trustee", TrusteeW),
+    ]
 
 
 class _StatIdentity(Protocol):
@@ -92,6 +121,11 @@ _KERNEL32 = (
     if os.name == WINDOWS_PLATFORM and _WIN_DLL is not None
     else None
 )
+_ADVAPI32 = (
+    _WIN_DLL("advapi32", use_last_error=True)
+    if os.name == WINDOWS_PLATFORM and _WIN_DLL is not None
+    else None
+)
 if _KERNEL32 is not None:
     _KERNEL32.CreateFileW.argtypes = [
         wintypes.LPCWSTR,
@@ -119,11 +153,44 @@ if _KERNEL32 is not None:
         wintypes.DWORD,
     ]
     _KERNEL32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+    _KERNEL32.LocalFree.argtypes = [wintypes.HLOCAL]
+    _KERNEL32.LocalFree.restype = wintypes.HLOCAL
+if _ADVAPI32 is not None:
+    _ADVAPI32.GetUserNameW.argtypes = [wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    _ADVAPI32.GetUserNameW.restype = wintypes.BOOL
+    _ADVAPI32.GetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    _ADVAPI32.GetSecurityInfo.restype = wintypes.DWORD
+    _ADVAPI32.SetEntriesInAclW.argtypes = [
+        wintypes.ULONG,
+        ctypes.POINTER(ExplicitAccessW),
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.LPVOID),
+    ]
+    _ADVAPI32.SetEntriesInAclW.restype = wintypes.DWORD
+    _ADVAPI32.SetSecurityInfo.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+    ]
+    _ADVAPI32.SetSecurityInfo.restype = wintypes.DWORD
 
 
 def _raise_windows_error() -> None:
     code = _GET_LAST_ERROR() if callable(_GET_LAST_ERROR) else 0
-    raise OSError(code, f"Windows filesystem error {code}")
+    raise OSError(None, f"Windows filesystem error {code}", None, code)
 
 
 def _validate_part(part: str) -> None:
@@ -195,12 +262,12 @@ def open_parent(path: str | os.PathLike[str]) -> tuple[DirectoryHandle, str]:
     return open_directory(canonical_root(source.parent), ()), source.name
 
 
-def _open_windows_directory(path: Path) -> int:
+def _open_windows_directory(path: Path, access: int = FILE_READ_ATTRIBUTES | SYNCHRONIZE) -> int:
     if _KERNEL32 is None:
         raise OSError("Windows filesystem backend unavailable")
     handle = _KERNEL32.CreateFileW(
         str(path),
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        access,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         None,
         OPEN_EXISTING,
@@ -225,6 +292,82 @@ def _open_windows_directory(path: Path) -> int:
         _KERNEL32.CloseHandle(handle)
         raise OSError("reparse-point directory rejected")
     return int(handle)
+
+
+def _current_windows_user() -> ctypes.Array[ctypes.c_wchar]:
+    if _ADVAPI32 is None:
+        raise OSError("Windows security backend unavailable")
+    size = wintypes.DWORD(0)
+    _ADVAPI32.GetUserNameW(None, ctypes.byref(size))
+    if not size.value:
+        _raise_windows_error()
+    buffer = ctypes.create_unicode_buffer(size.value)
+    if not _ADVAPI32.GetUserNameW(buffer, ctypes.byref(size)):
+        _raise_windows_error()
+    return buffer
+
+
+def grant_current_user_directory_access(path: Path) -> None:
+    """Preserve host access for descendants created by the Windows sandbox."""
+
+    if os.name != WINDOWS_PLATFORM:
+        return
+    if _ADVAPI32 is None or _KERNEL32 is None:
+        raise OSError("Windows security backend unavailable")
+    directory = open_directory(
+        canonical_root(path), (), final_access=READ_CONTROL | WRITE_DAC | SYNCHRONIZE
+    )
+    security_descriptor = wintypes.LPVOID()
+    current_dacl = wintypes.LPVOID()
+    updated_dacl = wintypes.LPVOID()
+    username = _current_windows_user()
+    try:
+        code = _ADVAPI32.GetSecurityInfo(
+            directory.native_handles[-1],
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            ctypes.byref(current_dacl),
+            None,
+            ctypes.byref(security_descriptor),
+        )
+        if code:
+            raise OSError(code, f"GetSecurityInfo failed: {code}")
+        entry = ExplicitAccessW(
+            access_permissions=FILE_ALL_ACCESS,
+            access_mode=SET_ACCESS,
+            inheritance=SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            trustee=TrusteeW(
+                multiple_trustee=None,
+                multiple_trustee_operation=NO_MULTIPLE_TRUSTEE,
+                trustee_form=TRUSTEE_IS_NAME,
+                trustee_type=TRUSTEE_IS_USER,
+                name=ctypes.cast(username, wintypes.LPWSTR),
+            ),
+        )
+        code = _ADVAPI32.SetEntriesInAclW(
+            1, ctypes.byref(entry), current_dacl, ctypes.byref(updated_dacl)
+        )
+        if code:
+            raise OSError(code, f"SetEntriesInAclW failed: {code}")
+        code = _ADVAPI32.SetSecurityInfo(
+            directory.native_handles[-1],
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            updated_dacl,
+            None,
+        )
+        if code:
+            raise OSError(code, f"SetSecurityInfo failed: {code}")
+    finally:
+        if updated_dacl:
+            _KERNEL32.LocalFree(updated_dacl)
+        if security_descriptor:
+            _KERNEL32.LocalFree(security_descriptor)
+        directory.close()
 
 
 def _windows_disposition(flags: int) -> int:
@@ -423,7 +566,13 @@ def marker(descriptor: int) -> str:
         return ""
 
 
-def open_directory(root: Path, parts: tuple[str, ...], *, create: bool = False) -> DirectoryHandle:
+def open_directory(
+    root: Path,
+    parts: tuple[str, ...],
+    *,
+    create: bool = False,
+    final_access: int = FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+) -> DirectoryHandle:
     """Open every ancestor without following a symlink or Windows reparse point."""
     if not root.is_absolute():
         raise ValueError(DIRECTORY_PATH_INVALID)
@@ -454,8 +603,10 @@ def open_directory(root: Path, parts: tuple[str, ...], *, create: bool = False) 
     handles: list[int] = []
     path = Path(root.anchor)
     try:
-        handles.append(_open_windows_directory(path))
-        for part, may_create in steps:
+        handles.append(
+            _open_windows_directory(path, final_access if not steps else FILE_READ_ATTRIBUTES)
+        )
+        for index, (part, may_create) in enumerate(steps):
             _validate_part(part)
             path /= part
             if may_create:
@@ -463,7 +614,8 @@ def open_directory(root: Path, parts: tuple[str, ...], *, create: bool = False) 
                     os.mkdir(path, DIRECTORY_MODE)
                 except FileExistsError:
                     pass
-            handles.append(_open_windows_directory(path))
+            access = final_access if index == len(steps) - 1 else FILE_READ_ATTRIBUTES
+            handles.append(_open_windows_directory(path, access))
         return DirectoryHandle(path=path, native_handles=tuple(handles))
     except BaseException:
         if _KERNEL32 is not None:
@@ -482,6 +634,7 @@ __all__ = [
     "NONBLOCK",
     "DirectoryHandle",
     "canonical_root",
+    "grant_current_user_directory_access",
     "marker",
     "open_directory",
     "open_parent",

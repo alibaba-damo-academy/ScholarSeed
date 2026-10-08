@@ -3,11 +3,54 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
+const fs = require('node:fs')
+const os = require('node:os')
 const {
-  artifact, bundledTexlive, stagedBinDirectory, stagedEngines
+  artifact, bundledTexlive, cacheDirectory, publishCache, stagedBinDirectory, stagedEngines
 } = require('./texlive.cjs')
 
 const DESKTOP = path.resolve(__dirname, '..')
+test('development cache uses user artifact paths, not checkout depth or platform labels', () => {
+  const selected = artifact(DESKTOP, 'darwin', 'arm64')
+  const macCache = cacheDirectory(selected, {}, 'darwin')
+  const localAppData = path.resolve(os.tmpdir(), 'local')
+  const customCache = path.resolve(os.tmpdir(), 'custom-cache')
+  assert.equal(macCache, path.join(os.homedir(), '.cache', 'scholarseed', 'artifacts', 'texlive', selected.sha256))
+  assert.equal(cacheDirectory(selected, { LOCALAPPDATA: localAppData }, 'win32'),
+    path.join(localAppData, 'ScholarSeed', 'cache', 'artifacts', 'texlive', selected.sha256))
+  for (const platform of ['darwin', 'win32']) {
+    assert.equal(cacheDirectory(selected, { SCHOLARSEED_ARTIFACT_CACHE: customCache }, platform),
+      path.join(customCache, 'texlive', selected.sha256))
+  }
+  assert.notEqual(cacheDirectory({ ...selected, sha256: '0'.repeat(64) }, {}, 'darwin'), macCache)
+})
+
+test('concurrent cache publication accepts only the same archive receipt', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'texlive-cache-'))
+  const destination = path.join(root, 'destination')
+  const digest = 'a'.repeat(64)
+  try {
+    const first = fs.mkdtempSync(path.join(root, 'stage-'))
+    fs.writeFileSync(path.join(first, 'archive.sha256'), `${digest}\n`)
+    fs.writeFileSync(path.join(first, 'payload'), 'first')
+    publishCache(first, destination, digest)
+    const second = fs.mkdtempSync(path.join(root, 'stage-'))
+    fs.writeFileSync(path.join(second, 'archive.sha256'), `${digest}\n`)
+    publishCache(second, destination, digest)
+    assert.equal(fs.existsSync(second), false)
+    assert.equal(fs.readFileSync(path.join(destination, 'payload'), 'utf8'), 'first')
+    for (const receipt of ['different', null]) {
+      const stage = fs.mkdtempSync(path.join(root, 'stage-'))
+      if (receipt === null) fs.unlinkSync(path.join(destination, 'archive.sha256'))
+      else fs.writeFileSync(path.join(destination, 'archive.sha256'), receipt)
+      assert.throws(() => publishCache(stage, destination, digest))
+      assert.equal(fs.existsSync(stage), true)
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('vendored manifest selects platform-specific archives', () => {
   const arm = artifact(DESKTOP, 'darwin', 'arm64')
   const intel = artifact(DESKTOP, 'darwin', 'x64')

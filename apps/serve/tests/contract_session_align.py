@@ -51,7 +51,11 @@ from service.chat.runtime.live import (  # noqa: E402 -- after SCHOLARSEED_HOME 
     LiveSession,
 )
 from service.chat.service.models import SessionModelUnavailableError  # noqa: E402
-from service.chat.service.sessions import SessionService, workspace_allows  # noqa: E402
+from service.chat.service.sessions import (  # noqa: E402
+    PRODUCT_PERMISSION_MODES,
+    SessionService,
+    workspace_allows,
+)
 from service.chat.service.workspaces import SessionWorkspaceService  # noqa: E402
 from service.identity.service.skill_credentials import SKILL_API_KEY_ENV  # noqa: E402
 
@@ -77,20 +81,29 @@ def _native_policy(mode: str) -> tuple[str, str, str]:
 
 
 class _PermissionSession:
+    def permission_update_scope(self, intent):
+        return (
+            "turn"
+            if _native_policy(self.mode.value)[:2] == _native_policy(intent.mode.value)[:2]
+            else "next_turn"
+        )
+
     def __init__(self) -> None:
         self.mode = RuntimePermissionMode.ASK
         self.model_switches: list[str] = []
         self.writable_roots: tuple[Path, ...] = ()
         self.local_sockets: tuple[Path, ...] = ()
+        self.network_domains: tuple[str, ...] = ()
 
     async def reconfigure(self, request: Any) -> AppliedState:
         if request.model is not None:
             return AppliedState(request.revision, "", CommandState.RESTART_REQUIRED)
         target = request.permission.mode
-        if self.mode is target:
+        if self.mode is target or target is RuntimePermissionMode.SAFE_AUTO:
             self.mode = target
             self.writable_roots = request.permission.writable_roots
             self.local_sockets = request.permission.local_sockets
+            self.network_domains = request.permission.network_domains
             return AppliedState(request.revision, request.revision, CommandState.APPLIED)
         return AppliedState(request.revision, "", CommandState.RESTART_REQUIRED)
 
@@ -121,6 +134,8 @@ class _Credentials:
 
 
 class _Live:
+    permission_intent = LiveSession.permission_intent
+
     def __init__(
         self,
         *,
@@ -131,17 +146,22 @@ class _Live:
         self.id = SESSION_ID
         self.model_id = "gpt-5-codex"
         self.reasoning_effort = ""
+        self.thinking = None
         self.vendor_thread_id = f"thread-{SESSION_ID}"
         self.process_environment = dict(environment)
         self.running = running
+        self.active_product_turn_id = ""
         self.user_id = user_id
         self.applied_permission_mode = RuntimePermissionMode.ASK.value
+        self.permission_switch_warning = ""
         self.skill_configurations = ()
         self.runtime_session = _PermissionSession()
         self.runtime_binding = object()
         self.runtime_driver = None
         self.suspensions = 0
         self.writable_roots: tuple[Path, ...] = ()
+        self.local_socket = None
+        self.network_domains = ()
         self.lifecycle_lock = asyncio.Lock()
 
     async def suspend_runtime(self) -> bool:
@@ -186,7 +206,12 @@ class _Runtime:
 
     @staticmethod
     def resolve_model(
-        model_id: str, *, user_id: str = "", session_id: str = "", reasoning_effort: str = ""
+        model_id: str,
+        *,
+        user_id: str = "",
+        session_id: str = "",
+        reasoning_effort: str = "",
+        thinking: Any = None,
     ) -> SimpleNamespace:
         if not model_id.strip():
             raise ValueError("model is required")
@@ -400,11 +425,11 @@ def test_running_session_safe_auto_switch_defers_to_turn_boundary() -> None:
     payload, status = asyncio.run(service.set_mode(SESSION_ID, OWNER, "safe_auto"))
     record = catalog.get(SESSION_ID)
     check(
-        "HTTP 200 返回延迟生效状态",
+        "HTTP 200 返回当前轮次已应用状态",
         status == 200
         and payload.get("mode") == "safe_auto"
-        and payload.get("active_mode") == "ask"
-        and payload.get("deferred") is True,
+        and payload.get("active_mode") == "safe_auto"
+        and payload.get("deferred") is False,
         str(payload),
     )
     check("不打断当前 turn", runtime.policies == [], str(runtime.policies))
@@ -413,7 +438,7 @@ def test_running_session_safe_auto_switch_defers_to_turn_boundary() -> None:
     asyncio.run(service.prepare_turn(live))  # type: ignore[arg-type]
     check(
         "下一 turn 前启用 Codex 自动复核",
-        runtime.policies == [("workspace-write", "on-request", "auto_review")],
+        runtime.policies == [] and live.runtime_session.mode is RuntimePermissionMode.SAFE_AUTO,
         str(runtime.policies),
     )
 
@@ -422,7 +447,9 @@ def test_running_session_bypass_switch_defers_to_turn_boundary() -> None:
     print("[8b] 运行中切到完全访问 → 记下选择, 下一 turn 边界重开")
     live = _Live(environment=CURRENT, running=True)
     service, runtime, catalog = _service(live, _Credentials(CURRENT))
-    payload, status = asyncio.run(service.set_mode(SESSION_ID, OWNER, "bypassPermissions"))
+    payload, status = asyncio.run(
+        service.set_mode(SESSION_ID, OWNER, "bypassPermissions", application="next_turn")
+    )
     record = catalog.get(SESSION_ID)
     check(
         "HTTP 200 返回延迟生效状态",
@@ -446,8 +473,8 @@ def test_running_session_bypass_switch_defers_to_turn_boundary() -> None:
     check("已生效则不再重开", len(runtime.policies) == 1, str(runtime.policies))
 
 
-def test_waiting_approval_rejects_permission_switch() -> None:
-    print("[8c] 等待审批时切权限 → 拒绝修改且保留当前权限")
+def test_waiting_approval_defers_permission_switch() -> None:
+    print("[8c] 等待审批时切权限 → 保存选择但不改变当前审批")
     live = _Live(environment=CURRENT, running=True)
     service, runtime, catalog = _service(live, _Credentials(CURRENT))
     catalog.record_hil(
@@ -459,19 +486,74 @@ def test_waiting_approval_rejects_permission_switch() -> None:
         method="permission",
         payload={"kind": "permission"},
     )
-    payload, status = asyncio.run(service.set_mode(SESSION_ID, OWNER, "bypassPermissions"))
+    payload, status = asyncio.run(
+        service.set_mode(SESSION_ID, OWNER, "bypassPermissions", application="next_turn")
+    )
     record = catalog.get(SESSION_ID)
     check(
-        "HTTP 409 返回待审批冲突",
-        status == 409
-        and payload.get("error") == "session_permission_switch_requires_hil_resolution"
-        and payload.get("mode") == "ask"
+        "HTTP 200 返回下一轮生效",
+        status == 200
+        and payload.get("mode") == "bypassPermissions"
         and payload.get("active_mode") == "ask"
-        and payload.get("deferred") is False,
+        and payload.get("deferred") is True,
         str(payload),
     )
     check("不打断当前审批", runtime.policies == [], str(runtime.policies))
-    check("权限选择未修改", record is not None and record.policy_id == "ask")
+    check("权限选择已保存", record is not None and record.policy_id == "bypassPermissions")
+    check("审批仍待处理", len(catalog.pending_hil(SESSION_ID)) == 1)
+
+
+def test_pending_question_defers_permission_switch() -> None:
+    print("[8d] 等待提问时切权限 → 保存选择但不改变当前提问")
+    live = _Live(environment=CURRENT, running=True)
+    service, runtime, catalog = _service(live, _Credentials(CURRENT))
+    catalog.record_hil(
+        product_request_id="question-request",
+        session_id=SESSION_ID,
+        vendor_request_id="question-request",
+        vendor_turn_id="turn-running",
+        vendor_item_id="item-running",
+        method="user_input",
+        payload={"kind": "question"},
+    )
+    payload, status = asyncio.run(service.set_mode(SESSION_ID, OWNER, "safe_auto"))
+    record = catalog.get(SESSION_ID)
+    check(
+        "HTTP 200 返回后续步骤生效",
+        status == 200
+        and payload.get("mode") == "safe_auto"
+        and payload.get("active_mode") == "safe_auto"
+        and payload.get("deferred") is False,
+        str(payload),
+    )
+    check("不打断当前提问", runtime.policies == [], str(runtime.policies))
+    check("权限选择已保存", record is not None and record.policy_id == "safe_auto")
+    check("提问仍待处理", len(catalog.pending_hil(SESSION_ID)) == 1)
+
+
+def test_pending_interaction_without_running_defers_permission_switch() -> None:
+    print("[8e] 前端状态尚未同步时切权限 → 不即时重配运行时")
+    live = _Live(environment=CURRENT)
+    service, runtime, catalog = _service(live, _Credentials(CURRENT))
+    catalog.record_hil(
+        product_request_id="pending-request",
+        session_id=SESSION_ID,
+        vendor_request_id="pending-request",
+        vendor_turn_id="turn-running",
+        vendor_item_id="item-running",
+        method="permission",
+        payload={"kind": "permission"},
+    )
+    payload, status = asyncio.run(service.set_mode(SESSION_ID, OWNER, "safe_auto"))
+    check(
+        "HTTP 200 返回延迟生效",
+        status == 200
+        and payload.get("mode") == "safe_auto"
+        and payload.get("active_mode") == "ask"
+        and payload.get("deferred") is True,
+        str(payload),
+    )
+    check("待处理交互期间不重配", runtime.policies == [], str(runtime.policies))
 
 
 def test_permission_switch_failure_is_not_reported_as_running() -> None:
@@ -490,7 +572,7 @@ def test_permission_switch_failure_is_not_reported_as_running() -> None:
         "失败响应区分选择与实际生效状态",
         payload.get("mode") == "bypassPermissions"
         and payload.get("active_mode") == ""
-        and payload.get("deferred") is True,
+        and payload.get("deferred") is False,
         str(payload),
     )
     with unittest.TestCase().assertRaisesRegex(RuntimeError, "refused to resume"):
@@ -519,6 +601,157 @@ def test_permission_downgrade_uses_current_authorization() -> None:
 
 
 class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_selecting_active_mode_cancels_next_turn_without_runtime_update(self) -> None:
+        for active in (RuntimePermissionMode.ASK, RuntimePermissionMode.SAFE_AUTO):
+            for pending in (False, True):
+                with self.subTest(active=active, pending=pending):
+                    live = _Live(environment=CURRENT, running=True)
+                    live.applied_permission_mode = active.value
+                    live.runtime_session.mode = active
+                    service, runtime, catalog = _service(live, _Credentials(CURRENT))
+                    catalog.set_policy(SESSION_ID, OWNER, active.value)
+                    if pending:
+                        catalog.record_hil(
+                            product_request_id="approval-request",
+                            session_id=SESSION_ID,
+                            vendor_request_id="approval-request",
+                            vendor_turn_id="turn-running",
+                            vendor_item_id="item-running",
+                            method="permission",
+                            payload={"kind": "permission"},
+                        )
+                    hil_before = catalog.pending_hil(SESSION_ID)
+                    thread_before = live.vendor_thread_id
+                    live.runtime_session.reconfigure = AsyncMock(
+                        side_effect=RuntimeError("unchanged permissions must not reach runtime")
+                    )
+                    deferred, status = await service.set_mode(
+                        SESSION_ID, OWNER, "bypassPermissions", application="next_turn"
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertTrue(deferred["next_turn_selected"])
+                    for repeat in range(2):
+                        result, status = await service.set_mode(SESSION_ID, OWNER, active.value)
+                        self.assertEqual(status, 200)
+                        self.assertTrue(result["ok"])
+                        self.assertEqual(result["mode"], active.value)
+                        self.assertEqual(result["active_mode"], active.value)
+                        self.assertFalse(result["next_turn_selected"])
+                        self.assertFalse(result["deferred"])
+                        self.assertEqual(result["switch_warning"], "")
+                        self.assertNotIn("continuation", result)
+                    live.runtime_session.reconfigure.assert_not_awaited()
+                    self.assertTrue(live.running)
+                    self.assertEqual(live.vendor_thread_id, thread_before)
+                    self.assertEqual(catalog.pending_hil(SESSION_ID), hil_before)
+                    self.assertIsNone(
+                        SessionCatalogStore(catalog.database).get(SESSION_ID).next_turn_mode
+                    )
+                    self.assertEqual(runtime.policies, [])
+
+    async def test_non_live_auto_requires_confirmation_without_persisting(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+        result, status = await service.set_mode(SESSION_ID, OWNER, "bypassPermissions")
+        self.assertEqual(status, 409)
+        self.assertEqual(result["error"], "session_permission_confirmation_required")
+        self.assertEqual(catalog.get(SESSION_ID).policy_id, "ask")
+        self.assertEqual(live.applied_permission_mode, "ask")
+
+    async def test_only_explicit_next_turn_selection_is_projected_and_persisted(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+        self.assertIn("safe_auto", service.mode(SESSION_ID)["current_turn_modes"])
+        self.assertNotIn("bypassPermissions", service.mode(SESSION_ID)["current_turn_modes"])
+        result, status = await service.set_mode(
+            SESSION_ID, OWNER, "bypassPermissions", application="next_turn"
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(result["next_turn_selected"])
+        reopened = SessionCatalogStore(catalog.database)
+        self.assertEqual(reopened.get(SESSION_ID).next_turn_mode, "bypassPermissions")
+        catalog.set_policy(SESSION_ID, OWNER, "safe_auto")
+        self.assertTrue(service.mode(SESSION_ID)["deferred"])
+        self.assertFalse(service.mode(SESSION_ID)["next_turn_selected"])
+
+    async def test_unbound_permission_is_not_deferred(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+        live.applied_permission_mode = ""
+        for selected in PRODUCT_PERMISSION_MODES:
+            catalog.set_policy(SESSION_ID, OWNER, selected)
+            projection = service.mode(SESSION_ID)
+            self.assertEqual(projection["active_mode"], "")
+            self.assertFalse(projection["deferred"])
+        live.applied_permission_mode = RuntimePermissionMode.ASK.value
+        catalog.set_policy(SESSION_ID, OWNER, RuntimePermissionMode.SAFE_AUTO.value)
+        self.assertTrue(service.mode(SESSION_ID)["deferred"])
+        catalog.set_policy(SESSION_ID, OWNER, RuntimePermissionMode.ASK.value)
+        self.assertFalse(service.mode(SESSION_ID)["deferred"])
+
+    async def test_mode_change_preserves_product_permissions(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        live.local_socket = Path("/permission-capability.sock")
+        live.network_domains = ("scholarseed.damo.alibaba.com",)
+        service, _runtime, _catalog = _service(live, _Credentials(CURRENT))
+        captured = []
+        original = live.runtime_session.reconfigure
+
+        async def record(request):
+            captured.append(request.permission)
+            return await original(request)
+
+        live.runtime_session.reconfigure = record
+        result, status = await service.set_mode(SESSION_ID, OWNER, "safe_auto")
+        self.assertEqual(status, 200)
+        self.assertFalse(result["deferred"])
+        self.assertEqual(captured[0].local_sockets, (live.local_socket,))
+        self.assertEqual(captured[0].network_domains, live.network_domains)
+        self.assertTrue(captured[0].deny_read_roots)
+
+    async def test_interrupt_continuation_requires_interrupted_outcome(self) -> None:
+        for outcome, continued in (("interrupted", True), ("completed", False), ("failed", False)):
+            with self.subTest(outcome=outcome):
+                live = _Live(environment=CURRENT, running=True)
+                service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+                live.activation_lock = asyncio.Lock()
+                live.catalog = catalog
+                live.last_submission_id = "submission-permission"
+                live.interrupt_generation = 0
+                live.ledger = SimpleNamespace(
+                    active_turn_id="vendor-turn-permission",
+                    has_unknown_outcome=False,
+                    wait_terminal=AsyncMock(return_value=outcome),
+                )
+
+                async def interrupt():
+                    live.interrupt_generation += 1
+                    live.running = False
+
+                live.interrupt = interrupt
+                thread_id = live.vendor_thread_id
+                result, status = await service.set_mode(
+                    SESSION_ID, OWNER, "safe_auto", application="interrupt_continue"
+                )
+                self.assertEqual("continuation" in result, continued)
+                self.assertEqual(live.vendor_thread_id, thread_id)
+                self.assertEqual(status, 409 if outcome == "failed" else 200)
+
+    async def test_interrupt_timeout_never_continues(self) -> None:
+        live = _Live(environment=CURRENT, running=True)
+        service, _runtime, catalog = _service(live, _Credentials(CURRENT))
+        live.activation_lock = asyncio.Lock()
+        live.catalog = catalog
+        live.last_submission_id = "submission-permission"
+        live.ledger = SimpleNamespace(active_turn_id="", has_unknown_outcome=False)
+        with patch("service.chat.service.sessions.SESSION_PERMISSION_STOP_TIMEOUT_SECONDS", 0.001):
+            result, status = await service.set_mode(
+                SESSION_ID, OWNER, "safe_auto", application="interrupt_continue"
+            )
+        self.assertEqual(status, 409)
+        self.assertNotIn("continuation", result)
+        self.assertEqual(live.applied_permission_mode, "ask")
+
     async def test_detached_settings_only_save_intent(self) -> None:
         live = _Live(environment=CURRENT)
         live.runtime_session = None
@@ -531,7 +764,8 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual((mode_status, model_status), (200, 200))
         self.assertEqual((mode["active_mode"], model["active_model_id"]), ("", ""))
-        self.assertTrue(mode["deferred"] and model["deferred"])
+        self.assertFalse(mode["deferred"])
+        self.assertTrue(model["deferred"])
         self.assertIsNone(live.runtime_session)
         self.assertEqual(runtime.policies, [])
         self.assertEqual(runtime.model_switches, [])
@@ -682,7 +916,7 @@ class PermissionActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog.get(SESSION_ID).policy_id, RuntimePermissionMode.ASK.value)
         self.assertEqual(payload.get("mode"), RuntimePermissionMode.ASK.value)
         self.assertEqual(payload.get("active_mode"), "")
-        self.assertIs(payload.get("deferred"), True)
+        self.assertIs(payload.get("deferred"), False)
         for _ in range(2):
             with self.assertRaisesRegex(RuntimeError, "refused to resume"):
                 await service.prepare_turn(live)
@@ -734,7 +968,11 @@ def test_idle_session_switches_only_its_model_binding() -> None:
         str(payload),
     )
     check("runtime 仅重绑目标会话", runtime.model_switches == ["deepseek-v4-pro"])
-    check("模型选择使用真实账号身份", runtime.selection_actors == [ACTOR_ID])
+    check(
+        "模型选择使用真实账号身份",
+        bool(runtime.selection_actors) and set(runtime.selection_actors) == {ACTOR_ID},
+        str(runtime.selection_actors),
+    )
     check("模型更改恢复原生 thread 身份", live.vendor_thread_id == f"thread-{SESSION_ID}")
     check("目标会话持久化新模型", record is not None and record.model_id == "deepseek-v4-pro")
     check("其他会话模型不变", foreign is not None and foreign.model_id == "gpt-5-codex")
@@ -782,11 +1020,17 @@ def test_gateway_writable_roots_reconfigure_permission_intent() -> None:
     live.writable_roots = ()
     target = (Path(tempfile.mkdtemp(prefix="linked-root-")),)
     live.local_socket = target[0] / "capability.sock"
+    live.network_domains = ("scholarseed.damo.alibaba.com",)
     applied = asyncio.run(live.set_writable_roots(target))
     check("Gateway 路径确认可写根已生效", applied is True)
     check("本地 applied state 与 Runtime intent 一致", live.writable_roots == target)
     check("Runtime session 收到完整可写根", live.runtime_session.writable_roots == target)
     check("更新可写根保留本地能力声明", live.runtime_session.local_sockets == (live.local_socket,))
+    check("更新可写根保留域名授权", live.runtime_session.network_domains == live.network_domains)
+    live.applied_permission_mode = RuntimePermissionMode.READ_ONLY.value
+    live.runtime_session.mode = RuntimePermissionMode.READ_ONLY
+    applied = asyncio.run(live.set_writable_roots(target))
+    check("只读模式不延续外网域名授权", applied and not live.runtime_session.network_domains)
 
 
 def main() -> int:
@@ -799,7 +1043,9 @@ def main() -> int:
     test_idle_session_permission_mode_switches_runtime_policy()
     test_running_session_safe_auto_switch_defers_to_turn_boundary()
     test_running_session_bypass_switch_defers_to_turn_boundary()
-    test_waiting_approval_rejects_permission_switch()
+    test_waiting_approval_defers_permission_switch()
+    test_pending_question_defers_permission_switch()
+    test_pending_interaction_without_running_defers_permission_switch()
     test_permission_switch_failure_is_not_reported_as_running()
     test_permission_downgrade_uses_current_authorization()
     test_idle_session_switches_only_its_model_binding()

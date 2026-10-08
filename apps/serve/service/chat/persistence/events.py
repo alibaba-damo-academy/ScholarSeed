@@ -12,12 +12,15 @@ from typing import Any, Iterator, Sequence
 
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
 from service.chat.constants import (
+    CANCELLED_MESSAGE_HISTORY_PREFIX,
     PRODUCT_EVENT_MESSAGE_DELTA,
     PRODUCT_EVENT_TURN_COMPLETED,
     PRODUCT_EVENT_TURN_FAILED,
     PRODUCT_EVENT_USER_MESSAGE,
     PRODUCT_EVENT_VERSION,
     PRODUCT_EVENT_VERSION_V1,
+    USER_MESSAGE_BINDING_BOUND,
+    USER_MESSAGE_BINDING_CANCELLED,
 )
 from service.chat.persistence.catalog import (
     SESSION_CATALOG_TABLE,
@@ -42,6 +45,20 @@ WORKSPACE_ORIGIN_UNAVAILABLE = "session_workspace_origin_unavailable"
 CONTENT_REJECTION_CODES = frozenset(
     {"content_safety_blocked", "content_policy_violation", "content_filter"}
 )
+
+
+def cancelled_message_text(payload: dict[str, Any]) -> str:
+    text = str(payload.get("text") or "")
+    references = payload.get("refs")
+    if isinstance(references, list):
+        labels = [
+            str(reference.get("title") or reference.get("id") or "")
+            for reference in references
+            if isinstance(reference, dict)
+        ]
+        if labels:
+            text = f"{text}\nReferences: {json.dumps(labels, ensure_ascii=False)}"
+    return text.strip()
 
 
 @dataclass(frozen=True)
@@ -754,7 +771,16 @@ class ProductEventStore:
             )
             for record in page:
                 if record.kind == PRODUCT_EVENT_USER_MESSAGE:
-                    text = str(record.payload.get("text") or "").strip()
+                    binding = str(record.payload.get("binding") or "")
+                    source_text = cancelled_message_text(record.payload)
+                    text = (
+                        CANCELLED_MESSAGE_HISTORY_PREFIX
+                        + json.dumps(source_text, ensure_ascii=False)
+                        if binding == USER_MESSAGE_BINDING_CANCELLED
+                        else str(record.payload.get("text") or "").strip()
+                    )
+                    if binding == USER_MESSAGE_BINDING_CANCELLED and not source_text:
+                        continue
                     client_turn_id = str(
                         record.payload.get("client_turn_id")
                         or record.vendor_item_id
@@ -792,7 +818,12 @@ class ProductEventStore:
                         text=text,
                         turn_id=record.vendor_turn_id or "",
                         item_id=record.vendor_item_id or message_id,
-                        phase=MessagePhase.FINAL_ANSWER,
+                        phase=(
+                            MessagePhase(str(record.payload["phase"]))
+                            if record.payload.get("phase")
+                            in {phase.value for phase in MessagePhase}
+                            else MessagePhase.FINAL_ANSWER
+                        ),
                     ),
                 )
             if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
@@ -807,6 +838,25 @@ class ProductEventStore:
             )
             if entry.turn_id not in rejected
         )
+
+    def cancelled_messages_since_bound(self, session_id: str) -> tuple[HistoryEntry, ...]:
+        pending: list[HistoryEntry] = []
+        sequence = 0
+        while True:
+            page = self.replay(session_id, after_seq=sequence, limit=MAXIMUM_REPLAY_LIMIT)
+            for record in page:
+                if record.kind != PRODUCT_EVENT_USER_MESSAGE:
+                    continue
+                binding = str(record.payload.get("binding") or "")
+                if binding == USER_MESSAGE_BINDING_BOUND:
+                    pending.clear()
+                elif binding == USER_MESSAGE_BINDING_CANCELLED:
+                    text = cancelled_message_text(record.payload)
+                    if text:
+                        pending.append(HistoryEntry(role="user", text=text))
+            if not page or len(page) < MAXIMUM_REPLAY_LIMIT:
+                return tuple(pending)
+            sequence = page[-1].product_seq
 
     def turn_context(self, session_id: str, vendor_turn_id: str) -> dict[str, Any]:
         """Recover the context admitted for this exact native turn, never the latest selection."""

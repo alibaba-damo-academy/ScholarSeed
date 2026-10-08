@@ -233,6 +233,8 @@ export interface InteractionQuestion {
   header?: string
   question: string
   options: Array<{ label: string; description?: string }>
+  multiSelect?: boolean
+  papers?: Array<{ id: string; label: string; description?: string }>
 }
 
 export type InteractionDirectPresentation = 'options' | 'primary-secondary'
@@ -248,6 +250,10 @@ export interface InteractionPolicyContribution {
   directPresentation?: InteractionDirectPresentation
   /** Optional canonical label for immediate decisions whose native protocol adds presentation suffixes. */
   optionLabel?: (option: InteractionQuestion['options'][number]) => string
+  replyTitle?: (question: InteractionQuestion, answer: string, localization: i18n) => string | undefined
+  replyText?: (question: InteractionQuestion, answer: string, localization: i18n) => string | undefined
+  presentQuestion?: (question: InteractionQuestion, localization: i18n) => InteractionQuestion
+  presentAnswer?: (question: InteractionQuestion, answer: string, localization: i18n) => string
   /** Optional terminal copy after a feature-owned immediate cancellation succeeds. */
   cancelledLabel?: (question: InteractionQuestion) => string
   complete?: (questions: readonly InteractionQuestion[], answers: Readonly<Record<number, readonly string[]>>, texts: Readonly<Record<number, string>>) => boolean

@@ -16,6 +16,7 @@ sys.path.insert(0, str(SKILL_DIR / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from io_utils import atomic_write_json, read_json, utc_now  # noqa: E402
+from filesystem import canonical_path, filesystem_path, path_exists
 from state import initialize  # noqa: E402
 from validate_json import validate_data  # noqa: E402
 
@@ -171,17 +172,17 @@ def _validate_existing_plan(
 
 
 def prepare(request_path: Path, work_dir: Path, profile: str | None = None) -> dict[str, Any]:
-    if request_path.is_symlink() or work_dir.is_symlink():
+    if filesystem_path(request_path).is_symlink() or filesystem_path(work_dir).is_symlink():
         raise ValueError("request and work paths must not be symbolic links")
-    request_path = request_path.resolve()
-    work_dir = work_dir.resolve()
-    if work_dir != (request_path.parent / "work").resolve():
+    request_path = canonical_path(request_path)
+    work_dir = canonical_path(work_dir)
+    if work_dir != canonical_path((request_path.parent / "work")):
         raise ValueError("work directory must be the request file's sibling work directory")
 
     request = read_json(request_path)
     validate_data("search-request", request)
     plan_path = work_dir / "plan.json"
-    plan_exists = plan_path.exists()
+    plan_exists = path_exists(plan_path)
     existing_plan = read_json(plan_path) if plan_exists else None
     request_profile = request.get("search_profile")
     profile = profile or request_profile
@@ -192,8 +193,8 @@ def prepare(request_path: Path, work_dir: Path, profile: str | None = None) -> d
     if request["intent"].get("confirmed") is not True:
         raise ValueError("search preparation requires a confirmed intent")
 
-    work_dir.mkdir(parents=True, exist_ok=True)
-    (work_dir / "results").mkdir(parents=True, exist_ok=True)
+    filesystem_path(work_dir).mkdir(parents=True, exist_ok=True)
+    filesystem_path((work_dir / "results")).mkdir(parents=True, exist_ok=True)
     status = "ready"
     if plan_exists:
         plan = existing_plan

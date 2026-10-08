@@ -1,7 +1,8 @@
 // Windows 版本化组件仓库的单一事实源（proposal 108 §7 / P2a）。
 //
 // 布局契约与 apps/serve/service/paths.py 的 runtime 契约互为镜像，两侧各有契约测试钉死
-// 相对形状（`runtime/python/<target>-<contentId>/`、`runtime/texlive/...`、staging/manifests/locks）。
+// 相对形状（`runtime/python/<target>-<contentId>/`、`runtime/texlive/...`、
+// `runtime/powershell/...`、staging/manifests/locks）。
 //
 // 设计要点：
 // - **组件 = 稳定依赖**。python 组件只含解释器 + uv.lock 锁定的第三方 site-packages；
@@ -20,13 +21,6 @@ const { spawnSync } = require('node:child_process')
 
 const COMPONENT_SCHEMA_VERSION = 1
 const RUNTIME_DIRNAME = 'runtime'
-/**
- * 组件 store 根的用户级覆盖（首装向导高级步骤写入 HKCU Environment 并广播）。
- * 选 env 而非配置文件：.cmd 启动器在打包机生成、batch 读不了 UTF-16 配置，而 env 是
- * batch/NSIS/Node 三方原生且同源的寻址档——任一消费者都不会与另一方走岔。
- * 入口锁在首装（安装后不可改），故 store 根在安装生命周期内不变。
- */
-const RUNTIME_STORE_ENV = 'SCHOLARSEED_RUNTIME_STORE'
 const STAGING_DIRNAME = 'staging'
 const MANIFESTS_DIRNAME = 'manifests'
 const LOCKS_DIRNAME = 'locks'
@@ -35,16 +29,20 @@ const PYLIBS_DIRNAME = 'pylibs'
 const APP_COMPONENTS_FILENAME = 'app-components.json'
 const PYTHON_KIND = 'python'
 const TEXLIVE_KIND = 'texlive'
-const COMPONENT_KINDS = [PYTHON_KIND, TEXLIVE_KIND]
-// 组件目录内保留归档顶层树名（python/、texlive/），entry 是相对组件根的入口路径。
+const POWERSHELL_KIND = 'powershell'
+const COMPONENT_KINDS = [PYTHON_KIND, TEXLIVE_KIND, POWERSHELL_KIND]
+// 组件目录内保留归档顶层树名（python/、texlive/、powershell/），entry 是相对组件根的入口路径。
 const PYTHON_TREE_DIRNAME = 'python'
 const TEXLIVE_TREE_DIRNAME = 'texlive'
+const POWERSHELL_TREE_DIRNAME = 'powershell'
 const PYTHON_ENTRY_RELATIVE = `${PYTHON_TREE_DIRNAME}/python.exe`
 const TEXLIVE_BIN_PARENT_RELATIVE = TEXLIVE_TREE_DIRNAME
+const POWERSHELL_ENTRY_RELATIVE = `${POWERSHELL_TREE_DIRNAME}/pwsh.exe`
 const HOME_ENV = 'SCHOLARSEED_HOME'
 const CONTENT_ID_PATTERN = /^[a-f0-9]{64}$/
 const TARGET_PATTERN = /^[a-z0-9]+-[a-z0-9_]+$/
 const SHA256_CHUNK_BYTES = 16 * 1024 * 1024
+const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
 
 function componentTarget(platform, arch) {
   if (platform !== 'win32') throw new Error(`component store is win32-only, got ${platform}`)
@@ -88,6 +86,10 @@ function derivePythonContentId({ target, pythonArchiveSha256, requirementsSha256
 /** texlive 组件内容标识：审阅过的 vendor 归档哈希 + 版本。 */
 function deriveTexliveContentId({ target, archiveSha256, texlive }) {
   return canonicalSha256({ kind: TEXLIVE_KIND, target, archiveSha256, texlive })
+}
+
+function derivePowerShellContentId({ target, archiveSha256, version }) {
+  return canonicalSha256({ kind: POWERSHELL_KIND, target, archiveSha256, version })
 }
 
 function componentArchiveName(kind, contentId) {
@@ -179,6 +181,8 @@ function validateAppComponents(value) {
     if (component.kind === TEXLIVE_KIND &&
       (component.entry !== `${TEXLIVE_BIN_PARENT_RELATIVE}/bin/windows` ||
         !Array.isArray(component.executables) || component.executables.length === 0)) return false
+    if (component.kind === POWERSHELL_KIND &&
+      (component.entry !== POWERSHELL_ENTRY_RELATIVE || !VERSION_PATTERN.test(component.version || ''))) return false
   }
   return kinds.size === COMPONENT_KINDS.length
 }
@@ -224,9 +228,10 @@ function storeLockPath(storeRoot, contentId) {
 // ---- Windows 启动器寻址（.cmd） ----
 
 /**
- * .cmd 前导：把解释器定位到组件仓库（SCHOLARSEED_HOME 覆盖 → 默认 %USERPROFILE%\.scholarseed），
- * 并把 backend/pylibs 前置进 PYTHONPATH（产品代码不在组件里）。组件尚未 provision 时
- * 显式报错退出，不静默回落宿主 Python（AGENTS.md：禁止回退宿主解释器）。
+ * .cmd 前导：把解释器定位到组件仓库（`%SCHOLARSEED_HOME%\runtime` → 默认
+ * `%USERPROFILE%\.scholarseed\runtime`），并把 backend/pylibs 前置进 PYTHONPATH
+ * （产品代码不在组件里）。组件尚未 provision 时显式报错退出，不静默回落宿主
+ * Python（AGENTS.md：禁止回退宿主解释器）。
  */
 function windowsComponentPreamble(target, contentId) {
   const runtimeRelative = componentDirectoryName(PYTHON_KIND, target, contentId)
@@ -234,9 +239,9 @@ function windowsComponentPreamble(target, contentId) {
   return [
     '@echo off',
     'setlocal',
-    // 三档寻址与 Node 侧 resolveRuntimeStoreRoot 同源：首装自定义 store > SCHOLARSEED_HOME
-    // 派生 > 默认 %USERPROFILE%\.scholarseed\runtime。
-    `if defined ${RUNTIME_STORE_ENV} (set "SS_RUNTIME=%${RUNTIME_STORE_ENV}%") else (if defined ${HOME_ENV} (set "SS_RUNTIME=%${HOME_ENV}%\\${RUNTIME_DIRNAME}") else (set "SS_RUNTIME=%USERPROFILE%\\.scholarseed\\${RUNTIME_DIRNAME}"))`,
+    // 两档寻址与 Node 侧 runtimeStoreRoot 同源：SCHOLARSEED_HOME 派生 > 默认
+    // %USERPROFILE%\.scholarseed\runtime。组件仓库恒为 <home>/runtime，无独立覆盖档。
+    `if defined ${HOME_ENV} (set "SS_RUNTIME=%${HOME_ENV}%\\${RUNTIME_DIRNAME}") else (set "SS_RUNTIME=%USERPROFILE%\\.scholarseed\\${RUNTIME_DIRNAME}")`,
     `set "SS_PY=%SS_RUNTIME%\\${runtimeRelative}\\${PYTHON_TREE_DIRNAME}\\python.exe"`,
     'if not exist "%SS_PY%" (echo ScholarSeed runtime component is not provisioned yet; start the ScholarSeed app first. 1>&2 & exit /b 1)',
     'set "PYTHONPATH=%~dp0..\\' + PYLIBS_DIRNAME + ';%PYTHONPATH%"'
@@ -244,27 +249,10 @@ function windowsComponentPreamble(target, contentId) {
 }
 
 /**
- * 组件 store 根覆盖值的形状校验。Windows 认盘符与 UNC，POSIX 认前导 /；其余一律拒，
- * 让「env 被手改坏」在解析口显式失败，而不是半路写出个不存在的解释器路径。
+ * 组件 store 根的唯一解析口：恒为 `<home>/runtime`（proposal 112 收敛掉此前独立的
+ * 组件仓库覆盖轴）。backend.ts 与 .cmd 前导（batch 两档）必须保持同源同序，契约测试钉死。
  */
-function isValidRuntimeStoreRoot(value, platform) {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 4096) return false
-  if (platform === 'win32') return /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)
-  return value.startsWith('/')
-}
-
-/**
- * 组件 store 根的唯一解析口：env 覆盖（形状非法即抛，fail-closed）> <home>/runtime。
- * backend.ts 与 .cmd 前导（batch 三档）必须保持同档同序，契约测试钉死。
- */
-function resolveRuntimeStoreRoot(env, home, platform) {
-  const override = env[RUNTIME_STORE_ENV]
-  if (override !== undefined && override !== '') {
-    if (!isValidRuntimeStoreRoot(override, platform)) {
-      throw new Error(`invalid ${RUNTIME_STORE_ENV}: ${override}`)
-    }
-    return override
-  }
+function runtimeStoreRoot(home) {
   return path.join(home, RUNTIME_DIRNAME)
 }
 
@@ -286,11 +274,13 @@ module.exports = {
   LOCKS_DIRNAME,
   MANIFESTS_DIRNAME,
   PYLIBS_DIRNAME,
+  POWERSHELL_ENTRY_RELATIVE,
+  POWERSHELL_KIND,
+  POWERSHELL_TREE_DIRNAME,
   PYTHON_ENTRY_RELATIVE,
   PYTHON_KIND,
   PYTHON_TREE_DIRNAME,
   RUNTIME_DIRNAME,
-  RUNTIME_STORE_ENV,
   STAGING_DIRNAME,
   TARGET_PATTERN,
   TEXLIVE_BIN_PARENT_RELATIVE,
@@ -301,12 +291,12 @@ module.exports = {
   componentDirectoryName,
   componentTarget,
   consoleScriptLauncherCommand,
+  derivePowerShellContentId,
   derivePythonContentId,
   deriveTexliveContentId,
-  isValidRuntimeStoreRoot,
   packComponentArchive,
   parseAppComponents,
-  resolveRuntimeStoreRoot,
+  runtimeStoreRoot,
   sha256FileSync,
   skillPythonLauncherCommand,
   storeComponentDirectory,

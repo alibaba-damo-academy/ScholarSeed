@@ -41,23 +41,47 @@ const LITERATURE_ERROR_KEYS = {
 
 type OperationFailure = 'search.importFailed' | 'search.loadFailed' | 'search.reconnecting' | 'panel.error.nameRequired' | 'panel.error.createFailed' | 'panel.error.deleteFailed' | 'panel.error.queryRequired' | 'panel.error.searchFailed' | 'importTask.failed' | 'references.collectionsFailed' | 'references.noImportResult' | 'references.addFailed' | 'references.createFailed' | 'detail.loadFailed' | 'detail.saveFailed' | 'detail.fulltextFailed' | 'detail.uploadFailed' | 'detail.deleteAttachmentFailed' |  'batch.loadFailed' | 'batch.bulkFailed' | 'batch.importFailed' | 'batch.bibliographyFailed' | 'batch.deleteFailed' | 'batch.saveFailed' | 'relations.nothingToExport' | 'relations.exportFailed' | 'zotero.connectionFailed' | 'zotero.importFailed' | 'pdfImport.onlyPdf' | 'pdfImport.parseFailed'
 export interface LiteratureErrorMessage {
-  key: typeof LITERATURE_ERROR_KEYS[keyof typeof LITERATURE_ERROR_KEYS] | OperationFailure | 'panel.error.updateFailed'
+  key: typeof LITERATURE_ERROR_KEYS[keyof typeof LITERATURE_ERROR_KEYS] | OperationFailure | FulltextFailureKey | 'panel.error.updateFailed'
   detail?: string
 }
 
-/** Translate known product failures; preserve unknown upstream diagnostics verbatim. */
+/** Translate known failures and use the operation fallback for unknown diagnostics. */
 export function literatureErrorMessage(
   code: string | undefined,
-  detail: string | undefined,
+  _detail: string | undefined,
   fallback: OperationFailure | 'panel.error.updateFailed'
 ): LiteratureErrorMessage {
   if (code && Object.prototype.hasOwnProperty.call(LITERATURE_ERROR_KEYS, code)) {
     return { key: LITERATURE_ERROR_KEYS[code as keyof typeof LITERATURE_ERROR_KEYS] }
   }
-  const diagnostic = code && code !== 'REQUEST_FAILED'
-    ? detail && detail !== code ? `${code}: ${detail}` : detail || code
-    : detail || undefined
-  return { key: fallback, detail: diagnostic }
+  return { key: fallback, detail: undefined }
+}
+
+/**
+ * 「获取全文」只允许三种结果, 文案固定 (产品口径):
+ * 未找到全文 / Not found、无法访问 / Unable to access、请求被限流 / Rate limited。
+ *
+ * serve 侧两条腿 (arXiv / DOI) 共用 `service/literature/service/outcome.py` 的三个码, 所以
+ * 这里只认这三个。任何未知码 —— 前置校验失败 (标识无效/缺标识)、渲染层自己的网络错误、
+ * 以后新增的服务端码 —— 一律落到「未找到全文」: 宁可少说, 也不能把原始 code 或服务端中文
+ * 诊断直接甩给用户, 否则这条链路的报错就不止三种了。
+ */
+const FULLTEXT_FAILURE_KEYS = {
+  FULLTEXT_NO_ACCESS: 'detail.fulltextNoAccess',
+  FULLTEXT_RATE_LIMITED: 'detail.fulltextRateLimited'
+} as const
+
+export const FULLTEXT_NOT_FOUND_KEY = 'detail.fulltextNotFound'
+
+export type FulltextFailureKey =
+  | typeof FULLTEXT_NOT_FOUND_KEY
+  | (typeof FULLTEXT_FAILURE_KEYS)[keyof typeof FULLTEXT_FAILURE_KEYS]
+
+/** Map a full-text failure code onto the only three messages this UI may show. */
+export function fulltextFailureMessageKey(code: string | null | undefined): FulltextFailureKey {
+  if (code && Object.prototype.hasOwnProperty.call(FULLTEXT_FAILURE_KEYS, code))
+    return FULLTEXT_FAILURE_KEYS[code as keyof typeof FULLTEXT_FAILURE_KEYS]
+  return FULLTEXT_NOT_FOUND_KEY
 }
 
 /**

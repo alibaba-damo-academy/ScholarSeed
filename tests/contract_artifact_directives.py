@@ -224,5 +224,37 @@ class DeclarationContract(unittest.TestCase):
         self.assertEqual(events[2].correlation_id, "command")
 
 
+class WorkspaceWatchIsolation(unittest.IsolatedAsyncioTestCase):
+    async def test_concurrent_threads_do_not_attribute_same_workspace_file_to_each_other(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="shared-watch-") as directory:
+            workspace = Path(directory)
+            watcher = WorkspaceWatch(AsyncMock(return_value={}), lambda message: None)
+            targets = [
+                SimpleNamespace(
+                    thread_id=thread_id,
+                    request=CodexSessionOpenRequest(
+                        request_id=thread_id, runtime_id="codex", cwd=workspace
+                    ),
+                    attached_generation=1,
+                    fs_watch_id="",
+                    turn_done=asyncio.get_running_loop().create_future(),
+                    watched_paths={},
+                )
+                for thread_id in ("thread-a", "thread-b")
+            ]
+            for target in targets:
+                await watcher.open(target, 1)
+                await watcher.begin_turn(target)
+            (workspace / "result.py").write_text("print('done')\n")
+            for target in targets:
+                watcher.changed(
+                    {"watchId": target.fs_watch_id, "changedPaths": [str(workspace / "result.py")]}
+                )
+                await watcher.finish_turn(target)
+                self.assertEqual(target.watched_paths, {})
+
+
 if __name__ == "__main__":
     unittest.main()

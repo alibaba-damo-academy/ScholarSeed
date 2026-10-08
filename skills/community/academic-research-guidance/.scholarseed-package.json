@@ -1,0 +1,30 @@
+{
+  "dependencies": {},
+  "files": [
+    {
+      "mode": 420,
+      "path": "SKILL.md",
+      "sha256": "e12bac76f991ab27475e182851797f91f1d9e434b9c487efedaff7536bf28608",
+      "size": 3294
+    },
+    {
+      "mode": 420,
+      "path": "references/clarification.md",
+      "sha256": "f30f33fcc55585a2fe9d6b3f3e13cf68b107a8e5681d2b2983203293fa5d0799",
+      "size": 9271
+    },
+    {
+      "mode": 420,
+      "path": "references/evidence.md",
+      "sha256": "f85be7cb9fd4fa261676188198f5e81cf6ea633a289c49f8da5240c6bc7a326b",
+      "size": 534
+    }
+  ],
+  "name": "academic-research-guidance",
+  "schema": 1,
+  "source": {
+    "kind": "directory"
+  },
+  "source_document_sha256": "e12bac76f991ab27475e182851797f91f1d9e434b9c487efedaff7536bf28608",
+  "version": "2026.9.29"
+}

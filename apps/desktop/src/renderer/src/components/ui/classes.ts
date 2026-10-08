@@ -325,7 +325,7 @@ const CHECKBOX_MARK_CLASS_NAME =
 const RADIO_BASE_CLASS_NAME =
   'inline-flex min-w-0 min-h-[var(--vds-radio-size)] items-center gap-[var(--vds-space-2)] border-0 bg-transparent p-0 text-left [font-family:var(--vds-font-main)] text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)] cursor-pointer disabled:cursor-not-allowed disabled:text-[var(--vds-text-disabled)] disabled:opacity-50 focus-visible:outline-none'
 const RADIO_DOT_CLASS_NAME =
-  'relative inline-grid flex-none place-items-center size-[var(--vds-radio-size)] rounded-[var(--vds-radius-circle)] border-solid border-[var(--vds-control-border)] bg-[var(--vds-bg-white-default)] [border-width:var(--vds-border-width-2)] transition-[background-color,border-color,box-shadow] duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)] after:size-[6px] after:rounded-[var(--vds-radius-circle)] after:bg-[var(--vds-bg-white-default)] after:content-[""] after:opacity-0 after:transition-opacity after:duration-[var(--vds-duration-fast)] after:ease-[var(--vds-ease-standard)] group-hover:border-[var(--vds-control-border)] group-focus-visible:shadow-none group-disabled:border-[var(--vds-control-border)] group-disabled:bg-[var(--vds-bg-white-default)] group-[.vds-radio--checked]:border-[var(--vds-brand-bg-default)] group-[.vds-radio--checked]:bg-[var(--vds-bg-white-default)] group-[.vds-radio--checked]:shadow-[inset_0_0_0_2px_var(--vds-brand-bg-default)] group-[.vds-radio--checked]:after:opacity-100 group-[.vds-radio--checked]:group-hover:border-[var(--vds-brand-bg-default)] group-[.vds-radio--checked]:group-focus-visible:border-[var(--vds-brand-bg-default)]'
+  'relative inline-grid flex-none place-items-center size-[var(--vds-radio-size)] rounded-[var(--vds-radius-circle)] border-solid border-[var(--vds-control-border)] bg-[var(--vds-bg-white-default)] [border-width:var(--vds-border-width-2)] transition-[background-color,border-color] duration-[var(--vds-duration-fast)] ease-[var(--vds-ease-standard)] after:block after:size-[6px] after:rounded-[var(--vds-radius-circle)] after:bg-[var(--vds-bg-white-default)] after:content-[""] after:opacity-0 after:transition-opacity after:duration-[var(--vds-duration-fast)] after:ease-[var(--vds-ease-standard)] group-hover:border-[var(--vds-control-border)] group-focus-visible:shadow-none group-disabled:border-[var(--vds-control-border)] group-disabled:bg-[var(--vds-bg-white-default)] group-[.vds-radio--checked]:border-[var(--vds-brand-bg-default)] group-[.vds-radio--checked]:bg-[var(--vds-brand-bg-default)] group-[.vds-radio--checked]:after:opacity-100 group-[.vds-radio--checked]:group-hover:border-[var(--vds-brand-bg-default)] group-[.vds-radio--checked]:group-focus-visible:border-[var(--vds-brand-bg-default)]'
 const RADIO_GROUP_BASE_CLASS_NAME =
   'flex min-w-0 gap-[var(--vds-space-3)] aria-disabled:cursor-default'
 const RADIO_GROUP_ORIENTATION_CLASS_NAMES: Record<
@@ -407,11 +407,11 @@ const SHEET_BASE_CLASS_NAME =
   'fixed z-[var(--vds-sheet-z-index)] flex max-h-full max-w-full flex-col gap-[var(--vds-sheet-gap)] overflow-auto border border-solid border-[var(--vds-control-border)] bg-[var(--vds-surface-raised)] p-[var(--vds-sheet-padding)] text-[var(--vds-text-primary)] shadow-[var(--vds-sheet-shadow)] focus:shadow-[var(--vds-focus-ring)]'
 const SHEET_SIDE_CLASS_NAMES: Record<SheetSide, string> = {
   right:
-    '[top:0] [right:0] [bottom:0] w-[min(var(--vds-sheet-side-width),100%)] border-r-0',
-  left: '[top:0] [bottom:0] [left:0] w-[min(var(--vds-sheet-side-width),100%)] border-l-0',
-  top: '[top:0] [right:0] [left:0] min-h-[var(--vds-sheet-edge-height)] max-h-[var(--vds-sheet-edge-max-height)] border-t-0',
+    '[top:0] [right:0] [bottom:0] w-[min(var(--vds-sheet-side-width),100%)] border-r-0 data-[state=open]:animate-[vds-sheet-in-right_var(--vds-duration-normal)_var(--vds-ease-standard)_both] data-[state=closed]:pointer-events-none data-[state=closed]:animate-[vds-sheet-out-right_var(--vds-duration-normal)_var(--vds-ease-standard)_both] motion-reduce:animate-none',
+  left: '[top:0] [bottom:0] [left:0] w-[min(var(--vds-sheet-side-width),100%)] border-l-0 data-[state=open]:animate-[vds-sheet-in-left_var(--vds-duration-normal)_var(--vds-ease-standard)_both] data-[state=closed]:pointer-events-none data-[state=closed]:animate-[vds-sheet-out-left_var(--vds-duration-normal)_var(--vds-ease-standard)_both] motion-reduce:animate-none',
+  top: '[top:0] [right:0] [left:0] min-h-[var(--vds-sheet-edge-height)] max-h-[var(--vds-sheet-edge-max-height)] border-t-0 data-[state=open]:animate-[vds-sheet-in-top_var(--vds-duration-normal)_var(--vds-ease-standard)_both] data-[state=closed]:pointer-events-none data-[state=closed]:animate-[vds-sheet-out-top_var(--vds-duration-normal)_var(--vds-ease-standard)_both] motion-reduce:animate-none',
   bottom:
-    '[right:0] [bottom:0] [left:0] min-h-[var(--vds-sheet-edge-height)] max-h-[var(--vds-sheet-edge-max-height)] border-b-0'
+    '[right:0] [bottom:0] [left:0] min-h-[var(--vds-sheet-edge-height)] max-h-[var(--vds-sheet-edge-max-height)] border-b-0 data-[state=open]:animate-[vds-sheet-in-bottom_var(--vds-duration-normal)_var(--vds-ease-standard)_both] data-[state=closed]:pointer-events-none data-[state=closed]:animate-[vds-sheet-out-bottom_var(--vds-duration-normal)_var(--vds-ease-standard)_both] motion-reduce:animate-none'
 }
 const DRAWER_SIDE_CLASS_NAMES: Record<SheetSide, string> = {
   left: 'w-[min(var(--vds-drawer-side-width),100%)] rounded-none',
@@ -461,9 +461,9 @@ const ACCORDION_BASE_CLASS_NAME = 'grid min-w-0 gap-[var(--vds-accordion-gap)]'
 const ACCORDION_ITEM_CLASS_NAME =
   'overflow-hidden rounded-[var(--vds-accordion-radius)] [border:var(--vds-border-width-1)_solid_var(--vds-border-default)] bg-[var(--vds-surface-raised)]'
 const ACCORDION_TRIGGER_CLASS_NAME =
-  'flex min-h-[var(--vds-control-height-md)] w-full items-center justify-between border-0 bg-transparent [padding:var(--vds-accordion-trigger-padding)] text-left [font:inherit] [font-weight:500] text-[var(--vds-text-primary)] cursor-pointer hover:not-disabled:bg-[var(--vds-surface-hover)] focus-visible:outline-none focus-visible:shadow-[inset_var(--vds-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)] after:size-[var(--vds-accordion-chevron-size)] after:rotate-45 after:[border-right:var(--vds-border-width-2)_solid_currentColor] after:[border-bottom:var(--vds-border-width-2)_solid_currentColor] after:content-[\"\"] after:transition-transform after:duration-[320ms] after:ease-[cubic-bezier(0.22,1,0.36,1)] data-[state=open]:after:rotate-[225deg]'
+  'group/accordion-trigger flex min-h-[var(--vds-control-height-md)] w-full items-center justify-between border-0 bg-transparent [padding:var(--vds-accordion-trigger-padding)] text-left font-normal text-[var(--vds-text-primary)] cursor-pointer hover:not-disabled:bg-[var(--vds-other-overlay-1)] focus-visible:outline-none focus-visible:shadow-[inset_var(--vds-focus-ring)] disabled:cursor-not-allowed disabled:opacity-[var(--vds-opacity-disabled)]'
 const ACCORDION_CONTENT_CLASS_NAME =
-  'group/accordion-content grid [grid-template-rows:1fr] overflow-hidden [border-top:var(--vds-border-width-1)_solid_var(--vds-border-default)] [padding:var(--vds-accordion-content-padding)] text-[var(--vds-text-secondary)] opacity-100 transition-[grid-template-rows,opacity,padding-block] duration-[320ms,260ms,320ms] ease-[cubic-bezier(0.22,1,0.36,1),ease,cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:[grid-template-rows:0fr] data-[state=closed]:[border-top-color:transparent] data-[state=closed]:[padding-block:0] data-[state=closed]:opacity-0 data-[state=closed]:pointer-events-none'
+  'group/accordion-content grid [grid-template-rows:1fr] overflow-hidden [border-top:var(--vds-border-width-1)_solid_var(--vds-border-default)] [padding:var(--vds-accordion-content-padding)] text-[var(--vds-text-tertiary)] opacity-100 transition-[grid-template-rows,opacity,padding-block] duration-[320ms,260ms,320ms] ease-[cubic-bezier(0.22,1,0.36,1),ease,cubic-bezier(0.22,1,0.36,1)] data-[state=closed]:[grid-template-rows:0fr] data-[state=closed]:border-t-0 data-[state=closed]:[padding-block:0] data-[state=closed]:opacity-0 data-[state=closed]:pointer-events-none'
 const ACCORDION_CONTENT_INNER_CLASS_NAME =
   'min-h-0 overflow-hidden translate-y-0 transition-transform duration-[320ms] ease-[cubic-bezier(0.22,1,0.36,1)] group-data-[state=closed]/accordion-content:-translate-y-1.5'
 const TOGGLE_BASE_CLASS_NAME =
@@ -1781,9 +1781,14 @@ export function tooltipStyleClassName(): string {
 }
 
 export const alertIconClassName =
-  'vds-alert__icon mt-px inline-flex size-[var(--vds-alert-icon-size)] flex-none items-center justify-center text-[length:var(--vds-alert-icon-size)] leading-none text-[var(--vds-alert-icon-color)]'
+  'vds-alert__icon inline-flex size-[var(--vds-alert-icon-size)] flex-none items-center justify-center text-[length:var(--vds-alert-icon-size)] leading-none text-[var(--vds-alert-icon-color)]'
+export const alertStackedClassName =
+  'vds-alert--stacked !flex-col !gap-[var(--vds-space-2)]'
+export const alertStackedHeaderClassName =
+  'vds-alert__header flex w-full min-w-0 items-center gap-[var(--vds-space-half)]'
+export const alertStackedBodyClassName = 'vds-alert__body w-full min-w-0'
 export const alertContentClassName =
-  'vds-alert__content grid min-w-0 flex-1 auto-rows-min gap-0.5'
+  'vds-alert__content grid min-h-[var(--vds-alert-icon-size)] min-w-0 flex-1 content-center auto-rows-min gap-0.5'
 export const alertTitleClassName =
   'vds-alert__title m-0 text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-primary)]'
 export const alertDescriptionClassName =

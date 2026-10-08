@@ -13,6 +13,49 @@ export interface ReviewDraftChoice {
   expectedDiskRevision: string | null
 }
 
+export enum ReviewUndoSource {
+  Candidate = 'candidate',
+  Memory = 'memory'
+}
+
+export function resolveReviewAction(
+  action: ResourceReviewAction,
+  _member: ResourceReviewBatchMember,
+  _expectedDiskRevision: string | null
+): ResourceReviewAction {
+  return action
+}
+
+export function resolveExpectedDiskRevision(
+  member: ResourceReviewBatchMember,
+  currentRevision: string | null | undefined,
+  sessionRevision: string | null | undefined
+): string | null {
+  return currentRevision ?? sessionRevision ?? member.candidate_revision
+}
+
+export function shouldSaveReviewDraft(action: ResourceReviewAction, dirty: boolean): boolean {
+  return action === 'revise' && dirty
+}
+
+export function shouldRestoreReviewCandidate(
+  choice: ReviewDraftChoice | null,
+  member: ResourceReviewBatchMember
+): boolean {
+  return choice?.action === 'revise'
+    && choice.expectedDiskRevision !== member.candidate_revision
+}
+
+export function resolveReviewUndoSource(
+  choice: ReviewDraftChoice | null,
+  member: ResourceReviewBatchMember,
+  dirty: boolean,
+  currentRevision: string | null
+): ReviewUndoSource | null {
+  if (currentRevision !== member.candidate_revision || shouldRestoreReviewCandidate(choice, member)) return ReviewUndoSource.Candidate
+  return dirty ? ReviewUndoSource.Memory : null
+}
+
 function batchKey(project: string, batchId: string): string {
   return `${project}\0${batchId}`
 }
@@ -32,10 +75,12 @@ export class ReviewDraftStore {
       if (
         !member
         || member.review_id !== choice.reviewId
-        || member.pending_revision !== choice.pendingRevision
         || member.candidate_revision !== choice.candidateRevision
       ) {
         choices.delete(fileId)
+        changed = true
+      } else if (member.pending_revision !== choice.pendingRevision) {
+        choices.set(fileId, { ...choice, pendingRevision: member.pending_revision })
         changed = true
       }
     }
@@ -81,6 +126,14 @@ export class ReviewDraftStore {
 
   clearBatch(project: string, batchId: string): void {
     if (this.batches.delete(batchKey(project, batchId))) this.emit()
+  }
+
+  clearChoice(project: string, batchId: string, fileId: string): void {
+    const key = batchKey(project, batchId)
+    const choices = this.batches.get(key)
+    if (!choices?.delete(fileId)) return
+    if (choices.size === 0) this.batches.delete(key)
+    this.emit()
   }
 
   decidedCount(project: string, batchId: string): number {

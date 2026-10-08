@@ -11,7 +11,7 @@ import { LiteratureResults, LiteratureResultTab, literatureResultArtifacts } fro
 import { LiteratureReviewCard } from './Review'
 import { LITERATURE_RESULT_PREFIX } from '../workbench/tabs'
 import { LiteratureSearchTab } from './Search'
-import { literatureRetrievalAuthorization, literatureReviewInteraction } from './interaction'
+import { literatureRetrievalAuthorization, literatureReviewInteraction, preciseFulltextSubsetAuthorization } from './interaction'
 import { LiteratureNotesPanel, LiteratureNotesTitle } from './ReaderNotes'
 import { LITERATURE_NOTES_PANEL_ID, literatureIdFromDocument } from './note'
 import { reviewSupersessionKey, searchSupersessionKey } from './projection'
@@ -58,6 +58,6 @@ export function literatureFeature(): FeatureModule {
       type: LITERATURE_REFERENCES_CARD,
       render: ({ content }) => <LiteratureReferences content={content} />
     }],
-    interactionPolicies: [literatureRetrievalAuthorization, literatureReviewInteraction]
+    interactionPolicies: [preciseFulltextSubsetAuthorization, literatureRetrievalAuthorization, literatureReviewInteraction]
   }
 }

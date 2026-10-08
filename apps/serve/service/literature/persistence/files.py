@@ -22,6 +22,7 @@ from service.platform.storage import NOFOLLOW, NONBLOCK, canonical_root, open_di
 BATCH_NOT_OPEN = "literature_file_batch_not_open"
 INVALID_NAME = "literature_attachment_name_invalid"
 INVALID_RELATIVE_PATH = "literature_relative_path_invalid"
+ROOT_WORKSPACE = "."
 # 修订号词法的唯一属主: 附件行、CAS 的 If-Match 与全文索引缓存的键都用它。
 REVISION_PREFIX = "sha256:"
 T = TypeVar("T")
@@ -107,6 +108,23 @@ def scoped_relative(*values: str) -> str:
     if not path.parts:
         raise ValueError(INVALID_RELATIVE_PATH)
     return str(path)
+
+
+def scoped_workspace(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(INVALID_RELATIVE_PATH)
+    if Path(value) == Path(ROOT_WORKSPACE):
+        return ROOT_WORKSPACE
+    return scoped_relative(value)
+
+
+def scoped_workspace_path(workspace: str, *values: str) -> str:
+    relative = scoped_workspace(workspace)
+    return (
+        scoped_relative(*values)
+        if relative == ROOT_WORKSPACE
+        else scoped_relative(relative, *values)
+    )
 
 
 def scoped_parent(value: str) -> str:

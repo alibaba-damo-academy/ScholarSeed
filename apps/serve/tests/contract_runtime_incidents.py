@@ -38,6 +38,7 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRetryability,
 )
 from scholarseed_runtime.contract.input import InputItem, InputKind, TurnInput
+from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
 from service.capabilities.service.skills import SkillCatalog
 from service.chat.active import RUNTIME_ID
 from service.chat.constants import (
@@ -175,6 +176,39 @@ class _EvidenceControl:
 
 
 class RuntimeIncidentContract(unittest.IsolatedAsyncioTestCase):
+    async def test_started_permission_uses_submission_not_latest_selection(self) -> None:
+        self.catalog.set_policy(PRODUCT_SESSION_ID, OWNER, "bypassPermissions")
+        await self.emit(RuntimeEventKind.TURN_STARTED, payload={PERMISSION_MODE_KEY: "ask"})
+        self.assertEqual(self.live.applied_permission_mode, "ask")
+
+    async def test_started_permission_preserves_confirmed_live_switch(self) -> None:
+        self.live.applied_permission_mode = "safe_auto"
+        self.live.applied_permission_turn_id = VENDOR_TURN_ID
+        await self.emit(RuntimeEventKind.TURN_STARTED, payload={PERMISSION_MODE_KEY: "ask"})
+        self.assertEqual(self.live.applied_permission_mode, "safe_auto")
+
+    async def test_permission_continuation_rejects_changed_origin(self) -> None:
+        self.live.last_submission_id = "permission-submission"
+        self.catalog.set_policy(PRODUCT_SESSION_ID, OWNER, "ask")
+        service = TurnService({PRODUCT_SESSION_ID: self.live}, self.logger)
+        for submission_id, generation, mode in (
+            ("other-submission", self.live.interrupt_generation, "ask"),
+            ("permission-submission", self.live.interrupt_generation + 1, "ask"),
+            ("permission-submission", self.live.interrupt_generation, "safe_auto"),
+        ):
+            with self.subTest(submission_id=submission_id, generation=generation, mode=mode):
+                result, status = await service.post(
+                    PRODUCT_SESSION_ID,
+                    {"input": [{"type": "text", "text": "continue"}]},
+                    side=False,
+                    expected_submission_id=submission_id,
+                    expected_interrupt_generation=generation,
+                    expected_permission_mode=mode,
+                )
+                self.assertEqual(status, 409)
+                self.assertFalse(result["ok"])
+                self.assertEqual(self.catalog.queued_messages(PRODUCT_SESSION_ID), ())
+
     async def asyncSetUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-incidents-")
         self.root = Path(self._temporary.name)

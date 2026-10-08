@@ -34,7 +34,8 @@
         "numeric",
         "author_year",
         "ieee",
-        "acm"
+        "acm",
+        "gbt7714_2025"
       ]
     },
     "bibliography_style": {

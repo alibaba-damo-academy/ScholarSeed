@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Iterator, Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.status import HTTP_404_NOT_FOUND
 
+from scholarseed_runtime.contract.input import InputKind
 from service.chat.constants import (
     RUNTIME_CAPABILITY_UNAVAILABLE,
     SESSION_LIST_PROJECT_REQUIRED_ERROR,
@@ -32,11 +34,17 @@ from service.chat.service.artifacts import (
     ARTIFACT_PATH_FORBIDDEN,
     ARTIFACT_REVISION_CONFLICT,
     ARTIFACT_TOO_LARGE,
+    ArtifactDocument,
     ArtifactReadError,
     ArtifactService,
 )
 from service.chat.service.events import EventService
-from service.chat.service.sessions import MCP_DIRECT_APPROVAL_REQUIRED, SessionService
+from service.chat.service.sessions import (
+    MCP_DIRECT_APPROVAL_REQUIRED,
+    SESSION_PERMISSION_CONTINUATION_TEXT,
+    PermissionApplication,
+    SessionService,
+)
 from service.chat.service.turns import TurnService
 from service.identity.service.skill_credentials import SkillCredentialService
 from service.identity.utils import bearer_or_cookie, request_owner_id, request_user_id
@@ -52,6 +60,42 @@ HTTP_PRECONDITION_FAILED = 412
 HTTP_PRECONDITION_REQUIRED = 428
 ARTIFACT_EDITABLE_HEADER = "X-ScholarSeed-Artifact-Editable"
 MCP_CONTROL_FAILED = "mcp_control_failed"
+PERMISSION_CONTINUATION_CONTEXT_FIELDS = (
+    "client_user_message_id",
+    "assistant_context_revision",
+    "active_document",
+    "selected_literature_ids",
+    "task_type",
+)
+
+
+def _document_chunks(stream: BinaryIO) -> Iterator[bytes]:
+    with stream:
+        while chunk := stream.read(UPLOAD_CHUNK_BYTES):
+            yield chunk
+
+
+def _artifact_response(document: ArtifactDocument, *, head: bool = False) -> Response:
+    headers = {
+        ARTIFACT_EDITABLE_HEADER: str(document.editable).lower(),
+        "ETag": f'"{document.revision}"',
+        "Content-Length": str(document.size),
+    }
+    if isinstance(document.body, bytes):
+        return Response(
+            content=b"" if head else document.body,
+            media_type=document.media_type,
+            headers=headers,
+        )
+    if head:
+        document.body.close()
+        return Response(media_type=document.media_type, headers=headers)
+    return StreamingResponse(
+        _document_chunks(document.body),
+        media_type=document.media_type,
+        headers=headers,
+        background=BackgroundTask(document.body.close),
+    )
 
 
 def _mcp_failure(error: Exception) -> JSONResponse:
@@ -330,7 +374,7 @@ def mount_session_routes(
             ARTIFACT_EDIT_UNAVAILABLE: HTTP_FORBIDDEN,
         }
         return JSONResponse(
-            {"ok": False, "error": error.code},
+            {"ok": False, "error": error.code, "detail": {"code": error.code}},
             status_code=status_by_code.get(error.code, HTTP_BAD_REQUEST),
         )
 
@@ -350,19 +394,10 @@ def mount_session_routes(
     )
     def artifact_raw(session_id: str, artifact_id: str) -> Response:
         try:
-            content, media_type, editable, revision = artifacts.read_document(
-                session_id, artifact_id
-            )
+            document = artifacts.open_document(session_id, artifact_id)
         except ArtifactReadError as error:
             return artifact_failure(error)
-        return Response(
-            content=content,
-            media_type=media_type,
-            headers={
-                ARTIFACT_EDITABLE_HEADER: str(editable).lower(),
-                "ETag": f'"{revision}"',
-            },
-        )
+        return _artifact_response(document)
 
     @app.head(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/raw",
@@ -370,18 +405,10 @@ def mount_session_routes(
     )
     def artifact_raw_revision(session_id: str, artifact_id: str) -> Response:
         try:
-            _content, media_type, editable, revision = artifacts.read_document(
-                session_id, artifact_id
-            )
+            document = artifacts.open_document(session_id, artifact_id)
         except ArtifactReadError as error:
             return artifact_failure(error)
-        return Response(
-            media_type=media_type,
-            headers={
-                ARTIFACT_EDITABLE_HEADER: str(editable).lower(),
-                "ETag": f'"{revision}"',
-            },
-        )
+        return _artifact_response(document, head=True)
 
     @app.put(
         "/api/serve/sessions/{session_id}/artifacts/{artifact_id}/raw",
@@ -629,6 +656,24 @@ def mount_session_routes(
         )
         return _result(payload, status)
 
+    @app.post(
+        "/api/serve/sessions/{session_id}/recovery/check",
+        dependencies=session_guard,
+    )
+    async def check_recovery(session_id: str, request: Request) -> Any:
+        actor_id = request_user_id(request)
+        skill_environment = await credentials.environment(
+            actor_id,
+            bearer_or_cookie(request),
+        )
+        payload, status = await sessions.check_recovery(
+            session_id,
+            request_principal(request),
+            actor_id=actor_id,
+            skill_environment=skill_environment,
+        )
+        return _result(payload, status)
+
     @app.delete("/api/serve/sessions/{session_id}", dependencies=session_guard)
     async def delete_session(session_id: str, request: Request) -> Any:
         payload, status = await sessions.delete(session_id, request_principal(request))
@@ -681,11 +726,37 @@ def mount_session_routes(
 
     @app.post("/api/serve/sessions/{session_id}/mode", dependencies=session_guard)
     async def set_mode(session_id: str, request: Request) -> Any:
+        body = await _json(request)
         payload, status = await sessions.set_mode(
             session_id,
             request_principal(request),
-            str((await _json(request)).get("mode") or ""),
+            str(body.get("mode") or ""),
+            application=str(body.get("application") or PermissionApplication.AUTO.value),
         )
+        continuation = payload.pop("continuation", None)
+        if status == HTTP_OK and continuation:
+            context = body.get("continuation_context")
+            context = context if isinstance(context, Mapping) else {}
+            result, result_status = await turns.post(
+                session_id,
+                {
+                    "input": [
+                        {"type": InputKind.TEXT.value, "text": SESSION_PERMISSION_CONTINUATION_TEXT}
+                    ],
+                    **{
+                        key: context[key]
+                        for key in PERMISSION_CONTINUATION_CONTEXT_FIELDS
+                        if key in context
+                    },
+                },
+                side=False,
+                expected_submission_id=continuation["submission_id"],
+                expected_interrupt_generation=continuation["interrupt_generation"],
+                expected_permission_mode=str(payload["mode"]),
+            )
+            payload["continued"] = bool(result.get("ok"))
+            if result_status >= HTTP_BAD_REQUEST:
+                return _result({**payload, **result}, result_status)
         return _result(payload, status)
 
     @app.api_route(

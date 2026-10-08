@@ -1,4 +1,26 @@
 {
+  "batchSync": {
+    "title": "同步元数据",
+    "progressTitle": "同步进度",
+    "resultTitle": "同步结果",
+    "description": "按 DOI 或 arXiv 编号自动同步；仅标题、无标识或正在单篇同步的文献将跳过，可在详情页同步并确认。关闭此面板不会中断任务；退出应用后任务不保留。",
+    "progress": "已处理 {{completed}} / {{total}} 篇",
+    "completed": "同步结束，已处理 {{completed}} / {{total}} 篇",
+    "cancelling": "正在停止，当前文献完成后不再启动下一篇…",
+    "pending": "等待中",
+    "running": "同步中",
+    "success": "成功",
+    "missing": "未命中",
+    "failed": "失败",
+    "quota": "限流",
+    "skipped": "跳过",
+    "deferred": "限流暂缓",
+    "cancelled": "已取消",
+    "cancel": "停止同步",
+    "retry": "重试失败和未完成项",
+    "startSelected": "同步所选 {{count}} 篇",
+    "close": "关闭"
+  },
   "navigation": {
     "overview": "文献全览",
     "project": "文献库",
@@ -125,7 +147,6 @@
     "projects": "项目归属"
   },
   "list": {
-    "noProject": "未关联项目",
     "moreProjects_other": "另有 {{count}} 个项目：{{names}}",
     "moreTags_other": "另有 {{count}} 个标签：{{names}}",
     "newImport": "本次新导入",
@@ -147,7 +168,15 @@
     "searchPlaceholder": "标题、作者、年份",
     "import": "导入",
     "page_other": "第 {{page}}/{{pageCount}} 页 · 共 {{count}} 篇",
-    "importTask": "导入任务"
+    "importTask": "导入任务",
+    "rowMenu": {
+      "viewPdf": "查看 PDF",
+      "viewInfo": "查看基本信息",
+      "addNote": "添加笔记",
+      "addAttachment": "添加附件",
+      "removeDescription": "确定将“{{title}}”移出当前项目吗？文献仍保留在文献全览中。",
+      "deleteDescription": "确定要删除“{{title}}”吗？此操作无法撤销。"
+    }
   },
   "zotero": {
     "title": "从 Zotero Desktop 导入",
@@ -478,6 +507,9 @@
     "loadFailed": "加载详情失败",
     "saveFailed": "保存失败",
     "fulltextFailed": "获取全文失败",
+    "fulltextNotFound": "未找到全文",
+    "fulltextNoAccess": "无法访问",
+    "fulltextRateLimited": "请求被限流",
     "uploadFailed": "上传失败",
     "deleteAttachmentFailed": "删除附件失败",
     "sync": {
@@ -713,6 +745,23 @@
       "issueAffected": "受影响内容：{{content}}",
       "interactionTitle": "综述输出设置",
       "authorizationTitle": "确认检索结果",
+      "authorizationReplyTitle": "用户授权读取文献",
+      "authorizationReplyGranted": "用户已授权 AI 读取本次检索到的文献全文，用于继续生成文献综述",
+      "authorizationReplyRejected": "暂不授权阅读文献全文。",
+      "authorization": {
+        "authorize": "一键授权",
+        "reject": "拒绝",
+        "authorizeDescription": "允许在本次任务和已展示文献范围内读取全文。",
+        "subsetHint": "将下载并阅读以下文献的全文：",
+        "subsetSelectAll": "全选",
+        "rejectDescription": "不读取全文，并停止本次全文处理。",
+        "preciseHeader": "精准检索授权",
+        "preciseQuestion": "是否允许下载、读取并使用已展示文献的全文作为证据？",
+        "reviewHeader": "综述检索授权",
+        "reviewQuestion": "是否允许读取已展示文献的全文，用于继续生成文献综述？",
+        "ideaHeader": "想法原文授权",
+        "ideaQuestion": "是否允许读取已展示文献的全文，用于生成有原文依据的研究想法？"
+      },
       "authorizationRejected": "已拒绝全文授权。本次任务已停止，未读取任何文献全文。",
       "interactionDefault": "采用默认设置：Markdown + 通用数字顺序制",
       "interactionDefaultLabel": "采用默认设置 · Markdown · 通用数字顺序制"

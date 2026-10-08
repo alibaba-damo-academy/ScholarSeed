@@ -11,7 +11,11 @@ from typing import Any, Literal, Mapping, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from service.literature.persistence.files import read_scoped_file, scoped_relative
+from service.literature.persistence.files import (
+    read_scoped_file,
+    scoped_workspace,
+    scoped_workspace_path,
+)
 from service.literature.service.metadata import parse_bibtex
 from service.literature.service.result import (
     AUTHORIZATION_ARTIFACT_PREFIX,
@@ -35,6 +39,14 @@ REVIEW_TITLE = 256
 REVIEW_CHECKS = 16
 REVIEW_ISSUES = 32
 REVIEW_CITATIONS = 100
+FULLTEXT_LIMITATION_REASONS = {
+    "not_in_paperhub": "全文来源暂未返回可下载文件，仅使用摘要证据",
+    "auth_failed": "全文服务认证失败",
+    "fetch_failed": "全文服务暂时不可用",
+    "extract_failed": "全文解析失败",
+    "too_large": "全文文件超过可处理大小限制",
+    "not_a_pdf": "全文格式无法解析",
+}
 YEAR_RANGE = re.compile(r"(?<!\d)((?:19|20)\d{2})\s*[—–-]\s*((?:19|20)\d{2})(?!\d)")
 QUERY = "01_input/query.json"
 REQUIREMENTS = "01_input/requirements.json"
@@ -203,7 +215,7 @@ class ReviewEvidenceLimitation(ReviewRecord):
 
 class ReviewOutput(ReviewRecord):
     format: Literal["latex_pdf", "markdown"] | None = None
-    citation_style: Literal["numeric", "author_year", "ieee", "acm"] | None = None
+    citation_style: Literal["numeric", "author_year", "ieee", "acm", "gbt7714_2025"] | None = None
     decided_by: Literal["user", "default"] | None = None
 
 
@@ -276,6 +288,11 @@ def _count(value: object) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _fulltext_limitation_reason(row: Mapping[str, Any]) -> str:
+    outcome = _text(row.get("outcome"))
+    return FULLTEXT_LIMITATION_REASONS.get(outcome, "未取得全文，只能支持题录或摘要层判断")
+
+
 def _strings(value: object, limit: int = REVIEW_CHILDREN) -> list[str]:
     return [_text(item) for item in value[:limit] if _text(item)] if isinstance(value, list) else []
 
@@ -287,7 +304,7 @@ def _load(
     hashes: dict[str, str] = {}
     files: list[ReviewFile] = []
     for name in dict.fromkeys(names):
-        relative = scoped_relative(workspace, name)
+        relative = scoped_workspace_path(workspace, name)
         try:
             raw = read_scoped_file(workdir, relative, REVIEW_FILE_BYTES)
         except FileNotFoundError:
@@ -690,7 +707,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
     if checkpoint not in {"outline", "result"}:
         raise ValueError("review_checkpoint_invalid")
     normalized_checkpoint = cast(Literal["outline", "result"], checkpoint)
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     values, hashes, files = _load(workdir, workspace, (*JSON_FILES, *DOCUMENT_FILES))
     query = values.get(QUERY, {})
     requirements = values.get(REQUIREMENTS, {})
@@ -730,7 +747,7 @@ def prepare_review(workdir: Path, workspace: str, checkpoint: str) -> PreparedRe
             ReviewEvidenceLimitation(
                 paper_id=paper_id,
                 title=_text(paper.get("title")) if isinstance(paper, dict) else "",
-                reason=_text(row.get("detail")) or "未取得全文，只能支持题录或摘要层判断",
+                reason=_fulltext_limitation_reason(row),
             )
         )
     generation = values.get(GENERATION, {})
@@ -895,13 +912,17 @@ def validate_review_checkpoint(
 ) -> dict[str, str]:
     """Bind one retrieval checkpoint to its launcher, status and exact artifacts."""
 
-    workspace = scoped_relative(workspace)
-    raw = read_scoped_file(workdir, scoped_relative(workspace, manifest), CHECKPOINT_FILE_BYTES)
+    workspace = scoped_workspace(workspace)
+    raw = read_scoped_file(
+        workdir, scoped_workspace_path(workspace, manifest), CHECKPOINT_FILE_BYTES
+    )
     if sha256(raw).hexdigest() != manifest_sha256:
         raise ValueError("review_checkpoint_manifest_changed")
     value = json.loads(raw)
     binding = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES
+        )
     )
     if (
         not isinstance(value, dict)
@@ -918,7 +939,9 @@ def validate_review_checkpoint(
     if stage_path != RETRIEVAL_STAGE_STATUS:
         raise ValueError("review_checkpoint_status_invalid")
     stage = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, stage_path), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, stage_path), CHECKPOINT_FILE_BYTES
+        )
     )
     if (
         stage.get("stage") != RETRIEVAL_STAGE
@@ -941,12 +964,12 @@ def validate_review_checkpoint(
         if item.get("path") != expected_path:
             raise ValueError("review_checkpoint_artifacts_invalid")
         artifact = read_scoped_file(
-            workdir, scoped_relative(workspace, expected_path), REVIEW_FILE_BYTES
+            workdir, scoped_workspace_path(workspace, expected_path), REVIEW_FILE_BYTES
         )
         digest = sha256(artifact).hexdigest()
         if digest != item.get("sha256"):
             raise ValueError("review_checkpoint_artifact_changed")
-        expected_hashes[scoped_relative(workspace, expected_path)] = digest
+        expected_hashes[scoped_workspace_path(workspace, expected_path)] = digest
     return expected_hashes
 
 
@@ -957,10 +980,10 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
     workspace itself is the identity, so a skill refresh cannot silently disable the gate.
     """
 
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     stage = json.loads(
         read_scoped_file(
-            workdir, scoped_relative(workspace, RETRIEVAL_STAGE_STATUS), CHECKPOINT_FILE_BYTES
+            workdir, scoped_workspace_path(workspace, RETRIEVAL_STAGE_STATUS), CHECKPOINT_FILE_BYTES
         )
     )
     if (
@@ -970,7 +993,9 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
     ):
         raise ValueError("review_checkpoint_status_invalid")
     binding = json.loads(
-        read_scoped_file(workdir, scoped_relative(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES)
+        read_scoped_file(
+            workdir, scoped_workspace_path(workspace, REVIEW_BINDING), CHECKPOINT_FILE_BYTES
+        )
     )
     if not isinstance(binding, dict):
         raise ValueError("review_checkpoint_identity_invalid")
@@ -983,7 +1008,7 @@ def review_retrieval_run(workdir: Path, workspace: str) -> str:
 
 def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> PreparedReviewSearch:
     """Project SLR retrieval artifacts into the existing saved-search card contract."""
-    workspace = scoped_relative(workspace)
+    workspace = scoped_workspace(workspace)
     names = (QUERY, REQUIREMENTS, METADATA, CORPUS, RETRIEVAL, FULLTEXT)
     values, hashes, files = _load(workdir, workspace, names)
     query = values.get(QUERY, {})
@@ -1028,7 +1053,7 @@ def prepare_review_search(workdir: Path, workspace: str, run_id: str) -> Prepare
     included = tuple(
         authorization_source(paper) for paper in papers if paper.decision == "included"
     )
-    corpus_path = scoped_relative(workspace, CORPUS)
+    corpus_path = scoped_workspace_path(workspace, CORPUS)
     return PreparedReviewSearch(card, tuple(files), included, hashes[corpus_path])
 
 

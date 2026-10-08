@@ -45,6 +45,6 @@ test('Markdown offers only registered citation URLs to the citation renderer', (
   const source = readFileSync(new URL('../../components/primitive/Markdown.tsx', import.meta.url), 'utf8')
   const anchor = source.slice(source.indexOf("a: ({ node: _node"), source.indexOf("img: ({ node: _node"))
 
-  assert.match(anchor, /isCitationUrl\(href\)/)
-  assert.match(anchor, /citationUrls\.has\(href\)/)
+  assert.match(anchor, /properties\[CITATION_MARKER\]/)
+  assert.doesNotMatch(anchor, /citationUrls\.has\(href\)/)
 })

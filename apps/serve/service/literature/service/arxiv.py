@@ -1,4 +1,9 @@
-"""Download PDF attachments from normalized arXiv identifiers."""
+"""Download PDF attachments from normalized arXiv identifiers.
+
+失败口径与 DOI 腿共用 ``outcome.py`` 的三类结果 (未找到全文 / 无法访问 / 请求被限流),
+所以这一层只负责「按状态取字节」, 不再自己发明一套 arXiv 专属失败码。标识本身不合法
+(``ARXIV_INVALID``) 不是获取失败, 保留原码。
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,12 @@ import httpx
 
 from service.literature.domain.model import MAX_IMPORT_BYTES
 from service.literature.service.extractor import InvalidPdfError, extract_pdf_metadata
+from service.literature.service.outcome import (
+    FULLTEXT_NO_ACCESS,
+    FULLTEXT_NOT_FOUND,
+    classify_status,
+    is_success,
+)
 
 ARXIV_PDF_ROOT = "https://arxiv.org/pdf"
 ARXIV_DOWNLOAD_TIMEOUT_SECONDS = 60.0
@@ -23,10 +34,6 @@ ARXIV_URL = re.compile(
 )
 
 ARXIV_INVALID = "ARXIV_INVALID"
-ARXIV_NOT_FOUND = "ARXIV_NOT_FOUND"
-ARXIV_DOWNLOAD_FAILED = "ARXIV_DOWNLOAD_FAILED"
-ARXIV_TOO_LARGE = "ARXIV_TOO_LARGE"
-ARXIV_INVALID_PDF = "ARXIV_INVALID_PDF"
 
 
 class ArxivDownloadError(ValueError):
@@ -52,8 +59,14 @@ def normalize_arxiv_id(value: str) -> str:
     return candidate
 
 
-def fetch_arxiv_pdf(value: str) -> tuple[str, bytes]:
-    """Fetch one bounded, valid PDF from arXiv's fixed PDF endpoint."""
+def fetch_arxiv_pdf(
+    value: str, *, transport: httpx.BaseTransport | None = None
+) -> tuple[str, bytes]:
+    """Fetch one bounded, valid PDF from arXiv's fixed PDF endpoint.
+
+    ``transport`` 只为离线契约测试存在; 产品路径不传, 端点始终是按校验过的标识拼出来的
+    固定地址。
+    """
 
     identifier = normalize_arxiv_id(value)
     url = f"{ARXIV_PDF_ROOT}/{identifier}.pdf"
@@ -66,35 +79,33 @@ def fetch_arxiv_pdf(value: str) -> tuple[str, bytes]:
             # not follow a caller-provided URL.
             follow_redirects=True,
             headers={"User-Agent": ARXIV_USER_AGENT},
+            transport=transport,
         ) as client:
             with client.stream("GET", url) as response:
-                # A 404 means arXiv has no PDF for this identifier, which the
-                # user can act on (fix the identifier or attach a local PDF);
-                # folding it into the transport failure would blame the network.
-                if response.status_code == 404:
-                    raise ArxivDownloadError(ARXIV_NOT_FOUND)
-                response.raise_for_status()
+                if not is_success(response.status_code):
+                    # 404 = arXiv 没有这个标识的 PDF; 401/403 = 要登录或付费; 429 = 限流。
+                    # 归类只由 outcome.classify_status 决定, 不在这里另写一套。
+                    raise ArxivDownloadError(classify_status(response.status_code))
                 for chunk in response.iter_bytes():
                     content.extend(chunk)
                     if len(content) > MAX_IMPORT_BYTES:
-                        raise ArxivDownloadError(ARXIV_TOO_LARGE)
+                        # 取得到但收不进库: 归「无法访问」, 不谎报成没有全文。
+                        raise ArxivDownloadError(FULLTEXT_NO_ACCESS)
     except ArxivDownloadError:
         raise
     except (httpx.HTTPError, OSError) as error:
-        raise ArxivDownloadError(ARXIV_DOWNLOAD_FAILED) from error
+        # 没有回应 (超时 / DNS / 连接被断) 与 404 同类: 用户能采取的行动是一样的。
+        raise ArxivDownloadError(FULLTEXT_NOT_FOUND) from error
     try:
         extract_pdf_metadata(bytes(content))
     except InvalidPdfError as error:
-        raise ArxivDownloadError(ARXIV_INVALID_PDF) from error
+        # arXiv 对取不到的 PDF 会回一个 200 的 HTML 说明页: 拿到的不是 PDF 就是取不到全文。
+        raise ArxivDownloadError(FULLTEXT_NO_ACCESS) from error
     return identifier, bytes(content)
 
 
 __all__ = [
-    "ARXIV_DOWNLOAD_FAILED",
     "ARXIV_INVALID",
-    "ARXIV_INVALID_PDF",
-    "ARXIV_NOT_FOUND",
-    "ARXIV_TOO_LARGE",
     "ArxivDownloadError",
     "fetch_arxiv_pdf",
     "normalize_arxiv_id",

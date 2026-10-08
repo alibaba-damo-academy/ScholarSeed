@@ -10,13 +10,17 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from acquire_result import (ACQUIRE_RESULT_RELATIVE, AcquireResultError, load_acquire_result,
+                            require_within_selection)
 from io_utils import atomic_write_json, atomic_write_text, read_json, utc_now
+from filesystem import canonical_path, filesystem_path, path_exists
 from platform_support import command_display
 from process_control import run_cancellable, ChildProcessCancelled
 from run_state import (initialize_run, read_state, update_status, increment_search_round,
                        record_report_review, complete_final_report)
 from stage_guard import (authorize_download, claim_stage, contained, digest,
                          require_run, release_stage, require_worker, cancel_stage, serialized)
+from task_binding import ACTIVATION_HINT, activation_request
 from validate_json import validate_data
 
 SKILL = Path(__file__).resolve().parent.parent
@@ -34,10 +38,16 @@ WEB_SEARCH_SKILL_NAME = "web-search"
 WEB_SEARCH_INVOKE_PARTS = ("scripts", "invoke.py")
 
 
+def with_task_activation(result: dict, run: Path) -> dict:
+    """Attach this run's lease activation request; the product lease lasts one turn."""
+    return {**result, "task_activation": activation_request(run),
+            "task_activation_hint": ACTIVATION_HINT}
+
+
 def web_search_invoke() -> str:
     """Absolute path to the sibling web-search skill's invoke.py, or '' when absent."""
     candidate = SKILL.parent.joinpath(WEB_SEARCH_SKILL_NAME, *WEB_SEARCH_INVOKE_PARTS)
-    return str(candidate) if candidate.is_file() else ""
+    return str(candidate) if filesystem_path(candidate).is_file() else ""
 
 
 def execute(script: str, arguments: list[str], *, environment=None) -> None:
@@ -53,7 +63,7 @@ def execute(script: str, arguments: list[str], *, environment=None) -> None:
 
 
 def start(work_dir: Path, request_file: Path, auto_delegated=False) -> dict:
-    request = request_file.read_text(encoding="utf-8")
+    request = filesystem_path(request_file).read_text(encoding="utf-8")
     if not request.strip():
         raise ValueError("request file is empty")
     run = initialize_run(work_dir, request)
@@ -152,7 +162,7 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
         atomic_write_json(contained(run, state["paths"]["intent"]), revised)
     intent = read_json(contained(run, state["paths"]["intent"]))
     previous_request_path = run / "search" / f"round-{state['search_round']:03d}" / "request.json"
-    previous_mode = read_json(previous_request_path).get("search_profile") if previous_request_path.exists() else None
+    previous_mode = read_json(previous_request_path).get("search_profile") if path_exists(previous_request_path) else None
     mode = profile or previous_mode or "balance"
     if mode not in {"fast_mock", "balance", "full"}:
         raise ValueError("new searches support fast_mock, balance, or full")
@@ -162,7 +172,7 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
         raise ValueError("max_results exceeds selected mode cap")
     count = min(count or cap or 20, cap) if cap else (count or 20)
     excluded = set()
-    for archived_selection in sorted((run / "iterations").glob("round-*/selection.json")):
+    for archived_selection in sorted(filesystem_path(run / "iterations").glob("round-*/selection.json")):
         # Only post-download review creates these archives, not pre-download refinement.
         archived = read_json(archived_selection)
         archived_metadata = read_json(contained(run, archived["metadata_path"]))
@@ -171,8 +181,8 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
     if review_value:
         review = read_json(contained(run, review_value))
         feedback = feedback if feedback is not None else review.get("feedback")
-    if feedback is None and state["status"] == "REFINEMENT_REQUESTED" and (run / "refinement-feedback.txt").exists():
-        feedback = (run / "refinement-feedback.txt").read_text(encoding="utf-8")
+    if feedback is None and state["status"] == "REFINEMENT_REQUESTED" and path_exists(run / "refinement-feedback.txt"):
+        feedback = filesystem_path((run / "refinement-feedback.txt")).read_text(encoding="utf-8")
     previous = state["paths"].get("latest_metadata")
     request = {"schema_version": "2.0",
                "run_id": state["run_id"], "round": state["search_round"] + 1,
@@ -200,16 +210,20 @@ def prepare_search(run: Path, intent_path: Path | None, profile: str | None,
     return result
 
 
+READING_TEXT_DIR = "work-reading"
+
+
 def stats(run: Path) -> dict:
     state = read_state(run)
     result = {"status": state["status"], "run_id": state["run_id"],
               "run_dir": str(run), "search_round": state["search_round"], "artifacts": state["paths"]}
     manifest_path = run / "downloads/manifest.json"
-    if manifest_path.exists():
+    if path_exists(manifest_path):
         from post_open_gate import verified_manifest_download
         manifest = read_json(manifest_path)
         counts = Counter(p.get("status", "unknown") for p in manifest["papers"])
         counts["verified_pdf"] = sum(verified_manifest_download(p, run) for p in manifest["papers"])
+        counts["managed"] = sum(p.get("storage") == "managed" for p in manifest["papers"])
         result["download_counts"] = dict(counts)
     metadata_path = state["paths"].get("latest_metadata")
     if metadata_path:
@@ -249,6 +263,7 @@ def download(run: Path, intervention_resolved=False, confirm_non_arxiv=False) ->
         route, skipped = route_selection(selected, metadata)
         if route["next_action"] == "run_open_download":
             require_download(run, selection, "open-download")
+            require_acquired_by_product(run, selected)
             execute("scripts/module_runner.py", ["--module", "open-download", "--input", selection,
                     "--output", manifest, "--run-dir", run], environment=environment)
         else:
@@ -275,6 +290,19 @@ def download(run: Path, intervention_resolved=False, confirm_non_arxiv=False) ->
     return stats(run)
 
 
+def require_acquired_by_product(run: Path, selection: dict) -> None:
+    """Only serve fetches full text, and only the host can relay what it acquired.
+
+    The record is checked here so a missing or widened relay fails before the batch is
+    reported; whether the bytes exist is re-verified by serve at the delivery checkpoint.
+    """
+    result = load_acquire_result(run)
+    selected = selection.get("selected_paper_ids")
+    if not isinstance(selected, list):
+        raise ValueError("selection needs selected_paper_ids")
+    require_within_selection(result, [str(paper_id) for paper_id in selected])
+
+
 @serialized
 def prepare_reading(run: Path, source: str) -> dict:
     if source == "auto_delegated" and not read_json(run / "workflow.json")["auto_delegated"]:
@@ -287,26 +315,35 @@ def prepare_reading(run: Path, source: str) -> dict:
     if any(p["status"] in {"failed", "action_required", "not_attempted"} for p in manifest["papers"]):
         raise ValueError("resolve, retry, or explicitly skip unsuccessful downloads before reading")
     from post_open_gate import verified_manifest_download
-    pdfs = [contained(run, p["file_path"]) for p in manifest["papers"] if verified_manifest_download(p, run)]
-    if not pdfs:
+    verified = [p for p in manifest["papers"] if verified_manifest_download(p, run)]
+    if not verified:
         outcome = {"schema_version": "1.0", "run_id": state["run_id"],
                    "search_round": state["search_round"], "manifest_sha256": digest(run / "downloads/manifest.json"),
                    "papers": [{"paper_id": p["paper_id"], "file_path": p.get("file_path"),
-                               "status": "unreadable", "reason": "No existing run-contained PDF with valid signature"}
+                               "status": "unreadable",
+                               "reason": "No full text is verified by the product for this turn"}
                               for p in manifest["papers"] if p["status"] == "downloaded"]}
         atomic_write_json(run / "reading-outcome.json", outcome)
-        for name in ("report.md", "paper_summary.md"):
-            atomic_write_text(run / name, "# No readable full text\n\nNo verified PDF was available for reading. No full-text findings are claimed.\n")
+        for name in ("read_report.md", "paper_summary.md"):
+            atomic_write_text(run / name, "# No readable full text\n\nNo verified full text was available for reading. No full-text findings are claimed.\n")
         validate_reading(run)
-        update_status(run, "REPORT_REVIEW_PENDING", "No verified PDFs; limitations recorded", {
+        update_status(run, "REPORT_REVIEW_PENDING", "No verified full texts; limitations recorded", {
             "download_manifest": "downloads/manifest.json", "reading_outcome": "reading-outcome.json",
-            "report": "report.md", "paper_summary": "paper_summary.md"})
+            "report": "read_report.md", "paper_summary": "paper_summary.md"})
         return {**stats(run), "next_action": "finish_or_refine"}
-    lease = claim_stage(run, "reading", state["search_round"], [run / "downloads/manifest.json", run / "intent.json", *pdfs])
-    update_status(run, "READING", "Reading confirmed", {"download_manifest": "downloads/manifest.json"})
+    text_dir = run / READING_TEXT_DIR
+    filesystem_path(text_dir).mkdir(parents=True, exist_ok=True)
+    bindings = [run / "downloads/manifest.json", run / "intent.json"]
+    if filesystem_path(run / ACQUIRE_RESULT_RELATIVE).is_file():
+        bindings.append(run / ACQUIRE_RESULT_RELATIVE)
+    bindings.extend(contained(run, p["file_path"]) for p in verified if p.get("file_path"))
+    lease = claim_stage(run, "reading", state["search_round"], bindings)
+    update_status(run, "READING", "Reading under the product full-text authorization",
+                  {"download_manifest": "downloads/manifest.json"})
     return handoff(run, lease, "modules/pdf-reader/PDF_READER_AGENT.md", {
         "SKILL_DIR": str(SKILL), "RUN_DIR": str(run), "manifest": str(run / "downloads/manifest.json"),
-        **{name: str(run / name) for name in ("report.md", "paper_summary.md", "reading-outcome.json")},
+        "reading_dir": str(text_dir),
+        **{name: str(run / name) for name in ("read_report.md", "paper_summary.md", "reading-outcome.json")},
     })
 
 
@@ -318,22 +355,31 @@ def validate_reading(run: Path) -> dict:
     if (outcome["run_id"] != state["run_id"] or outcome["search_round"] != state["search_round"]
             or outcome["manifest_sha256"] != digest(manifest_path)):
         raise ValueError("reading outcome is stale or bound to a different manifest")
-    expected = {(p["paper_id"], p.get("file_path")) for p in read_json(manifest_path)["papers"]
-                if p["status"] == "downloaded"}
-    actual = {(p["paper_id"], p.get("file_path")) for p in outcome["papers"]}
-    if expected != actual or len(actual) != len(outcome["papers"]):
+    from post_open_gate import verified_manifest_download
+    manifest_papers = read_json(manifest_path)["papers"]
+    verified = {p["paper_id"] for p in manifest_papers if verified_manifest_download(p, run)}
+    expected = {p["paper_id"] for p in manifest_papers if p["status"] == "downloaded"}
+    actual = [p["paper_id"] for p in outcome["papers"]]
+    if expected != set(actual) or len(actual) != len(set(actual)):
         raise ValueError("reading outcome does not cover exactly the downloaded papers")
-    for name in ("report.md", "paper_summary.md"):
-        if not contained(run, name).read_text(encoding="utf-8").strip():
+    for name in ("read_report.md", "paper_summary.md"):
+        if not filesystem_path(contained(run, name)).read_text(encoding="utf-8").strip():
             raise ValueError(f"{name} must be nonempty")
-    summaries = (run / "paper_summary.md").read_text(encoding="utf-8")
+    summaries = filesystem_path((run / "paper_summary.md")).read_text(encoding="utf-8")
     readable = sum(p["status"] == "readable" for p in outcome["papers"])
     for paper in outcome["papers"]:
-        if paper["status"] == "readable":
-            path = contained(run, paper["file_path"])
-            with path.open("rb") as handle:
-                if handle.read(5) != b"%PDF-":
-                    raise ValueError("readable outcome requires a valid existing PDF")
+        if paper["status"] != "readable":
+            continue
+        if paper["paper_id"] not in verified:
+            raise ValueError(
+                f"{paper['paper_id']} is claimed readable without a product-verified full text"
+            )
+        evidence = paper.get("file_path")
+        if not isinstance(evidence, str) or not evidence:
+            raise ValueError("readable outcome must name the run-contained evidence it used")
+        path = contained(run, evidence)
+        if not filesystem_path(path).is_file() or filesystem_path(path).stat().st_size == 0:
+            raise ValueError("readable outcome requires existing nonempty run-contained evidence")
     if (summaries.count("Interaction summary:") != readable
             or summaries.count("Query-specific evidence:") != readable):
         raise ValueError("paper_summary.md must have one interaction summary and evidence block per readable paper")
@@ -347,16 +393,16 @@ def complete(run: Path, stage: str, token: str) -> dict:
     if stage == "search":
         directory = run / "search" / f"round-{state['search_round']:03d}"
         execute("modules/search/finalize.py", ["--input", directory / "request.json", "--work-dir", directory / "work",
-                "--output", directory / "metadata.json", "--report-output", directory / "report.md", "--run-dir", run],
+                "--output", directory / "metadata.json", "--report-output", directory / "search_report.md", "--run-dir", run],
                 environment=dict(os.environ, PLS_STAGE_TOKEN=token))
         validate_data("metadata", read_json(directory / "metadata.json"))
         update_status(run, "REVIEW_PENDING", "Search output validated", {
-            "latest_metadata": str((directory / "metadata.json").relative_to(run)),
-            "latest_search_report": str((directory / "report.md").relative_to(run))})
+            "latest_metadata": (directory / "metadata.json").relative_to(run).as_posix(),
+            "latest_search_report": (directory / "search_report.md").relative_to(run).as_posix()})
     elif stage == "reading":
         validate_reading(run)
         update_status(run, "REPORT_REVIEW_PENDING", "Reading output validated", {
-            "report": "report.md", "paper_summary": "paper_summary.md", "reading_outcome": "reading-outcome.json",
+            "report": "read_report.md", "paper_summary": "paper_summary.md", "reading_outcome": "reading-outcome.json",
             "reading_plan": None, "native_results": None})
     else:
         complete_final_report(run, _stage_authorized=True)
@@ -374,10 +420,13 @@ def prepare_report(run: Path, source: str) -> dict:
     if read_state(run)["status"] != "REPORT_REVIEW_PENDING":
         raise ValueError("report requires an explicit finish decision after reading review")
     validate_reading(run)
-    bindings = [run / "intent.json", run / "request.txt", run / "report.md", run / "paper_summary.md",
+    bindings = [run / "intent.json", run / "request.txt", run / "read_report.md", run / "paper_summary.md",
                 run / "reading-outcome.json", run / "downloads/manifest.json"]
-    bindings.extend(p for p in (run / "iterations").glob("round-*/*") if p.is_file())
-    bindings.extend(p for p in (run / "downloads/papers").glob("*.pdf") if p.is_file())
+    bindings.extend(canonical_path(p) for p in filesystem_path(run / "iterations").glob("round-*/*") if p.is_file())
+    bindings.extend(canonical_path(p) for p in filesystem_path(run / "downloads/papers").glob("*.pdf") if p.is_file())
+    bindings.extend(canonical_path(p) for p in filesystem_path(run / READING_TEXT_DIR).glob("*.txt") if p.is_file())
+    if filesystem_path(run / ACQUIRE_RESULT_RELATIVE).is_file():
+        bindings.append(run / ACQUIRE_RESULT_RELATIVE)
     lease = claim_stage(run, "final-report", read_state(run)["search_round"], bindings)
     try:
         record_report_review(run, "complete", decision_source="host_agent" if source == "auto_delegated" else "user_explicit")
@@ -415,7 +464,7 @@ def resume_stage(run: Path, token: str) -> dict:
         prompt = {"reading": "modules/pdf-reader/PDF_READER_AGENT.md",
                   "final-report": "modules/final-report/FINAL_REPORT_AGENT.md"}[stage]
         inputs = {name: str(run / name) for name in (
-            ("downloads/manifest.json", "report.md", "paper_summary.md", "reading-outcome.json")
+            ("downloads/manifest.json", "read_report.md", "paper_summary.md", "reading-outcome.json")
             if stage == "reading" else ("final_report.md",))}
     result = handoff(run, lease, prompt, {"SKILL_DIR": str(SKILL), "RUN_DIR": str(run), **inputs})
     return result
@@ -429,7 +478,7 @@ def refine(run: Path, feedback: str) -> dict:
     if state["status"] == "REPORT_REVIEW_PENDING":
         record_report_review(run, "refine", feedback)
     elif state["status"] == "REVIEW_PENDING" or (
-            state["status"] == "SEARCHING" and (run / "stage-lease.json").exists()
+            state["status"] == "SEARCHING" and path_exists(run / "stage-lease.json")
             and read_json(run / "stage-lease.json").get("status") == "cancelled"):
         update_status(run, "REFINEMENT_REQUESTED", "Search refinement requested")
     else:
@@ -445,7 +494,7 @@ def metadata_only(run: Path, source: str) -> dict:
         raise ValueError("metadata-only completion requires search review before any download")
     if source == "auto_delegated" and not read_json(run / "workflow.json")["auto_delegated"]:
         raise ValueError("completion was not delegated")
-    if (run / "downloads/manifest.json").exists():
+    if path_exists(run / "downloads/manifest.json"):
         raise ValueError("a download was already attempted; use the reading/outcome review flow")
     atomic_write_text(run / "metadata-only.md", "# Metadata-only result\n\n"
                       "The user stopped at scholarly metadata. No PDFs were downloaded or read; "
@@ -490,11 +539,12 @@ def main() -> int:
     try:
         if args.command == "start":
             result = start(args.work_dir, args.request_file, args.auto_delegated)
+            run = Path(result["run_dir"])
         else:
-            run = args.run_dir.resolve()
+            run = canonical_path(args.run_dir)
             require_run(run)
             if args.command == "search":
-                feedback = args.feedback_file.read_text(encoding="utf-8") if args.feedback_file else None
+                feedback = filesystem_path(args.feedback_file).read_text(encoding="utf-8") if args.feedback_file else None
                 result = prepare_search(run, args.intent, args.profile, feedback, args.max_results, args.time_budget_seconds)
             elif args.command == "complete":
                 result = complete(run, args.stage, args.token)
@@ -511,12 +561,12 @@ def main() -> int:
             elif args.command == "cancel":
                 result = serialized(cancel_stage)(run, args.token)
             elif args.command == "refine":
-                result = refine(run, args.feedback_file.read_text(encoding="utf-8"))
+                result = refine(run, filesystem_path(args.feedback_file).read_text(encoding="utf-8"))
             elif args.command == "metadata-only":
                 result = metadata_only(run, args.decision_source)
             else:
                 result = stats(run)
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(with_task_activation(result, run), ensure_ascii=False))
         return 0
     except ChildProcessCancelled as exc:
         print(json.dumps({"status": "cancelled", "signal": exc.signum}))

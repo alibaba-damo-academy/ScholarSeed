@@ -13,6 +13,7 @@ RESOURCE_WAIT_TIMEOUT = "runtime_resource_wait_timeout"
 RESOURCE_QUEUE_FULL = "runtime_resource_queue_full"
 RESOURCE_CANCELLED = "runtime_resource_cancelled"
 RESOURCE_RESERVATION_INVALID = "runtime_resource_reservation_invalid"
+RESOURCE_THREAD_CAPACITY = "runtime_thread_capacity_reached"
 
 
 class ResourcePurpose(str, Enum):
@@ -39,7 +40,7 @@ class ResourcePolicy:
 @dataclass(frozen=True)
 class ResourceCapacity:
     role: str
-    limit: int
+    limit: int | None
     used: int
     waiting: int
 
@@ -83,6 +84,7 @@ __all__ = [
     "RESOURCE_CANCELLED",
     "RESOURCE_QUEUE_FULL",
     "RESOURCE_RESERVATION_INVALID",
+    "RESOURCE_THREAD_CAPACITY",
     "RESOURCE_WAIT_TIMEOUT",
     "ResourceCapacity",
     "ResourceEvidence",

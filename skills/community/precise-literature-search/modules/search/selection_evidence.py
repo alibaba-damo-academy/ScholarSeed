@@ -11,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from io_utils import atomic_write_json, read_json, utc_now
+from filesystem import canonical_path
 from validate_json import validate_data
 from intent_constraints import assess_intent, intent_key
 from normalize import normalize_paper
@@ -227,7 +228,7 @@ def main() -> int:
     parser.add_argument("--id", action="append", default=[])
     args = parser.parse_args()
     try:
-        request_path, work = args.request.resolve(), args.work_dir.resolve()
+        request_path, work = canonical_path(args.request), canonical_path(args.work_dir)
         if work != request_path.parent / "work":
             raise ValueError("work must be the request's sibling work directory")
         request = read_json(request_path)
@@ -243,7 +244,7 @@ def main() -> int:
         elif args.action == "save-hypotheses":
             if args.input is None:
                 raise ValueError("save-hypotheses requires --input")
-            source = args.input.resolve()
+            source = canonical_path(args.input)
             source.relative_to(work)
             output = save_hypotheses(work, request, read_json(source))
         else:

@@ -19,7 +19,5 @@ const LOGIN_FAILURE_KEYS = {
 export function loginFailureText(failure: LoginFailure, t: TFunction<'account'>): string {
   const key = Object.prototype.hasOwnProperty.call(LOGIN_FAILURE_KEYS, failure.code)
     ? LOGIN_FAILURE_KEYS[failure.code as keyof typeof LOGIN_FAILURE_KEYS] : undefined
-  const message = key ? t(key) : t('loginFailure.login_failed')
-  const detail = [!key ? failure.code : '', failure.diagnostic].filter(Boolean).join(': ')
-  return detail ? t('loginFailure.diagnostic', { message, detail }) : message
+  return key ? t(key) : t('loginFailure.login_failed')
 }

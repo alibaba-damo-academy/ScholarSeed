@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import io
 import json
 import os
-import subprocess
+import ssl
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import urlencode
 
+import httpx
+import official
 import smoke
 from browser import (
     DEFAULT_LIMIT,
@@ -32,7 +36,14 @@ from browser import (
     parse_args,
     search,
 )
-from invoke import BRIDGE_COMMAND, OUTPUT_PATH, publish
+from invoke import (
+    OUTPUT_PATH,
+    RECEIPT_MAX_BYTES,
+    RECEIPT_PREFIX,
+    bounded_artifact_path,
+    source_receipt,
+    write_result,
+)
 from official import (
     API_HOST,
     API_PATH,
@@ -503,6 +514,56 @@ class BrowserSearchContractTest(unittest.TestCase):
         self.assertEqual(json.loads(kwargs["body"]), {"q": "test", "num": 2})
         self.assertTrue(connection.closed)
 
+    def test_official_default_transport_uses_https_proxy_without_following_redirects(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.com/redirect"})
+
+        client_type = httpx.Client
+        options: list[dict[str, object]] = []
+
+        def client_factory(**kwargs):
+            options.append(kwargs)
+            return client_type(
+                timeout=kwargs["timeout"],
+                transport=httpx.MockTransport(respond),
+                follow_redirects=kwargs["follow_redirects"],
+            )
+
+        with (
+            patch.object(
+                official.urllib.request,
+                "getproxies",
+                return_value={
+                    "https": "http://127.0.0.1:52314",
+                    "all": "socks5://127.0.0.1:52315",
+                },
+            ),
+            patch.object(official.urllib.request, "proxy_bypass", return_value=False),
+            patch.object(official.httpx, "Client", side_effect=client_factory),
+        ):
+            payload, exit_code = official_search(
+                parse_official_args(["--query", "test"]),
+                environment={"SCHOLARSEED_API_KEY": "secret"},
+            )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(payload["error"]["code"], ERROR_RESPONSE)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].url, httpx.URL(API_URL))
+        self.assertEqual(requests[0].headers["Authorization"], "Bearer secret")
+        self.assertEqual(options[0]["proxy"], "http://127.0.0.1:52314")
+        self.assertFalse(options[0]["trust_env"])
+        self.assertFalse(options[0]["follow_redirects"])
+        self.assertIsInstance(options[0]["verify"], ssl.SSLContext)
+
+    def test_official_response_read_is_bounded(self) -> None:
+        response = official.ProxyAwareResponse(httpx.Response(200, content=b"abcdef"))
+        self.assertEqual(response.read(0), b"")
+        self.assertEqual(response.read(4), b"abcd")
+
     def test_official_search_logs_safe_transport_failure_diagnostics(self) -> None:
         api_key = "secret-api-key"
         query = "private diagnostic query"
@@ -645,13 +706,63 @@ class BrowserSearchContractTest(unittest.TestCase):
         self.assertNotIn(api_key, stdout.getvalue())
         self.assertNotIn(api_key, stderr.getvalue())
 
-    def test_invocation_publishes_exact_structured_artifact(self) -> None:
+    def test_invocation_writes_exact_structured_artifact(self) -> None:
         payload = {"schema": "scholarseed.web_search.v1", "status": "failed"}
-        calls: list[tuple] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                self.assertEqual(write_result(payload), 0)
+            finally:
+                os.chdir(previous)
+            self.assertEqual(json.loads((root / OUTPUT_PATH).read_text(encoding="utf-8")), payload)
 
-        def runner(*args, **kwargs):
-            calls.append((args, kwargs))
-            return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="", stderr="")
+    def test_source_receipt_preserves_candidates_and_reports_truncation(self) -> None:
+        payload = {
+            "provider": "official-api",
+            "status": "completed",
+            "query": "weather",
+            "candidates": [
+                {"url": "https://example.com/weather", "title": "Weather", "description": "Rain"}
+            ],
+        }
+        line = source_receipt(payload)
+        self.assertTrue(line.startswith(RECEIPT_PREFIX))
+        result = json.loads(line.removeprefix(RECEIPT_PREFIX))
+        self.assertEqual(result["candidates"], payload["candidates"])
+        payload["candidates"] *= 100
+        line = source_receipt(payload)
+        self.assertLessEqual(len(line.removeprefix(RECEIPT_PREFIX).encode()), RECEIPT_MAX_BYTES)
+        self.assertTrue(json.loads(line.removeprefix(RECEIPT_PREFIX))["truncated"])
+        payload["candidates"] = [
+            {"url": f"https://example.com/{index}", "title": "杭州" * 64, "description": "天气" * 128}
+            for index in range(20)
+        ]
+        line = source_receipt(payload)
+        result = json.loads(line.removeprefix(RECEIPT_PREFIX))
+        self.assertLessEqual(len(line.removeprefix(RECEIPT_PREFIX).encode()), RECEIPT_MAX_BYTES)
+        self.assertTrue(result["truncated"])
+        self.assertGreater(len(result["candidates"]), 0)
+        self.assertLess(len(result["candidates"]), len(payload["candidates"]))
+
+    def test_source_receipt_stays_on_one_line_for_unicode_query(self) -> None:
+        query = "杭州\u0085天气\u2028预报\u2029来源"
+        line = source_receipt({"provider": "official-api", "status": "empty", "query": query})
+        self.assertEqual(len(line.splitlines()), 1)
+        self.assertEqual(json.loads(line.removeprefix(RECEIPT_PREFIX))["query"], query)
+
+    def test_invocation_accepts_only_relative_json_artifact_names(self) -> None:
+        self.assertEqual(
+            bounded_artifact_path("web-search-official-result.json"),
+            "web-search-official-result.json",
+        )
+        for value in ("/tmp/result.json", "../result.json", "result.txt", ""):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                bounded_artifact_path(value)
+
+    def test_invocation_writes_custom_artifact_path(self) -> None:
+        payload = {"schema": "scholarseed.web_search.v1", "status": "empty"}
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -659,12 +770,15 @@ class BrowserSearchContractTest(unittest.TestCase):
             try:
                 os.chdir(root)
                 self.assertEqual(
-                    publish(payload, runner=runner, bridge_command=BRIDGE_COMMAND), 0
+                    write_result(payload, artifact_path="web-search-browser-result.json"),
+                    0,
                 )
             finally:
                 os.chdir(previous)
-            self.assertEqual(json.loads((root / OUTPUT_PATH).read_text(encoding="utf-8")), payload)
-        self.assertEqual(calls[0][0][0][:2], [BRIDGE_COMMAND, "artifact"])
+            self.assertEqual(
+                json.loads((root / "web-search-browser-result.json").read_text(encoding="utf-8")),
+                payload,
+            )
 
 
 if __name__ == "__main__":

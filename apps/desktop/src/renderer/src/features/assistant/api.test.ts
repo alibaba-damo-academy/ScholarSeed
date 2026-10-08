@@ -259,6 +259,26 @@ test('returns the authoritative latest selection after a CAS conflict', async ()
   }
 })
 
+test('preserves claimed-ref rejection and its authoritative selection', async () => {
+  const latest = { ...CONTEXT, claimed_ref_ids: ['claimed-ref'] }
+  const restore = installBrowser(async () => Response.json({
+    detail: { error: 'assistant_claimed_refs_immutable', latest }
+  }, { status: 409 }))
+  try {
+    const result = await patchAssistantContext('session-1', {
+      expected_revision: 2,
+      project_policy: 'explicit_only',
+      search_scope: 'web',
+      refs: []
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'assistant_claimed_refs_immutable')
+    assert.deepEqual(result.latest, latest)
+  } finally {
+    restore()
+  }
+})
+
 test('answer annotations use their dedicated persisted context endpoints', async () => {
   const observed: Array<{ url: string; method?: string; body?: Record<string, unknown> }> = []
   const restore = installBrowser(async (input, init) => {
@@ -361,6 +381,24 @@ test('turn admission carries a stable client id and acknowledged context revisio
       client_user_message_id: 'client-1',
       assistant_context_revision: 2
     })
+  } finally {
+    restore()
+  }
+})
+
+test('turn admission carries only selected literature identities', async () => {
+  let body: Record<string, unknown> = {}
+  const restore = installBrowser(async (_input, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    return Response.json({ ok: true, turn_id: 'turn-literature' }, { status: 202 })
+  })
+  try {
+    await postTurn('session-1', [{ type: 'text', text: '总结这两篇' }], 'default', {
+      clientUserMessageId: 'client-literature',
+      selectedLiteratureIds: ['first', 'second']
+    })
+    assert.deepEqual(body.selected_literature_ids, ['first', 'second'])
+    assert.equal(body.active_document, undefined)
   } finally {
     restore()
   }
@@ -493,7 +531,7 @@ test('generic and translation calls use distinct authenticated Assistant endpoin
       client_attempt_id: 'attempt-2',
       project_id: 'project-1',
       text: 'explicit selected text',
-      target_language: 'ja',
+      target_language: 'en',
       source_id: 'paper.pdf'
     })
 
@@ -505,7 +543,7 @@ test('generic and translation calls use distinct authenticated Assistant endpoin
     ])
     assert.equal(observed[0].credentials, 'include')
     assert.equal(observed[1].body.text, 'explicit selected text')
-    assert.equal(observed[1].body.target_language, 'ja')
+    assert.equal(observed[1].body.target_language, 'en')
     assert.equal('source_language' in observed[1].body, false)
   } finally {
     restore()
@@ -897,6 +935,7 @@ test('resource and literature endpoints become prototype context candidates', as
         source_id: 'resources/数据',
         label: '数据',
         hint: 'folder',
+        child_count: 0,
         retention: 'next_turn',
         origin: 'explicit'
       }
@@ -973,6 +1012,23 @@ test('folder expansion keeps project-relative paths and follows server paginatio
     assert.equal(observed[0].searchParams.get('path'), 'resources/数据 & 分析')
     assert.equal(observed[0].searchParams.get('depth'), '1')
     assert.equal(observed[1].searchParams.get('offset'), '1')
+  } finally {
+    restore()
+  }
+})
+
+test('resource folder candidates retain the direct child count', async () => {
+  const restore = installBrowser(async () => Response.json({
+    nodes: [
+      { path: 'resources/论文', name: '论文', kind: 'dir', count: 3 },
+      { path: 'resources/空目录', name: '空目录', kind: 'dir', count: null }
+    ],
+    total: 2,
+    offset: 0
+  }))
+  try {
+    const page = await fetchResourceCandidatePage('project-1')
+    assert.deepEqual(page?.items.map((item) => item.child_count), [3, 0])
   } finally {
     restore()
   }

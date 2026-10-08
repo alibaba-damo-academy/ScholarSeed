@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { join } from 'node:path'
 
 import {
   DECISION_CANCEL,
   DECISION_COMMIT,
   DECISION_KEYS,
+  ELEVATION_REQUIRED,
+  ELEVATION_TIMEOUT_MS,
+  InstallerReadiness,
+  READY_TIMEOUT_MS,
   HANDSHAKE_SCHEMA_VERSION,
   REQUEST_KEYS,
   READY_KEYS,
@@ -29,6 +34,61 @@ import type { DecisionRecord, HandshakeRequest, ReadyRecord } from './handshake.
 
 const UPDATE_ID = '0f0fd4b8-4b6f-4a5e-9c1c-2f0d5f8e6a11'
 const NONCE = 'a1'.repeat(16)
+const INSTALLER_PID = 4242
+
+test('普通安装只有有效 ready 才完成交接', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  assert.equal(state.observe(null, 1), null)
+  assert.equal(state.observe(ready(), READY_TIMEOUT_MS - 1), 'ready')
+})
+
+test('普通初始化超时不被迟到 ready 覆盖', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  assert.equal(state.observe(ready(), READY_TIMEOUT_MS), 'timeout')
+})
+
+test('提权状态仅延展授权预算，不能作为 ready 提交', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  const elevation = ready({ result: ELEVATION_REQUIRED })
+  assert.equal(state.observe(elevation, 1), null)
+  assert.equal(validateReady(elevation, request()), false)
+  assert.equal(state.observe(null, READY_TIMEOUT_MS), null)
+  assert.equal(state.observe(ready(), ELEVATION_TIMEOUT_MS), 'ready')
+})
+
+test('重复提权记录不能无限延长授权窗口', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  const elevation = ready({ result: ELEVATION_REQUIRED })
+  assert.equal(state.observe(elevation, 1), null)
+  assert.equal(state.observe(elevation, ELEVATION_TIMEOUT_MS), null)
+  assert.equal(state.observe(elevation, ELEVATION_TIMEOUT_MS + 1), 'timeout')
+})
+
+test('过期初始化不能靠迟到提权记录复活', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  assert.equal(state.observe(ready({ result: ELEVATION_REQUIRED }), READY_TIMEOUT_MS), 'timeout')
+})
+
+for (const result of ['ready', ELEVATION_REQUIRED]) {
+  for (const override of [{ nonce: 'b2'.repeat(16) }, { updateId: 'bad' }, { installerPid: '4243' }, { schemaVersion: '2' }]) {
+    test(`${result} 拒绝错误的 ${Object.keys(override)[0]}`, () => {
+      const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+      assert.equal(state.observe(ready({ result, ...override }), 1), 'invalid-ready')
+    })
+  }
+}
+
+test('未知安装阶段立即拒绝', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  assert.equal(state.observe(ready({ result: 'installed' }), 1), 'invalid-ready')
+})
+
+test('提权阶段截断的记录继续等待，直到有限超时', () => {
+  const state = new InstallerReadiness(request(), INSTALLER_PID, 0)
+  assert.equal(state.observe(ready({ result: ELEVATION_REQUIRED }), 1), null)
+  assert.equal(state.observe(parseReady(Buffer.from('partial')), 2), null)
+  assert.equal(state.observe(null, ELEVATION_TIMEOUT_MS + 1), 'timeout')
+})
 
 function request(overrides: Partial<HandshakeRequest> = {}): HandshakeRequest {
   return {
@@ -168,7 +228,7 @@ test('validateDecision 区分 commit/cancel 且绑定本轮身份', () => {
 test('handshakeDirectory 拒绝非 UUID 形态的 updateId（路径穿越闸）', () => {
   assert.equal(
     handshakeDirectory('/tmp/updates/install', UPDATE_ID),
-    `/tmp/updates/install/${UPDATE_ID}`
+    join('/tmp/updates/install', UPDATE_ID)
   )
   assert.throws(() => handshakeDirectory('/tmp/updates/install', '..'), /invalid updateId/)
   assert.throws(() => handshakeDirectory('/tmp/updates/install', `x${UPDATE_ID.slice(1)}`), /invalid updateId/)

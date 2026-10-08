@@ -65,10 +65,6 @@ for _slr_anc in _slr_pathlib.Path(__file__).resolve().parents:
 else:
     raise RuntimeError("systematic-literature-review skill root not found above " + __file__)
 import slr_paths as _slr_paths
-# bootstrap() is not optional here: it runs lib/no_proxy.py, and PaperHub sits on
-# an internal network. Handed to an ambient outbound proxy, its responses come
-# back as a 405 that parses as an empty result set rather than as an error — the
-# whole corpus would silently degrade to abstract-only with no failure to see.
 _slr_paths.bootstrap(__file__)
 # --- end slr path bootstrap ---
 
@@ -320,8 +316,9 @@ def fetch_paperhub(paper_id: str, base_url: str, timeout: float, cache_dir: Path
     try:
         source, meta = download(paper_id, cache_dir, base_url, timeout, use_cache=use_cache)
         parsed = parse_source(source, cache_dir / 'parsed')
+        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
         if parsed['status'] != 'ok':
-            raise FetchError('extract_failed', '; '.join(parsed['warnings']), False)
+            raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
         record = blank_record('', parsed['info_type'], parsed['sentences'])
         record['paperhub_id'] = paper_id
         record['source_file'] = str(source)
@@ -794,7 +791,8 @@ def acquire(paper_id: str, paper: dict, *, hub_base: str, cache: Cache,
         source = cache.path_for(paper_id, '.pdf')
         if not source.exists(): source.write_bytes(pdf_bytes)
         parsed = parse_source(source, cache.path_for(paper_id, '.parsed'))
-        if parsed['status'] != 'ok': raise FetchError('extract_failed', '; '.join(parsed['warnings']), False)
+        fatal_warnings = parsed.get('fatal_warnings', parsed.get('warnings', []))
+        if parsed['status'] != 'ok': raise FetchError('extract_failed', '; '.join(fatal_warnings), False)
         blob = parsed['sentences']
     except (FetchError, ValueError, OSError) as exc:
         err = exc if isinstance(exc, FetchError) else FetchError("extract_failed", str(exc), False)

@@ -16,11 +16,15 @@
         "properties": {
           "paper_id": {"type": "string", "minLength": 1},
           "file_path": {"type": ["string", "null"]},
+          "storage": {"enum": ["managed", "run", null]},
+          "revision": {"type": ["string", "null"]},
           "status": {"enum": ["readable", "unreadable"]},
           "reason": {"type": ["string", "null"]}
         },
         "allOf": [{"if": {"properties": {"status": {"const": "unreadable"}}},
-                   "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}}]
+                   "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}},
+                  {"if": {"properties": {"status": {"const": "readable"}}},
+                   "then": {"properties": {"file_path": {"type": "string", "minLength": 1}}}}]
       }
     }
   }

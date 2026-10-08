@@ -27,15 +27,6 @@ const TURN_COMPLETE_TIMEOUT_MS = 180_000
 const CLEANUP_MAX_RETRIES = 5
 const CLEANUP_RETRY_DELAY_MS = 100
 
-/**
- * 等工作台外壳挂载, 并保证当前不在首页空间。
- *
- * 首页空间是全局面, 刻意不挂顶栏 / 标签 / 模块面板（`WorkbenchShell` 只在
- * `mainView !== 'home'` 时挂 `TopBar`）, 而 `mainView` 的初值就是 `'home'` ——
- * 于是**每次 `page.reload()` 都会退回首页, 顶栏随之消失**。用例在 reload 之后
- * 直接点 `topbar-*` 只会等到超时。凡是重新加载过页面的用例都要再走一遍这一步;
- * 已经离开首页时它是空操作。
- */
 export async function enterWorkbenchShell(page: Page): Promise<void> {
   await expect(page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible()
   if (await page.getByTestId(HOME_SPACE_TEST_ID).isVisible().catch(() => false)) {
@@ -54,6 +45,7 @@ export interface LiveStatus {
 }
 
 export interface DesktopSessionOptions {
+  preserveNavigation?: boolean
   preserveRuntime?: boolean
   nativeWindowLifecycle?: boolean
 }
@@ -108,6 +100,10 @@ export class DesktopSession {
       appendFileSync(this.rendererLog, `[pageerror] ${error.stack ?? error.message}\n`)
     })
     await this.page.context().tracing.start({ screenshots: true, snapshots: true, sources: true })
+    if (this.options.preserveNavigation) {
+      await expect(this.page.getByTestId(PRODUCT_SHELL_TEST_ID)).toBeVisible()
+      return this.page
+    }
     await enterWorkbenchShell(this.page)
     // Live suites exercise the conversation surface. The 0.2 workbench keeps that
     // surface in a user-toggleable panel, so enter it through the real product control.

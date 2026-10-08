@@ -23,6 +23,7 @@ _PDF_LOCK=Lock()  # PDF layout code has process-wide state; downloads remain con
 MAX_UNPACKED_BYTES = 160 * 1024 * 1024
 MAX_MEMBERS = 6000
 FLOATS = {'figure','figure*','table','table*','wrapfigure','wraptable','sidewaysfigure','sidewaystable','longtable','longtable*'}
+NON_FATAL_WARNING_PREFIXES = ('float without caption: ',)
 DISCARD = {'tabular','tabular*','tabularx','tabulary','tikzpicture','axis','thebibliography','verbatim','lstlisting'}
 MATH_ENVS = {'equation','equation*','align','align*','gather','gather*','multline','multline*','displaymath','eqnarray','eqnarray*'}
 ENV = re.compile(r'\\(begin|end)\s*\{([^{}]+)\}')
@@ -34,6 +35,10 @@ class ParseError(ValueError):
 
 def parser_fingerprint():
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _fatal_warnings(warnings):
+    return [warning for warning in warnings if not warning.startswith(NON_FATAL_WARNING_PREFIXES)]
 
 
 def _sentence_parts(segmenter,paragraph):
@@ -372,7 +377,8 @@ def parse_source(path,output_dir=None):
             caption_blocks.append({'kind':block['kind'],'text':cleaner.restore(cleaned),'sentence_ids':list(range(first,len(sentences)+1))})
     if not sentences:raise ParseError('no extractable text; PDF may require OCR')
     numbered='\n'.join(f"#{s['id']} {s['text']}" for s in sentences)+'\n'
-    result={'status':'partial' if warnings else 'ok','info_type':'origin_latex' if kind=='latex' else 'origin_pdf','sentences':numbered,'n_sentences':len(sentences),'caption_count':len(caption_blocks),'parser_version':PARSER_VERSION,'parser_sha256':parser_fingerprint(),'source_sha256':hashlib.sha256(data).hexdigest(),'source_filename':path.name,'warnings':warnings,**details}
+    fatal_warnings = _fatal_warnings(warnings)
+    result={'status':'partial' if fatal_warnings else 'ok','info_type':'origin_latex' if kind=='latex' else 'origin_pdf','sentences':numbered,'n_sentences':len(sentences),'caption_count':len(caption_blocks),'parser_version':PARSER_VERSION,'parser_sha256':parser_fingerprint(),'source_sha256':hashlib.sha256(data).hexdigest(),'source_filename':path.name,'warnings':warnings,'fatal_warnings':fatal_warnings,**details}
     if output_dir:
         out=Path(output_dir);out.mkdir(parents=True,exist_ok=True)
         (out/'sentences.txt').write_text(numbered)

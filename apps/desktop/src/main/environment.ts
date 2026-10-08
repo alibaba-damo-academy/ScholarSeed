@@ -16,6 +16,21 @@ const STANDARD_USER_BIN_DIRECTORIES = [
 ] as const
 const STANDARD_SYSTEM_BIN_DIRECTORIES = ['/opt/homebrew/bin', '/usr/local/bin'] as const
 const ENABLED_ENV_VALUE = '1'
+const WINDOWS_PLATFORM = 'win32'
+const USER_DATA_DIRECTORY_SWITCH = '--user-data-dir'
+
+export function protocolClientArguments(
+  platform: string,
+  defaultApp: boolean,
+  appPath: string,
+  userDataPath: string
+): string[] {
+  const args = defaultApp ? [appPath] : []
+  if (platform === WINDOWS_PLATFORM) {
+    args.push(`${USER_DATA_DIRECTORY_SWITCH}=${userDataPath}`)
+  }
+  return args
+}
 
 export function resolveDeveloperToolsEnabled(
   rendererUrl: string | undefined,

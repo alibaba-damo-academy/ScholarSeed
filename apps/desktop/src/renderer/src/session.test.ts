@@ -107,8 +107,9 @@ test('delete confirmation redraws stored error keys and interpolates original co
   const dialog = source.slice(source.indexOf('function ConfirmDialog()'))
   assert.match(dialog, /if \(r.status === 409\) setErr\('delete.running'\)/)
   assert.match(dialog, /act.removeSession\(cd.sessionId, cd.surface\)/)
-  assert.match(dialog, /onClick=\{onDelete\}\s+disabled=\{busy\}/)
-  assert.match(dialog, /onClick=\{\(\) => !busy && set\(\{ confirmDelete: null \}\)\}/)
+  assert.match(dialog, /<AlertDialog open onOpenChange=/)
+  assert.match(dialog, /<AlertDialogAction variant="danger" disabled=\{busy\}/)
+  assert.match(dialog, /event\.preventDefault\(\); void onDelete\(\)/)
   assert.doesNotMatch(dialog, /<button/)
   assert.doesNotMatch(dialog, /values=\{\{ name:/)
 })
@@ -121,7 +122,8 @@ test('catalog timestamps redraw in both languages while explicit time labels rem
   const format = (locale: string) => ({
     date: (value: Date | number, options?: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(locale, options).format(value),
     relative: (value: number, unit: Intl.RelativeTimeFormatUnit, options?: Intl.RelativeTimeFormatOptions) => new Intl.RelativeTimeFormat(locale, options).format(value, unit),
-    number: (value: number) => String(value)
+    number: (value: number) => String(value),
+    bytes: (value: number) => String(value)
   })
   assert.equal(node.timeLabel, undefined)
   assert.equal(sessionDisplayTime(node, format('zh-CN'), now), '昨天')

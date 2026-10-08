@@ -6,6 +6,8 @@ import {
   closeTab,
   LITERATURE_TAB,
   literatureSearchTab,
+  openLiteratureSearchTabs,
+  openWorkbenchTab,
   OVERVIEW_TAB,
   reviewTab,
   tabMatchesProject,
@@ -13,6 +15,32 @@ import {
   versionDiffTab,
   type WorkbenchTab
 } from './tabs.ts'
+
+test('opening a literature result or restored search preserves the fixed list tab', () => {
+  for (const projectId of [null, 'project-1']) {
+    const search = literatureSearchTab('search-1', 'query', projectId)
+    const opened = openWorkbenchTab([OVERVIEW_TAB], 'literature', search)
+    assert.deepEqual(opened, [OVERVIEW_TAB, LITERATURE_TAB, search])
+    assert.strictEqual(openWorkbenchTab(opened, 'literature', search), opened)
+  }
+})
+
+test('opening search tasks repairs a missing fixed tab even when the search already exists', () => {
+  const task = { id: 'search-1', query: 'query', projectId: 'project-1' }
+  const search = literatureSearchTab(task.id, task.query, task.projectId)
+  for (const tabs of [[OVERVIEW_TAB], [OVERVIEW_TAB, search]]) {
+    const opened = openLiteratureSearchTabs(tabs, [task])
+    assert.equal(opened.filter((tab) => tab.id === LITERATURE_TAB.id).length, 1)
+    assert.equal(opened.filter((tab) => tab.id === search.id).length, 1)
+    assert.equal(opened.find((tab) => tab.id === search.id)?.projectId, task.projectId)
+  }
+})
+
+test('views without a fixed tab and empty search restoration keep existing navigation', () => {
+  const tabs = [OVERVIEW_TAB]
+  assert.strictEqual(openWorkbenchTab(tabs, 'resource', OVERVIEW_TAB), tabs)
+  assert.strictEqual(openLiteratureSearchTabs(tabs, []), tabs)
+})
 
 test('project-scoped tabs are hidden outside their owner and remain available on return', () => {
   const tab = { ...OVERVIEW_TAB, projectId: 'alpha' }
@@ -76,6 +104,10 @@ test('review tab stays independent from its document and can be closed', () => {
   const review = reviewTab('project-1', 'batch-1', 2)
 
   assert.equal(tabVisibleInCurrentView(review.kind, 'resource'), true)
+  assert.equal(review.projectId, 'project-1')
+  assert.equal(tabMatchesProject(review, 'project-1'), true)
+  assert.equal(tabMatchesProject(review, 'project-2'), false)
+  assert.equal(tabMatchesProject(review, null), false)
   assert.equal(review.title, '审阅修改 · 2')
   assert.equal(review.closable, true)
   assert.equal(

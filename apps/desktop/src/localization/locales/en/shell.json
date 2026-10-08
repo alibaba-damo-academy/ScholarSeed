@@ -1,7 +1,19 @@
 {
   "navigation": {
     "projects": "Home",
-    "returnHome": "Back to home"
+    "returnHome": "Back to home",
+    "skipToContent": "Skip to main content"
+  },
+  "errorBoundary": {
+    "title": "Something went wrong on this page",
+    "description": "ScholarSeed could not finish rendering the page, but your projects and local files remain safe.",
+    "notice": "The application cannot continue displaying this view",
+    "guidance": "Reload the page, or send an error report. The report includes this error's details and local diagnostic logs to help us investigate.",
+    "reload": "Reload",
+    "feedback": "Report error",
+    "feedbackSubmitted": "Report sent",
+    "feedbackFailedTitle": "Report could not be sent",
+    "feedbackFailed": "We could not send the error details. Check your connection and try again."
   },
   "chrome": {
     "projectOverview": "Home",
@@ -44,6 +56,10 @@
     "hint": "Follow the guidance below:",
     "runtimeNotReady": "Codex Runtime is not ready.",
     "submitNotReady": "The message submission entry point is not ready.",
+    "harnessLanding": "Headless harness prerequisite unmet: the first-launch landing is still open. Finish the first-launch chain (skip the landing, create a project, skip the beginner guide), or drive an isolated instance over CDP, then retry.",
+    "harnessLogin": "Headless harness prerequisite unmet: the login dialog is still open. Sign in or skip login to close it, then retry.",
+    "harnessGuide": "Headless harness prerequisite unmet: the beginner guide is still open. Skip the guide, then retry.",
+    "harnessNoProject": "Headless harness prerequisite unmet: no project exists yet, and the composer only mounts inside a project's AI panel. Create at least one project, then retry.",
     "reviewUnknown": "Could not confirm pending review status. Try again later.",
     "reviewUnsaved": "Review files have unsaved edits. Save or discard them before continuing.",
     "effortFailed": "Could not change reasoning effort. Try again.",
@@ -93,6 +109,8 @@
     "reproduceHint": "Use the paper reproduction skill: break down algorithms, implement code, and validate a demo"
   },
   "workspaceLoading": {
+    "retrying": "The conversation list is temporarily unavailable. Your workspace remains usable while recovery runs automatically.",
+    "unavailable": "The conversation list returned unrecognized data. Your workspace remains usable; reload again later.",
     "signInTitle": "Sign in to continue",
     "failedTitle": "Conversations could not be loaded",
     "loadingTitle": "Loading workspace",

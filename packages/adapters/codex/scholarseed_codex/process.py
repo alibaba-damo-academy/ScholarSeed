@@ -6,6 +6,7 @@ import asyncio
 import os
 import random
 import shutil
+import time
 import uuid
 from collections import deque
 from dataclasses import replace
@@ -13,7 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from scholarseed_codex.activity import NativeActivity, subagent_lifecycle_payload
+from scholarseed_codex.activity import (
+    NativeActivity,
+    subagent_item_summary,
+    subagent_lifecycle_payload,
+    subagent_status_payload,
+)
 from scholarseed_codex.attachment import ThreadAttachment
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.executable import _resolve_launch_arguments
@@ -23,6 +29,20 @@ from scholarseed_codex.history import (
     terminal_turn_status,
 )
 from scholarseed_codex.interaction import hil_payload, hil_response
+from scholarseed_codex.permission import (
+    PERMISSION_SCOPE_NEXT_TURN,
+    PERMISSION_SCOPE_SESSION,
+    PERMISSION_SCOPE_TURN,
+    PERMISSION_SETTINGS_UNCONFIRMED,
+    THREAD_SETTINGS_UPDATE_METHOD,
+    THREAD_SETTINGS_UPDATED_METHOD,
+    TURN_SETTINGS_APPLIED,
+    TURN_SETTINGS_UNAVAILABLE,
+    TURN_SETTINGS_UPDATE_METHOD,
+    PermissionUpdate,
+    reviewer_only_update,
+    sandbox_policy,
+)
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import (
     CodexRuntimeIdentity,
@@ -81,6 +101,7 @@ from scholarseed_codex.protocol.state import (
 )
 from scholarseed_codex.router import AgentRoute, ThreadRouter
 from scholarseed_codex.rpc import JsonLineWriter, PendingRequests, read_messages
+from scholarseed_codex.sandbox import SANDBOX_COMPLETED_METHOD, WindowsSandboxBootstrap
 from scholarseed_codex.turn import CodexTurnRuntime
 from scholarseed_codex.watch import WorkspaceWatch
 from scholarseed_runtime.contract.evidence import (
@@ -105,10 +126,47 @@ from scholarseed_runtime.contract.session import RUNTIME_SUSPEND_BUSY, RUNTIME_S
 NATIVE_PROCESS_NOT_READY = "native_process_not_ready"
 NATIVE_COMMAND_UNSETTLED = "native_command_unsettled"
 NATIVE_CALLBACK_PENDING = "native_callback_pending"
+THREAD_CONFIGURATION_MISMATCH = "codex_thread_configuration_mismatch"
 THREAD_UNSUBSCRIBE_METHOD = "thread/unsubscribe"
 THREAD_ID_KEY = "threadId"
 UNSUBSCRIBE_STATUS_KEY = "status"
 THREAD_UNSUBSCRIBE_STATUSES = frozenset({"unsubscribed", "notSubscribed", "notLoaded"})
+SUBAGENT_PROGRESS_INTERVAL_SECONDS = 15
+SUBAGENT_STREAM_ACTIVITIES = {
+    "item/agentMessage/delta": "message",
+    "item/reasoning/summaryTextDelta": "reasoning",
+    "item/reasoning/textDelta": "reasoning",
+    "item/commandExecution/outputDelta": "command",
+}
+SUBAGENT_ITEM_ACTIVITIES = {
+    "agentMessage": "message",
+    "reasoning": "reasoning",
+    "webSearch": "search",
+    "commandExecution": "command",
+    "mcpToolCall": "tool",
+    "dynamicToolCall": "tool",
+    "fileChange": "edit",
+    "plan": "plan",
+}
+SUBAGENT_ITEM_BOUNDARIES = frozenset({"item/started", "item/completed"})
+SUBAGENT_GENERIC_ACTIVITY = "work"
+
+
+def _confirmed_thread_model(result: Mapping[str, Any], request: CodexSessionOpenRequest) -> str:
+    model = str(result.get("model") or "")
+    provider = str(result.get("modelProvider") or "")
+    if (
+        not model
+        or not provider
+        or (request.model and model != request.model)
+        or (request.model_provider and provider != request.model_provider)
+    ):
+        raise AppServerError(
+            "Codex App Server did not apply the requested thread model configuration",
+            safe_error=THREAD_CONFIGURATION_MISMATCH,
+            retryability=RuntimeRetryability.TERMINAL,
+        )
+    return model
 
 
 class CodexProcessHost:
@@ -131,6 +189,7 @@ class CodexProcessHost:
         recovery_max_delay: float = CODEX_RECOVERY_MAX_DELAY_SECONDS,
         recovery_jitter_ratio: float = CODEX_RECOVERY_JITTER_RATIO,
         recovery_total_timeout: float = CODEX_RECOVERY_TOTAL_TIMEOUT_SECONDS,
+        sandbox_setup_lock: asyncio.Lock | None = None,
     ) -> None:
         self.executable = executable or shutil.which(CODEX_DEFAULT_BIN) or CODEX_DEFAULT_BIN
         self.version = version
@@ -142,6 +201,7 @@ class CodexProcessHost:
             if str(name).strip()
         }
         self.launch_arguments = tuple(launch_arguments)
+        self._sandbox = WindowsSandboxBootstrap(self.launch_arguments, sandbox_setup_lock)
         self.remove_environment = tuple(sorted(set(remove_environment)))
         self.rpc_timeout = rpc_timeout
         self.max_threads = max_threads
@@ -209,7 +269,10 @@ class CodexProcessHost:
             or (state.turn.turn_done is not None and not state.turn.turn_done.done())
         ):
             blockers.append(NATIVE_COMMAND_UNSETTLED)
-        if self._pending_hil or self._pending_tools:
+        if any(
+            pending.thread_id == thread_id
+            for pending in (*self._pending_hil.values(), *self._pending_tools.values())
+        ):
             blockers.append(NATIVE_CALLBACK_PENDING)
         return tuple(blockers)
 
@@ -450,6 +513,12 @@ class CodexProcessHost:
                 generation=generation,
             )
             await self._notify("initialized", {}, generation=generation)
+            await self._sandbox.ensure_ready(
+                self._request_connected,
+                self.launch_cwd,
+                generation,
+                cleanup=lambda: self._discard_process(proc, generation),
+            )
             if self._skill_roots:
                 await self._set_skill_roots(self._skill_roots, generation=generation)
             if generation != self._generation or proc is not self._proc:
@@ -461,7 +530,8 @@ class CodexProcessHost:
             self.state = CodexProcessState.READY
             self._record_process_event(RuntimeProcessEventKind.STARTED)
         except BaseException:
-            await self._discard_process(proc, generation)
+            if proc is self._proc and generation == self._generation:
+                await self._discard_process(proc, generation)
             if self.state != CodexProcessState.CLOSING:
                 self.state = CodexProcessState.CRASHED
                 self._record_process_event(
@@ -601,6 +671,7 @@ class CodexProcessHost:
                 safe_error="codex_thread_identity_mismatch",
                 retryability=RuntimeRetryability.TERMINAL,
             )
+        confirmed_model = _confirmed_thread_model(result, request)
         if thread_id in self._threads:
             raise AppServerError(f"Codex thread is already attached: {thread_id}")
         history = history_entries(thread)
@@ -612,7 +683,7 @@ class CodexProcessHost:
             listener=listener,
             thread_id=thread_id,
             writable_roots=normalized_roots(request.writable_roots),
-            model=str(result.get("model") or request.model),
+            model=confirmed_model,
             history=history,
             attachment_state=CodexThreadAttachmentState.ATTACHED,
             attached_generation=generation,
@@ -742,6 +813,118 @@ class CodexProcessHost:
         state = self._threads.get(thread_id)
         return () if state is None else state.writable_roots
 
+    def confirm_permission_settings(
+        self, state: ThreadAttachment, settings: Mapping[str, Any]
+    ) -> None:
+        confirmation = state.permission_confirmation
+        if confirmation is None or confirmation.done():
+            return
+        for key, expected in state.permission_expected.items():
+            actual = settings.get(key)
+            if isinstance(expected, dict):
+                if not isinstance(actual, dict) or any(
+                    actual.get(field) != value for field, value in expected.items()
+                ):
+                    return
+            elif actual != expected:
+                return
+        confirmation.set_result(dict(settings))
+
+    async def update_permissions(
+        self, thread_id: str, request: CodexSessionOpenRequest
+    ) -> PermissionUpdate:
+        state = self.attachment(thread_id)
+        async with state.permission_lock:
+            generation = await self.ensure_attached(thread_id)
+            epoch = state.registration_epoch
+            active_turn_id = state.turn.active_turn_id
+            previous = state.request
+            roots = normalized_roots(request.writable_roots)
+            params: dict[str, Any] = {
+                "threadId": thread_id,
+                "approvalPolicy": request.approval_policy or CODEX_DEFAULT_APPROVAL_POLICY,
+            }
+            if request.approval_reviewer is not None:
+                params["approvalsReviewer"] = request.approval_reviewer.value
+            if request.permissions_profile:
+                params["permissions"] = request.permissions_profile
+            else:
+                params["sandboxPolicy"] = sandbox_policy(request, roots)
+            state.permission_expected = {
+                key: value
+                for key, value in params.items()
+                if key not in {"threadId", "permissions"}
+            }
+            if request.permissions_profile:
+                state.permission_expected["activePermissionProfile"] = {
+                    "id": request.permissions_profile
+                }
+            confirmation = asyncio.get_running_loop().create_future()
+            state.permission_confirmation = confirmation
+            scope = PERMISSION_SCOPE_SESSION
+            safe_error = ""
+            try:
+                await self._request_connected(
+                    THREAD_SETTINGS_UPDATE_METHOD, params, generation=generation
+                )
+                try:
+                    await asyncio.wait_for(asyncio.shield(confirmation), timeout=self.rpc_timeout)
+                except TimeoutError as error:
+                    raise AppServerError(
+                        "Codex permission settings were not confirmed",
+                        safe_error=PERMISSION_SETTINGS_UNCONFIRMED,
+                        retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                    ) from error
+                if generation != self._generation or state.registration_epoch != epoch:
+                    raise AppServerError(
+                        "Codex permission settings attachment changed",
+                        safe_error=PERMISSION_SETTINGS_UNCONFIRMED,
+                        retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                    )
+                state.request = request
+                state.writable_roots = roots
+                if active_turn_id:
+                    scope = PERMISSION_SCOPE_NEXT_TURN
+                    if reviewer_only_update(previous, request):
+                        try:
+                            result = await self._request_connected(
+                                TURN_SETTINGS_UPDATE_METHOD,
+                                {
+                                    "threadId": thread_id,
+                                    "turnId": active_turn_id,
+                                    "approvalsReviewer": request.approval_reviewer.value,
+                                },
+                                generation=generation,
+                            )
+                        except AppServerError as error:
+                            if error.rpc_code != RPC_METHOD_NOT_FOUND:
+                                safe_error = error.safe_error or PERMISSION_SETTINGS_UNCONFIRMED
+                        else:
+                            if result.get("status") == TURN_SETTINGS_APPLIED:
+                                if (
+                                    generation == self._generation
+                                    and state.registration_epoch == epoch
+                                ):
+                                    scope = PERMISSION_SCOPE_TURN
+                                else:
+                                    safe_error = PERMISSION_SETTINGS_UNCONFIRMED
+                            elif result.get("status") != TURN_SETTINGS_UNAVAILABLE:
+                                safe_error = PERMISSION_SETTINGS_UNCONFIRMED
+            except AppServerError as error:
+                if error.rpc_code != RPC_METHOD_NOT_FOUND:
+                    raise
+                scope = PERMISSION_SCOPE_NEXT_TURN
+            finally:
+                state.permission_confirmation = None
+                state.permission_expected = {}
+                if confirmation.done() and not confirmation.cancelled():
+                    confirmation.exception()
+                else:
+                    confirmation.cancel()
+            state.request = request
+            state.writable_roots = roots
+            return PermissionUpdate(scope, safe_error, active_turn_id)
+
     async def ensure_skill_roots(self, roots: tuple[Path, ...]) -> None:
         normalized = {str(path.expanduser().resolve()) for path in roots if str(path).strip()}
         if not normalized:
@@ -750,6 +933,15 @@ class CodexProcessHost:
             merged = self._skill_roots | normalized
             if merged == self._skill_roots:
                 return
+            await self._set_skill_roots(merged)
+            self._skill_roots = merged
+
+    async def reassert_skill_roots(self, roots: tuple[Path, ...]) -> None:
+        normalized = {str(path.expanduser().resolve()) for path in roots if str(path).strip()}
+        if not normalized:
+            return
+        async with self._skill_lock:
+            merged = self._skill_roots | normalized
             await self._set_skill_roots(merged)
             self._skill_roots = merged
 
@@ -882,6 +1074,7 @@ class CodexProcessHost:
                         safe_error="codex_thread_identity_mismatch",
                         retryability=RuntimeRetryability.TERMINAL,
                     )
+                confirmed_model = _confirmed_thread_model(result, state.request)
             except Exception as exc:
                 if (
                     self._threads.get(state.thread_id) is state
@@ -898,7 +1091,11 @@ class CodexProcessHost:
                             kind=RuntimeIncidentKind.RESUME_FAILED,
                             strategy=RuntimeRecoveryStrategy.MANUAL_RETRY,
                             retryability=RuntimeRetryability.USER_RETRYABLE,
-                            safe_error="thread_resume_failed",
+                            safe_error=(
+                                exc.safe_error
+                                if isinstance(exc, AppServerError)
+                                else "thread_resume_failed"
+                            ),
                             process_generation=generation,
                             attempt=max(1, self._recovery_attempt),
                             max_attempts=max(1, self.max_recovery_attempts),
@@ -911,7 +1108,11 @@ class CodexProcessHost:
                             kind=RuntimeIncidentKind.RESUME_FAILED,
                             strategy=RuntimeRecoveryStrategy.MANUAL_RETRY,
                             retryability=RuntimeRetryability.USER_RETRYABLE,
-                            safe_error="thread_resume_failed",
+                            safe_error=(
+                                exc.safe_error
+                                if isinstance(exc, AppServerError)
+                                else "thread_resume_failed"
+                            ),
                             process_generation=generation,
                             attempt=max(1, self._recovery_attempt),
                             max_attempts=max(1, self.max_recovery_attempts),
@@ -928,7 +1129,7 @@ class CodexProcessHost:
                 or state.attachment_state == CodexThreadAttachmentState.CLOSED
             ):
                 return False
-            state.model = str(result.get("model") or state.model)
+            state.model = confirmed_model
             state.attachment_state = CodexThreadAttachmentState.ATTACHED
             state.attached_generation = generation
             state.last_resume_failure = ""
@@ -1031,6 +1232,15 @@ class CodexProcessHost:
         state = self._threads.get(thread_id)
         if state is None:
             return
+        confirmation = state.permission_confirmation
+        if confirmation is not None and not confirmation.done():
+            confirmation.set_exception(
+                AppServerError(
+                    "Codex permission settings attachment closed",
+                    safe_error=PERMISSION_SETTINGS_UNCONFIRMED,
+                    retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
+                )
+            )
         await self._watcher.close(
             state.turn, self._generation, self.state == CodexProcessState.READY
         )
@@ -1227,6 +1437,9 @@ class CodexProcessHost:
         self._activity_revision += 1
         if method == "thread/started":
             return
+        if method == SANDBOX_COMPLETED_METHOD:
+            self._sandbox.completed(params, message_generation)
+            return
         if method == "serverRequest/resolved":
             await self._server_request_resolved(params)
             return
@@ -1306,9 +1519,10 @@ class CodexProcessHost:
             )
             await self._emitter.incident(state, incident, turn_id=turn_id)
             return
-        if method == "thread/settings/updated":
+        if method == THREAD_SETTINGS_UPDATED_METHOD:
             settings = dict(params.get("threadSettings") or {})
             state.model = str(settings.get("model") or state.model)
+            self.confirm_permission_settings(state, settings)
             return
         if method == "thread/name/updated":
             title = str(params.get("threadName") or "").strip()
@@ -1353,6 +1567,54 @@ class CodexProcessHost:
         raw_turn = params.get("turn")
         turn = dict(raw_turn) if isinstance(raw_turn, Mapping) else {}
         status = str(turn.get("status") or "")
+        if method in SUBAGENT_ITEM_BOUNDARIES or method in SUBAGENT_STREAM_ACTIVITIES:
+            raw_item = params.get("item")
+            item = dict(raw_item) if isinstance(raw_item, Mapping) else {}
+            activity_item_id = str(params.get("itemId") or item.get("id") or "")
+            public_summary = ""
+            if method == "item/reasoning/summaryTextDelta":
+                public_summary = self._router.append_agent_summary(
+                    agent_thread_id,
+                    activity_item_id,
+                    str(params.get("delta") or ""),
+                )
+            elif method in SUBAGENT_ITEM_BOUNDARIES:
+                public_summary = self._router.agent_summary(
+                    agent_thread_id, activity_item_id
+                ) or subagent_item_summary(item)
+            activity = (
+                SUBAGENT_ITEM_ACTIVITIES.get(str(item.get("type") or ""), SUBAGENT_GENERIC_ACTIVITY)
+                if method in SUBAGENT_ITEM_BOUNDARIES
+                else SUBAGENT_STREAM_ACTIVITIES[method]
+            )
+            if self._router.observe_agent_activity(
+                agent_thread_id,
+                now=time.monotonic(),
+                interval=SUBAGENT_PROGRESS_INTERVAL_SECONDS,
+                boundary=method in SUBAGENT_ITEM_BOUNDARIES,
+            ):
+                await self._emitter.emit(
+                    state,
+                    CodexSessionEventKind.SUBAGENT_ACTIVITY,
+                    turn_id=route.owner_turn_id,
+                    item_id=agent_thread_id,
+                    payload=subagent_status_payload(
+                        agent_thread_id=agent_thread_id,
+                        agent_path=route.agent_path,
+                        activity=activity,
+                        phase=(
+                            method.removeprefix("item/")
+                            if method in SUBAGENT_ITEM_BOUNDARIES
+                            else "progress"
+                        ),
+                        activity_item_id=activity_item_id,
+                        public_summary=public_summary,
+                        item=item,
+                    ),
+                )
+            if method == "item/completed":
+                self._router.forget_agent_summary(agent_thread_id, activity_item_id)
+            return
         if method == "turn/started":
             status = "started"
             completed = False
@@ -1367,6 +1629,8 @@ class CodexProcessHost:
             return
         if not self._router.update_agent_status(agent_thread_id, status):
             return
+        if completed:
+            self._router.forget_agent_summaries(agent_thread_id)
         await self._emitter.emit(
             state,
             (
@@ -1672,6 +1936,7 @@ class CodexProcessHost:
         if proc is not None and proc is not self._proc:
             self._diagnostics.append("stale_process_exit")
             return
+        self._sandbox.disconnected(exit_generation)
         process_exit_code = proc.returncode if proc is not None else None
         self.state = CodexProcessState.CRASHED
         self._rpc_writer.detach(exit_generation)
@@ -1683,6 +1948,10 @@ class CodexProcessHost:
             retryability=RuntimeRetryability.UNKNOWN_OUTCOME,
         )
         self._rpc_requests.fail(error, generation=exit_generation)
+        for state in self._threads.values():
+            confirmation = state.permission_confirmation
+            if confirmation is not None and not confirmation.done():
+                confirmation.set_exception(error)
         incident = RuntimeIncident(
             incident_id=uuid.uuid4().hex,
             scope=RuntimeIncidentScope.PROCESS,
@@ -1841,6 +2110,7 @@ class CodexProcessHost:
         if proc is not self._proc or generation != self._generation:
             self._diagnostics.append("stale_process_discard")
             return
+        self._sandbox.disconnected(generation)
         reader_task = self._reader_task
         stderr_task = self._stderr_task
         self._rpc_writer.detach(generation)

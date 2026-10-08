@@ -40,6 +40,28 @@ test('language round trip and concurrent theme are serialized without stale lang
   assert.deepEqual(applied, ['en', 'zh'])
 })
 
+test('navigation changes keep only the newest location while preserving concurrent preferences', async () => {
+  let disk = { ...DEFAULT_RENDERER_PREFERENCES }
+  const gate = deferred<void>()
+  let saves = 0
+  const writer = new PreferenceWriter(disk, {
+    save: async (value) => { if (++saves === 1) await gate.promise; disk = value; return disk },
+    reconcile: async () => disk,
+    apply: async () => {},
+    failed: () => assert.fail('unexpected failure')
+  })
+  const first = sanitizeRendererPreferences({ lastLocation: { view: 'literature' } }).lastLocation
+  const last = sanitizeRendererPreferences({ lastLocation: { view: 'resource', projectId: 'project-a' } }).lastLocation
+  const done = writer.submit({ lastLocation: first })
+  void writer.submit({ theme: 'dark' })
+  void writer.submit({ lastLocation: last })
+  gate.resolve()
+  await done
+  assert.deepEqual(disk.lastLocation, last)
+  assert.equal(disk.theme, 'dark')
+  assert.equal(saves, 2)
+})
+
 test('failed write does not commit language or loop, retry applies the intent', async () => {
   let disk = { ...DEFAULT_RENDERER_PREFERENCES }
   let fail = true

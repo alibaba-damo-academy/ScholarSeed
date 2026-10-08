@@ -8,11 +8,12 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFileSync, spawn } = require('node:child_process')
 const { nativeTar } = require('../../../scripts/python.cjs')
-const { ensureArtifact } = require('../../../scripts/artifacts.cjs')
+const { artifactCache, ensureArtifact } = require('../../../scripts/artifacts.cjs')
 
 const VENDOR_RELATIVE = path.join('scripts', 'vendor', 'texlive')
 const MANIFEST_NAME = 'manifest.json'
-const CACHE_DIRECTORY = 'node_modules/.cache/scholarseed/texlive'
+const CACHE_DIRECTORY = 'texlive'
+const CACHE_COLLISION_CODES = new Set(['EEXIST', 'ENOTEMPTY', 'EPERM'])
 const CACHE_RECEIPT = 'archive.sha256'
 const BACKEND_DIRECTORY = 'backend'
 const TREE_DIRECTORY = 'texlive'
@@ -104,16 +105,26 @@ async function probe(binDir, executables, texlive, platform = process.platform) 
   return reported
 }
 
-// Development launcher: extract the reviewed archive into a per-checksum cache
-// under node_modules, the same place the vendored Codex runtime caches.
+function cacheDirectory(selected, environment = process.env, platform = process.platform) {
+  return path.join(artifactCache(environment, platform), CACHE_DIRECTORY, selected.sha256)
+}
+
+function publishCache(stage, directory, expectedDigest) {
+  try {
+    fs.renameSync(stage, directory)
+  } catch (error) {
+    const receipt = path.join(directory, CACHE_RECEIPT)
+    if (!CACHE_COLLISION_CODES.has(error.code) || !fs.existsSync(receipt) ||
+        fs.readFileSync(receipt, 'utf8').trim() !== expectedDigest) throw error
+    fs.rmSync(stage, { recursive: true, force: true })
+  }
+}
+
 async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
   arch = process.arch, log = () => {}) {
   const selected = artifact(desktopRoot, platform, arch)
-  const cache = path.join(desktopRoot, CACHE_DIRECTORY)
-  // `bin_relative` is relative to the extraction root and already starts with
-  // the tree directory, so the cache entry itself is what binDirectory resolves
-  // against.
-  const directory = path.join(cache, `${selected.texlive}-${selected.key}-${selected.sha256}`)
+  const directory = cacheDirectory(selected, process.env, platform)
+  const cache = path.dirname(directory)
   const receipt = path.join(directory, CACHE_RECEIPT)
   if (fs.existsSync(directory)) {
     if (!fs.existsSync(receipt) || fs.readFileSync(receipt, 'utf8').trim() !== selected.sha256) {
@@ -136,7 +147,7 @@ async function resolveVendoredTexlive(desktopRoot, platform = process.platform,
   try {
     execFileSync(nativeTar(platform), ['-xzf', selected.archive, '-C', stage], { stdio: 'pipe' })
     fs.writeFileSync(path.join(stage, CACHE_RECEIPT), `${selected.sha256}\n`, { flag: 'wx' })
-    fs.renameSync(stage, directory)
+    publishCache(stage, directory, selected.sha256)
   } catch (error) {
     fs.rmSync(stage, { recursive: true, force: true })
     throw error
@@ -191,5 +202,6 @@ function bundledTexlive(resourcesRoot, platform = process.platform) {
 }
 
 module.exports = { PLATFORM_DIRECTORY, TREE_DIRECTORY, artifact, binDirectory, bundledTexlive,
+  cacheDirectory, publishCache,
   digest, executableName, probe, resolveVendoredTexlive, stagedBinDirectory, stagedEngines,
   stageTexlive, stageVerifiedTexlive }

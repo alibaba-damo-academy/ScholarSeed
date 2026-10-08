@@ -18,6 +18,7 @@ from enum import Enum
 from service.content.service.sheet import SpreadsheetInspection
 from service.content.service.spreadsheet import processor_for
 from service.platform.content import FileAssetRef
+from service.platform.limits import DOCUMENT_PREVIEW_MAX_BYTES
 from service.platform.resources import ResourceFormatPolicy
 from service.platform.workbench import DocumentFormatProjection
 
@@ -59,8 +60,7 @@ UTF8_ENCODING = "utf-8"
 BINARY_PREVIEW_UNSUPPORTED = "binary_preview_unsupported"
 FILE_TOO_LARGE = "file_too_large"
 TEXT_VIEWER_KINDS = {ViewerKind.MARKDOWN, ViewerKind.CODE}
-MEBIBYTE = 1024 * 1024
-WORKBENCH_PREVIEW_MAX_BYTES = 500 * MEBIBYTE
+WORKBENCH_PREVIEW_MAX_BYTES = DOCUMENT_PREVIEW_MAX_BYTES
 
 
 #: 扩展名 → 格式能力。Viewer 和版本白名单共用这一份声明式注册表。

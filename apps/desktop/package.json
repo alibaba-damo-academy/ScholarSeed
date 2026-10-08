@@ -12,7 +12,7 @@
   },
   "scripts": {
     "preinstall": "node ../../scripts/toolchain.cjs check",
-    "pretest": "node ../../scripts/toolchain.cjs check && node --test ../../scripts/artifacts.test.cjs runtime/codex.test.cjs runtime/browser.test.cjs runtime/python.test.cjs runtime/texlive.test.cjs runtime/components.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
+    "pretest": "node ../../scripts/toolchain.cjs check && node --test ../../scripts/artifacts.test.cjs runtime/codex.test.cjs runtime/browser.test.cjs runtime/python.test.cjs runtime/powershell.test.cjs runtime/texlive.test.cjs runtime/components.test.cjs scripts/browser.test.cjs scripts/closure.test.cjs scripts/python.test.cjs scripts/toolchain.test.cjs && npm run i18n:test",
     "postinstall": "install-electron",
     "predev": "node scripts/office-assets.cjs && npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
     "dev": "electron-vite dev",
@@ -22,7 +22,7 @@
     "build:web": "vite build --config vite.web.config.ts",
     "preview:web": "vite preview --config vite.web.config.ts",
     "test": "node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
-    "test:coverage": "c8 --reporter=text --reporter=html --reporter=cobertura --all --include='src/**' node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
+    "test:coverage": "c8 node --experimental-transform-types --test scripts/build.test.cjs scripts/reuse.test.mjs \"*.test.ts\" \"src/**/*.test.ts\"",
     "test:literature-search": "node --experimental-transform-types --test src/renderer/src/features/literature/search.test.ts",
     "prepreview": "npm run prepare:python && node ../../scripts/toolchain.cjs check && node scripts/identity.cjs",
     "preview": "electron-vite preview",
@@ -31,6 +31,8 @@
     "package:dir": "npm run prepare:python && node scripts/build.cjs --stage dir --type dev",
     "package:installer": "npm run package",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "lint": "eslint src/ --max-warnings 305",
+    "lint:fix": "eslint src/ --fix",
     "test:e2e": "playwright test",
     "test:e2e:mr": "npm run build && playwright test --project=smoke",
     "test:e2e:live": "npm run build && playwright test --project=live",
@@ -56,12 +58,19 @@
     "@babel/core": "7.29.7",
     "@codemirror/view": "6.43.10",
     "@electron/asar": "3.4.1",
+    "@eslint/js": "^10.0.1",
+    "@tanstack/react-virtual": "^3.14.13",
     "semver": "6.3.1",
     "@milkdown/crepe": "^7.22.1",
     "@milkdown/kit": "^7.22.1",
     "decode-named-character-reference": "1.3.0",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
     "fflate": "0.8.3",
+    "husky": "^9.1.7",
     "katex": "0.18.1",
+    "lint-staged": "^17.5.1",
     "lucide-react": "^1.41.0",
     "monaco-editor": "0.56.0",
     "pdf-lib": "1.17.1",
@@ -95,6 +104,7 @@
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8.70.1",
     "vite": "7.3.6",
     "i18next": "26.4.2",
     "react-i18next": "17.0.13"
@@ -162,6 +172,10 @@
         ]
       }
     ],
+    "electronLanguages": [
+      "zh-CN",
+      "en"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "resources/icon.icns",
@@ -227,6 +241,7 @@
       "deleteAppDataOnUninstall": false
     },
     "dmg": {
+      "format": "UDBZ",
       "title": "ScholarSeed",
       "contents": [
         {
@@ -253,5 +268,9 @@
   "allowScripts": {
     "electron@44.3.0": true,
     "esbuild@0.21.5": true
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+    "src/**/*.{css,json}": ["prettier --write"]
   }
 }

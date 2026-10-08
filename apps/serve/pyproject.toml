@@ -47,7 +47,7 @@ dependencies = [
     "zstandard>=0.23,<1",
     "pdfplumber>=0.11.10,<0.12",
     "pypdfium2>=5,<5.12",     # PDF 渲染与快速文本；5.12+ 无 macOS <13 x86_64 wheel
-    "markdown-it-py>=4.2.0",
+    "markdown-it-py[linkify]>=4.2.0",
 ]
 
 [project.optional-dependencies]

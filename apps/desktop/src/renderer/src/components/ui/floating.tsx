@@ -197,7 +197,7 @@ export function createOpenContext(name: string, { dismissOutside = true }: { dis
   const Context = createContext<OpenContextValue | null>(null)
 
   function Provider({ children, defaultOpen = false, onOpenChange, open }: OpenRootProps): JSX.Element {
-    const anchorRef = useRef<HTMLElement>(null)
+    const anchorRef = useRef<HTMLElement | null>(null)
     const contentId = useId()
     const contentRef = useRef<HTMLDivElement>(null)
     const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen)
@@ -210,6 +210,15 @@ export function createOpenContext(name: string, { dismissOutside = true }: { dis
       }
       onOpenChange?.(nextOpen)
     }, [onOpenChange, open])
+
+    useLayoutEffect(() => {
+      if (!currentOpen || position) return
+      const anchor = anchorRef.current ?? document.querySelector<HTMLElement>(`[aria-controls~="${CSS.escape(contentId)}"]`)
+      if (!anchor) return
+      anchorRef.current = anchor
+      const rect = anchor.getBoundingClientRect()
+      setPosition({ bottom: rect.bottom, kind: 'anchor', left: rect.left, top: rect.top, width: rect.width })
+    }, [contentId, currentOpen, position])
 
     useEffect(() => {
       if (!currentOpen) return undefined
@@ -236,6 +245,7 @@ export function createOpenContext(name: string, { dismissOutside = true }: { dis
 
       const handlePointerDown = (event: PointerEvent): void => {
         if (!dismissOutside) return
+        if (event.target instanceof Node && anchorRef.current?.contains(event.target)) return
         if (!visibleContent(contentRef.current) || inFocusScope(contentRef.current, event.target)) return
         setOpen(false)
       }
@@ -379,7 +389,7 @@ export function useFloatingContentStyle(
   const { open, position } = context
   const floatingStyle = useTrackedFloatingStyle(context, open, side, align)
 
-  if (!position) return style
+  if (!position) return { visibility: 'hidden', ...style }
   return {
     visibility: floatingStyle ? 'visible' : 'hidden',
     ...floatingStyle,

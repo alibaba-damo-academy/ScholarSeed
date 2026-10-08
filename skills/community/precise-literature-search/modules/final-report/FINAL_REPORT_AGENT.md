@@ -17,8 +17,8 @@ Read these run-contained inputs when present:
 
 - `request.txt` and confirmed `intent.json`;
 - every `search/round-NNN/request.json`, especially its `user_feedback`;
-- the active `report.md` and `paper_summary.md`;
-- every `iterations/round-NNN/review.json`, plus its archived `report.md` and
+- the active `read_report.md` and `paper_summary.md`;
+- every `iterations/round-NNN/review.json`, plus its archived `read_report.md` and
   `paper_summary.md`;
 - `selection.json`, archived selections, and the referenced
   `search/round-NNN/metadata.json` files for paper identity and bibliography;
@@ -106,7 +106,8 @@ Mark abstract-derived reminder claims in the main body as `[A1]`, `[A2]`, and so
 on. If any are used, add exactly one `## 高度相关但未获得全文的文献（摘要级提醒）`
 or `## Highly relevant papers without full text (abstract-level alerts)` section
 immediately before the final references section. Use one single-line entry per
-marker in this form:
+marker in this form, with a blank line between every two entries so each is a
+separate Markdown paragraph in the document editor:
 
 `[A1] Authors. Title. Venue, Year. DOI or stable URL. Evidence level: abstract; full text not read. Abstract-based reminder: ...`
 
@@ -121,5 +122,8 @@ full-text claims they support. Reuse one number per readable paper, ensure every
 inline number has exactly one bibliography entry, and include no uncited
 bibliography entries. End with exactly one `## 参考资料` or `## References`
 section. Format each entry as one line: `[n] Authors. Title. Venue, Year. DOI or
-stable URL when available.` Put only numbered full-text reference entries and
-blank lines in that section. Do not cite internal run files as references.
+stable URL when available.` Separate every two entries with a blank line so
+each remains a distinct Markdown paragraph in the document editor. Alternatively,
+format every entry as a Markdown list item (`- [n] ...`). Put only numbered
+full-text reference entries, as paragraphs or list items, in that section.
+Do not cite internal run files as references.

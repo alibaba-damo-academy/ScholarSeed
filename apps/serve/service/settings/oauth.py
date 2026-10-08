@@ -14,6 +14,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
+from http import HTTPStatus
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
@@ -46,6 +47,15 @@ TOKEN_ERROR_CODES = {
     "invalid_client": "oauth_client_rejected",
     "access_denied": "oauth_authorization_denied",
 }
+#: 令牌失效时统一抛出的失败码；前端据此显示「请重新登录」。
+REAUTH_REQUIRED_CODE = "oauth_reauth_required"
+#: 上游模型/推理端点（区别于 /oauth/token）用 ``{"error": {"code": ...}}`` 表达「令牌已被
+#: 吊销/作废」的 401 code。命中即说明本地凭证已被上游提前作废（用户在官网登出、改密码或换
+#: 登录方式），必须回写 REAUTH_REQUIRED，而不是当通用失败吞掉。新增厂商吊销码是这里的新数据，
+#: 不是调用方的新分支。
+TOKEN_REVOKED = "token_revoked"
+INVALID_TOKEN = "invalid_token"
+UPSTREAM_REVOCATION_CODES = frozenset({TOKEN_REVOKED, INVALID_TOKEN})
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +63,20 @@ def token_failure(stage: str, status: int, code: str) -> OAuthFailure:
     """Only product-controlled fields may enter authentication diagnostics."""
     logger.warning("oauth_request_failed stage=%s http_status=%s error=%s", stage, status, code)
     return OAuthFailure(code)
+
+
+def upstream_revocation_code(status_code: int, error_code: str) -> str:
+    """Return the canonical code when an upstream response means re-login, else ``""``.
+
+    Data-driven gate shared by the model-catalog and inference paths: only an unauthorized
+    status carrying a whitelisted revocation code counts, so transient 5xx, network failures
+    and ordinary 4xx are never misread as a revoked login.
+    """
+
+    if status_code != HTTPStatus.UNAUTHORIZED:
+        return ""
+    code = error_code.strip().casefold()
+    return code if code in UPSTREAM_REVOCATION_CODES else ""
 
 
 class OAuthFailure(ValueError):
@@ -197,6 +221,12 @@ class OAuthProtocol:
             error = payload.get("error")
             upstream_code = error.get("code") if isinstance(error, dict) else error
             code = TOKEN_ERROR_CODES.get(upstream_code) if isinstance(upstream_code, str) else None
+            if (
+                previous is not None
+                and response.status_code == HTTPStatus.UNAUTHORIZED
+                and not code
+            ):
+                code = REAUTH_REQUIRED_CODE
             raise token_failure(stage, response.status_code, code or "oauth_exchange_failed")
         access = payload.get("access_token")
         refresh = payload.get("refresh_token")

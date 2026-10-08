@@ -7,10 +7,8 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from typing import Mapping
 
-from scholarseed_codex.protocol.state import CODEX_MAX_PROCESS_HOSTS
 from scholarseed_runtime.contract.resource import ResourceState
 
-DEFAULT_CONTROL_HOSTS = 1
 DEFAULT_RESOURCE_QUEUE_LIMIT = 100
 DEFAULT_RESOURCE_WAIT_SECONDS = 120.0
 DEFAULT_IDLE_RETENTION_SECONDS = 30.0
@@ -40,8 +38,8 @@ PENDING_RESOURCE_STATES = frozenset({ResourceState.WAITING, ResourceState.GRANTE
 
 @dataclass(frozen=True)
 class CapacityPolicy:
-    execution_hosts: int = CODEX_MAX_PROCESS_HOSTS
-    control_hosts: int = DEFAULT_CONTROL_HOSTS
+    execution_hosts: int | None = None
+    control_hosts: int | None = None
     queue_limit: int = DEFAULT_RESOURCE_QUEUE_LIMIT
     wait_seconds: float = DEFAULT_RESOURCE_WAIT_SECONDS
     idle_seconds: float = DEFAULT_IDLE_RETENTION_SECONDS
@@ -50,12 +48,13 @@ class CapacityPolicy:
 
     def __post_init__(self) -> None:
         for value in (
-            self.execution_hosts,
-            self.control_hosts,
             self.queue_limit,
             self.tombstone_limit,
         ):
             if type(value) is not int or value <= 0:
+                raise ValueError(CAPACITY_CONFIGURATION_INVALID)
+        for host_limit in (self.execution_hosts, self.control_hosts):
+            if host_limit is not None and (type(host_limit) is not int or host_limit <= 0):
                 raise ValueError(CAPACITY_CONFIGURATION_INVALID)
         for duration in (self.wait_seconds, self.idle_seconds, self.tombstone_seconds):
             if (
@@ -66,7 +65,7 @@ class CapacityPolicy:
             ):
                 raise ValueError(CAPACITY_CONFIGURATION_INVALID)
 
-    def limit(self, role: HostRole) -> int:
+    def limit(self, role: HostRole) -> int | None:
         return {
             HostRole.EXECUTION: self.execution_hosts,
             HostRole.CONTROL: self.control_hosts,

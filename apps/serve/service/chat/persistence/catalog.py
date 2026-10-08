@@ -14,14 +14,23 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from scholarseed_runtime.contract import (
+    ActorKind,
     CapabilitySet,
     CapabilityState,
+    DeliveryClass,
     ModelThinking,
     RuntimeBinding,
     RuntimeCapability,
     RuntimeCapabilityName,
+    RuntimeEvent,
+    RuntimeEventKind,
 )
 from scholarseed_runtime.contract.history import HistoryEntry, MessagePhase
+from scholarseed_runtime.contract.incident import (
+    INCIDENT_ID_KEY,
+    INCIDENT_PAYLOAD_KEY,
+    RESOLVED_AMBIGUOUS_INCIDENT_ID_KEY,
+)
 from service.chat.constants import PRODUCT_TURN_OUTCOME_INTERRUPTED, SessionTitleFallback
 from service.chat.persistence.utils import validate_transaction
 from service.paths import SESSION_CATALOG_DB
@@ -38,6 +47,15 @@ SESSION_PORTABLE_HISTORY_TABLE = "session_portable_history"
 SESSION_RUNTIME_BINDING_TABLE = "session_runtime_binding"
 SESSION_MESSAGE_QUEUE_TABLE = "session_message_queue"
 SESSION_ACTIVATION_TABLE = "session_activation"
+SESSION_TASK_BINDING_TABLE = "session_task_binding"
+SESSION_TURN_SETTLEMENT_TABLE = "session_turn_settlement"
+TURN_SETTLEMENT_RESOLUTION_KINDS = frozenset(
+    {
+        RuntimeEventKind.TURN_COMPLETED,
+        RuntimeEventKind.TURN_FAILED,
+        RuntimeEventKind.TURN_INTERRUPTED,
+    }
+)
 QUEUE_PURPOSE_TURN = "turn"
 QUEUE_RECOVERY_UNKNOWN_ERROR = "runtime_submission_outcome_unknown"
 QUEUE_RECOVERY_WAIT_INTERRUPTED = "runtime_resource_wait_interrupted"
@@ -104,6 +122,7 @@ CATALOG_ADDITIVE_COLUMNS = {
     "codex_version": "TEXT",
     "model_id": "TEXT",
     "policy_id": "TEXT",
+    "next_turn_mode": "TEXT",
     "status": f"TEXT NOT NULL DEFAULT '{SessionStatus.LEGACY_READONLY.value}'",
     "last_turn_id": "TEXT",
     "last_turn_status": "TEXT",
@@ -165,6 +184,11 @@ class QueuedMessageState(str, Enum):
     OUTCOME_UNKNOWN = "outcome_unknown"
 
 
+class SubmissionMode(str, Enum):
+    DIRECT = "direct"
+    QUEUED = "queued"
+
+
 QUEUE_PENDING_STATES = (
     QueuedMessageState.QUEUED,
     QueuedMessageState.WAITING_RESOURCES,
@@ -185,9 +209,11 @@ QUEUE_REJECTABLE_STATES = (
     QueuedMessageState.SUBMITTING,
 )
 QUEUE_ADDITIVE_COLUMNS = {
+    "safe_error_details": "TEXT NOT NULL DEFAULT '{}'",
     "deadline": "REAL",
     "purpose": f"TEXT NOT NULL DEFAULT '{QUEUE_PURPOSE_TURN}'",
     "native_turn_id": "TEXT NOT NULL DEFAULT ''",
+    "submission_mode": f"TEXT NOT NULL DEFAULT '{SubmissionMode.QUEUED.value}'",
 }
 CATALOG_FOREIGN_KEY_MIGRATION_SUFFIX = "_foreign_key_migration"
 
@@ -222,6 +248,18 @@ class QueuedMessageRecord:
     deadline: float | None = None
     purpose: str = QUEUE_PURPOSE_TURN
     native_turn_id: str = ""
+    submission_mode: SubmissionMode = SubmissionMode.QUEUED
+    safe_error_details: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PendingTurnSettlement:
+    session_id: str
+    client_turn_id: str
+    native_turn_id: str
+    event: RuntimeEvent
+    created_at: float
+    recovery_blocked: bool = False
 
 
 @dataclass(frozen=True)
@@ -262,6 +300,7 @@ class SessionCatalogRecord:
     todo_product_seq: int = INITIAL_PRODUCT_SEQUENCE
     todo_explanation: str | None = None
     title_fallback: SessionTitleFallback | None = None
+    next_turn_mode: str | None = None
 
 
 def encode_thinking(thinking: ModelThinking | None) -> str | None:
@@ -443,6 +482,32 @@ class SessionCatalogStore:
         cls._create_runtime_binding(connection)
         cls._create_activation(connection)
         cls._create_message_queue(connection)
+        cls._create_turn_settlement(connection)
+        connection.execute(f"""
+            CREATE TABLE IF NOT EXISTS {SESSION_TASK_BINDING_TABLE} (
+                session_id TEXT PRIMARY KEY,
+                binding_json TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES {SESSION_CATALOG_TABLE}(session_id)
+                    ON DELETE CASCADE
+            )
+            """)
+
+    def task_binding(self, session_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"SELECT binding_json FROM {SESSION_TASK_BINDING_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return json.loads(row["binding_json"]) if row is not None else None
+
+    def remember_task_binding(self, session_id: str, binding: Mapping[str, Any]) -> None:
+        encoded = json.dumps(dict(binding), ensure_ascii=False, sort_keys=True)
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                f"INSERT INTO {SESSION_TASK_BINDING_TABLE} (session_id, binding_json) VALUES (?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET binding_json = excluded.binding_json",
+                (session_id, encoded),
+            )
 
     @staticmethod
     def _tables(connection: sqlite3.Connection) -> frozenset[str]:
@@ -519,6 +584,7 @@ class SessionCatalogStore:
                 codex_version TEXT,
                 model_id TEXT,
                 policy_id TEXT,
+                next_turn_mode TEXT,
                 status TEXT NOT NULL,
                 last_turn_id TEXT,
                 last_turn_status TEXT,
@@ -708,6 +774,7 @@ class SessionCatalogStore:
                 deadline REAL,
                 purpose TEXT NOT NULL DEFAULT '{QUEUE_PURPOSE_TURN}',
                 native_turn_id TEXT NOT NULL DEFAULT '',
+                submission_mode TEXT NOT NULL DEFAULT '{SubmissionMode.QUEUED.value}',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 UNIQUE(session_id, enqueue_seq),
@@ -727,6 +794,144 @@ class SessionCatalogStore:
             f"ON {SESSION_MESSAGE_QUEUE_TABLE}(session_id, state, enqueue_seq)"
         )
 
+    @classmethod
+    def _create_turn_settlement(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(f"""
+            CREATE TABLE IF NOT EXISTS {SESSION_TURN_SETTLEMENT_TABLE} (
+                session_id TEXT PRIMARY KEY,
+                client_turn_id TEXT NOT NULL,
+                native_turn_id TEXT NOT NULL,
+                event_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                recovery_blocked INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(session_id) REFERENCES {SESSION_CATALOG_TABLE}(session_id)
+                    ON DELETE CASCADE
+            )
+            """)
+        if "recovery_blocked" not in cls._columns(connection, SESSION_TURN_SETTLEMENT_TABLE):
+            connection.execute(
+                f"ALTER TABLE {SESSION_TURN_SETTLEMENT_TABLE} "
+                "ADD COLUMN recovery_blocked INTEGER NOT NULL DEFAULT 0"
+            )
+
+    @staticmethod
+    def _turn_settlement(row: sqlite3.Row | None) -> PendingTurnSettlement | None:
+        if row is None:
+            return None
+        payload = json.loads(str(row["event_json"]))
+        payload["kind"] = RuntimeEventKind(payload["kind"])
+        payload["delivery"] = DeliveryClass(payload["delivery"])
+        payload["actor_kind"] = ActorKind(payload["actor_kind"])
+        return PendingTurnSettlement(
+            session_id=str(row["session_id"]),
+            client_turn_id=str(row["client_turn_id"]),
+            native_turn_id=str(row["native_turn_id"]),
+            event=RuntimeEvent(**payload),
+            created_at=float(row["created_at"]),
+            recovery_blocked=bool(row["recovery_blocked"]),
+        )
+
+    def record_turn_settlement(
+        self, session_id: str, client_turn_id: str, event: RuntimeEvent
+    ) -> PendingTurnSettlement:
+        if (
+            not client_turn_id.strip()
+            or not event.native_turn_id.strip()
+            or event.product_session_id != session_id
+        ):
+            raise ValueError("turn settlement requires matching session and turn ids")
+        encoded = json.dumps(dataclasses.asdict(event), ensure_ascii=False, sort_keys=True)
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            existing = self._turn_settlement(row)
+            if existing is not None:
+                if self._resolves_unknown_settlement(existing, client_turn_id, event):
+                    connection.execute(
+                        f"UPDATE {SESSION_TURN_SETTLEMENT_TABLE} "
+                        "SET native_turn_id = ?, event_json = ? "
+                        "WHERE session_id = ? AND event_json = ?",
+                        (event.native_turn_id, encoded, session_id, row["event_json"]),
+                    )
+                    return PendingTurnSettlement(
+                        session_id,
+                        client_turn_id,
+                        event.native_turn_id,
+                        event,
+                        existing.created_at,
+                        existing.recovery_blocked,
+                    )
+                if (
+                    existing.client_turn_id != client_turn_id
+                    or existing.native_turn_id != event.native_turn_id
+                    or existing.event.event_id != event.event_id
+                    or existing.event != event
+                ):
+                    raise SessionStateConflictError("pending turn settlement conflict")
+                return existing
+            now = time.time()
+            connection.execute(
+                f"INSERT INTO {SESSION_TURN_SETTLEMENT_TABLE} "
+                "(session_id, client_turn_id, native_turn_id, event_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, client_turn_id, event.native_turn_id, encoded, now),
+            )
+            return PendingTurnSettlement(
+                session_id, client_turn_id, event.native_turn_id, event, now
+            )
+
+    @staticmethod
+    def _resolves_unknown_settlement(
+        existing: PendingTurnSettlement, client_turn_id: str, event: RuntimeEvent
+    ) -> bool:
+        prior = existing.event
+        prior_payload = prior.payload if isinstance(prior.payload, Mapping) else {}
+        incident = prior_payload.get(INCIDENT_PAYLOAD_KEY)
+        incident_values = incident if isinstance(incident, Mapping) else {}
+        resolved_payload = event.payload if isinstance(event.payload, Mapping) else {}
+        incident_id = str(incident_values.get(INCIDENT_ID_KEY) or "")
+        return bool(
+            incident_id
+            and prior.kind is RuntimeEventKind.TURN_UNKNOWN
+            and event.kind in TURN_SETTLEMENT_RESOLUTION_KINDS
+            and existing.client_turn_id == client_turn_id
+            and prior.runtime_id == event.runtime_id
+            and prior.product_session_id == event.product_session_id
+            and prior.native_session_id == event.native_session_id
+            and prior.correlation_id == event.correlation_id == client_turn_id
+            and event.process_generation >= prior.process_generation
+            and str(resolved_payload.get(RESOLVED_AMBIGUOUS_INCIDENT_ID_KEY) or "") == incident_id
+        )
+
+    def pending_turn_settlement(self, session_id: str) -> PendingTurnSettlement | None:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                f"SELECT * FROM {SESSION_TURN_SETTLEMENT_TABLE} WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return self._turn_settlement(row)
+
+    def mark_turn_recovery_blocked(self, session_id: str, blocked: bool) -> bool:
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                f"UPDATE {SESSION_TURN_SETTLEMENT_TABLE} SET recovery_blocked = ? "
+                "WHERE session_id = ?",
+                (int(blocked), session_id),
+            )
+            return cursor.rowcount == 1
+
+    def clear_turn_settlement(self, session_id: str, native_turn_id: str) -> bool:
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                f"DELETE FROM {SESSION_TURN_SETTLEMENT_TABLE} "
+                "WHERE session_id = ? AND native_turn_id = ?",
+                (session_id, native_turn_id),
+            )
+            return cursor.rowcount == 1
+
     @staticmethod
     def _queued_message(row: sqlite3.Row | None) -> QueuedMessageRecord | None:
         if row is None:
@@ -739,11 +944,13 @@ class SessionCatalogStore:
             state=QueuedMessageState(str(row["state"])),
             body=dict(json.loads(str(row["body"]))),
             safe_error=str(row["safe_error"] or ""),
+            safe_error_details=dict(json.loads(str(row["safe_error_details"]))),
             created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]),
             deadline=float(row["deadline"]) if row["deadline"] is not None else None,
             purpose=str(row["purpose"]),
             native_turn_id=str(row["native_turn_id"]),
+            submission_mode=SubmissionMode(str(row["submission_mode"])),
         )
 
     def enqueue_message(
@@ -754,6 +961,7 @@ class SessionCatalogStore:
         *,
         deadline: float | None = None,
         purpose: str = QUEUE_PURPOSE_TURN,
+        submission_mode: SubmissionMode = SubmissionMode.QUEUED,
     ) -> QueuedMessageRecord:
         if not queued_message_id.strip() or not purpose.strip():
             raise ValueError("queued request id and purpose must not be empty")
@@ -795,7 +1003,7 @@ class SessionCatalogStore:
             connection.execute(
                 f"INSERT INTO {SESSION_MESSAGE_QUEUE_TABLE} "
                 "(queued_message_id, session_id, enqueue_seq, state, body, created_at, updated_at, "
-                "deadline, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "deadline, purpose, submission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     queued_message_id,
                     session_id,
@@ -806,6 +1014,7 @@ class SessionCatalogStore:
                     now,
                     deadline,
                     purpose,
+                    submission_mode.value,
                 ),
             )
             connection.commit()
@@ -863,7 +1072,7 @@ class SessionCatalogStore:
                 return record
             connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, "
-                "deadline = ?, safe_error = '', updated_at = ? "
+                "deadline = ?, safe_error = '', safe_error_details = '{}', updated_at = ? "
                 "WHERE session_id = ? AND queued_message_id = ?",
                 (
                     QueuedMessageState.WAITING_RESOURCES.value,
@@ -902,7 +1111,8 @@ class SessionCatalogStore:
                 return record
             connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, native_turn_id = ?, "
-                "safe_error = '', updated_at = ? WHERE session_id = ? AND queued_message_id = ?",
+                "safe_error = '', safe_error_details = '{}', updated_at = ? "
+                "WHERE session_id = ? AND queued_message_id = ?",
                 (
                     QueuedMessageState.RUNNING.value,
                     native_turn_id,
@@ -945,7 +1155,8 @@ class SessionCatalogStore:
             operation_seq = int(row["value"]) + 1
             cursor = connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, operation_seq = ?, "
-                "safe_error = '', updated_at = ? WHERE session_id = ? AND queued_message_id = ? "
+                "safe_error = '', safe_error_details = '{}', updated_at = ? "
+                "WHERE session_id = ? AND queued_message_id = ? "
                 f"AND state IN ({','.join('?' for _ in QUEUE_SUBMITTABLE_STATES)})",
                 (
                     QueuedMessageState.SUBMITTING.value,
@@ -969,7 +1180,8 @@ class SessionCatalogStore:
     ) -> QueuedMessageRecord | None:
         with closing(self._connect()) as connection, connection:
             cursor = connection.execute(
-                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET body = ?, safe_error = '', updated_at = ? "
+                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET body = ?, safe_error = '', "
+                "safe_error_details = '{}', updated_at = ? "
                 "WHERE session_id = ? AND queued_message_id = ? "
                 f"AND state IN ({','.join('?' for _ in QUEUE_SUBMITTABLE_STATES)})",
                 (
@@ -1007,17 +1219,20 @@ class SessionCatalogStore:
         *,
         unknown: bool,
         safe_error: str,
+        safe_error_details: Mapping[str, str] | None = None,
     ) -> None:
         state = QueuedMessageState.OUTCOME_UNKNOWN if unknown else QueuedMessageState.FAILED
         allowed = QUEUE_COMPLETABLE_STATES if unknown else QUEUE_REJECTABLE_STATES
         with closing(self._connect()) as connection, connection:
             connection.execute(
-                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, safe_error = ?, updated_at = ? "
+                f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, safe_error = ?, "
+                "safe_error_details = ?, updated_at = ? "
                 "WHERE session_id = ? AND queued_message_id = ? "
                 f"AND state IN ({','.join('?' for _ in allowed)})",
                 (
                     state.value,
                     safe_error,
+                    json.dumps(dict(safe_error_details or {}), ensure_ascii=False, sort_keys=True),
                     time.time(),
                     session_id,
                     queued_message_id,
@@ -1221,6 +1436,7 @@ class SessionCatalogStore:
             codex_version=cls._optional(row, "codex_version"),
             model_id=cls._optional(row, "model_id"),
             policy_id=cls._optional(row, "policy_id"),
+            next_turn_mode=cls._optional(row, "next_turn_mode"),
             status=SessionStatus(str(row["status"])),
             last_turn_id=cls._optional(row, "last_turn_id"),
             last_turn_status=cls._optional(row, "last_turn_status"),
@@ -1540,7 +1756,7 @@ class SessionCatalogStore:
             ).rowcount
             connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, safe_error = ?, "
-                "updated_at = ? WHERE state = ?",
+                "safe_error_details = '{}', updated_at = ? WHERE state = ?",
                 (
                     QueuedMessageState.FAILED.value,
                     QUEUE_RECOVERY_WAIT_INTERRUPTED,
@@ -1550,7 +1766,7 @@ class SessionCatalogStore:
             )
             submissions = connection.execute(
                 f"UPDATE {SESSION_MESSAGE_QUEUE_TABLE} SET state = ?, safe_error = ?, "
-                "updated_at = ? WHERE state IN (?, ?)",
+                "safe_error_details = '{}', updated_at = ? WHERE state IN (?, ?)",
                 (
                     QueuedMessageState.OUTCOME_UNKNOWN.value,
                     QUEUE_RECOVERY_UNKNOWN_ERROR,
@@ -1811,6 +2027,7 @@ class SessionCatalogStore:
         policy_id: str,
         *,
         updated_at: float | None = None,
+        next_turn: bool = False,
     ) -> SessionCatalogRecord:
         self.require(session_id, principal)
         timestamp = float(updated_at if updated_at is not None else time.time())
@@ -1819,10 +2036,16 @@ class SessionCatalogStore:
             cursor = connection.execute(
                 f"""
                 UPDATE {SESSION_CATALOG_TABLE}
-                SET policy_id = ?, updated_at = ?
+                SET policy_id = ?, next_turn_mode = ?, updated_at = ?
                 WHERE session_id = ? AND {condition}
                 """,
-                ((policy_id or "").strip() or None, timestamp, session_id, *owner_params),
+                (
+                    (policy_id or "").strip() or None,
+                    policy_id if next_turn else None,
+                    timestamp,
+                    session_id,
+                    *owner_params,
+                ),
             )
         if cursor.rowcount != 1:
             raise SessionAccessError("session not found")

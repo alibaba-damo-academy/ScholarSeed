@@ -15,6 +15,7 @@ from service.assistant.persistence.invocations import (
     AssistantInvocationStore,
 )
 from service.assistant.service.actions import CompiledAssistantAction
+from service.chat.service.models import SessionModelUnavailableError
 from service.literature.api.analysis import register_analysis_routes
 from service.literature.persistence.store import LiteratureRepository
 from service.literature.service.analysis import (
@@ -75,6 +76,15 @@ class PdfFailureContracts(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         response.json()["detail"]["code"],
                         AnalysisErrorCode.LITERATURE_MISSING.value,
+                    )
+                    models.inference_connection.side_effect = SessionModelUnavailableError(
+                        "selected model is unavailable"
+                    )
+                    response = await client.post("/api/literature/ai/preflight", json=payload)
+                    self.assertEqual(response.status_code, 422)
+                    self.assertEqual(
+                        response.json()["detail"],
+                        {"code": AnalysisErrorCode.MODEL_UNAVAILABLE.value, "diagnostic": ""},
                     )
                     # Identical Chinese text from an untyped external failure must stay a diagnostic.
                     diagnostic = "文献不存在，请重新打开文献。"

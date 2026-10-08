@@ -2,6 +2,14 @@
   "downloaded_at": "2026-08-25",
   "files": [
     {
+      "style": "gbt7714_2025",
+      "path": "gbt7714/gbt7714-2025-numeric.bst",
+      "source": "https://mirrors.ctan.org/biblio/bibtex/contrib/gbt7714.zip",
+      "version": "3.1.1 (2026-09-27), generated unmodified with gbt7714-bst.ins",
+      "license": "LaTeX Project Public License 1.3c or later",
+      "sha256": "3a831839612ed22bb315857c47ef31363c006cec43b0faff2e2baa85e0e9e644"
+    },
+    {
       "style": "author_year",
       "path": "author-year/plainnat.bst",
       "source": "https://mirrors.ctan.org/macros/latex/contrib/natbib/plainnat.bst",

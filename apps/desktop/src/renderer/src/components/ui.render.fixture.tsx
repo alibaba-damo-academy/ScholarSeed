@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { I18nextProvider } from 'react-i18next'
 import { Copy } from 'lucide-react'
+import { IconFont } from './primitive'
 import { createLocalization } from '../../../localization/engine'
 import { resources } from '../../../localization/resources'
 import aiThinking from '../assets/ai-thinking.gif'
@@ -459,6 +460,23 @@ function Fixture(): JSX.Element {
       />
       <output data-testid="render-checkbox-value">{accepted ? 'yes' : 'no'}</output>
       <Checkbox checked="mixed" data-testid="render-checkbox-mixed" label="部分选择" />
+      <Checkbox checked={accepted} data-testid="render-checkbox-content" onCheckedChange={setAccepted}>
+        <span>选项标题</span><span>选项描述</span>
+      </Checkbox>
+      <section className="grid w-[var(--vds-conversation-content-width)] gap-[var(--vds-space-3)]" data-testid="render-question-options">
+        <Radio align="first-line" checked className="flex w-full gap-[var(--vds-space-2)]" data-testid="render-question-option-radio">
+          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
+            <span className="mr-[var(--vds-space-2)] font-medium">外置持久记忆系统</span>
+            跨会话、跨任务的外部记忆库：写入/压缩/检索/更新与遗忘机制（如 MemGPT、记忆增强 Agent 一类工作）
+          </span>
+        </Radio>
+        <Checkbox align="first-line" className="flex w-full gap-[var(--vds-space-2)]" data-testid="render-question-option-checkbox">
+          <span className="min-w-0 flex-1 text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)]">
+            <span className="mr-[var(--vds-space-2)] font-medium">外置持久记忆系统</span>
+            跨会话、跨任务的外部记忆库：写入/压缩/检索/更新与遗忘机制（如 MemGPT、记忆增强 Agent 一类工作）
+          </span>
+        </Checkbox>
+      </section>
 
       <Radio
         checked={mode === 'auto'}
@@ -521,6 +539,12 @@ function Fixture(): JSX.Element {
         <AlertDescription data-testid="render-alert-default">普通摘要保持默认两行。</AlertDescription>
       </Alert>
 
+      <Alert data-testid="render-alert-align-single" tone="warning">
+        <AlertDescription truncate={false}>文件将移到废纸篓。</AlertDescription>
+      </Alert>
+      <Alert data-testid="render-alert-align-multiple" tone="warning" style={{ width: 220 }}>
+        <AlertDescription truncate={false}>这会同步影响你的本地文件：文件将被移到系统废纸篓，可以从废纸篓恢复。</AlertDescription>
+      </Alert>
       <ProgressBar
         data-testid="render-progress"
         label="上传进度"
@@ -562,6 +586,9 @@ function Fixture(): JSX.Element {
         image={{ src: '/assets/empty-test.webp', alt: '' }}
         title="暂无项目"
       />
+
+      <EmptyState variant="compact" data-testid="render-empty-compact" icon={<Copy size={24} />} title="暂无内容" description="没有匹配的结果" />
+      <EmptyState variant="compact" data-testid="render-empty-compact-font" icon={<IconFont type="line-operation-search" />} title="暂无内容" />
 
       <CopyButton data-testid="render-copy-button" feedbackDuration={50} value="copy-value">
         复制
@@ -1169,11 +1196,13 @@ function Fixture(): JSX.Element {
       />
       <output data-testid="render-toaster-controlled-count">{controlledToasts.length}</output>
 
+      <div data-vds-toast-viewport style={{ position: 'relative', width: 320, transform: 'translateX(20px)' }}>
       <Toaster
         aria-label="位置通知"
         data-testid="render-toaster-position"
         placement="top-right"
       />
+      </div>
 
       <Toaster
         aria-label="自动通知"

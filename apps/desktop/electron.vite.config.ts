@@ -2,7 +2,7 @@ import { resolve } from 'path'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import { developmentLocalization } from './scripts/localization/dom.mjs'
-import { RENDERER_OPTIMIZE_DEPS } from './renderer'
+import { RENDERER_OPTIMIZE_DEPS, supportedFontSources } from './renderer'
 import {
   RENDERER_DEV_CACHE_DIRECTORY,
   RENDERER_DEV_HOST,
@@ -32,10 +32,20 @@ export default defineConfig(({ command }) => ({
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           monaco: resolve(__dirname, 'src/renderer/monaco.html')
+        },
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/')) return 'vendor-react'
+            if (id.includes('node_modules/i18next') || id.includes('node_modules/react-i18next')) return 'vendor-i18n'
+            if (id.includes('node_modules/@milkdown') || id.includes('node_modules/prosemirror')) return 'vendor-editor'
+            if (id.includes('node_modules/katex') || id.includes('node_modules/rehype-katex')) return 'vendor-math'
+            if (id.includes('node_modules/lucide-react')) return 'vendor-icons'
+            if (id.includes('node_modules/recharts') || id.includes('node_modules/d3-')) return 'vendor-charts'
+          }
         }
       }
     },
-    plugins: [react({ babel: developmentLocalization(command) })],
+    plugins: [react({ babel: developmentLocalization(command) }), supportedFontSources()],
     cacheDir: resolve(__dirname, RENDERER_DEV_CACHE_DIRECTORY),
     optimizeDeps: RENDERER_OPTIMIZE_DEPS,
     server: {

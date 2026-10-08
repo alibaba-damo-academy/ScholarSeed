@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import type { DocumentPanelContext } from '../../contracts/features.ts'
@@ -9,6 +10,8 @@ import {
   markdownNoteExport,
   exportNoteAsMarkdown
 } from './note.ts'
+
+const notesSource = readFileSync(new URL('./Notes.tsx', import.meta.url), 'utf8')
 
 const context = (
   owner: 'literature_attachment' | 'project_asset' | null,
@@ -45,6 +48,13 @@ test('reader note titles prefer persisted titles and use a stable positional fal
     'Findings'
   )
   assert.equal(literatureNoteTitle({ title: '' }, 1, fallback), 'Note 2')
+})
+
+test('note editor back discards the draft when an error is visible', () => {
+  assert.match(
+    notesSource,
+    /const requestClose = \(\): void => \{\s+if \(error \|\| exportError\) \{\s+setExportError\(''\)\s+close\(\)\s+return/
+  )
 })
 
 test('Markdown export preserves headings, lists, links, code and Unicode exactly', () => {

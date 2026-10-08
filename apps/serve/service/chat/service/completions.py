@@ -16,7 +16,8 @@ from email.utils import parsedate_to_datetime
 from enum import Enum
 from http import HTTPStatus
 from io import BytesIO
-from typing import Any, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from typing import Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, Request
@@ -25,19 +26,34 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.types import Message, Receive, Scope, Send
 
 from scholarseed_runtime.contract.model import ModelCredential, ModelThinking, ModelWireProtocol
-from service.chat.service.rejections import TRANSIENT_PROVIDER_HTTP_STATUSES
+from service.chat.service.provenance import ProvenanceStream, response_provenance
+from service.chat.service.rejections import (
+    TRANSIENT_PROVIDER_CODES,
+    TRANSIENT_PROVIDER_FAILURE_CODE,
+    TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+    TRANSIENT_PROVIDER_HTTP_STATUSES,
+)
 from service.chat.service.streams import (
     RESPONSE_FAILED,
+    SSE_BUFFER_LIMIT,
     CompletionDiagnostic,
     NativeResponseNormalizer,
     StreamEnd,
+    StreamObservation,
+    coalesce_text_delta_stream,
     metadata_token,
 )
-from service.chat.service.transport import retryable_connect_failure, transport_diagnostics
+from service.chat.service.transport import (
+    TransportFailureCategory,
+    retryable_pre_response_failure,
+    transport_diagnostics,
+)
 from service.identity.service.account_token import CONV_TURN_ID_HEADER
 from service.inference.reasoning import (
     ThinkingParameters,
     apply_thinking,
+    outbound_names,
+    strip_thinking,
     thinking_parameters,
 )
 from service.inference.source import SOURCE_UNAVAILABLE, accepts_source, attach_source
@@ -66,6 +82,9 @@ COMPLETION_STATUS_INCOMPLETE = "incomplete"
 COMPLETION_STATUS_COMPLETED = "completed"
 COMPLETION_STATUS_FAILED = "failed"
 CHAT_COMPLETIONS_TOOL_TYPE = "function"
+REASONING_ITEM_TYPE = "reasoning"
+REASONING_TEXT_TYPE = "reasoning_text"
+CHAT_REASONING_CONTENT = "reasoning_content"
 RESPONSES_SUFFIX = "/responses"
 MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED = "model_bridge_native_tools_unsupported"
 MODEL_BRIDGE_CLOSED = "model_bridge_closed"
@@ -82,10 +101,15 @@ MODEL_BRIDGE_CREDENTIAL_REQUIRED = "model_bridge_credential_required"
 MODEL_UPSTREAM_STREAM_ERROR = "model_upstream_stream_error"
 UPSTREAM_RATE_LIMIT_STATUS = HTTPStatus.TOO_MANY_REQUESTS
 UPSTREAM_RETRY_MAX_ATTEMPTS = 3
+UPSTREAM_TLS_RETRY_MAX_ATTEMPTS = 7
 UPSTREAM_RETRY_BASE_DELAY_SECONDS = 1.0
 UPSTREAM_RETRY_MAX_DELAY_SECONDS = 8.0
 UPSTREAM_RETRY_JITTER_RATIO = 0.2
 UPSTREAM_RETRY_AFTER_HEADER = "retry-after"
+UPSTREAM_KEEPALIVE_EXPIRY_SECONDS = 60.0
+HTTP_CORE_CONNECT_STARTED = "connection.connect_tcp.started"
+HTTP_CORE_TLS_STARTED = "connection.start_tls.started"
+HTTP_CORE_TRACE_EXTENSION = "trace"
 
 
 class TransportStage(str, Enum):
@@ -114,6 +138,10 @@ logger = logging.getLogger(__name__)
 class CompletionRegistration:
     bridge_id: str
     base_url: str
+    # 内部通道的目标 host。Codex 子进程继承宿主系统代理，其模型客户端默认不豁免
+    # loopback，所以产品必须显式声明这个 host 需要绕过代理，否则请求被代理截走、
+    # 永远到不了本进程。归属知识在本模块（``_internal_base_url`` 的唯一持有者）。
+    proxy_bypass_host: str = ""
 
 
 @dataclass(frozen=True)
@@ -136,7 +164,6 @@ class CompletionCall:
     task: asyncio.Task | None
     on_closed: Callable[[CompletionCall], None]
     diagnostic: CompletionDiagnostic
-    client: httpx.AsyncClient | None = None
     response: httpx.Response | None = None
     streaming: bool = False
     revoked: bool = False
@@ -160,12 +187,8 @@ class CompletionCall:
 
     async def _close(self) -> None:
         try:
-            try:
-                if self.response is not None:
-                    await self.response.aclose()
-            finally:
-                if self.client is not None:
-                    await self.client.aclose()
+            if self.response is not None:
+                await self.response.aclose()
         finally:
             self.on_closed(self)
 
@@ -183,13 +206,28 @@ class CompletionStream(StreamingResponse):
         super().__init__(content, media_type=SSE_MEDIA_TYPE)
         self.call = call
 
+    async def stream_response(self, send: Send) -> None:
+        # Starlette may consume the response in an ASGI task-group child. Own
+        # that whole consumer, never a single coalescer anext task.
+        self.call.task = asyncio.current_task()
+        try:
+            await super().stream_response(send)
+        finally:
+            self.call.task = None
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         reason = StreamEnd.EOF.value
 
         async def observed_send(message: Message) -> None:
+            body = message.get("body", b"") if message["type"] == "http.response.body" else b""
+            send_started_at = time.perf_counter() if body else None
             await send(message)
-            if message["type"] == "http.response.body":
-                self.call.diagnostic.downstream.feed(message.get("body", b""))
+            if body:
+                self.call.diagnostic.downstream.feed(body)
+                assert send_started_at is not None
+                self.call.diagnostic.observe_downstream_send(
+                    (time.perf_counter() - send_started_at) * 1000
+                )
 
         try:
             await super().__call__(scope, receive, observed_send)
@@ -277,11 +315,19 @@ class CompletionUpstream:
     catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = field(
         default=None, repr=False
     )
+    #: 上游明确吊销凭据（401 token_revoked / invalid_token）时的回写钩子，由订阅侧注入：
+    #: ``(owner_id, connection_id, status_code, upstream_error_code) -> 要透出的产品码``
+    #: （返回 ``""`` 表示非吊销类）。桥不持有凭证 store、也不反向依赖 settings，只通过这个
+    #: 回调把「是否吊销 + 回写」交回凭据属主，推理路径与目录路径共用同一判定。
+    credential_revocation_handler: Callable[[str, str, int, str], str] | None = field(
+        default=None, repr=False
+    )
     trust_env: bool = False
     reasoning_effort: str | None = None
     thinking: ModelThinking | None = None
     reasoning_options: tuple[Mapping[str, Any], ...] | None = None
     provider: str = ""
+    approval_model_ref: str = ""
     active: bool = True
     calls: set[CompletionCall] = field(default_factory=set, repr=False)
     created_at: float = field(default_factory=time.monotonic)
@@ -379,6 +425,7 @@ class CompletionBridge:
         *,
         on_model: Callable[[str, str, str], None] | None = None,
         on_diagnostic: Callable[[str, Mapping[str, Any]], None] | None = None,
+        on_sources: Callable[[str, str, Mapping[str, Any]], Awaitable[None]] | None = None,
         turn_ids: Callable[[str], str] | None = None,
         source_text: Callable[[str, str], str | None] | None = None,
         source_endpoints: Sequence[str] = (),
@@ -386,6 +433,7 @@ class CompletionBridge:
     ) -> None:
         self._on_model = on_model
         self._on_diagnostic = on_diagnostic
+        self._on_sources = on_sources
         self._turn_ids = turn_ids
         self._source_text = source_text
         self._source_endpoints = tuple(source_endpoints)
@@ -394,7 +442,25 @@ class CompletionBridge:
         self._shared_ownership = bool(shared_ownership)
         self._upstreams: dict[str, CompletionUpstream] = {}
         self._calls: set[CompletionCall] = set()
+        self._clients: dict[bool, httpx.AsyncClient] = {}
         self._closed = False
+
+    def _client(self, trust_env: bool) -> tuple[httpx.AsyncClient, bool]:
+        client = self._clients.get(trust_env)
+        if client is not None:
+            return client, True
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                read=UPSTREAM_READ_TIMEOUT_SECONDS,
+                write=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                pool=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+            ),
+            limits=httpx.Limits(keepalive_expiry=UPSTREAM_KEEPALIVE_EXPIRY_SECONDS),
+            trust_env=trust_env,
+        )
+        self._clients[trust_env] = client
+        return client, False
 
     def accepts_source(self, endpoint: str) -> bool:
         return accepts_source(endpoint, self._source_endpoints)
@@ -417,11 +483,13 @@ class CompletionBridge:
         credential_resolver: Callable[[str, str], Awaitable[ModelCredential]] | None = None,
         request_policy: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
         catalog_resolver: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        credential_revocation_handler: Callable[[str, str, int, str], str] | None = None,
         trust_env: bool = False,
         reasoning_effort: str | None = None,
         thinking: ModelThinking | None = None,
         reasoning_options: Sequence[Mapping[str, Any]] | None = None,
         provider: str = "",
+        approval_model_ref: str = "",
     ) -> CompletionRegistration:
         if self._closed:
             raise ValueError(MODEL_BRIDGE_CLOSED)
@@ -462,6 +530,7 @@ class CompletionBridge:
             credential_resolver=credential_resolver,
             request_policy=request_policy,
             catalog_resolver=catalog_resolver,
+            credential_revocation_handler=credential_revocation_handler,
             trust_env=trust_env,
             reasoning_effort=reasoning_effort,
             thinking=thinking,
@@ -471,10 +540,21 @@ class CompletionBridge:
                 else None
             ),
             provider=provider,
+            approval_model_ref=approval_model_ref,
+        )
+        logger.info(
+            "model_bridge_registration_credentials session_id=%s api_key_present=%s "
+            "owner_present=%s token_provider_present=%s credential_resolver_present=%s",
+            session_id,
+            bool(api_key.strip()),
+            bool(owner_id.strip()),
+            token_provider is not None,
+            credential_resolver is not None,
         )
         return CompletionRegistration(
             bridge_id=bridge_id,
             base_url=(f"{self._internal_base_url}/api/internal/model-bridge/{bridge_id}/v1"),
+            proxy_bypass_host=(urlsplit(self._internal_base_url).hostname or ""),
         )
 
     def rebind_owner(self, session_id: str, owner_id: str) -> int:
@@ -509,7 +589,15 @@ class CompletionBridge:
                 and upstream.token_provider is not None
                 and upstream.owner_id != actor
             ):
+                previous_bearer_present = bool(upstream.bearer())
                 upstream.owner_id = actor
+                logger.info(
+                    "model_bridge_owner_rebound session_id=%s previous_bearer_present=%s "
+                    "bearer_present=%s",
+                    owner,
+                    previous_bearer_present,
+                    bool(upstream.bearer()),
+                )
                 moved += 1
         return moved
 
@@ -561,6 +649,9 @@ class CompletionBridge:
         for key in tuple(self._upstreams):
             self._invalidate(key)
         await asyncio.gather(*(call.close() for call in calls), return_exceptions=True)
+        clients = tuple(self._clients.values())
+        self._clients.clear()
+        await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
 
     def registration_count(self) -> int:
         """Live registration count (contract tests assert this stays bounded)."""
@@ -597,6 +688,15 @@ class CompletionBridge:
         owner_id = upstream.owner_id
         try:
             payload = await upstream.catalog_resolver(owner_id, upstream.connection_id)
+        except CompletionCredentialError as error:
+            # 凭据被上游吊销/失效：透出可操作的 reauth 码与 401，而不是塌进通用 502 ——
+            # 否则 catalog.py raise_for_status 之后前端只剩「服务出错」，拿不到「需重新登录」。
+            logger.warning(
+                "model_catalog_credential_failed session_id=%s code=%s",
+                upstream.session_id,
+                str(error),
+            )
+            return JSONResponse({"error": {"code": str(error)}}, status_code=401)
         except Exception as error:
             logger.warning(
                 "model_catalog_failed session_id=%s error_class=%s",
@@ -664,6 +764,7 @@ class CompletionBridge:
                 {"error": {"code": MODEL_BRIDGE_INVALID_TOOL_INPUT}}, status_code=400
             )
         call.diagnostic.converted_input_items = converted_items
+        call.diagnostic.observe_tools(payload)
         native_tool_types = sorted(
             {
                 str(tool.get("type") or "")
@@ -672,12 +773,15 @@ class CompletionBridge:
             }
         )
         if native_tool_types and upstream.wire_protocol == ModelWireProtocol.CHAT_COMPLETIONS:
-            logger.info(
-                "model_bridge_native_tools_omitted session_id=%s wire=%s native_tools=%s effort=%s",
+            logger.warning(
+                "model_bridge_native_tools_rejected session_id=%s wire=%s native_tools=%s",
                 upstream.session_id,
                 upstream.wire_protocol.value,
                 native_tool_types,
-                upstream.reasoning_effort or "default",
+            )
+            return JSONResponse(
+                {"error": {"code": MODEL_BRIDGE_NATIVE_TOOLS_UNSUPPORTED}},
+                status_code=400,
             )
         native_response = upstream.wire_protocol == ModelWireProtocol.RESPONSES or (
             upstream.wire_protocol is None and bool(native_tool_types)
@@ -690,7 +794,15 @@ class CompletionBridge:
             ModelWireProtocol.RESPONSES if native_response else ModelWireProtocol.CHAT_COMPLETIONS
         )
         resolution: ThinkingParameters | None = None
-        if upstream.reasoning_effort is not None or upstream.thinking is not None:
+        if (
+            upstream.approval_model_ref
+            and chat_request.get(MODEL_FIELD) == upstream.approval_model_ref
+        ):
+            chat_request = strip_thinking(
+                chat_request,
+                outbound_names(upstream.reasoning_options, protocol.value, upstream.provider),
+            )
+        elif upstream.reasoning_effort is not None or upstream.thinking is not None:
             resolution = thinking_parameters(
                 upstream.reasoning_options,
                 protocol.value,
@@ -811,6 +923,16 @@ class CompletionBridge:
                 headers["Authorization"] = f"Bearer {material.api_key}"
         else:
             bearer = upstream.bearer()
+            logger.info(
+                "model_bridge_request_credentials session_id=%s request_id=%s "
+                "api_key_present=%s owner_present=%s token_provider_present=%s bearer_present=%s",
+                upstream.session_id,
+                call.diagnostic.request_id,
+                bool(upstream.api_key),
+                bool(upstream.owner_id),
+                upstream.token_provider is not None,
+                bool(bearer),
+            )
             if upstream.token_provider is not None and not bearer:
                 call.diagnostic.status_code = 401
                 call.diagnostic.failure_type = MODEL_BRIDGE_CREDENTIAL_REQUIRED
@@ -851,46 +973,68 @@ class CompletionBridge:
                 captured_turn_id,
                 len(text),
             )
-        client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                connect=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-                read=UPSTREAM_READ_TIMEOUT_SECONDS,
-                write=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-                pool=UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-            ),
-            trust_env=upstream.trust_env,
-        )
-        call.client = client
+        client, call.diagnostic.client_pool_hit = self._client(upstream.trust_env)
         call.diagnostic.max_attempts = UPSTREAM_RETRY_MAX_ATTEMPTS
         send_started_at = time.perf_counter()
         attempt = 1
+        native_prefix: list[bytes] = []
+        native_iterator: AsyncIterator[bytes] | None = None
+
+        async def observe_connection(event: str, _details: Mapping[str, Any]) -> None:
+            if event == HTTP_CORE_CONNECT_STARTED:
+                call.diagnostic.tcp_connects += 1
+            elif event == HTTP_CORE_TLS_STARTED:
+                call.diagnostic.tls_handshakes += 1
+
         try:
             while True:
+                client.cookies.clear()
                 request = client.build_request(
                     "POST",
                     endpoint,
                     json=chat_request,
                     headers=headers,
                 )
+                request.extensions[HTTP_CORE_TRACE_EXTENSION] = observe_connection
                 call.diagnostic.attempt = attempt
                 try:
                     response = await client.send(request, stream=True)
                 except httpx.TransportError as error:
                     diagnostics = transport_diagnostics(error)
-                    if attempt >= UPSTREAM_RETRY_MAX_ATTEMPTS or not retryable_connect_failure(
-                        error, diagnostics["category"]
-                    ):
+                    retryable = retryable_pre_response_failure(error, diagnostics["category"])
+                    max_attempts = (
+                        UPSTREAM_TLS_RETRY_MAX_ATTEMPTS
+                        if retryable
+                        and diagnostics["category"] == TransportFailureCategory.TLS.value
+                        else UPSTREAM_RETRY_MAX_ATTEMPTS
+                    )
+                    call.diagnostic.max_attempts = max_attempts
+                    if attempt >= max_attempts or not retryable:
                         raise
+                    request_reset = (
+                        diagnostics["category"] == TransportFailureCategory.CONNECTION_RESET.value
+                    )
+                    if request_reset:
+                        call.diagnostic.request_retries += 1
+                    else:
+                        call.diagnostic.connect_retries += 1
+                    if diagnostics["category"] == TransportFailureCategory.TLS.value:
+                        call.diagnostic.tls_retries += 1
                     delay = _retry_backoff_delay(attempt)
                     logger.warning(
-                        "model_bridge_upstream_connect_retry session_id=%s "
+                        "%s session_id=%s "
                         "failure_type=%s category=%s attempt=%d max_attempts=%d "
                         "delay_seconds=%.3f",
+                        (
+                            "model_bridge_upstream_request_retry"
+                            if request_reset
+                            else "model_bridge_upstream_connect_retry"
+                        ),
                         upstream.session_id,
                         diagnostics["failure_type"],
                         diagnostics["category"],
                         attempt,
-                        UPSTREAM_RETRY_MAX_ATTEMPTS,
+                        max_attempts,
                         delay,
                     )
                     attempt += 1
@@ -901,10 +1045,14 @@ class CompletionBridge:
                 if call.revoked:
                     await response.aclose()
                     raise asyncio.CancelledError()
+                call.response = response
                 retryable = response.status_code in TRANSIENT_PROVIDER_HTTP_STATUSES
                 if response.status_code == UPSTREAM_RATE_LIMIT_STATUS:
                     retryable = _retryable_internal_rate_limit(upstream, await response.aread())
+                if retryable:
+                    call.diagnostic.max_attempts = max(UPSTREAM_RETRY_MAX_ATTEMPTS, attempt)
                 if attempt < UPSTREAM_RETRY_MAX_ATTEMPTS and retryable:
+                    call.diagnostic.http_retries += 1
                     delay = _upstream_retry_delay(response, attempt)
                     logger.warning(
                         "model_bridge_upstream_retry session_id=%s status=%d "
@@ -916,11 +1064,44 @@ class CompletionBridge:
                         delay,
                     )
                     await response.aclose()
+                    call.response = None
                     attempt += 1
                     await asyncio.sleep(delay)
                     if call.revoked or not upstream.active:
                         raise asyncio.CancelledError()
                     continue
+                if native_response and chat_request.get("stream") and response.status_code < 400:
+                    native_prefix, native_iterator, normalized_code = (
+                        await _preflight_native_stream(response, call.diagnostic)
+                    )
+                    observed = call.diagnostic.upstream
+                    stream_error = observed.error_seen or observed.terminal == RESPONSE_FAILED
+                    retryable_stream = (
+                        stream_error
+                        and not observed.semantic_seen
+                        and normalized_code.casefold() in TRANSIENT_PROVIDER_CODES
+                    )
+                    if retryable_stream and attempt < UPSTREAM_RETRY_MAX_ATTEMPTS:
+                        call.diagnostic.stream_retries += 1
+                        delay = _retry_backoff_delay(attempt)
+                        logger.warning(
+                            "model_bridge_upstream_stream_retry session_id=%s code=%s "
+                            "attempt=%d max_attempts=%d delay_seconds=%.3f",
+                            upstream.session_id,
+                            observed.error_code,
+                            attempt,
+                            UPSTREAM_RETRY_MAX_ATTEMPTS,
+                            delay,
+                        )
+                        await response.aclose()
+                        call.response = None
+                        call.diagnostic.upstream = StreamObservation(redactor=observed.redactor)
+                        call.diagnostic.observed_upstream_events = 0
+                        attempt += 1
+                        await asyncio.sleep(delay)
+                        if call.revoked or not upstream.active:
+                            raise asyncio.CancelledError()
+                        continue
                 break
             call.response = response
             call.diagnostic.status_code = response.status_code
@@ -966,14 +1147,18 @@ class CompletionBridge:
                 metrics["tool_count"],
                 metrics["max_message_bytes"],
             )
-            return JSONResponse(
-                {
-                    "error": {
-                        "message": f"Chat Completions upstream unavailable: {type(exc).__name__}"
-                    }
-                },
-                status_code=502,
-            )
+            if isinstance(exc, httpx.TransportError) and retryable_pre_response_failure(
+                exc, diagnostics["category"]
+            ):
+                error_payload = {
+                    "code": TRANSIENT_PROVIDER_FAILURE_CODE,
+                    "message": TRANSIENT_PROVIDER_FAILURE_MESSAGE,
+                }
+            else:
+                error_payload = {
+                    "message": f"Chat Completions upstream unavailable: {type(exc).__name__}"
+                }
+            return JSONResponse({"error": error_payload}, status_code=502)
         if response.status_code >= 400:
             try:
                 body = await response.aread()
@@ -982,6 +1167,18 @@ class CompletionBridge:
             product_code = _product_error_code(body)
             if upstream.credential_resolver is not None:
                 summary = _upstream_error_summary(body)
+                # 上游明确吊销令牌时把凭证回写交回订阅侧（桥不持有凭证 store），并透出 reauth
+                # 码，使推理路径与目录路径一致地提示「请重新登录」而非通用 model_upstream_rejected。
+                revocation_code = (
+                    upstream.credential_revocation_handler(
+                        upstream.owner_id,
+                        upstream.connection_id,
+                        response.status_code,
+                        summary["code"],
+                    )
+                    if upstream.credential_revocation_handler is not None
+                    else ""
+                )
                 logger.warning(
                     "model_connection_upstream_rejected status=%d code=%s type=%s param=%s "
                     "product_code=%s",
@@ -992,7 +1189,7 @@ class CompletionBridge:
                     product_code or "-",
                 )
                 return JSONResponse(
-                    {"error": {"code": product_code or MODEL_UPSTREAM_REJECTED}},
+                    {"error": {"code": revocation_code or product_code or MODEL_UPSTREAM_REJECTED}},
                     status_code=response.status_code,
                 )
             if product_code:
@@ -1033,6 +1230,14 @@ class CompletionBridge:
                 await call.close()
             observation.body(body)
             if native_response:
+                if self._on_sources is not None:
+                    try:
+                        decoded = json.loads(body)
+                    except (ValueError, UnicodeError, RecursionError):
+                        decoded = None
+                    if isinstance(decoded, Mapping):
+                        for record in response_provenance(decoded):
+                            await self._on_sources(upstream.session_id, captured_turn_id, record)
                 return Response(content=body, media_type="application/json")
             try:
                 converted = chat_response_to_response(json.loads(body))
@@ -1043,9 +1248,7 @@ class CompletionBridge:
                 )
             return JSONResponse(converted)
 
-        async def stream() -> AsyncIterator[bytes]:
-            call.task = asyncio.current_task()
-
+        async def stream() -> AsyncGenerator[bytes, None]:
             def settle_upstream_end() -> None:
                 # 带 error 的 response.failed 终态是供应商拒绝，不是干净的流结束：升格
                 # PROVIDER_ERROR 并用真实 error_code 记 failure_type，使 serve 侧记录不再
@@ -1062,13 +1265,28 @@ class CompletionBridge:
                     raise asyncio.CancelledError()
                 if native_response:
                     normalizer = NativeResponseNormalizer()
-                    async for chunk in response.aiter_bytes():
-                        call.diagnostic.upstream.feed(chunk)
+                    provenance = ProvenanceStream()
+                    assert native_iterator is not None
+                    async for chunk, previously_observed, prefix_complete in _native_stream_chunks(
+                        native_prefix, native_iterator
+                    ):
+                        if not previously_observed:
+                            call.diagnostic.upstream.feed(chunk)
+                            call.diagnostic.observe_upstream_chunk()
                         observation.feed(chunk)
+                        if self._on_sources is not None:
+                            for record in provenance.feed(chunk):
+                                await self._on_sources(
+                                    upstream.session_id, captured_turn_id, record
+                                )
                         for normalized_chunk in normalizer.feed(chunk):
                             yield normalized_chunk
                         upstream_stream = call.diagnostic.upstream
-                        if upstream_stream.error_seen and not upstream_stream.terminal:
+                        if (
+                            (not previously_observed or prefix_complete)
+                            and upstream_stream.error_seen
+                            and not upstream_stream.terminal
+                        ):
                             for normalized_chunk in normalizer.finish():
                                 yield normalized_chunk
                             yield _sse(
@@ -1094,15 +1312,20 @@ class CompletionBridge:
                             return
                     for normalized_chunk in normalizer.finish():
                         yield normalized_chunk
+                    if provenance.invalid_events:
+                        logger.warning(
+                            "native_provenance_invalid_events session_id=%s turn_id=%s count=%d",
+                            upstream.session_id,
+                            captured_turn_id,
+                            provenance.invalid_events,
+                        )
                     settle_upstream_end()
                     return
                 async for chunk in chat_stream_to_responses(
                     response,
                     request_metrics=_chat_request_metrics(chat_request),
                     on_model=observation.observe,
-                    on_line=lambda line: call.diagnostic.upstream.feed(
-                        line.encode(JSON_ENCODING) + b"\n"
-                    ),
+                    on_line=lambda line: _observe_chat_stream_line(call.diagnostic, line),
                 ):
                     yield chunk
                 settle_upstream_end()
@@ -1128,13 +1351,12 @@ class CompletionBridge:
                     call.diagnostic.failure_type = type(error).__name__
                 raise
             finally:
-                try:
-                    await call.close()
-                finally:
-                    call.task = None
+                await call.close()
 
         call.streaming = True
-        return CompletionStream(stream(), call)
+        return CompletionStream(
+            coalesce_text_delta_stream(stream(), call.diagnostic.text_delta_batcher), call
+        )
 
 
 def normalize_response_input(payload: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
@@ -1204,6 +1426,7 @@ def mount_completion_bridge(app: FastAPI, bridge: CompletionBridge) -> None:
 
 def responses_to_chat_request(payload: Mapping[str, Any]) -> dict[str, Any]:
     messages: list[dict[str, Any]] = []
+    pending_reasoning = ""
     instructions = str(payload.get("instructions") or "").strip()
     if instructions:
         messages.append({"role": "system", "content": instructions})
@@ -1215,9 +1438,18 @@ def responses_to_chat_request(payload: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(raw, Mapping):
                 continue
             item_type = str(raw.get("type") or "")
-            if item_type == "message":
+            if item_type == REASONING_ITEM_TYPE:
+                pending_reasoning += "".join(
+                    str(part.get("text") or "")
+                    for part in raw.get("content") or []
+                    if isinstance(part, Mapping) and part.get("type") == REASONING_TEXT_TYPE
+                )
+            elif item_type == "message":
                 message = _response_message_to_chat(raw)
                 if message is not None:
+                    if message.get("role") == "assistant" and pending_reasoning:
+                        message[CHAT_REASONING_CONTENT] = pending_reasoning
+                    pending_reasoning = ""
                     messages.append(message)
             elif item_type == "function_call":
                 tool_call = {
@@ -1228,17 +1460,17 @@ def responses_to_chat_request(payload: Mapping[str, Any]) -> dict[str, Any]:
                         "arguments": str(raw.get("arguments") or "{}"),
                     },
                 }
-                if (
-                    messages
-                    and messages[-1].get("role") == "assistant"
-                    and messages[-1].get("tool_calls")
-                ):
-                    messages[-1]["tool_calls"].append(tool_call)
+                if messages and messages[-1].get("role") == "assistant":
+                    messages[-1].setdefault("tool_calls", []).append(tool_call)
                 else:
                     messages.append(
                         {"role": "assistant", "content": None, "tool_calls": [tool_call]}
                     )
+                if pending_reasoning:
+                    messages[-1][CHAT_REASONING_CONTENT] = pending_reasoning
+                    pending_reasoning = ""
             elif item_type == "function_call_output":
+                pending_reasoning = ""
                 messages.extend(
                     _function_call_output_to_chat(
                         str(raw.get("call_id") or raw.get("id") or ""),
@@ -1324,6 +1556,57 @@ def _retryable_internal_rate_limit(upstream: CompletionUpstream, body: bytes) ->
     except (UnicodeDecodeError, json.JSONDecodeError):
         return True
     return not (isinstance(document, Mapping) and isinstance(document.get("error"), Mapping))
+
+
+def _observe_chat_stream_line(diagnostic: CompletionDiagnostic, line: str) -> None:
+    diagnostic.upstream.feed(line.encode(JSON_ENCODING) + b"\n")
+    diagnostic.observe_upstream_chunk()
+
+
+async def _preflight_native_stream(
+    response: httpx.Response, diagnostic: CompletionDiagnostic
+) -> tuple[list[bytes], AsyncIterator[bytes], str]:
+    iterator = response.aiter_bytes()
+    prefix: list[bytes] = []
+    buffered = 0
+    normalizer = NativeResponseNormalizer()
+    observation = diagnostic.upstream
+    normalized_observation = StreamObservation(redactor=observation.redactor)
+    try:
+        async for chunk in iterator:
+            prefix.append(chunk)
+            buffered += len(chunk)
+            observation.feed(chunk)
+            diagnostic.observe_upstream_chunk()
+            for normalized_chunk in normalizer.feed(chunk):
+                normalized_observation.feed(normalized_chunk)
+            if (
+                observation.semantic_seen
+                or observation.error_seen
+                or observation.terminal
+                or buffered >= SSE_BUFFER_LIMIT
+            ):
+                break
+    except (httpx.TransportError, asyncio.CancelledError) as error:
+        current_task = asyncio.current_task()
+        if isinstance(error, asyncio.CancelledError) and current_task and current_task.cancelling():
+            raise
+        return prefix, _deferred_native_error(error), normalized_observation.error_code
+    return prefix, iterator, normalized_observation.error_code
+
+
+async def _deferred_native_error(error: BaseException) -> AsyncIterator[bytes]:
+    raise error
+    yield b""
+
+
+async def _native_stream_chunks(
+    prefix: Sequence[bytes], iterator: AsyncIterator[bytes]
+) -> AsyncIterator[tuple[bytes, bool, bool]]:
+    for index, chunk in enumerate(prefix):
+        yield chunk, True, index == len(prefix) - 1
+    async for chunk in iterator:
+        yield chunk, False, False
 
 
 def _retry_backoff_delay(attempt: int) -> float:
@@ -1718,26 +2001,7 @@ async def chat_stream_to_responses(
             return []
         reasoning_completed = True
         reasoning_text = "".join(reasoning_parts)
-        summary = {"type": "summary_text", "text": reasoning_text}
         return [
-            response_event(
-                {
-                    "type": "response.reasoning_summary_text.done",
-                    "item_id": reasoning_id,
-                    "output_index": 0,
-                    "summary_index": 0,
-                    "text": reasoning_text,
-                }
-            ),
-            response_event(
-                {
-                    "type": "response.reasoning_summary_part.done",
-                    "item_id": reasoning_id,
-                    "output_index": 0,
-                    "summary_index": 0,
-                    "part": summary,
-                }
-            ),
             response_event(
                 {
                     "type": "response.output_item.done",
@@ -1746,7 +2010,8 @@ async def chat_stream_to_responses(
                         "type": "reasoning",
                         "id": reasoning_id,
                         "status": "completed",
-                        "summary": [summary],
+                        "summary": [],
+                        "content": [{"type": REASONING_TEXT_TYPE, "text": reasoning_text}],
                     },
                 }
             ),
@@ -1831,25 +2096,7 @@ async def chat_stream_to_responses(
                         },
                     }
                 )
-                yield response_event(
-                    {
-                        "type": "response.reasoning_summary_part.added",
-                        "item_id": reasoning_id,
-                        "output_index": 0,
-                        "summary_index": 0,
-                        "part": {"type": "summary_text", "text": ""},
-                    }
-                )
             reasoning_parts.append(reasoning)
-            yield response_event(
-                {
-                    "type": "response.reasoning_summary_text.delta",
-                    "item_id": reasoning_id,
-                    "output_index": 0,
-                    "delta": reasoning,
-                    "summary_index": 0,
-                }
-            )
         for raw_call in delta.get("tool_calls") or []:
             if not isinstance(raw_call, Mapping):
                 continue

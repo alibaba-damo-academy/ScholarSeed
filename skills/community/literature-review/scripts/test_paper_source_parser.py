@@ -32,6 +32,25 @@ The conclusion remains after the table.
 \end{document}'''
 
 class PaperSourceTest(unittest.TestCase):
+    def test_latex_float_without_caption_keeps_fulltext(self):
+        source_text = r'''\documentclass{article}
+\begin{document}
+The paragraph before the illustration remains evidence.
+\begin{figure}[t]
+\includegraphics{private-pixels.pdf}
+\end{figure}
+The paragraph after the illustration remains evidence.
+\end{document}'''
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'uncaptioned.tex'
+            source.write_text(source_text)
+            result = parse_source(source)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['fatal_warnings'], [])
+        self.assertIn('float without caption: figure', result['warnings'])
+        self.assertGreater(result['n_sentences'], 0)
+        self.assertIn('paragraph after the illustration', result['sentences'])
+
     def test_tex_and_archives_keep_captions_and_math_but_not_table_data(self):
         files={'main.tex':MAIN.encode(),'parts/method.tex':b'The method includes a calibration stage.'}
         for kind in ['tar','gzip','zip']:

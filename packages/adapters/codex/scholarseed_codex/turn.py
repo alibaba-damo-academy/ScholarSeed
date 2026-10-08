@@ -3,20 +3,35 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from typing import Any, Mapping, Protocol
 
 from scholarseed_codex.activity import (
+    NATIVE_ACTIVITY_MAX_PAGES,
+    NATIVE_ACTIVITY_PAGE_SIZE,
+    NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
+    NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD,
+    NATIVE_CURSOR_FIELD,
+    NATIVE_DATA_FIELD,
+    NATIVE_ITEM_ID_FIELD,
+    NATIVE_LIMIT_FIELD,
+    NATIVE_NEXT_CURSOR_FIELD,
+    NATIVE_PROCESS_ID_FIELD,
+    NATIVE_THREAD_ID_FIELD,
     auto_approval_payload,
     collaboration_activity_payload,
     collaboration_receivers,
-    command_name,
     native_activity_payload,
+    public_summary_parts,
     search_payload,
     skill_activity_payload,
     skill_for_command,
+    strict_review_item_id,
+    strict_review_payload,
+    tool_item_payload,
+    tool_item_result,
 )
 from scholarseed_codex.emitter import CodexEmitter
 from scholarseed_codex.failure import (
@@ -32,7 +47,7 @@ from scholarseed_codex.history import (
     terminal_turn_status,
 )
 from scholarseed_codex.input import serialize_input, skill_inputs, start_parameters
-from scholarseed_codex.protocol.constants import MCP_TOOL_NAME_PREFIX
+from scholarseed_codex.permission import CODEX_PERMISSION_POLICIES
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import (
     CodexSessionEventKind,
@@ -48,6 +63,7 @@ from scholarseed_codex.protocol.state import (
     CODEX_DEDICATED_ITEM_TYPES,
     CODEX_PROVIDER_INCIDENT_METHODS,
     CODEX_SEARCH_NOTIFICATION_KINDS,
+    CODEX_STRICT_REVIEW_NOTIFICATION,
     CODEX_WEB_SEARCH_ITEM_TYPE,
     AppServerError,
     _message_phase,
@@ -56,6 +72,11 @@ from scholarseed_codex.protocol.state import (
 )
 from scholarseed_codex.router import ThreadRouter
 from scholarseed_codex.watch import WorkspaceWatch
+from scholarseed_runtime.contract.content import (
+    PUBLIC_REASONING_SUMMARY,
+    REASONING_SOURCE,
+    REASONING_SUMMARY_INDEX,
+)
 from scholarseed_runtime.contract.history import (
     MessagePhase,
     ResumeTurnSnapshot,
@@ -70,6 +91,12 @@ from scholarseed_runtime.contract.incident import (
     RuntimeRetryability,
 )
 from scholarseed_runtime.contract.input import TurnInput
+from scholarseed_runtime.contract.permission import PERMISSION_MODE_KEY
+
+INTERRUPTED_TERMINAL_CLEANUP_SECONDS = 10.0
+INTERRUPTED_TERMINAL_POLL_SECONDS = 0.2
+INTERRUPTED_TERMINAL_EMPTY_CONFIRMATIONS = 2
+INTERRUPTED_TERMINAL_CLEANUP_ERROR = "codex_interrupted_terminal_cleanup_failed"
 
 
 class ThreadContext(Protocol):
@@ -117,6 +144,7 @@ class CodexTurnRuntime:
         self._completion_lock = asyncio.Lock()
         self.resume_turns = resume_turns
         self.active_turn_id: str = ""
+        self.submitted_permission_mode = ""
         self.active_turn_client_id: str = ""
         self.turn_client_ids: dict[str, str] = dict()
         self.interrupted_turn_id: str = ""
@@ -134,7 +162,9 @@ class CodexTurnRuntime:
         self.active_skill_inputs: dict[str, str] = dict()
         self.skill_items: dict[str, tuple[str, str]] = dict()
         self.turn_items: dict[str, set[str]] = dict()
+        self.active_command_items: dict[str, set[str]] = dict()
         self.streamed_messages: set[str] = set()
+        self.streamed_reasoning: set[str] = set()
         self.fs_watch_id: str = ""
         self.watched_paths: dict[str, str] = dict()
         self.explicit_file_paths: set[str] = set()
@@ -250,6 +280,7 @@ class CodexTurnRuntime:
                 payload={
                     "process_generation": message_generation,
                     "resolved_ambiguous_incident_id": resolved_ambiguous_incident_id,
+                    PERMISSION_MODE_KEY: self.submitted_permission_mode,
                 },
             )
             return
@@ -271,15 +302,8 @@ class CodexTurnRuntime:
             )
             return
         if method == "item/reasoning/summaryTextDelta":
-            await self._emitter.emit(
-                self._thread,
-                CodexSessionEventKind.REASONING_DELTA,
-                turn_id=turn_id,
-                item_id=item_id,
-                payload={"text": str(params.get("delta") or "")},
-            )
-            return
-        if method == "item/reasoning/textDelta":
+            if params.get("delta"):
+                self.streamed_reasoning.add(item_id)
             await self._emitter.emit(
                 self._thread,
                 CodexSessionEventKind.REASONING_DELTA,
@@ -287,9 +311,12 @@ class CodexTurnRuntime:
                 item_id=item_id,
                 payload={
                     "text": str(params.get("delta") or ""),
-                    "content_index": int(params.get("contentIndex", 0) or 0),
+                    REASONING_SOURCE: PUBLIC_REASONING_SUMMARY,
+                    REASONING_SUMMARY_INDEX: int(params.get("summaryIndex", 0) or 0),
                 },
             )
+            return
+        if method == "item/reasoning/textDelta":
             return
         if method == "item/reasoning/summaryPartAdded":
             await self._emitter.emit(
@@ -300,7 +327,8 @@ class CodexTurnRuntime:
                 payload={
                     "text": "",
                     "summary_part_added": True,
-                    "summary_index": int(params.get("summaryIndex", 0) or 0),
+                    REASONING_SOURCE: PUBLIC_REASONING_SUMMARY,
+                    REASONING_SUMMARY_INDEX: int(params.get("summaryIndex", 0) or 0),
                 },
             )
             return
@@ -407,6 +435,18 @@ class CodexTurnRuntime:
                 self._thread,
                 CodexSessionEventKind.RUNTIME_WARNING,
                 payload={"message": str(params.get("message") or "")},
+            )
+            return
+        if method == CODEX_STRICT_REVIEW_NOTIFICATION:
+            # 一次性通知，没有 started/completed 配对：直接落一条终态活动。放到兼容分支里
+            # 它就只剩一条 unsupported_notification 警告，「机器复核升级成严格复核」这个
+            # 权限语义会在产品侧彻底消失。
+            await self._emitter.emit(
+                self._thread,
+                CodexSessionEventKind.NATIVE_ACTIVITY_COMPLETED,
+                turn_id=turn_id,
+                item_id=strict_review_item_id(params, str(turn_id or "")),
+                payload=strict_review_payload(params),
             )
             return
         auto_approval_kind = CODEX_AUTO_APPROVAL_NOTIFICATION_KINDS.get(method)
@@ -615,6 +655,7 @@ class CodexTurnRuntime:
         self._router.forget_turn(turn_id)
         for item_id in self.turn_items.pop(turn_id, set()):
             self._router.forget_item(item_id)
+        self.active_command_items.pop(turn_id, None)
         self.active_skill_inputs.clear()
         self.skill_items.clear()
         self.turn_client_ids.pop(turn_id, None)
@@ -753,6 +794,17 @@ class CodexTurnRuntime:
             self._thread.writable_roots,
             self._thread.model,
         )
+        submitted_request = self._thread.request
+        self.submitted_permission_mode = next(
+            (
+                mode.value
+                for mode, policy in CODEX_PERMISSION_POLICIES.items()
+                if policy.sandbox == submitted_request.sandbox
+                and policy.approval_policy == submitted_request.approval_policy
+                and policy.approval_reviewer == submitted_request.approval_reviewer
+            ),
+            "",
+        )
         self.final_text = ""
         self.usage = CodexUsage()
         self.item_names.clear()
@@ -764,6 +816,7 @@ class CodexTurnRuntime:
         self.active_skill_inputs = skill_inputs(turn_input)
         self.skill_items.clear()
         self.streamed_messages.clear()
+        self.streamed_reasoning.clear()
         self.watched_paths.clear()
         self.explicit_file_paths.clear()
         self.turn_done = asyncio.get_running_loop().create_future()
@@ -927,18 +980,123 @@ class CodexTurnRuntime:
             raise AppServerError("Codex App Server steered a different active turn")
         return turn_id
 
-    async def interrupt(self) -> None:
+    async def _background_terminal_rows(self, generation: int) -> list[tuple[str, str]]:
+        cursor: str | None = None
+        seen: set[str] = set()
+        rows: list[tuple[str, str]] = []
+        for _ in range(NATIVE_ACTIVITY_MAX_PAGES):
+            params: dict[str, Any] = {
+                NATIVE_THREAD_ID_FIELD: self._thread.thread_id,
+                NATIVE_LIMIT_FIELD: NATIVE_ACTIVITY_PAGE_SIZE,
+            }
+            if cursor is not None:
+                params[NATIVE_CURSOR_FIELD] = cursor
+            result = await self._request(
+                NATIVE_BACKGROUND_TERMINALS_LIST_METHOD,
+                params,
+                generation=generation,
+            )
+            page = result.get(NATIVE_DATA_FIELD)
+            if not isinstance(page, list):
+                break
+            for row in page:
+                if not isinstance(row, dict):
+                    break
+                item_id = row.get(NATIVE_ITEM_ID_FIELD)
+                process_id = row.get(NATIVE_PROCESS_ID_FIELD)
+                if (
+                    not isinstance(item_id, str)
+                    or not item_id
+                    or not isinstance(process_id, str)
+                    or not process_id
+                ):
+                    break
+                rows.append((item_id, process_id))
+            else:
+                cursor = result.get(NATIVE_NEXT_CURSOR_FIELD)
+                if cursor is None:
+                    return rows
+                if isinstance(cursor, str) and cursor and cursor not in seen:
+                    seen.add(cursor)
+                    continue
+            break
+        raise AppServerError(
+            "Codex background terminal inventory is incomplete",
+            safe_error=INTERRUPTED_TERMINAL_CLEANUP_ERROR,
+        )
+
+    async def _cleanup_interrupted_background_processes(
+        self,
+        item_ids: set[str],
+        completion: asyncio.Future[dict[str, Any]] | None,
+        generation: int,
+    ) -> None:
+        if not item_ids:
+            return
+        if completion is None:
+            raise AppServerError(
+                "Codex interrupted turn has no completion signal",
+                safe_error=INTERRUPTED_TERMINAL_CLEANUP_ERROR,
+            )
+        deadline = asyncio.get_running_loop().time() + INTERRUPTED_TERMINAL_CLEANUP_SECONDS
+        attempted: set[str] = set()
+        empty_observations = 0
+        while True:
+            matching = {
+                process_id
+                for item_id, process_id in await self._background_terminal_rows(generation)
+                if item_id in item_ids
+            }
+            for process_id in matching - attempted:
+                response = await self._request(
+                    NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD,
+                    {
+                        NATIVE_THREAD_ID_FIELD: self._thread.thread_id,
+                        NATIVE_PROCESS_ID_FIELD: process_id,
+                    },
+                    generation=generation,
+                )
+                if not isinstance(response.get("terminated"), bool):
+                    raise AppServerError(
+                        "Codex background terminal termination response is invalid",
+                        safe_error=INTERRUPTED_TERMINAL_CLEANUP_ERROR,
+                    )
+                attempted.add(process_id)
+            if completion.done() and not matching:
+                empty_observations += 1
+                if empty_observations == INTERRUPTED_TERMINAL_EMPTY_CONFIRMATIONS:
+                    return
+            else:
+                empty_observations = 0
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AppServerError(
+                    "Codex interrupted background terminal did not exit",
+                    safe_error=INTERRUPTED_TERMINAL_CLEANUP_ERROR,
+                )
+            await asyncio.sleep(INTERRUPTED_TERMINAL_POLL_SECONDS)
+
+    async def interrupt(self, *, cleanup_background_processes: bool = False) -> None:
         thread_id = self._thread.thread_id
         self._generation = await self._ensure_attached(thread_id)
         if not self.active_turn_id:
             return
         turn_id = self.active_turn_id
+        item_ids = (
+            set(self.active_command_items.get(turn_id, ()))
+            if cleanup_background_processes
+            else set()
+        )
+        completion = self.turn_done if cleanup_background_processes else None
         await self._request(
             "turn/interrupt",
             {"threadId": thread_id, "turnId": turn_id},
             generation=self._generation,
         )
         await self._stale_requests(thread_id, turn_id, "turn_interrupted")
+        if cleanup_background_processes:
+            await self._cleanup_interrupted_background_processes(
+                item_ids, completion, self._generation
+            )
 
     async def _emit_assistant_message(
         self,
@@ -1011,6 +1169,8 @@ class CodexTurnRuntime:
         if item_id:
             self._router.bind_item(item_id, self._thread.thread_id)
             self.item_details[item_id] = dict(item)
+            if item_type == "commandExecution":
+                self.active_command_items.setdefault(turn_id, set()).add(item_id)
         if item_type == CODEX_COLLAB_TOOL_CALL_ITEM_TYPE:
             for agent_thread_id in collaboration_receivers(item):
                 await self._emitter.emit(
@@ -1063,31 +1223,8 @@ class CodexTurnRuntime:
                     },
                 )
                 return
-            name = command_name(item)
-            self.item_names[item_id] = name
-            payload: Mapping[str, JsonValue] = {
-                "name": name,
-                "input": {
-                    "command": item.get("command"),
-                    "cwd": item.get("cwd"),
-                    "actions": item.get("commandActions") or [],
-                },
-            }
-        elif item_type == "fileChange":
-            self.item_names[item_id] = "file_change"
-            payload = {"name": "file_change", "input": {"changes": item.get("changes") or []}}
-        elif item_type == "mcpToolCall":
-            name = (
-                f"{MCP_TOOL_NAME_PREFIX}{item.get('server') or 'mcp'}"
-                f"__{item.get('tool') or 'tool'}"
-            )
-            self.item_names[item_id] = name
-            payload = {"name": name, "input": item.get("arguments") or {}}
-        elif item_type == "dynamicToolCall":
-            name = str(item.get("tool") or "dynamic_tool")
-            self.item_names[item_id] = name
-            payload = {"name": name, "input": item.get("arguments") or {}}
-        else:
+        payload = tool_item_payload(item)
+        if payload is None:
             if item_type in CODEX_DEDICATED_ITEM_TYPES:
                 return
             await self._emitter.emit(
@@ -1098,6 +1235,7 @@ class CodexTurnRuntime:
                 payload=native_activity_payload(item, completed=False),
             )
             return
+        self.item_names[item_id] = str(payload["name"])
         await self._emitter.emit(
             self._thread,
             CodexSessionEventKind.TOOL_STARTED,
@@ -1113,6 +1251,31 @@ class CodexTurnRuntime:
     ) -> None:
         item_type = str(item.get("type") or "")
         item_id = str(item.get("id") or "")
+        if item_type == "reasoning":
+            if item_id not in self.streamed_reasoning:
+                for summary_index, summary in enumerate(public_summary_parts(item)):
+                    await self._emitter.emit(
+                        self._thread,
+                        CodexSessionEventKind.REASONING_DELTA,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        payload={
+                            "text": summary,
+                            REASONING_SOURCE: PUBLIC_REASONING_SUMMARY,
+                            REASONING_SUMMARY_INDEX: summary_index,
+                        },
+                    )
+            self.streamed_reasoning.discard(item_id)
+            await self._emitter.emit(
+                self._thread,
+                CodexSessionEventKind.REASONING_COMPLETED,
+                turn_id=turn_id,
+                item_id=item_id,
+                payload={REASONING_SOURCE: PUBLIC_REASONING_SUMMARY},
+            )
+            return
+        if item_type == "commandExecution":
+            self.active_command_items.get(turn_id, set()).discard(item_id)
         if item_type == CODEX_COLLAB_TOOL_CALL_ITEM_TYPE:
             started = self.item_details.get(item_id, {})
             receivers = tuple(
@@ -1197,19 +1360,23 @@ class CodexTurnRuntime:
                 payload=native_activity_payload(item, completed=True),
             )
             return
-        status = str(item.get("status") or "")
-        if (
-            item_type == "commandExecution"
-            and isinstance(item.get("exitCode"), int)
-            and item["exitCode"] != 0
-        ):
-            status = "failed"
-        elif item_type in {"mcpToolCall", "dynamicToolCall"} and item.get("error"):
-            status = "failed"
-        output = str(item.get("aggregatedOutput") or self.item_output.get(item_id, ""))
+        result = tool_item_result(item, self.item_output.get(item_id, ""))
+        if item_type == "commandExecution":
+            streamed = self.item_output.get(item_id, "").encode("utf-8")
+            complete = str(result.get("output") or "").encode("utf-8")
+            logger.debug(
+                "codex_tool_output_read thread_id=%s item_id=%s streamed_bytes=%d "
+                "streamed_sha256=%s completed_bytes=%d completed_sha256=%s",
+                self._thread.thread_id,
+                item_id,
+                len(streamed),
+                sha256(streamed).hexdigest(),
+                len(complete),
+                sha256(complete).hexdigest(),
+            )
+        status = result["status"]
         if item_type == "fileChange":
             changes = list(item.get("changes") or [])
-            output = json.dumps(changes, ensure_ascii=False)
             if status == "completed":
                 for change in changes:
                     if not isinstance(change, Mapping):
@@ -1224,18 +1391,6 @@ class CodexTurnRuntime:
                     item_id=item_id,
                     payload={"changes": changes, "status": status},
                 )
-        elif item_type == "mcpToolCall":
-            output = json.dumps(
-                item.get("result") or item.get("error") or {},
-                ensure_ascii=False,
-                default=str,
-            )
-        elif item_type == "dynamicToolCall":
-            output = json.dumps(
-                item.get("contentItems") or item.get("error") or [],
-                ensure_ascii=False,
-                default=str,
-            )
         await self._emitter.emit(
             self._thread,
             CodexSessionEventKind.TOOL_COMPLETED,
@@ -1243,10 +1398,7 @@ class CodexTurnRuntime:
             item_id=item_id,
             payload={
                 "name": self.item_names.get(item_id, item_type),
-                "output": output,
-                "ok": status == "completed",
-                "status": status,
-                **({"exit_code": item.get("exitCode")} if item_type == "commandExecution" else {}),
+                **result,
             },
         )
 
@@ -1338,6 +1490,7 @@ class CodexTurnRuntime:
             self._router.forget_turn(turn_id)
             for item_id in self.turn_items.pop(turn_id, set()):
                 self._router.forget_item(item_id)
+            self.active_command_items.pop(turn_id, None)
             self.active_skill_inputs.clear()
             self.skill_items.clear()
             self.provider_failure = None
@@ -1449,6 +1602,7 @@ class CodexTurnRuntime:
             self._router.bind_turn(turn_id, self._thread.thread_id)
             for item_id in self.turn_items.pop(turn_id, set()):
                 self._router.forget_item(item_id)
+            self.active_command_items.pop(turn_id, None)
         if self.turn_done is not None and not self.turn_done.done():
             self.turn_done.set_result(
                 {

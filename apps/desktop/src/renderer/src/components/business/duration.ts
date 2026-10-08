@@ -1,4 +1,5 @@
 import type { TFunction } from 'i18next'
+import type { ActivityRunState } from '../../activity'
 
 const MILLISECONDS_PER_SECOND = 1000
 const SECONDS_PER_MINUTE = 60
@@ -6,6 +7,16 @@ const MINUTES_PER_HOUR = 60
 const SECONDS_PER_HOUR = SECONDS_PER_MINUTE * MINUTES_PER_HOUR
 const MILLISECONDS_PER_TENTH_SECOND = 100
 const MINIMUM_ACTIVITY_SECONDS = 1
+const HOURS_PER_DAY = 24
+const MILLISECONDS_PER_DAY = HOURS_PER_DAY * SECONDS_PER_HOUR * MILLISECONDS_PER_SECOND
+
+export function planDurationLabel(milliseconds: number): string {
+  const wholeSeconds = Math.max(0, Math.floor(milliseconds / MILLISECONDS_PER_SECOND)) * MILLISECONDS_PER_SECOND
+  const days = Math.floor(wholeSeconds / MILLISECONDS_PER_DAY)
+  const remainder = wholeSeconds % MILLISECONDS_PER_DAY
+  if (!days) return turnDurationLabel(0, wholeSeconds)
+  return remainder ? `${days}d ${turnDurationLabel(0, remainder)}` : `${days}d`
+}
 
 export function elapsedLabel(
   startedAt: number,
@@ -23,13 +34,28 @@ export function elapsedLabel(
 
 export function activityDurationLabel(
   startedAt: number,
-  endedAt: number,
+  endedAt: number
+): string {
+  const seconds = Math.max(
+    MINIMUM_ACTIVITY_SECONDS,
+    Math.floor((endedAt - startedAt) / MILLISECONDS_PER_SECOND)
+  )
+  return turnDurationLabel(0, seconds * MILLISECONDS_PER_SECOND)
+}
+
+export function activitySummaryState(
+  runState: ActivityRunState,
+  stateLabel: string,
+  duration: string | null,
   t: TFunction<'components'>
 ): string {
-  if (endedAt - startedAt < MILLISECONDS_PER_SECOND) {
-    return t('stream.seconds', { count: MINIMUM_ACTIVITY_SECONDS })
+  if (runState === 'running') {
+    return duration ?? ''
   }
-  return elapsedLabel(startedAt, endedAt, t)
+  if (runState === 'completed') {
+    return duration ? t('stream.durationOnly', { duration }) : ''
+  }
+  return duration ? t('stream.durationState', { state: stateLabel, duration }) : stateLabel
 }
 
 export function turnDurationLabel(

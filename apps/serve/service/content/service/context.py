@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
 from pypdf import PdfReader
@@ -24,6 +24,7 @@ from service.content.service.spreadsheet import decode_csv
 from service.content.service.xlsx import decode as decode_xlsx
 from service.platform.citations import CitationDocument
 from service.platform.context import (
+    ActiveDocumentResolution,
     AssistantContextIssue,
     AssistantContextResolution,
     AssistantContextResolvedItem,
@@ -33,6 +34,7 @@ from service.platform.context import (
     ContextRefKind,
     ContextResolutionState,
 )
+from service.platform.files import guess_media_type
 
 SUPPORTED_KINDS = frozenset((ContextRefKind.FILE, ContextRefKind.DIR))
 PDF_MEDIA_TYPE = "application/pdf"
@@ -111,6 +113,34 @@ class ContentContextProvider:
         self._content = content
         self._decoders = dict(decoders or DEFAULT_DECODERS)
         self._absolute_file_reader = absolute_file_reader
+
+    def resolve_active_document(
+        self, project_id: str, source_id: str, attachment_id: str = ""
+    ) -> ActiveDocumentResolution | None:
+        path = PurePosixPath(source_id)
+        if (
+            not project_id
+            or attachment_id
+            or not source_id
+            or path.is_absolute()
+            or ".." in path.parts
+            or "\\" in source_id
+            or not path.parts
+            or ":" in path.parts[0]
+        ):
+            return None
+        try:
+            target = Path(self._content.resolve(project_id, source_id))
+            if not target.is_file():
+                return None
+        except (ContentError, OSError, ValueError):
+            return None
+        return ActiveDocumentResolution(
+            label=path.name,
+            source_revision="",
+            locator=source_id,
+            media_type=guess_media_type(path.name) or "application/octet-stream",
+        )
 
     def citation_document(
         self, project_id: str, ref: ContextRef, *, scope: ContextRef | None = None

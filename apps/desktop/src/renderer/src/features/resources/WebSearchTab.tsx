@@ -132,9 +132,10 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
       attempt?.invocationEvents ?? [],
       mode,
       attempt?.resultText,
-      search?.query
+      search?.query,
+      attempt?.artifactPath
     ),
-    [attempt?.invocationEvents, attempt?.resultText, mode, search?.query]
+    [attempt?.artifactPath, attempt?.invocationEvents, attempt?.resultText, mode, search?.query]
   )
   const terminal = search?.status === 'completed'
     || search?.status === 'failed'
@@ -335,6 +336,7 @@ export function WebSearchTab({ tabId }: { tabId: string }): React.JSX.Element {
     if (!result.ok) {
       patchSearch({ importing: false })
       toast({
+        dedupeKey: JSON.stringify(['web-import-failure', tabId, result.error]),
         description: <SearchFeedback message={{ kind: 'importFailure', error: result.error }} />,
         title: <SearchFeedback message={{ kind: 'label', messageKey: 'webFeedback.requestFailed' }} />,
         tone: 'error'

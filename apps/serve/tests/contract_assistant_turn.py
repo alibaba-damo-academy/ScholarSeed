@@ -30,6 +30,7 @@ from scholarseed_runtime.contract.input import (  # noqa: E402
 from scholarseed_runtime.contract.history import (  # noqa: E402
     TurnStatus,
 )
+from scholarseed_runtime.contract.session import RuntimeActivitySnapshot  # noqa: E402
 from service.assistant.persistence.store import AssistantStore  # noqa: E402
 from service.assistant.service.context import (  # noqa: E402
     ASSISTANT_CONTEXT_HEADER,
@@ -55,6 +56,7 @@ from service.chat.persistence.catalog import (  # noqa: E402
     SessionCatalogStore,
     SessionPrincipal,
     SessionStatus,
+    SubmissionMode,
     UncertaintyKind,
     UncertaintyState,
 )
@@ -71,6 +73,7 @@ from service.chat.service.sessions import (  # noqa: E402
     TURN_UNKNOWN_CONFIRM_DECISION,
 )
 from service.chat.runtime.activation import SessionActivationError  # noqa: E402
+from service.content.domain.model import ContentError, ContentReadPermissionError  # noqa: E402
 from scholarseed_runtime.contract.resource import (  # noqa: E402
     RESOURCE_WAIT_TIMEOUT,
     ResourceReceipt,
@@ -165,6 +168,9 @@ class CaptureSession:
     def __init__(self, adapter: CaptureAdapter) -> None:
         self.adapter = adapter
 
+    async def activity(self) -> RuntimeActivitySnapshot:
+        return RuntimeActivitySnapshot("fixture", 0, 0, True)
+
     async def steer(self, request: Any) -> CommandReceipt:
         self.adapter.inputs.append(request)
         return CommandReceipt(request.command_id, CommandState.ACCEPTED, "assistant-vendor-turn")
@@ -203,6 +209,211 @@ class ReadyProvider:
 
 
 class AssistantTurnContract(unittest.TestCase):
+    def test_completed_turn_with_pending_hil_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        with patch.object(
+            self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_pending_hil", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_background_activity_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        activity = SimpleNamespace(idle=False, blockers=("native_background_terminal_active",))
+        with patch.object(
+            self.live.runtime_session, "activity", new=AsyncMock(return_value=activity)
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_background_active", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_unavailable_activity_rejects_before_enqueue(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        with patch.object(
+            self.live.runtime_session,
+            "activity",
+            new=AsyncMock(side_effect=RuntimeError("unavailable")),
+        ):
+            payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual((payload["error"], status), ("previous_turn_activity_unavailable", 409))
+        self.assertIsNone(self.catalog.queued_message(SESSION_ID, CLIENT_TURN))
+
+    def test_completed_turn_with_idle_runtime_admits_next_turn(self) -> None:
+        self.live.active_product_turn_id = "previous-turn"
+        payload, status = asyncio.run(self.turns.post(SESSION_ID, self.body(0), side=False))
+        self.assertEqual(status, 202, payload)
+        self.assertTrue(payload["accepted"])
+
+    def test_running_turn_still_accepts_next_message_into_queue(self) -> None:
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            first, status = await self.turns.post(
+                SESSION_ID, {**self.body(0), "wait": False}, side=False
+            )
+            self.assertEqual(status, 202, first)
+            await self.adapter.started.wait()
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                second, status = await self.turns.post(
+                    SESSION_ID,
+                    {**self.body(0, client_turn_id="next-turn"), "wait": False},
+                    side=False,
+                )
+            self.assertEqual(status, 202, second)
+            self.assertEqual(second["disposition"], "queued")
+            self.adapter.release.set()
+            if self.live.current_task is not None:
+                await self.live.current_task
+
+        asyncio.run(scenario())
+
+    def test_queued_turn_rejects_retained_activity_before_native_submission(self) -> None:
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            first, status = await self.turns.post(
+                SESSION_ID, {**self.body(0), "wait": False}, side=False
+            )
+            self.assertEqual(status, 202, first)
+            await self.adapter.started.wait()
+            second, status = await self.turns.post(
+                SESSION_ID,
+                {**self.body(0, client_turn_id="queued-next-turn"), "wait": False},
+                side=False,
+            )
+            self.assertEqual(status, 202, second)
+            blocked = RuntimeActivitySnapshot(
+                "fixture", 1, 1, False, ("native_background_terminal_active",)
+            )
+            with patch.object(
+                self.live.runtime_session, "activity", new=AsyncMock(return_value=blocked)
+            ):
+                first_task = self.live.current_task
+                assert first_task is not None
+                self.adapter.release.set()
+                await first_task
+                await asyncio.sleep(0.05)
+            queued = self.catalog.queued_message(SESSION_ID, "queued-next-turn")
+            assert queued is not None
+            self.assertEqual(queued.state, QueuedMessageState.FAILED)
+            self.assertEqual(queued.safe_error, "runtime_resource_wait_blocked")
+            self.assertEqual(len(self.adapter.inputs), 1)
+
+        asyncio.run(scenario())
+
+    def test_queued_turn_rejects_pending_hil_before_native_submission(self) -> None:
+        async def scenario() -> None:
+            queued, status = await self.turns._enqueue(
+                self.live,
+                self.body(0, client_turn_id="queued-after-hil"),
+                submission_mode=SubmissionMode.QUEUED,
+            )
+            self.assertEqual(status, 202, queued)
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                result = await self.turns._prepare_queued(self.live, "queued-after-hil")
+            self.assertEqual(result.error, "runtime_resource_wait_pending_hil")
+            record = self.catalog.queued_message(SESSION_ID, "queued-after-hil")
+            assert record is not None
+            self.assertEqual(record.state, QueuedMessageState.FAILED)
+            self.assertEqual(self.adapter.inputs, [])
+
+        asyncio.run(scenario())
+
+    def test_pending_hil_blocks_suspend_with_a_recorded_reason(self) -> None:
+        async def scenario() -> None:
+            with patch.object(
+                self.live, "pending_hil_snapshot", return_value=[{"request_id": "hil-1"}]
+            ):
+                self.assertFalse(await self.live.suspend_runtime())
+            self.assertEqual(self.live.suspend_blockers, ("pending_hil",))
+
+        asyncio.run(scenario())
+
+    def test_failed_turn_recovery_accepts_only_once_and_expires_after_completion(self) -> None:
+        self.turns._events = self.events
+        selection = self.select(0)
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="failed-turn",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_FAILED,
+            payload={"retryable": True},
+            idempotency_key="recoverable-failure",
+        )
+
+        async def scenario() -> None:
+            self.adapter.started = asyncio.Event()
+            self.adapter.release = asyncio.Event()
+            body = {
+                **self.body(selection.revision),
+                "wait": False,
+                "continue_turn_id": "failed-turn",
+            }
+            first, first_status = await self.turns.post(SESSION_ID, body, side=False)
+            self.assertEqual(first_status, 202)
+            self.assertTrue(first["accepted"])
+            duplicate, status = await self.turns.post(
+                SESSION_ID, {**body, "client_user_message_id": "duplicate"}, side=False
+            )
+            self.assertEqual((duplicate["error"], status), ("continuation_origin_stale", 409))
+            await self.adapter.started.wait()
+            task = self.live.current_task
+            self.adapter.release.set()
+            await task
+            stale, status = await self.turns.post(
+                SESSION_ID, {**body, "client_user_message_id": "after-completion"}, side=False
+            )
+            self.assertEqual((stale["error"], status), ("continuation_origin_stale", 409))
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, "duplicate"))
+            self.assertIsNone(self.catalog.queued_message(SESSION_ID, "after-completion"))
+
+        asyncio.run(scenario())
+
+    def test_failed_turn_recovery_rejects_stale_origin_before_enqueue(self) -> None:
+        self.turns._events = self.events
+        self.events.append(
+            session_id=SESSION_ID,
+            runtime_id=RUNTIME_ID,
+            vendor_thread_id=self.adapter.session_id,
+            vendor_turn_id="completed-turn",
+            vendor_item_id=None,
+            kind=PRODUCT_EVENT_TURN_INTERRUPTED,
+            payload={},
+            idempotency_key="recovery-terminal",
+        )
+        payload, status = asyncio.run(
+            self.turns.post(SESSION_ID, {"continue_turn_id": "old-failure"}, side=False)
+        )
+        self.assertEqual((payload.get("error"), status), ("continuation_origin_stale", 409))
+        self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+
+    def test_continuation_admission_rejects_replaced_or_cancelled_origin(self) -> None:
+        async def scenario() -> None:
+            self.live.last_submission_id = "new-submission"
+            payload, status = await self.turns.post(
+                SESSION_ID, {}, side=False, expected_submission_id="old-submission"
+            )
+            self.assertEqual((payload["error"], status), ("continuation_origin_stale", 409))
+            self.live.interrupt_generation = 1
+            payload, status = await self.turns.post(
+                SESSION_ID,
+                {},
+                side=False,
+                expected_submission_id="new-submission",
+                expected_interrupt_generation=0,
+            )
+            self.assertEqual((payload["error"], status), ("continuation_origin_stale", 409))
+            self.assertFalse(self.catalog.queued_messages(SESSION_ID))
+
+        asyncio.run(scenario())
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="assistant-turn-")
         root = Path(self.temporary.name)
@@ -350,9 +561,7 @@ class AssistantTurnContract(unittest.TestCase):
         queued = self.catalog.enqueue_message(SESSION_ID, request_id, {"input": []})
         self.catalog.begin_resource_wait(SESSION_ID, request_id, purpose=queued.purpose)
         residents = {}
-        turns = TurnService(
-            residents, self.live._logger, catalog=self.catalog, events=self.events
-        )
+        turns = TurnService(residents, self.live._logger, catalog=self.catalog, events=self.events)
         result, status = asyncio.run(turns.delete_queued(SESSION_ID, request_id))
         self.assertEqual(status, 200)
         self.assertTrue(result["ok"])
@@ -434,10 +643,73 @@ class AssistantTurnContract(unittest.TestCase):
             self.turns.post(SESSION_ID, self.body(selection.revision), side=False)
         )
         self.assertEqual(status, 202, payload)
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["disposition"], "direct")
         items = self.adapter.inputs[0].items
         self.assertEqual(items[0]["text"], summary)
         self.assertTrue(any(item.get("text") == USER_TEXT for item in items))
         deliveries.begin_turn.assert_awaited_once()
+
+    def test_permission_baseline_failure_projects_file_details_without_runtime_submission(
+        self,
+    ) -> None:
+        path = "resources/受限文件.md"
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(side_effect=ContentReadPermissionError(path)),
+            finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
+        )
+        self.live.project_path = self.live.runtime_workdir
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            deliveries=deliveries,
+        )
+        selection = self.select(0)
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                self.body(selection.revision),
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["error"], "resource_baseline_permission_denied")
+        queued = self.catalog.queued_message(SESSION_ID, CLIENT_TURN)
+        self.assertEqual(queued.state, QueuedMessageState.FAILED)
+        self.assertEqual(queued.safe_error_details, {"path": path})
+        rejected = next(
+            event for event in self.events.replay(SESSION_ID) if event.kind == "send_now_rejected"
+        )
+        self.assertEqual(rejected.payload["safe_error_details"], {"path": path})
+        self.assertEqual(self.adapter.inputs, [])
+
+    def test_nonpermission_baseline_failure_retains_generic_error(self) -> None:
+        deliveries = SimpleNamespace(
+            begin_turn=AsyncMock(side_effect=ContentError("read_failed")),
+            finish_turn=AsyncMock(return_value=ReviewCaptureResult()),
+        )
+        self.live.project_path = self.live.runtime_workdir
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            context_source=self.assistant,
+            deliveries=deliveries,
+        )
+        selection = self.select(0)
+        payload, status = asyncio.run(
+            turns.post(
+                SESSION_ID,
+                self.body(selection.revision),
+                side=False,
+            )
+        )
+        self.assertEqual(status, 202, payload)
+        self.assertEqual(payload["error"], "resource_baseline_failed")
+        self.assertEqual(
+            self.catalog.queued_message(SESSION_ID, CLIENT_TURN).safe_error_details, {}
+        )
+        self.assertEqual(self.adapter.inputs, [])
 
     def test_open_agent_reviews_block_turn_without_mutating_the_batch(self) -> None:
         deliveries = SimpleNamespace(
@@ -563,7 +835,8 @@ class AssistantTurnContract(unittest.TestCase):
             [InputKind.TEXT.value, InputKind.TEXT.value],
         )
         self.assertTrue(items[0]["text"].startswith(ASSISTANT_CONTEXT_HEADER))
-        self.assertIn("precise-literature-search", items[0]["text"])
+        self.assertIn('"search_scope":"academic"', items[0]["text"])
+        self.assertNotIn("retrieval_directive", items[0]["text"])
         self.assertEqual(items[1]["text"], USER_TEXT)
 
         user_events = [
@@ -596,7 +869,7 @@ class AssistantTurnContract(unittest.TestCase):
         self.assertEqual(decorated[0]["text"], USER_TEXT)
         self.assertNotIn(ASSISTANT_CONTEXT_HEADER, decorated[0]["text"])
 
-    def test_default_web_scope_guides_existing_search_without_revision(self) -> None:
+    def test_default_web_scope_sends_only_user_text_without_revision(self) -> None:
         body = self.body(0, client_turn_id="default-web-turn")
         body.pop("assistant_context_revision")
 
@@ -605,10 +878,9 @@ class AssistantTurnContract(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertTrue(payload["ok"])
         items = self.adapter.inputs[0].items
+        self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["kind"], InputKind.TEXT.value)
-        self.assertIn('"search_scope":"web"', items[0]["text"])
-        self.assertIn("existing web-search capability", items[0]["text"])
-        self.assertEqual(items[1]["text"], USER_TEXT)
+        self.assertEqual(items[0]["text"], USER_TEXT)
 
     def test_unavailable_session_label_provenance_reaches_error_without_starting_adapter(
         self,
@@ -731,6 +1003,8 @@ class AssistantTurnContract(unittest.TestCase):
             )
             self.assertEqual(main_status, 202)
             self.assertTrue(main_payload["ok"])
+            self.assertTrue(main_payload["accepted"])
+            self.assertEqual(main_payload["disposition"], "direct")
             await self.adapter.started.wait()
             queued_payload, queued_status = await self.turns.post(
                 SESSION_ID,
@@ -742,7 +1016,12 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(queued_status, 202)
-            self.assertTrue(queued_payload["queued"])
+            self.assertTrue(queued_payload["accepted"])
+            self.assertEqual(queued_payload["disposition"], "queued")
+            self.assertEqual(
+                self.catalog.queued_message(SESSION_ID, "assistant-side-client").submission_mode,
+                SubmissionMode.QUEUED,
+            )
             side_payload, side_status = await self.turns.post(
                 SESSION_ID,
                 {"queued_message_id": queued_payload["queued_message_id"]},
@@ -905,12 +1184,14 @@ class AssistantTurnContract(unittest.TestCase):
             return {**queued, "listed": listed["messages"]}
 
         queued = asyncio.run(exercise())
-        self.assertTrue(queued["queued"])
+        self.assertTrue(queued["accepted"])
+        self.assertEqual(queued["disposition"], "queued")
         messages, _status = self.session_service().queued(SESSION_ID)
         self.assertEqual(messages["messages"], [])
         queued_row = next(
             row for row in queued["listed"] if row["queued_message_id"] == "queued-turn"
         )
+        self.assertEqual(queued_row["submission_mode"], "queued")
         self.assertEqual(
             [ref["source_id"] for ref in queued_row["assistant_references"]],
             ["queued.md"],
@@ -967,7 +1248,8 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             durable = SessionCatalogStore(self.database).queued_message(
                 SESSION_ID, "queued-provenance"
             )
@@ -1061,7 +1343,8 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             durable = SessionCatalogStore(self.database).queued_message(
                 SESSION_ID, "queued-provenance"
             )
@@ -1133,7 +1416,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -1235,7 +1519,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -1357,7 +1642,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             await self.live.interrupt()
             task = self.live.current_task
             assert task is not None
@@ -1500,14 +1786,16 @@ class AssistantTurnContract(unittest.TestCase):
                 side=False,
             )
             self.assertEqual(status, 202)
-            self.assertTrue(response["queued"])
+            self.assertTrue(response["accepted"])
+            self.assertEqual(response["disposition"], "direct")
             self.assertFalse(self.live.running)
             self.assertIsNone(self.live.current_task)
             await asyncio.wait_for(waiting.wait(), 1)
             async with self.live.lifecycle_lock:
                 record = self.catalog.queued_message(SESSION_ID, "wait-cancel")
-                self.assertEqual(record.state, QueuedMessageState.WAITING_RESOURCES)
-                self.assertEqual(record.deadline, 12345.0)
+            self.assertEqual(record.state, QueuedMessageState.WAITING_RESOURCES)
+            self.assertEqual(record.deadline, 12345.0)
+            self.assertEqual(record.submission_mode, SubmissionMode.DIRECT)
             self.assertTrue(self.live.waiting_resources)
             removed, remove_status = await turns.delete_queued(SESSION_ID, "wait-cancel")
             self.assertEqual(remove_status, 200)
@@ -1582,6 +1870,65 @@ class AssistantTurnContract(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_cancelled_message_remains_visible_and_reaches_next_model_turn(self) -> None:
+        selection = self.select(0)
+
+        async def prepare(live, *, request_id, deadline, on_wait):
+            if request_id == "cancelled-first":
+                await asyncio.Event().wait()
+
+        turns = TurnService(
+            {SESSION_ID: self.live},
+            self.live._logger,
+            prepare=prepare,
+            context_source=self.assistant,
+            events=self.events,
+        )
+
+        async def exercise() -> None:
+            first, status = await turns.post(
+                SESSION_ID,
+                {
+                    **self.body(selection.revision, client_turn_id="cancelled-first"),
+                    "input": [{"type": "text", "text": "第一条：不要执行"}],
+                    "wait": False,
+                },
+                side=False,
+            )
+            self.assertEqual(status, 202, first)
+            self.assertTrue(await self.live.cancel_resource_wait())
+            self.assertEqual(self.adapter.inputs, [])
+            history = EventService({SESSION_ID: self.live}, self.events, self.live._logger)
+            cancelled = history.decorate_history(SESSION_ID, self.live.history())
+            self.assertEqual(cancelled[0]["text"], "第一条：不要执行")
+            self.assertEqual(cancelled[0]["status"], "cancelled")
+            self.assertIn("第一条：不要执行", self.events.portable_history(SESSION_ID)[0].text)
+
+            second, status = await turns.post(
+                SESSION_ID,
+                {
+                    **self.body(
+                        self.assistant.selection(SESSION_ID).revision,
+                        client_turn_id="second-turn",
+                    ),
+                    "input": [{"type": "text", "text": "我上一条消息是什么？"}],
+                },
+                side=False,
+            )
+            self.assertEqual(status, 202, second)
+            self.assertEqual(len(self.adapter.inputs), 1)
+            model_items = self.adapter.inputs[0].items
+            self.assertIn("第一条：不要执行", model_items[0]["text"])
+            self.assertIn("cancelled before execution", model_items[0]["text"])
+            self.assertEqual(model_items[-1]["text"], "我上一条消息是什么？")
+            visible = history.decorate_history(SESSION_ID, self.live.history())
+            self.assertEqual(
+                [row["text"] for row in visible if row["kind"] == "user"],
+                ["第一条：不要执行", "我上一条消息是什么？"],
+            )
+
+        asyncio.run(exercise())
+
     def test_explicit_failed_retry_gets_a_new_resource_deadline(self) -> None:
         selection = self.select(0)
 
@@ -1620,7 +1967,8 @@ class AssistantTurnContract(unittest.TestCase):
             result, _status = await turns.post(SESSION_ID, body, side=False)
             self.assertFalse(result["ok"])
             duplicate, _status = await turns.post(SESSION_ID, {**body, "wait": False}, side=False)
-            self.assertTrue(duplicate["queued"])
+            self.assertTrue(duplicate["accepted"])
+            self.assertEqual(duplicate["disposition"], "direct")
             self.assertEqual(
                 self.catalog.queued_message(SESSION_ID, "renew-resource").state,
                 QueuedMessageState.FAILED,
@@ -1698,6 +2046,7 @@ class AssistantTurnContract(unittest.TestCase):
                     self.assertFalse(response["idle"])
                     self.assertNotIn("cancelled_waiting", response)
                     interrupt.assert_awaited_once()
+                    self.assertTrue(interrupt.await_args.args[0].cleanup_background_processes)
                     self.assertEqual(
                         self.catalog.queued_message(SESSION_ID, request_id).state,
                         QueuedMessageState.RUNNING,
@@ -2376,7 +2725,8 @@ class AssistantTurnContract(unittest.TestCase):
                 },
                 side=False,
             )
-            self.assertTrue(queued["queued"])
+            self.assertTrue(queued["accepted"])
+            self.assertEqual(queued["disposition"], "queued")
             task = self.live.current_task
             assert task is not None
             self.adapter.release.set()
@@ -2420,7 +2770,8 @@ class AssistantTurnContract(unittest.TestCase):
                     side=False,
                 )
                 self.assertEqual(status, 202)
-                self.assertTrue(queued["queued"])
+                self.assertTrue(queued["accepted"])
+                self.assertEqual(queued["disposition"], "queued")
             await self.live.interrupt()
             active_task = self.live.current_task
             assert active_task is not None

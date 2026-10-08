@@ -26,6 +26,34 @@ const SOURCE: LiteratureDocumentSource = {
   mediaType: 'application/pdf'
 }
 
+test('session artifact size failures retain the server error code', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWindow = globalThis.window
+  globalThis.window = {
+    scholarseed: { getApiBase: () => 'http://test' }
+  } as Window & typeof globalThis
+  try {
+    globalThis.fetch = async () => Response.json(
+      { ok: false, error: 'session_artifact_too_large' },
+      { status: 413 }
+    )
+    const loaded = await loadDocument({
+      kind: 'session-artifact',
+      sessionId: 'session',
+      artifactId: 'large-pdf',
+      path: 'large.pdf',
+      mediaType: 'application/pdf'
+    })
+    assert.ok(isDocumentLoadFailure(loaded))
+    assert.equal(loaded.code, 'session_artifact_too_large')
+    assert.equal(loaded.status, 413)
+    assert.equal(loaded.retryable, false)
+  } finally {
+    globalThis.fetch = originalFetch
+    globalThis.window = originalWindow
+  }
+})
+
 test('literature attachment locations resolve through their exact owner route', async () => {
   const originalFetch = globalThis.fetch
   const originalWindow = globalThis.window

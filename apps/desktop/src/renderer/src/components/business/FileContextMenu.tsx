@@ -1,9 +1,12 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
+import { AppWindow } from 'lucide-react'
 
-import { OpenWithApp, openPathWith } from '../../api'
+import type { OpenWithApp } from '../../api'
+import { openPathWith } from '../../api'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
-import { copyPath, listOpenWithApps, openByDefault, OpenContext, revealInFinder, revealLabelKey } from '../../fileOpen'
+import type { OpenContext } from '../../fileOpen'
+import { copyPath, listOpenWithApps, openByDefault, revealInFinder, revealLabelKey } from '../../fileOpen'
 import { useApp } from '../../store'
 import {
   ContextMenu,
@@ -13,7 +16,8 @@ import {
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
-  ContextMenuTrigger
+  ContextMenuTrigger,
+  EmptyState
 } from '../ui'
 
 // FileContextMenu.tsx — 文件右键菜单 (PRD 2.1.5 图2)。四项: 打开 / 在文件系统中打开 /
@@ -42,7 +46,7 @@ export function FileContextMenu({
   children: React.ReactNode
   target: FileContextMenuTarget
 }): React.JSX.Element {
-  const { t } = useTranslation('components')
+  const { t } = useTranslation(['components', 'resources'])
   const { act } = useApp()
   const [apps, setApps] = React.useState<OpenWithApp[] | null>(null)
   const [resetKey, setResetKey] = React.useState(0)
@@ -113,7 +117,7 @@ export function FileContextMenu({
               </ContextMenuSubTrigger>
               <ContextMenuSubContent className={SUBMENU_CLASS_NAME} side="right">
                 {apps === null && <div className={MENU_HINT_CLASS_NAME}>{t('fileMenu.loading')}</div>}
-                {apps !== null && apps.length === 0 && <div className={MENU_HINT_CLASS_NAME}>{t('fileMenu.empty')}</div>}
+                {apps !== null && apps.length === 0 && <EmptyState variant="compact" icon={<AppWindow />} title={t('fileMenu.empty')} />}
                 {apps?.map((app) => (
                   <ContextMenuItem
                     key={app.path}

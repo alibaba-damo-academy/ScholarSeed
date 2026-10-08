@@ -15,7 +15,10 @@ test('account access updates existing subscribers and ignores a stale login resp
   const settle = async (): Promise<void> => { await new Promise<void>((resolve) => setImmediate(resolve)) }
   const respond = (index: number, auth: boolean): void => requests[index](new Response(JSON.stringify({ auth })))
   const stop = watchAccountAccess(true, (snapshot) => snapshots.push(snapshot))
+  const secondary: typeof snapshots = []
+  const stopSecondary = watchAccountAccess(true, (snapshot) => secondary.push(snapshot))
   try {
+    assert.equal(requests.length, 1)
     assert.equal(snapshots.at(-1)?.authenticated, false)
     target.dispatchEvent(new Event('scholarseed:auth-required'))
     respond(0, true)
@@ -32,11 +35,13 @@ test('account access updates existing subscribers and ignores a stale login resp
     target.dispatchEvent(new Event('scholarseed:auth-required'))
     assert.equal(snapshots.at(-1)?.authenticated, false)
     stop()
+    stopSecondary()
     const count = snapshots.length
     target.dispatchEvent(new Event('scholarseed:auth-restored'))
     assert.equal(snapshots.length, count)
   } finally {
     stop()
+    stopSecondary()
     globalThis.fetch = previousFetch
     if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
     else Reflect.deleteProperty(globalThis, 'window')

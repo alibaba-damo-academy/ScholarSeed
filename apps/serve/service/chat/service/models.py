@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from scholarseed_runtime.contract import (
     ModelCapabilities,
+    ModelCatalogEntry,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
@@ -48,6 +49,7 @@ from service.settings.capabilities import (
     CAPABILITY_REASON_KEY,
     CONTEXT_WINDOW_KEY,
     EFFORT_FORM,
+    GATEWAY_CONNECTION,
     IMAGE_INPUT_KEY,
     IMAGE_MODALITY,
     INPUT_MODALITIES_KEY,
@@ -67,6 +69,7 @@ from service.settings.capabilities import (
     vendor_capability_hint,
 )
 from service.settings.catalog import (
+    GATEWAY_APPROVAL_MODEL_KEY,
     apply_model_to_config,
     available_models,
     current_model_key,
@@ -206,6 +209,8 @@ class SessionModelSpec:
     # 就要带到消费方；让下游再按模型名判一次，等于回到 proposal 78 I1 否决的做法。
     reasoning_options: list[dict[str, Any]] | None = None
     capabilities: ModelCapabilities = ModelCapabilities()
+    catalog_models: tuple[ModelCatalogEntry, ...] = ()
+    approval_model_name: str = ""
 
     def runtime_model(
         self, reasoning_effort: str = "", thinking: ModelThinking | None = None
@@ -248,11 +253,14 @@ class SessionModelSpec:
                 supports_websockets=bool(provider.get("supports_websockets")),
                 stream_max_retries=_retry_budget(provider.get("stream_max_retries")),
                 request_max_retries=_retry_budget(provider.get("request_max_retries")),
+                proxy_bypass_hosts=_proxy_bypass_hosts(provider.get("proxy_bypass_hosts")),
             ),
             context_window=context_window,
             reasoning_effort=reasoning_effort,
             thinking=thinking,
             capabilities=self.capabilities,
+            catalog_models=self.catalog_models,
+            approval_model_ref=self.approval_model_name,
         )
         return intent, credential_port
 
@@ -300,7 +308,7 @@ class ModelService:
         身份恒为机器级常量，拿它判门禁会让内置模型即使登录也永久置灰）。个人连接一律走
         ``_owner_id`` 投影出的归属身份，因此登录/登出/切号都不影响用户自配连接的可见性。
 
-        ``auto_switch``：落盘默认模型被未登录门禁置灰且目录里还有可用模型时，自动切换为
+        ``auto_switch``：落盘默认模型被凭据门禁置灰且目录里还有可用模型时，自动切换为
         第一个可用模型并落盘。显式选择路径（``select``）关掉它——那次调用刚刚按用户意图
         落盘，不应在同一次调用里被改写；下一次目录读取仍会执行切换。
         """
@@ -312,8 +320,20 @@ class ModelService:
         document = self._profiles.list(owner_id=owner_id)
         models = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(models, config, user_id)
-        self._mark_subscription_gate(models, owner_id)
         subscriptions = self._subscriptions
+        if subscriptions is not None:
+            connection_ids = {
+                str(item["profile_id"])
+                for item in models
+                if item.get("billing") == SUBSCRIPTION_BILLING
+            }
+            await asyncio.gather(
+                *(
+                    subscriptions.refresh_expiring(owner_id, profile_id)
+                    for profile_id in connection_ids
+                )
+            )
+        self._mark_subscription_gate(models, owner_id)
         if subscriptions is not None:
             profiles = {
                 item["profile_id"]
@@ -494,28 +514,25 @@ class ModelService:
         return next((str(row.get("key") or "") for row in models if not row.get("disabled")), "")
 
     @classmethod
-    def _gateway_blocked(cls, row: Mapping[str, Any] | None) -> bool:
-        """该行是否因未登录网关门禁而不可执行（只认这一个原因码）。
+    def _credential_blocked(cls, row: Mapping[str, Any] | None) -> bool:
+        """Whether the selected model's account or subscription credential is unusable."""
 
-        订阅连接断开等其他置灰原因不参与自动切换：那是用户要显式处理的连接状态，
-        静默换模型会掩盖「去连接 ChatGPT」的引导。
-        """
-
-        return row is not None and str(row.get("disabled_reason_code") or "") == (
-            GATEWAY_CREDENTIAL_REQUIRED_CODE
-        )
+        return row is not None and str(row.get("disabled_reason_code") or "") in {
+            GATEWAY_CREDENTIAL_REQUIRED_CODE,
+            SUBSCRIPTION_CONNECTION_REQUIRED_CODE,
+        }
 
     def _auto_switched_default(self, config: dict[str, Any], models: list[dict[str, Any]]) -> str:
-        """落盘默认模型被未登录门禁置灰时，自动切换为第一个可用模型并落盘。
+        """落盘默认模型被凭据门禁置灰时，自动切换为第一个可用模型并落盘。
 
         幂等：切换后 ``runtime_model()`` 即指向可用键，后续读路径不再触发写入。
-        只处理网关凭据门禁；目录整体不可用（无任何可选行）时保留原键，
+        目录整体不可用（无任何可选行）时保留原键，
         让执行面照旧给出「请先登录或配置自有模型」的可读错误。
         """
 
         selected = self._selected_key(config, models)
         row = next((item for item in models if str(item.get("key") or "") == selected), None)
-        if not self._gateway_blocked(row):
+        if row is None or not self._credential_blocked(row):
             return selected
         fallback = self._first_selectable_key(models)
         if not fallback or fallback == selected:
@@ -523,7 +540,7 @@ class ModelService:
         self._settings.set_runtime_model(fallback)
         LOGGER.info(
             "model_default_auto_switched reason=%s from=%s to=%s",
-            GATEWAY_CREDENTIAL_REQUIRED_CODE,
+            str(row.get("disabled_reason_code") or ""),
             selected,
             fallback,
         )
@@ -568,22 +585,25 @@ class ModelService:
         document = self._profiles.list(owner_id=self._owner_id(user_id))
         rows = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(rows, config, user_id)
+        self._mark_subscription_gate(rows, self._owner_id(user_id))
         row = next((item for item in rows if item["key"] == model_key), None)
         if row is None:
             raise SessionModelUnavailableError("请先在设置 → 模型服务配置并选择模型。")
         # 一次性推理（图表解释 / Office 文案 / PDF）与目录投影同一条自动切换语义：
-        # 请求键被未登录门禁置灰且目录里还有可用模型时，回落到第一个可用模型。
-        if self._gateway_blocked(row):
+        # 请求键被凭据门禁置灰且目录里还有可用模型时，回落到第一个可用模型。
+        if self._credential_blocked(row):
             fallback = next((item for item in rows if not item.get("disabled")), None)
             if fallback is not None:
                 LOGGER.info(
                     "model_invocation_auto_switched reason=%s from=%s to=%s",
-                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    str(row.get("disabled_reason_code") or ""),
                     model_key,
                     fallback["key"],
                 )
                 row = fallback
                 model_key = str(fallback["key"])
+            elif row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
         if row.get("billing") == SUBSCRIPTION_BILLING:
             profile = self._profiles.profile(
                 str(row.get("profile_id") or ""), owner_id=self._owner_id(user_id)
@@ -793,6 +813,7 @@ class ModelService:
     ) -> str:
         models = self._catalog_models(config, document)
         self._mark_gateway_credential_gate(models, config, user_id)
+        self._mark_subscription_gate(models, self._owner_id(user_id))
         selected = model_key.strip() or self._selected_key(config, models)
         available = {str(row.get("key") or "") for row in models}
         if not selected:
@@ -801,20 +822,22 @@ class ModelService:
             raise SessionModelUnavailableError(
                 f"selected ScholarSeed model is unavailable: {selected}; select a configured model connection"
             )
-        # 会话/执行链路拿着已被未登录门禁置灰的键进来时（登出前开的会话、过期缓存），
+        # 会话/执行链路拿着已被凭据门禁置灰的键进来时（登出前开的会话、过期缓存），
         # 回落到第一个可用模型而不是把必然失败的网关调用放行；目录全灰时保持原键，
         # 让下游照旧给出可读错误。
         row = next(item for item in models if str(item.get("key") or "") == selected)
-        if self._gateway_blocked(row):
+        if self._credential_blocked(row):
             fallback = self._first_selectable_key(models)
             if fallback and fallback != selected:
                 LOGGER.info(
                     "model_resolution_auto_switched reason=%s from=%s to=%s",
-                    GATEWAY_CREDENTIAL_REQUIRED_CODE,
+                    str(row.get("disabled_reason_code") or ""),
                     selected,
                     fallback,
                 )
                 return fallback
+            if row.get("billing") == SUBSCRIPTION_BILLING:
+                raise SessionModelUnavailableError(SUBSCRIPTION_CONNECTION_REQUIRED_REASON)
         return selected
 
     def session_spec(
@@ -851,6 +874,8 @@ class ModelService:
         selected_row = next(
             row for row in self._catalog_models(config, document) if row["key"] == selected
         )
+        catalog_models = self._catalog_entries(config, document, selected_row)
+        approval_model_name = str(selected_row.get(GATEWAY_APPROVAL_MODEL_KEY) or "")
         declared_options = selected_row.get(REASONING_OPTIONS_KEY)
         reasoning_options = list(declared_options or ()) or None
         capabilities = _runtime_capabilities(selected_row)
@@ -893,6 +918,8 @@ class ModelService:
                         input_modalities=capabilities.input_modalities,
                         reasoning_efforts=capabilities.reasoning_efforts,
                     ),
+                    catalog_models=catalog_models,
+                    approval_model_name=approval_model_name,
                     codex_provider={
                         "base_url": registration.base_url,
                         "wire_api": ModelWireProtocol.RESPONSES.value,
@@ -929,6 +956,8 @@ class ModelService:
                 billing=API_BILLING,
                 reasoning_options=reasoning_options,
                 capabilities=capabilities,
+                catalog_models=catalog_models,
+                approval_model_name=approval_model_name,
                 executable=self._settings.runtime_executable(),
                 codex_provider=personal_provider,
                 process_environment=personal_environment,
@@ -949,6 +978,7 @@ class ModelService:
             thinking=thinking,
             turn_id_provider=resolve_turn_id,
             source_text=source_text,
+            approval_model_ref=approval_model_name,
         )
         return SessionModelSpec(
             key=selected,
@@ -958,6 +988,8 @@ class ModelService:
             billing=billing,
             reasoning_options=reasoning_options,
             capabilities=capabilities,
+            catalog_models=catalog_models,
+            approval_model_name=approval_model_name,
             executable=self._settings.runtime_executable(),
             codex_provider=provider,
             process_environment=environment,
@@ -1011,6 +1043,48 @@ class ModelService:
         """
 
         return [*cls._available(config), *cls._personal_items(document)]
+
+    @classmethod
+    def _catalog_entries(
+        cls,
+        config: dict[str, Any],
+        document: Mapping[str, Any],
+        selected_row: Mapping[str, Any],
+    ) -> tuple[ModelCatalogEntry, ...]:
+        profile_id = str(selected_row.get("profile_id") or "")
+        entries: dict[str, ModelCatalogEntry] = {}
+        for row in sorted(cls._catalog_models(config, document), key=lambda item: str(item["key"])):
+            if str(row.get("profile_id") or "") != profile_id:
+                continue
+            model_ref = wire_model_name(str(row.get("model_id") or row.get("model_name") or ""))
+            if not model_ref:
+                continue
+            entry = ModelCatalogEntry(
+                model_ref=model_ref,
+                capabilities=_runtime_capabilities(row),
+                context_window=_optional_int(row.get(CONTEXT_WINDOW_KEY)),
+            )
+            previous = entries.setdefault(model_ref, entry)
+            if previous != entry:
+                raise SessionModelUnavailableError(
+                    f"model catalog contains conflicting definitions: {model_ref}"
+                )
+        approval_model = str(selected_row.get(GATEWAY_APPROVAL_MODEL_KEY) or "")
+        if approval_model:
+            capability = bundled_registry().lookup(approval_model, GATEWAY_CONNECTION)
+            if not capability.declared:
+                raise SessionModelUnavailableError(
+                    f"auto review model capability is undeclared: {approval_model}"
+                )
+            reviewer = apply_capability(
+                {"model_name": approval_model}, capability, lane=GATEWAY_CONNECTION
+            )
+            entries[approval_model] = ModelCatalogEntry(
+                model_ref=approval_model,
+                capabilities=_runtime_capabilities(reviewer),
+                context_window=_optional_int(reviewer.get(CONTEXT_WINDOW_KEY)),
+            )
+        return tuple(entries[model_ref] for model_ref in sorted(entries))
 
     @staticmethod
     def _personal_items(
@@ -1232,6 +1306,7 @@ def _codex_provider(
     thinking: ModelThinking | None = None,
     turn_id_provider: Callable[[str], str] | None = None,
     source_text: str | None = None,
+    approval_model_ref: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     base_url = _base_url(config)
     if not base_url:
@@ -1284,6 +1359,7 @@ def _codex_provider(
             reasoning_options=reasoning_options,
             thinking=thinking,
             provider=str(config.get("provider") or ""),
+            approval_model_ref=approval_model_ref,
         )
         return {
             "name": SCHOLARSEED_CODEX_PROVIDER_NAME,
@@ -1293,6 +1369,9 @@ def _codex_provider(
             "supports_websockets": False,
             "stream_max_retries": stream_max_retries,
             "request_max_retries": request_max_retries,
+            # 这条路 Codex 打的是本进程的本机通道，必须绕过宿主系统代理；与上游是
+            # 网关还是 BYOK 无关 —— 判定依据是「经不经 bridge」，不是 endpoint 归属。
+            "proxy_bypass_hosts": _proxy_bypass_hosts(registration.proxy_bypass_host),
         }, {}
     provider: dict[str, Any] = {
         "name": SCHOLARSEED_CODEX_PROVIDER_NAME,
@@ -1301,6 +1380,8 @@ def _codex_provider(
         "supports_websockets": False,
         "stream_max_retries": stream_max_retries,
         "request_max_retries": request_max_retries,
+        # 直连外部上游：保持用户自己的代理语义，不声明任何豁免。
+        "proxy_bypass_hosts": (),
     }
     environment: dict[str, str] = {}
     if api_key:
@@ -1376,6 +1457,16 @@ def _retry_budget(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _proxy_bypass_hosts(value: Any) -> tuple[str, ...]:
+    """Normalize declared proxy-bypass hosts, dropping empty and duplicate entries."""
+
+    if value is None:
+        return ()
+    declared = value if isinstance(value, (list, tuple)) else (value,)
+    hosts = (str(host).strip() for host in declared)
+    return tuple(dict.fromkeys(host for host in hosts if host))
 
 
 __all__ = [

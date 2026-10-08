@@ -53,6 +53,31 @@ export type UpdatePhase =
 
 export type UpdateInstallStage = 'preparing' | 'copying' | 'restarting'
 
+export type UpdateInstallStep =
+  | 'package'
+  | 'image'
+  | 'mounts'
+  | 'mounting'
+  | 'identity'
+  | 'signature'
+  | 'gatekeeper'
+  | 'notarization'
+  | 'publisher'
+  | 'staging-cleanup'
+  | 'copying'
+  | 'cleanup'
+  | 'restarting'
+
+/** Main-owned timestamps survive renderer remounts; timeout is a limit, never an ETA. */
+export interface UpdateInstallation {
+  step: UpdateInstallStep
+  startedAt: number
+  stepStartedAt: number
+  timeoutMs?: number
+  application?: 'source' | 'staged'
+  cancelling: boolean
+}
+
 /**
  * 失败来自哪一次用户动作。
  *
@@ -98,6 +123,7 @@ export interface UpdateProgress {
   /** 已落盘字节数。总量不重复携带 —— 它就是 candidate.file_size。 */
   receivedBytes?: number
   install_stage?: UpdateInstallStage
+  installation?: UpdateInstallation
 }
 
 export interface UpdateSnapshot {
@@ -110,6 +136,7 @@ export interface UpdateSnapshot {
   percent?: number
   receivedBytes?: number
   installStage?: UpdateInstallStage
+  installation?: UpdateInstallation
   error?: string
   /** `error` 来自哪一次动作；展示侧据此选文案，不从相位或 error 文本反推。 */
   errorOrigin?: UpdateErrorOrigin
@@ -143,12 +170,7 @@ export function updateCandidateKey(candidate: LatestVersionMeta | undefined): st
 }
 
 /** Identity fields the update check compares against the packaged product policy. */
-export type UpdateIdentityField =
-  | 'product_id'
-  | 'bundle_id'
-  | 'arch_type'
-  | 'channel'
-  | 'team_id'
+export type UpdateIdentityField = 'product_id' | 'bundle_id' | 'arch_type' | 'channel' | 'team_id'
 
 /** Read-only view of one update check: the server identity next to the packaged policy. */
 export interface UpdateDiagnosis {
@@ -175,6 +197,7 @@ export interface UpdateDiagnosis {
 
 export interface StartUpdateResult {
   ok: boolean
+  cancelled?: boolean
   mode?: 'auto' | 'manual'
   error?: string
   /**

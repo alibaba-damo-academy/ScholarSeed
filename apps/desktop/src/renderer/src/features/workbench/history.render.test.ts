@@ -60,7 +60,7 @@ async function withHistory(run: (page: Page) => Promise<void>, options: {
     const mutations: string[] = []
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
-    await page.route('**/api/**', async route => {
+    await page.route(url => url.pathname.startsWith('/api/'), async route => {
       const request = route.request()
       const pathname = new URL(request.url()).pathname
       const deletePreview = pathname === '/api/resource/versions/version-test/delete/preview'
@@ -68,7 +68,7 @@ async function withHistory(run: (page: Page) => Promise<void>, options: {
       const payload = pathname === '/api/resource/capability' ? options.capability ?? CAPABILITY
         : pathname === '/api/resource/files/file-test/versions' ? { versions: [options.version ?? VERSION], next_cursor: null, total: 1 }
         : deletePreview ? DELETE_PREVIEW
-        : pathname === '/api/literature/searches' ? { items: [] } : null
+        : pathname === '/api/literature/searches' || pathname === '/api/v1/literatures' ? { items: [], total: 0 } : null
       if (payload === null) throw new Error(`Unexpected history fixture request: ${request.method()} ${pathname}`)
       await route.fulfill({ json: payload })
     })
@@ -106,7 +106,7 @@ test('version arrow opens the selected comparison and closes history', async () 
       historicalVersionId: 'version-test', currentVersionId: 'version-current',
       historicalSequence: 1, processor: null
     })
-  })
+  }, { capability: { ...CAPABILITY, snapshot_state: 'saved', pending: null } })
 })
 
 test('version arrow is keyboard reachable and can inspect the current version', async () => {
@@ -126,7 +126,7 @@ test('version arrow is keyboard reachable and can inspect the current version', 
       await page.getByRole('button', { name: '查看版本记录', exact: true }).click()
       await page.getByRole('button', { name: '更多版本操作', exact: true }).waitFor()
     }
-  }, { capability: { ...CAPABILITY, version_id: VERSION.id } })
+  }, { capability: { ...CAPABILITY, snapshot_state: 'saved', pending: null, version_id: VERSION.id } })
 })
 
 test('unavailable versions do not expose an active inspect arrow', async () => {
@@ -226,19 +226,32 @@ test('version delete confirmation escapes its workspace stacking context', async
   })
 })
 
-test('review rejection confirmation covers the drawer without restoring on cancel', async () => {
+test('pending review is a single neutral hint without duplicate review actions', async () => {
   await withHistory(async page => {
-    await page.getByTestId('snapshot-review').getByRole('button', { name: '拒绝', exact: true }).click()
-    const dialog = page.getByRole('alertdialog')
-    await dialog.waitFor()
-    await assertReceivesPointer(dialog.getByRole('button', { name: '取消', exact: true }))
-    assert.equal(await page.getByRole('button', { name: '更多版本操作', exact: true }).evaluate(element => {
-      const bounds = element.getBoundingClientRect()
-      const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
-      return element.contains(hit)
-    }), false, 'modal confirmation must intercept clicks on the drawer')
-    await page.keyboard.press('Escape')
-    await dialog.waitFor({ state: 'hidden' })
-    assert.equal(await page.getByRole('heading', { name: '文件版本与审阅' }).isVisible(), true)
+    const hint = page.getByTestId('version-history-pending-review')
+    await hint.waitFor()
+    assert.equal(await hint.innerText(), '待审阅')
+    assert.equal(await page.getByTestId('snapshot-review').count(), 0)
+    for (const name of ['接受', '拒绝', '保存并采纳修改', '查看修改前内容', '下载修改前快照']) {
+      assert.equal(await page.getByRole('button', { name, exact: true }).count(), 0)
+    }
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 600, height: 700 }]) {
+      await page.setViewportSize(viewport)
+      await page.emulateMedia({ colorScheme: viewport.width === 600 ? 'dark' : 'light' })
+      assert.equal(await hint.isVisible(), true)
+      assert.equal(await hint.evaluate(element => element.scrollHeight <= element.clientHeight), true)
+    }
   })
+})
+
+test('saved files omit the review hint and ordinary pending saves keep their action', async () => {
+  await withHistory(async page => {
+    assert.equal(await page.getByTestId('version-history-pending-review').count(), 0)
+    assert.equal(await page.getByTestId('snapshot-pending').count(), 0)
+  }, { capability: { ...CAPABILITY, snapshot_state: 'saved', pending: null } })
+  await withHistory(async page => {
+    await page.getByTestId('snapshot-pending').waitFor()
+    assert.equal(await page.getByTestId('version-history-pending-review').count(), 0)
+    assert.equal(await page.getByTestId('snapshot-save-pending').isVisible(), true)
+  }, { capability: { ...CAPABILITY, pending: { ...CAPABILITY.pending!, origin: 'user', review: null } } })
 })

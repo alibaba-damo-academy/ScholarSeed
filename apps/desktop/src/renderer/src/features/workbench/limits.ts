@@ -3,7 +3,7 @@ import type { ViewerKind } from '../../contracts/workbench'
 const MEBIBYTE = 1024 * 1024
 const DEFAULT_TOKENIZATION_LINE_LENGTH = 20_000
 
-export const MARKDOWN_VISUAL_MAX_BYTES = MEBIBYTE
+export const MARKDOWN_VISUAL_MAX_BYTES = 10 * MEBIBYTE
 export const LARGE_EDITOR_BYTES = 20 * MEBIBYTE
 export const LARGE_EDITOR_LINES = 300_000
 

@@ -100,7 +100,6 @@ def apply():
     url = _canonical_paperhub_url(url)
     if url:
         os.environ["PAPERHUB_URL"] = url
-
     if not os.environ.get("PAPERHUB_PROXY_MODE") and cfg.get("paperhub_proxy_mode"):
         os.environ["PAPERHUB_PROXY_MODE"] = str(cfg["paperhub_proxy_mode"])
 

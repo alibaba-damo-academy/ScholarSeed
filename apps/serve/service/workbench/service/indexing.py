@@ -20,6 +20,7 @@ from service.paths import PROJECT_DB_RELATIVE, SERVICE_LITERATURE_DATABASE
 from service.persistence.project import connect, transaction
 from service.platform.citations import (
     LITERATURE_STORAGE,
+    MANAGED_STORAGE_SCOPE,
     CitationDocument,
     PdfIndex,
     PdfPageContent,
@@ -37,14 +38,21 @@ from service.workbench.service.extraction import (
 INDEX_TABLE = "workbench_pdf_indexes"
 METADATA_TABLE = "workbench_pdf_metadata"
 PAGE_TABLE = "workbench_pdf_pages"
+#: 字节由 serve 代用户保管在 ``SERVICE_LITERATURE_FILES_DIR`` 的存储范围。它们的索引
+#: 必须与字节同级 (用户级文献库), 不能按项目库解析: 会话可能根本没有项目 (文献全览),
+#: 项目目录拷到别的机器也不该带走 serve 保管的索引。
+USER_LEVEL_INDEX_SCOPES: frozenset[str] = frozenset({LITERATURE_STORAGE, MANAGED_STORAGE_SCOPE})
 PARSER_MODULE = "service.workbench.service.extraction"
 PARSER_TIMEOUT_SECONDS = 180
 PAGE_PARSER_TIMEOUT_SECONDS = 25
 MAXIMUM_PARSE_OUTPUT_BYTES = 64_000_000
+MAXIMUM_PARSER_STDERR_BYTES = 4_096
 MAXIMUM_PENDING_BYTES = 200_000_000
 PARSER_WORKERS = 3
 NAVIGATION_INDEX_WAIT_SECONDS = 30
-PARSER_ENV_KEYS = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL")
+PARSER_ENV_KEYS = ("PATH", "SYSTEMROOT", "LANG", "LC_ALL", "PYTHONPATH")
+PARSER_FAILED = "pdf_parser_failed"
+PARSER_INVALID_OUTPUT = "pdf_parser_invalid_output"
 READY = "ready"
 FAILED = "failed"
 QUEUED = "queued"
@@ -116,7 +124,7 @@ class PdfIndexService:
 
     def _database(self, document: CitationDocument):
         database: Path | str
-        if document.storage_scope == LITERATURE_STORAGE:
+        if document.storage_scope in USER_LEVEL_INDEX_SCOPES:
             database = SERVICE_LITERATURE_DATABASE
             foreign_key = ""
         elif document.session_id:
@@ -139,8 +147,11 @@ class PdfIndexService:
         resolve those rows again — the next read of the same item derives a
         different revision. Callers pass only revisions of files this deletion
         actually removed, which is also the guarantee that no surviving
-        attachment shares the bytes. Returns how many distinct cached indexes
-        were dropped.
+        attachment shares the bytes. Managed full texts share this database and
+        the same revision key (identical bytes, identical index), so deleting an
+        attachment can drop a managed row too; that is a cache loss the next
+        managed read rebuilds, not lost source data. Returns how many distinct
+        cached indexes were dropped.
         """
         keys = tuple(dict.fromkeys(index_identity(revision) for revision in revisions))
         if not keys:
@@ -325,15 +336,33 @@ class PdfIndexService:
             (START_PAGE_OPTION, str(start_page), END_PAGE_OPTION, str(end_page)),
             PAGE_PARSER_TIMEOUT_SECONDS,
         )
-        result = json.loads(output)
-        if returncode or not result.get("ok"):
-            raise ValueError(result.get("error", "pdf_parse_failed"))
+        result = self._parser_result(returncode, output)
         index = decode_index(result["index"])
         if index.revision != document.revision or index.index_id != index_identity(
             document.revision
         ):
             raise ValueError("pdf_index_revision_conflict")
         return index
+
+    @staticmethod
+    def _parser_result(returncode: int, output: bytes) -> dict:
+        if not output:
+            raise ValueError(PARSER_FAILED if returncode else PARSER_INVALID_OUTPUT)
+        try:
+            result = json.loads(output)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(PARSER_FAILED if returncode else PARSER_INVALID_OUTPUT) from error
+        if returncode:
+            if isinstance(result, dict) and isinstance(result.get("error"), str):
+                raise ValueError(result["error"])
+            raise ValueError(PARSER_FAILED)
+        if (
+            not isinstance(result, dict)
+            or result.get("ok") is not True
+            or not isinstance(result.get("index"), dict)
+        ):
+            raise ValueError(PARSER_INVALID_OUTPUT)
+        return result
 
     def _run_parser(
         self, payload: bytes, arguments: tuple[str, ...], timeout: int
@@ -347,7 +376,7 @@ class PdfIndexService:
                 [sys.executable, "-m", PARSER_MODULE, *arguments],
                 stdin=subprocess.PIPE,
                 stdout=output_file,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=environment,
             )
             with self._lock:
@@ -356,7 +385,7 @@ class PdfIndexService:
                     process.terminate()
             try:
                 try:
-                    process.communicate(payload, timeout=timeout)
+                    _, stderr = process.communicate(payload, timeout=timeout)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.communicate()
@@ -366,6 +395,16 @@ class PdfIndexService:
             finally:
                 with self._lock:
                     self._processes.discard(process)
+        if process.returncode or not output:
+            diagnostic = stderr[-MAXIMUM_PARSER_STDERR_BYTES:].decode("utf-8", errors="replace")
+            LOGGER.warning(
+                "PDF parser subprocess failed",
+                extra={
+                    "parser_returncode": process.returncode,
+                    "parser_stderr": diagnostic,
+                    "parser_output_bytes": len(output),
+                },
+            )
         if len(output) > MAXIMUM_PARSE_OUTPUT_BYTES:
             raise ValueError("pdf_index_too_large")
         return process.returncode, output
@@ -412,9 +451,7 @@ class PdfIndexService:
                     (RUNNING, key[1], attempt),
                 )
             returncode, output = self._run_parser(document.payload, (), PARSER_TIMEOUT_SECONDS)
-            result = json.loads(output)
-            if returncode or not result.get("ok"):
-                raise ValueError(result.get("error", "pdf_parse_failed"))
+            result = self._parser_result(returncode, output)
             index = decode_index(result["index"])
             if index.revision != document.revision or index.index_id != index_identity(
                 document.revision

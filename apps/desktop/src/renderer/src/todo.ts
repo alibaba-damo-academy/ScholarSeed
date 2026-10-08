@@ -1,9 +1,72 @@
 import type { ParseKeys } from 'i18next'
-import type { Thread, TodoItemUI } from './model'
+import { RELEASED_PLAN_SOURCE, type PlanSnapshotUI, type Thread, type TodoItemUI } from './model.ts'
+import type { ProductEvent } from './api'
+import { pendingHilItems } from './hil.ts'
+
+const MILLISECONDS_PER_SECOND = 1_000
+const UNKNOWN_STEP_DURATION = '–'
+
+export { UNKNOWN_STEP_DURATION }
+
+export function projectPlanSnapshots(events: ProductEvent[], current: PlanSnapshotUI[] = []): PlanSnapshotUI[] {
+  const snapshots = new Map(current.map((snapshot) => [snapshot.sequence, snapshot]))
+  for (const event of events) {
+    if (event.type !== 'plan_snapshot') continue
+    snapshots.set(event.seq, {
+      sequence: event.seq,
+      turnId: event.turn_id,
+      timestamp: event.ts * MILLISECONDS_PER_SECOND,
+      planId: event.data.plan?.plan_id,
+      released: event.data.plan?.source === RELEASED_PLAN_SOURCE,
+      items: event.data.items
+    })
+  }
+  return [...snapshots.values()].sort((left, right) => left.sequence - right.sequence)
+}
+
+function currentPlanSnapshots(thread: Thread, turnId: string | null | undefined): PlanSnapshotUI[] {
+  const snapshots = thread.planSnapshots ?? []
+  const latest = snapshots.at(-1)
+  if (!latest || latest.turnId !== turnId) return []
+  let start = snapshots.length - 1
+  while (start > 0) {
+    const previous = snapshots[start - 1]
+    const samePlan = latest.planId
+      ? previous.planId === latest.planId
+      : !previous.planId && previous.turnId === latest.turnId
+    if (!samePlan) break
+    start -= 1
+  }
+  return snapshots.slice(start)
+}
+
+function snapshotEnd(thread: Thread, snapshot: PlanSnapshotUI, next: PlanSnapshotUI | undefined, now: number): number {
+  const timing = snapshot.turnId ? thread.turnTimings?.[snapshot.turnId] : undefined
+  if (snapshot.released || snapshot.items.every((item) => item.status === 'completed')) return snapshot.timestamp
+  const terminal = snapshot.turnId && thread.turnOutcomes?.[snapshot.turnId] !== 'running'
+  return Math.max(snapshot.timestamp, Math.min(
+    next?.timestamp ?? Infinity,
+    timing?.completedAt ?? (terminal ? snapshot.timestamp : now)
+  ))
+}
+
+export function stepElapsedMilliseconds(thread: Thread, item: TodoDisplayItem, now: number): number | null {
+  const snapshots = currentPlanSnapshots(thread, thread.todoTurnId)
+  let elapsed: number | null = null
+  snapshots.forEach((snapshot, index) => {
+    const matches = snapshot.items.filter((candidate) => item.id
+      ? candidate.id === item.id
+      : !candidate.id && candidate.content === item.content)
+    if (matches.length !== 1 || matches[0].status !== 'in_progress' || snapshot.released) return
+    const end = snapshotEnd(thread, snapshot, snapshots[index + 1], now)
+    elapsed = (elapsed ?? 0) + executionMilliseconds(thread, snapshot.turnId, snapshot.timestamp, end)
+  })
+  return elapsed
+}
 
 // Plan facts belong to todoTurnId. Later conversation turns are not evidence of
 // continuation: only a new plan_snapshot can transfer that ownership.
-export type TodoDisplayStatus = 'done' | 'running' | 'need' | 'todo' | 'partial' | 'blocked' | 'failed' | 'stopped'
+export type TodoDisplayStatus = 'done' | 'running' | 'need' | 'unrequested' | 'todo' | 'partial' | 'blocked' | 'failed' | 'stopped'
 
 export interface TodoDisplayItem {
   content: string
@@ -13,6 +76,7 @@ export interface TodoDisplayItem {
   dependsOn?: string[]
   children?: TodoDisplayItem[]
   applyingConfirmation?: boolean
+  awaitingPlanUpdate?: boolean
 }
 
 type TodoSummaryKey = Exclude<
@@ -33,6 +97,44 @@ export function isLatestUserTurn(thread: Thread, turnId: string | null | undefin
   return !latestUserTurnId || latestUserTurnId === turnId
 }
 
+export function planElapsedMilliseconds(thread: Thread, turnId: string | null | undefined, now: number): number | null {
+  const snapshots = currentPlanSnapshots(thread, turnId)
+  if (snapshots.length) {
+    let elapsed = 0
+    snapshots.forEach((snapshot, index) => {
+      const previous = snapshots[index - 1]
+      const timing = snapshot.turnId ? thread.turnTimings?.[snapshot.turnId] : undefined
+      const earlierPlan = thread.planSnapshots?.some((candidate) => candidate.sequence < snapshot.sequence && candidate.turnId === snapshot.turnId)
+      const start = previous?.turnId === snapshot.turnId || earlierPlan
+        ? snapshot.timestamp
+        : timing?.startedAt ?? snapshot.timestamp
+      const end = snapshotEnd(thread, snapshot, snapshots[index + 1], now)
+      elapsed += executionMilliseconds(thread, snapshot.turnId, start, end)
+    })
+    return elapsed
+  }
+  const timing = turnId ? thread.turnTimings?.[turnId] : undefined
+  if (!timing) return null
+  const end = Math.max(timing.startedAt, timing.completedAt ?? now)
+  return executionMilliseconds(thread, turnId, timing.startedAt, end)
+}
+
+function executionMilliseconds(thread: Thread, turnId: string | null | undefined, startedAt: number, end: number): number {
+  const waits = thread.conversation.flatMap((item) => {
+    if (item.kind !== 'hil' || item.turnId !== turnId || item.requestedAt === undefined) return []
+    const start = Math.max(startedAt, item.requestedAt)
+    const finish = Math.min(end, item.resolvedAt ?? end)
+    return finish > start ? [{ start, finish }] : []
+  }).sort((left, right) => left.start - right.start)
+  let waited = 0
+  let accountedUntil = startedAt
+  for (const wait of waits) {
+    waited += Math.max(0, wait.finish - Math.max(accountedUntil, wait.start))
+    accountedUntil = Math.max(accountedUntil, wait.finish)
+  }
+  return Math.max(0, end - startedAt - waited)
+}
+
 export function planStatus(thread: Thread): TodoDisplayStatus {
   const turnId = thread.todoTurnId
   if (!turnId) return 'stopped'
@@ -47,7 +149,7 @@ export function planStatus(thread: Thread): TodoDisplayStatus {
   }
   if (outcome !== 'running') return 'stopped'
   const requests = thread.conversation.filter((item) => item.kind === 'hil' && item.turnId === turnId)
-  if (requests.some((item) => item.kind === 'hil' && (item.hilState === 'pending' || item.hilState === 'submitting'))) return 'need'
+  if (pendingHilItems(requests).length > 0) return 'need'
   // A declined tool is not a failed plan: Codex may replan within this same turn.
   return 'running'
 }
@@ -55,11 +157,9 @@ export function planStatus(thread: Thread): TodoDisplayStatus {
 /** Overlay execution state only on explicitly active steps; never select a pending step by position. */
 export function displayTodos(thread: Thread): TodoDisplayItem[] {
   const state = planStatus(thread)
-  const confirmationResolved = Boolean(thread.todoTurnId && thread.conversation.some((item) => (
-    item.kind === 'hil'
-      && item.turnId === thread.todoTurnId
-      && (item.hilState === 'resolved' || item.hilState === 'cancelled')
-  )))
+  const requests = thread.conversation.filter((item) => item.kind === 'hil' && item.turnId === thread.todoTurnId)
+  const confirmationResolved = requests.some((item) => item.kind === 'hil'
+    && (item.hilState === 'resolved' || item.hilState === 'cancelled'))
   const projected = (thread.todos ?? []).map((item) => {
     if (item.status === 'completed') return toItem(item, 'done')
     if (item.status === 'partial') return toItem(item, 'partial')
@@ -67,14 +167,11 @@ export function displayTodos(thread: Thread): TodoDisplayItem[] {
     if (item.status === 'failed') return toItem(item, 'failed')
     if (item.status === 'in_progress') return toItem(item, state)
     if (item.status === 'needs_confirmation') {
-      const confirmationStatus = state === 'need'
-        ? 'need'
-        : state === 'running'
-          ? confirmationResolved ? 'running' : 'need'
-          : state
+      const confirmationStatus = state === 'running' && requests.length === 0 ? 'unrequested' : state
       return {
         ...toItem(item, confirmationStatus),
-        applyingConfirmation: state === 'running' && confirmationResolved
+        applyingConfirmation: state === 'running' && confirmationResolved,
+        awaitingPlanUpdate: state === 'running' && requests.length > 0 && !confirmationResolved
       }
     }
     return toItem(item, 'todo')
@@ -108,10 +205,13 @@ export function todoSummary(thread: Thread, items: TodoDisplayItem[]): TodoSumma
   if (state === 'running' && current?.applyingConfirmation) {
     return { messageKey: 'todo.summary.applying', status: 'running' }
   }
+  if (state === 'running' && current?.awaitingPlanUpdate) {
+    return { messageKey: 'todo.summary.waiting', status: 'running' }
+  }
   if (state === 'running' && !current) {
-    if (details.some((item) => item.status === 'need')) return { messageKey: 'todo.summary.need', status: 'need' }
     if (details.some((item) => item.status === 'blocked')) return { messageKey: 'todo.summary.blocked', status: 'blocked' }
     if (details.some((item) => item.status === 'failed')) return { messageKey: 'todo.summary.partialFailure', status: 'failed' }
+    if (details.some((item) => item.status === 'unrequested')) return { messageKey: 'todo.summary.unrequested', status: 'unrequested' }
   }
   if (state === 'need') return { messageKey: 'todo.summary.need', status: state }
   if (state === 'failed') return { messageKey: 'todo.summary.failed', status: state }

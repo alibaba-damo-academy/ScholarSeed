@@ -10,7 +10,8 @@ import type {
   PdfRecordSnapshot,
   PdfRecords,
   RecordOwner,
-  RecordTarget
+  RecordTarget,
+  SelectionAnchor
 } from '../../contracts/workbench'
 import { fetchVersionCapability, type ResourceCapability } from '../../contracts/resources.ts'
 import type { PdfMarkColor } from './pdf/records'
@@ -39,6 +40,7 @@ export interface SessionArtifactSource {
   sessionId: string
   artifactId: string
   path: string
+  absolutePath?: string
   revision?: string
   mediaType?: string
   renderKind?: string
@@ -272,6 +274,37 @@ export async function digestText(text: string): Promise<string> {
   return digest(new TextEncoder().encode(text))
 }
 
+const SELECTION_SNAPSHOT_ROUTE = '/api/workbench/selection/snapshot'
+const ATTACHMENT_SELECTION_SNAPSHOT_PATH = '/selection-snapshot'
+
+export async function captureSelectionSnapshot(
+  source: ProjectDocumentSource | LiteratureDocumentSource,
+  sourceRevision: string,
+  selection: SelectionAnchor
+): Promise<{ snapshot_text: string; source_revision: string }> {
+  const route = source.kind === 'literature'
+    ? `/api/v1/literatures/${encodeURIComponent(source.literatureId)}/attachments/${encodeURIComponent(source.attachmentId)}${ATTACHMENT_SELECTION_SNAPSHOT_PATH}`
+    : SELECTION_SNAPSHOT_ROUTE
+  const body = source.kind === 'literature' && selection.locator.kind === 'calc'
+    ? { source_revision: sourceRevision, sheet: selection.locator.sheet, range: selection.locator.range }
+    : {
+        project_id: source.kind === 'project' ? source.project : undefined,
+        source_id: source.path,
+        source_revision: sourceRevision,
+        locator_kind: selection.locator.kind,
+        locator: selection.locator,
+        selected_text_hash: await digestText(selection.text)
+      }
+  const response = await fetch(`${base()}${route}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return response.json()
+}
+
 export function documentIdFor(source: DocumentSource): string {
   if (source.kind === 'builtin') return `builtin:${source.id}`
   if (source.kind === 'literature') return `literature:${source.literatureId}:attachment:${source.attachmentId}`
@@ -306,6 +339,7 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
   try {
     const payload = await response.json() as {
       detail?: string | { code?: string; message?: string; retryable?: boolean }
+      error?: string
     }
     if (typeof payload.detail === 'string' && payload.detail) {
       code = payload.detail
@@ -314,6 +348,9 @@ async function responseFailure(response: Response): Promise<DocumentLoadFailure>
       code = payload.detail.code || code
       message = payload.detail.message || code
       retryable = payload.detail.retryable ?? retryable
+    } else if (typeof payload.error === 'string' && payload.error) {
+      code = payload.error
+      message = payload.error
     }
   } catch {
     // Preserve the stable HTTP fallback when an upstream returns a non-JSON body.
@@ -468,10 +505,29 @@ export async function commitDocument(
       body: new Uint8Array(bytes)
     })
     if (response.status === 412) return { ok: false, error: 'conflict' }
-    if (!response.ok) return { ok: false, error: 'failed' }
+    if (!response.ok) {
+      let detail = ''
+      try {
+        detail = await response.text()
+      } catch {
+        detail = ''
+      }
+      console.warn('Document commit failed', {
+        source: source.kind,
+        path: source.path,
+        status: response.status,
+        detail
+      })
+      return { ok: false, error: 'failed' }
+    }
     const next = response.headers.get('etag')?.replace(/^"|"$/g, '')
     return next ? { ok: true, revision: next } : { ok: false, error: 'failed' }
-  } catch {
+  } catch (error) {
+    console.warn('Document commit request failed', {
+      source: source.kind,
+      path: source.path,
+      error
+    })
     return { ok: false, error: 'failed' }
   }
 }

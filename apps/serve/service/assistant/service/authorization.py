@@ -43,6 +43,7 @@ AUTHORIZE_DESCRIPTION = "允许在本次任务和已展示文献范围内读取�
 REJECT_DESCRIPTION = "不读取全文，并停止本次全文处理。"
 AUTHORIZATION_REQUIRED = "fulltext_authorization_required"
 CONTINUATION_TURN_COLUMN = "continuation_turn_id"
+SELECTED_PAPER_IDS_KEY = "selected_paper_ids"
 
 
 class AuthorizationDisposition(str, Enum):
@@ -59,6 +60,7 @@ class FulltextAuthorizationPolicy:
     question: str
     authorize: str = RESEARCH_IDEA_AUTHORIZE
     reject: str = RESEARCH_IDEA_REJECT
+    subset_selection: bool = False
 
 
 FULLTEXT_AUTHORIZATION_POLICIES = (
@@ -75,6 +77,7 @@ FULLTEXT_AUTHORIZATION_POLICIES = (
         PRECISE_SEARCH_QUESTION_PREFIX,
         PRECISE_SEARCH_AUTHORIZATION_HEADER,
         PRECISE_SEARCH_AUTHORIZATION_QUESTION,
+        subset_selection=True,
     ),
     FulltextAuthorizationPolicy(
         ProductTaskType.LITERATURE_REVIEW,
@@ -274,6 +277,30 @@ class FulltextAuthorizer:
     ) -> None:
         """Allow one ref only through a durable grant of this turn or its product continuation."""
 
+        for authorization in self.turn_scope(
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            turn_id=turn_id,
+            authorization_type=authorization_type,
+            client_turn_id=client_turn_id,
+        ):
+            if ref_id not in authorization.refs:
+                continue
+            if ref_id in self.granted_refs(authorization):
+                return
+        raise ValueError(AUTHORIZATION_REQUIRED)
+
+    def turn_scope(
+        self,
+        *,
+        session_id: str,
+        snapshot_id: str,
+        turn_id: str,
+        authorization_type: str,
+        client_turn_id: str = "",
+    ) -> tuple[FulltextAuthorization, ...]:
+        """Live challenges of one type for this turn or the product turn continuing it."""
+
         authorization_policy(authorization_type)
         with closing(self._connect()) as connection, connection:
             rows = connection.execute(
@@ -292,15 +319,11 @@ class FulltextAuthorizer:
                     client_turn_id,
                 ),
             ).fetchall()
-        authorizations = tuple(self._record(row) for row in rows)
-        for authorization in authorizations:
-            if authorization.authorization_type != authorization_type:
-                continue
-            if ref_id not in authorization.refs:
-                continue
-            if self._is_granted(authorization):
-                return
-        raise ValueError(AUTHORIZATION_REQUIRED)
+        return tuple(
+            record
+            for record in (self._record(row) for row in rows)
+            if record.authorization_type == authorization_type
+        )
 
     def session_scope(
         self, *, session_id: str, authorization_type: str, refs: tuple[str, ...]
@@ -349,8 +372,9 @@ class FulltextAuthorizer:
                 (client_turn_id, authorization.authorization_id, AuthorizationState.PENDING.value),
             )
 
-    def _is_granted(self, authorization: FulltextAuthorization) -> bool:
-        policy = authorization_policy(authorization.authorization_type)
+    def _resolved_decision(self, authorization: FulltextAuthorization) -> Mapping[str, Any] | None:
+        """The durable answer to this exact challenge, whatever it says."""
+
         for hil in self._catalog.turn_hil(authorization.session_id, authorization.turn_id):
             if hil.status is not HilStatus.RESOLVED or not hil.decision:
                 continue
@@ -361,20 +385,72 @@ class FulltextAuthorizer:
             ):
                 continue
             answers = hil.decision.get("answers")
-            if not isinstance(answers, dict):
+            if not isinstance(answers, dict) or authorization.question_id not in answers:
                 continue
-            answer = answers.get(authorization.question_id)
-            values = answer.get("answers") if isinstance(answer, dict) else answer
-            if values == policy.authorize or (
-                isinstance(values, list) and values == [policy.authorize]
-            ):
-                return True
-        return False
+            return hil.decision
+        return None
+
+    def _granted_decision(self, authorization: FulltextAuthorization) -> Mapping[str, Any] | None:
+        decision = self._resolved_decision(authorization)
+        if decision is None:
+            return None
+        if decision_disposition(authorization, decision) is not AuthorizationDisposition.AUTHORIZED:
+            return None
+        return decision
+
+    def _is_granted(self, authorization: FulltextAuthorization) -> bool:
+        return self._granted_decision(authorization) is not None
+
+    def decided(self, authorization: FulltextAuthorization) -> bool:
+        """Whether the user already answered this challenge, allow or refuse."""
+
+        return self._resolved_decision(authorization) is not None
 
     def granted(self, authorization: FulltextAuthorization) -> bool:
         """Return whether this exact persisted challenge has a durable allow."""
 
         return self._is_granted(authorization)
+
+    def granted_refs(self, authorization: FulltextAuthorization) -> tuple[str, ...]:
+        """The durable allow's effective source set, derived from its decision.
+
+        The ledger row always keeps the candidate set it was challenged with; the
+        subset the user actually picked lives only in the decision values, so a
+        grant never widens beyond its challenge and never needs a schema change.
+        """
+
+        decision = self._granted_decision(authorization)
+        if decision is None:
+            return ()
+        return derive_granted_scope(authorization, decision)
+
+    def turn_granted_refs(
+        self,
+        *,
+        session_id: str,
+        snapshot_id: str,
+        turn_id: str,
+        authorization_type: str,
+        refs: tuple[str, ...],
+        client_turn_id: str = "",
+    ) -> tuple[str, ...]:
+        """The refs this turn may actually use: exactly what `require` would allow.
+
+        A durable allow only counts when it is in this turn's scope, so a grant answered
+        in an earlier turn neither widens nor silently satisfies a later one; the caller
+        re-asks instead. Mirrors `require` per ref, which may be satisfied by any row.
+        """
+
+        allowed: set[str] = set()
+        for authorization in self.turn_scope(
+            session_id=session_id,
+            snapshot_id=snapshot_id,
+            turn_id=turn_id,
+            authorization_type=authorization_type,
+            client_turn_id=client_turn_id,
+        ):
+            allowed.update(self.granted_refs(authorization))
+        return tuple(ref for ref in refs if ref in allowed)
 
     @staticmethod
     def _record(row: sqlite3.Row) -> FulltextAuthorization:
@@ -414,9 +490,42 @@ def decision_disposition(
     )
 
 
-def authorization_question(authorization: FulltextAuthorization) -> dict[str, object]:
+def derive_granted_scope(
+    authorization: FulltextAuthorization, decision: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Effective source set of one durable allow, derived without touching the row.
+
+    Subset-capable policies read ``values.selected_paper_ids``; a missing value keeps
+    the challenged candidate set (legacy clients), while a malformed or oversized
+    selection fails closed to the empty set.
+    """
+
     policy = authorization_policy(authorization.authorization_type)
-    return {
+    if decision_disposition(authorization, decision) is not AuthorizationDisposition.AUTHORIZED:
+        return ()
+    if not policy.subset_selection:
+        return authorization.refs
+    values = decision.get("values")
+    if not isinstance(values, Mapping):
+        return authorization.refs
+    selected = values.get(SELECTED_PAPER_IDS_KEY)
+    if selected is None:
+        return authorization.refs
+    if not isinstance(selected, list) or any(
+        not isinstance(ref, str) or not ref for ref in selected
+    ):
+        return ()
+    allowed = frozenset(authorization.refs)
+    scope = tuple(ref for ref in selected if ref in allowed)
+    return scope if len(scope) == len(set(selected)) else ()
+
+
+def authorization_question(
+    authorization: FulltextAuthorization,
+    papers: tuple[Mapping[str, str], ...] = (),
+) -> dict[str, object]:
+    policy = authorization_policy(authorization.authorization_type)
+    question: dict[str, object] = {
         "id": authorization.question_id,
         "header": policy.header,
         "question": policy.question,
@@ -428,15 +537,29 @@ def authorization_question(authorization: FulltextAuthorization) -> dict[str, ob
             {"label": policy.reject, "description": REJECT_DESCRIPTION},
         ],
     }
+    if policy.subset_selection and papers:
+        allowed = frozenset(authorization.refs)
+        question["papers"] = [
+            {
+                "id": str(paper.get("id") or ""),
+                "label": str(paper.get("label") or ""),
+                "description": str(paper.get("description") or ""),
+            }
+            for paper in papers
+            if str(paper.get("id") or "") in allowed
+        ]
+    return question
 
 
 __all__ = [
     "AUTHORIZATION_REQUIRED",
+    "SELECTED_PAPER_IDS_KEY",
     "AuthorizationDisposition",
     "FULLTEXT_AUTHORIZATION_POLICIES",
     "FulltextAuthorization",
     "FulltextAuthorizationPolicy",
     "FulltextAuthorizer",
+    "derive_granted_scope",
     "LITERATURE_REVIEW_AUTHORIZATION_HEADER",
     "LITERATURE_REVIEW_AUTHORIZATION_QUESTION",
     "LITERATURE_REVIEW_FULLTEXT",

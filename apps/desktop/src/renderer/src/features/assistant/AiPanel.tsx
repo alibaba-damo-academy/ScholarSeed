@@ -12,11 +12,11 @@ import React, {
 } from 'react'
 import {
   EllipsisVertical,
+  Folder,
   Maximize2,
   MessageCirclePlus,
   Minimize2,
   Pencil,
-  Pin,
   RotateCcwClock,
   Trash,
   X
@@ -39,12 +39,19 @@ import {
 } from '../../components/business/Stream'
 import { TodoPanel } from '../../components/business/TodoPanel'
 import { PRODUCT_MENU_CONTENT_CLASS } from '../../components/primitive/menu'
+import { IconFont } from '../../components/primitive/Iconfont'
 import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
   Button,
   Command,
   CommandItem,
   CommandList,
   EllipsisText,
+  EmptyState,
   HoverCard,
   HoverCardContent,
   HoverCardTrigger,
@@ -61,12 +68,14 @@ import {
 import { Icon } from '../../icons'
 import { feedback } from '../../contracts/feedback'
 import { SESSION_TITLE_MAX_LENGTH } from '../../model'
+import { focusComposer } from '../../reference'
 import { SKILL_SURFACE_SETTINGS } from '../../../../skills'
 import { activeThread, assistantProject, useApp } from '../../store'
 import { serveSessionNode } from '../../tree'
 import { AssistantContextQuote } from './Quote'
 import { AnnotationSummary, annotationDisplay } from './Notes'
 import { Translation } from './Translation'
+import { assistantHeadingScope, truncateProjectName } from './heading'
 import {
   AI_TASK_STARTERS,
   AI_TASK_STARTER_SKILL_NAMES,
@@ -76,6 +85,8 @@ import {
 
 const PROJECT_SESSION_LIMIT = 30
 const FLOATING_PANEL_MARGIN_PX = 12
+const FLOATING_PANEL_MIN_WIDTH_PX = 320
+const FLOATING_PANEL_MIN_HEIGHT_PX = 420
 
 /**
  * 历史对话浮层：与「打开项目」浮层同族 —— 白底气泡 + 顶部搜索 + 单行列表。
@@ -128,6 +139,17 @@ type FloatingDrag = {
   offsetY: number
 }
 
+type FloatingResize = {
+  pointerId: number
+  edge: 'left' | 'right'
+  startX: number
+  startY: number
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 /**
  * 面板头部右上角的图标动作。
  *
@@ -162,9 +184,14 @@ function HeadAction({ label, ...props }: IconButtonProps): React.JSX.Element {
  * 面板自身只负责 0.2 新增的外围：多会话入口、上下文附加、
  * 暂存引用队列、存入资料库/文献库。
  */
-export function AiPanel(): React.JSX.Element {
+export function AiPanel({
+  sidebarVisible = true,
+}: {
+  sidebarVisible?: boolean
+}): React.JSX.Element {
   const { t } = useTranslation('assistant')
-  const { state, set, act } = useApp()
+  const { t: literatureText } = useTranslation('literature')
+  const { state, set, composerDraft, act } = useApp()
   const ai = state.aiPanel
   const thread = activeThread(state)
   const sessionTimeFormat = useMemo(() => createFormatters(state.lang), [state.lang])
@@ -185,7 +212,12 @@ export function AiPanel(): React.JSX.Element {
     left: number
     top: number
   } | null>(null)
+  const [floatingSize, setFloatingSize] = useState<{
+    width: number
+    height: number
+  } | null>(null)
   const floatingDrag = useRef<FloatingDrag | null>(null)
+  const floatingResize = useRef<FloatingResize | null>(null)
   const panelRef = useRef<HTMLElement | null>(null)
   // 输入框所在的会话内容列（由 Composer 透传）：历史浮层据此对齐，做到与输入框同宽同左。
   const composerInputBoxRef = useRef<HTMLDivElement | null>(null)
@@ -195,9 +227,18 @@ export function AiPanel(): React.JSX.Element {
   } | null>(null)
   const sessionListRequest = useRef(0)
   const taskStarterRequest = useRef(0)
+  const [taskStarterPending, setTaskStarterPending] = useState<string | null>(null)
   const [loginSkill, setLoginSkill] = useState<string | null>(null)
   const renameCancelled = useRef(false)
   const projectPath = assistantProject(state).projectPath
+  const projectName = state.projects.find((project) => project.path === projectPath)?.name ?? null
+  const headingScope = assistantHeadingScope(
+    ai.cover,
+    sidebarVisible,
+    projectName,
+    !projectPath && state.mainView === 'literature',
+    literatureText('navigation.overview')
+  )
 
   const patch = (next: Partial<typeof ai>): void =>
     set({ aiPanel: { ...ai, ...next } })
@@ -206,12 +247,14 @@ export function AiPanel(): React.JSX.Element {
     starter: (typeof AI_TASK_STARTERS)[number]
   ): Promise<void> => {
     const request = ++taskStarterRequest.current
+    setTaskStarterPending(starter.skillName)
     let skills
     try {
       skills = await getSkills(SKILL_SURFACE_SETTINGS)
     } catch {
       if (request === taskStarterRequest.current) {
         set({ foregroundError: feedback('components', 'composer.skillFailed') })
+        setTaskStarterPending(null)
       }
       return
     }
@@ -219,6 +262,7 @@ export function AiPanel(): React.JSX.Element {
     const result = resolveTaskStarterSkill(skills, starter.skillName)
     if (result.failure === 'login_required') {
       setLoginSkill(t(starter.titleKey))
+      setTaskStarterPending(null)
       return
     }
     if (result.failure) {
@@ -239,6 +283,7 @@ export function AiPanel(): React.JSX.Element {
           name: starter.skillName
         })
       })
+      setTaskStarterPending(null)
       return
     }
     act.askAiFromPanel(
@@ -255,6 +300,8 @@ export function AiPanel(): React.JSX.Element {
       ],
       foregroundError: null
     }))
+    setTaskStarterPending(null)
+    focusComposer({ selectionStart: 0, selectionEnd: 0 })
   }
 
   /**
@@ -433,7 +480,7 @@ export function AiPanel(): React.JSX.Element {
     if (!ai.open) return
     if (state.activeSession === null && !state.turnLaunch) {
       // 已有草稿就不要覆盖用户正在写的内容。
-      if (state.composerText.length === 0 && state.composerRefs.length === 0) {
+      if (composerDraft.getSnapshot().length === 0 && state.composerRefs.length === 0) {
         act.startPanelDraft()
       }
     }
@@ -492,6 +539,71 @@ export function AiPanel(): React.JSX.Element {
   ): void => {
     if (floatingDrag.current?.pointerId !== event.pointerId) return
     floatingDrag.current = null
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  const startFloatingResize = (
+    event: React.PointerEvent<HTMLDivElement>,
+    edge: FloatingResize['edge']
+  ): void => {
+    if (ai.docked || event.button !== 0) return
+    const panel = event.currentTarget.parentElement
+    if (!panel) return
+    const bounds = panel.getBoundingClientRect()
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    floatingResize.current = {
+      pointerId: event.pointerId,
+      edge,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height
+    }
+    setFloatingPosition({ left: bounds.left, top: bounds.top })
+    setFloatingSize({ width: bounds.width, height: bounds.height })
+  }
+
+  const resizeFloatingPanel = (
+    event: React.PointerEvent<HTMLDivElement>
+  ): void => {
+    const resize = floatingResize.current
+    if (!resize || resize.pointerId !== event.pointerId) return
+    const deltaX = event.clientX - resize.startX
+    const right = resize.left + resize.width
+    const left = resize.edge === 'left'
+      ? Math.max(
+          FLOATING_PANEL_MARGIN_PX,
+          Math.min(resize.left + deltaX, right - FLOATING_PANEL_MIN_WIDTH_PX)
+        )
+      : resize.left
+    const width = resize.edge === 'left'
+      ? right - left
+      : Math.max(
+          FLOATING_PANEL_MIN_WIDTH_PX,
+          Math.min(
+            resize.width + deltaX,
+            window.innerWidth - resize.left - FLOATING_PANEL_MARGIN_PX
+          )
+        )
+    const height = Math.max(
+      FLOATING_PANEL_MIN_HEIGHT_PX,
+      Math.min(
+        resize.height + event.clientY - resize.startY,
+        window.innerHeight - resize.top - FLOATING_PANEL_MARGIN_PX
+      )
+    )
+    setFloatingPosition({ left, top: resize.top })
+    setFloatingSize({ width, height })
+  }
+
+  const stopFloatingResize = (
+    event: React.PointerEvent<HTMLDivElement>
+  ): void => {
+    if (floatingResize.current?.pointerId !== event.pointerId) return
+    floatingResize.current = null
     event.currentTarget.releasePointerCapture(event.pointerId)
   }
 
@@ -587,7 +699,7 @@ export function AiPanel(): React.JSX.Element {
                         text={ref.anchor?.preview_text ?? ''}
                         onOpenSource={() => {
                           if (ref.kind === 'literature') {
-                            void act.openLiteratureAttachment(ref.source_id)
+                            void act.openLiteratureAttachment(ref.source_id, ref.anchor?.document_id ?? undefined)
                             return
                           }
                           act.openResourceFile(
@@ -620,7 +732,7 @@ export function AiPanel(): React.JSX.Element {
       className={`vds-ai-panel${ai.docked ? ' is-docked' : ' is-floating'}${ai.cover ? ' is-cover' : ''}`}
       data-testid="ai-panel"
       ref={panelRef}
-      style={!ai.docked && floatingPosition ? floatingPosition : undefined}
+      style={!ai.docked ? { ...floatingPosition, ...floatingSize } : undefined}
     >
       <LoginPrompt open={loginSkill !== null} onOpenChange={(open) => { if (!open) setLoginSkill(null) }} skill={loginSkill ?? undefined} />
       <div
@@ -631,7 +743,34 @@ export function AiPanel(): React.JSX.Element {
         onPointerCancel={stopFloatingDrag}
       >
         <div className="vds-ai-session" data-testid="ai-session-title">
-          <span className="text-[var(--vds-text-primary)]">{sessionTitle}</span>
+          {headingScope ? (
+            <Breadcrumb className="min-w-0" data-testid="ai-scope-breadcrumb">
+              <BreadcrumbList className="min-w-0 flex-nowrap gap-[var(--vds-space-2)]">
+                <BreadcrumbItem className="min-w-0 shrink">
+                  <Tooltip content={headingScope} portalled side="bottom" className="min-w-0">
+                    <span
+                      className="flex min-w-0 items-center gap-[var(--vds-space-2)] text-[var(--vds-text-secondary)]"
+                      data-testid="ai-scope-name"
+                      tabIndex={0}
+                    >
+                      <Folder className="size-[var(--vds-icon-8)] flex-none" aria-hidden />
+                      <span className="truncate">
+                        {projectName ? truncateProjectName(headingScope) : headingScope}
+                      </span>
+                    </span>
+                  </Tooltip>
+                </BreadcrumbItem>
+                <BreadcrumbSeparator />
+                <BreadcrumbItem className="min-w-0 flex-1">
+                  <BreadcrumbPage className="truncate text-[var(--vds-text-primary)]">
+                    {sessionTitle}
+                  </BreadcrumbPage>
+                </BreadcrumbItem>
+              </BreadcrumbList>
+            </Breadcrumb>
+          ) : (
+            <span className="text-[var(--vds-text-primary)]">{sessionTitle}</span>
+          )}
           {window.scholarseed.developerToolsEnabled && thread.sessionId && (
             <IconButton
               className="flex-none opacity-40 hover:opacity-100"
@@ -651,7 +790,7 @@ export function AiPanel(): React.JSX.Element {
             label={t('panel.new')}
             data-testid="ai-new-session"
             icon={<MessageCirclePlus strokeWidth={1.7} />}
-            onClick={act.startPanelDraft}
+            onClick={() => act.startPanelDraft()}
           />
           <Popover open={ai.sessionMenuOpen} onOpenChange={(open) => patch({ sessionMenuOpen: open })}>
             <PopoverTrigger asChild>
@@ -699,11 +838,13 @@ export function AiPanel(): React.JSX.Element {
                     </div>
                   )}
                   {sessionNodes.length === 0 && sessionListState === 'ready' && (
-                    <div className="vds-ai-context-empty">
-                      {deferredSessionQuery.trim()
+                    <EmptyState
+                      variant="compact"
+                      icon={<Icon name="search" />}
+                      title={deferredSessionQuery.trim()
                         ? t('panel.noMatches')
                         : t('panel.empty')}
-                    </div>
+                    />
                   )}
                   {sessionNodes.map((node) => {
                     const row = sessionRowsById.get(node.id)
@@ -901,7 +1042,7 @@ export function AiPanel(): React.JSX.Element {
           </Popover>
           <HeadAction
             label={ai.docked ? t('panel.float') : t('panel.dock')}
-            icon={<Pin strokeWidth={1.7} />}
+            icon={<IconFont type={ai.docked ? 'line-tool-pin' : 'fill-tool-pin'} className={ai.docked ? undefined : '!text-[var(--vds-brand-text-primary)]'} />}
             data-testid="ai-toggle-dock"
             onClick={act.toggleAiPanelDock}
           />
@@ -940,6 +1081,9 @@ export function AiPanel(): React.JSX.Element {
                   variant="ghost"
                   size="content"
                   className="vds-ai-task-starter hover:!bg-[var(--vds-bg-white-hover-transparent)]"
+                  data-testid={`ai-task-starter-${starter.taskType}`}
+                  loading={taskStarterPending === starter.skillName}
+                  aria-busy={taskStarterPending === starter.skillName}
                   onClick={() => void startTask(starter)}
                 >
                   <strong className="text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-body-lv2)] font-medium">
@@ -957,17 +1101,41 @@ export function AiPanel(): React.JSX.Element {
 
       {/* 真实输入框：0.1 的 Composer，含技能、附件、模型切换、中断。 */}
       <ConversationControls>
-        <div className="box-border px-[var(--vds-conversation-inline-gutter)]">
-          <div className="mx-auto box-border w-full min-w-0 max-w-[var(--vds-conversation-content-width)]">
-            <TodoPanel compact currentTurnOnly />
-          </div>
-        </div>
         <Composer
           surface="assistant"
+          header={({ continueTurn, continueDisabled }) => (
+            <div className="box-border px-[var(--vds-conversation-inline-gutter)]">
+              <div className="mx-auto box-border w-full min-w-0 max-w-[var(--vds-conversation-content-width)]">
+                <TodoPanel compact currentTurnOnly onContinue={continueTurn} continueDisabled={continueDisabled} />
+              </div>
+            </div>
+          )}
           contextTray={contextWorkspace}
           inputBoxRef={composerInputBoxRef}
         />
       </ConversationControls>
+      {!ai.docked && (
+        <>
+          <div
+            aria-hidden="true"
+            className="absolute bottom-0 left-0 z-[var(--vds-z-local-control)] size-[var(--vds-space-5)] cursor-sw-resize touch-none"
+            data-testid="ai-resize-bottom-left"
+            onPointerDown={(event) => startFloatingResize(event, 'left')}
+            onPointerMove={resizeFloatingPanel}
+            onPointerUp={stopFloatingResize}
+            onPointerCancel={stopFloatingResize}
+          />
+          <div
+            aria-hidden="true"
+            className="absolute bottom-0 right-0 z-[var(--vds-z-local-control)] size-[var(--vds-space-5)] cursor-se-resize touch-none"
+            data-testid="ai-resize-bottom-right"
+            onPointerDown={(event) => startFloatingResize(event, 'right')}
+            onPointerMove={resizeFloatingPanel}
+            onPointerUp={stopFloatingResize}
+            onPointerCancel={stopFloatingResize}
+          />
+        </>
+      )}
     </aside>
   )
 }

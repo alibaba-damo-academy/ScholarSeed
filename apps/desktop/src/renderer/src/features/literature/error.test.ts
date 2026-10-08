@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { literatureErrorMessage, literatureTaskErrorMessage, literatureTaskStatusMessage } from './error.ts'
+import { fulltextFailureMessageKey, literatureErrorMessage, literatureTaskErrorMessage, literatureTaskStatusMessage } from './error.ts'
 import { readFileSync } from 'node:fs'
 import { createInstance } from 'i18next'
 
@@ -11,10 +11,10 @@ test('known Zotero failures retain a language-neutral message identity', () => {
   })
 })
 
-test('unknown errors and prototype-like codes preserve raw diagnostics', () => {
+test('unknown errors and prototype-like codes use the localized fallback', () => {
   for (const code of ['VENDOR_NEW_ERROR', '__proto__', 'toString', undefined]) {
     assert.deepEqual(literatureErrorMessage(code, 'Original 原始 diagnostic', 'zotero.importFailed'), {
-      key: 'zotero.importFailed', detail: code ? `${code}: Original 原始 diagnostic` : 'Original 原始 diagnostic'
+      key: 'zotero.importFailed', detail: undefined
     })
   }
   assert.deepEqual(literatureErrorMessage(undefined, undefined, 'zotero.connectionFailed'), {
@@ -49,8 +49,63 @@ test('import task status and application errors translate without rewriting task
   assert.deepEqual(message, { key: 'operationError.ZOTERO_UNAVAILABLE' })
   assert.notEqual(engine.getFixedT('zh', 'literature')(message.key), engine.getFixedT('en', 'literature')(message.key))
   assert.deepEqual(task, before)
-  assert.deepEqual(literatureTaskErrorMessage({ error_code: 'NEW_CODE', error: '原始诊断' }), { key: 'importTask.failed', detail: 'NEW_CODE: 原始诊断' })
-  assert.deepEqual(literatureTaskErrorMessage({ error_code: 'NEW_CODE' }), { key: 'importTask.failed', detail: 'NEW_CODE' })
-  assert.deepEqual(literatureTaskErrorMessage({ error: '旧诊断' }), { key: 'importTask.failed', detail: '旧诊断' })
+  assert.deepEqual(literatureTaskErrorMessage({ error_code: 'NEW_CODE', error: '原始诊断' }), { key: 'importTask.failed', detail: undefined })
+  assert.deepEqual(literatureTaskErrorMessage({ error_code: 'NEW_CODE' }), { key: 'importTask.failed', detail: undefined })
+  assert.deepEqual(literatureTaskErrorMessage({ error: '旧诊断' }), { key: 'importTask.failed', detail: undefined })
   assert.deepEqual(literatureTaskErrorMessage({ error_code: 'ZOTERO_IMPORT_FAILED', error: 'Zotero 导入失败' }), { key: 'importTask.failed' })
+})
+
+/** 三条文案的中英文都是产品定死的字面量, 改了就是改了口径, 必须让测试先红。 */
+const FULLTEXT_OUTCOMES = [
+  ['FULLTEXT_NOT_FOUND', 'detail.fulltextNotFound', '未找到全文', 'Not found'],
+  ['FULLTEXT_NO_ACCESS', 'detail.fulltextNoAccess', '无法访问', 'Unable to access'],
+  ['FULLTEXT_RATE_LIMITED', 'detail.fulltextRateLimited', '请求被限流', 'Rate limited']
+] as const
+
+test('a full-text failure reports exactly one of three localized outcomes', async () => {
+  const engine = createInstance()
+  await engine.init({ lng: 'zh', fallbackLng: false, resources: {
+    zh: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/zh/literature.json', import.meta.url), 'utf8')) },
+    en: { literature: JSON.parse(readFileSync(new URL('../../../../localization/locales/en/literature.json', import.meta.url), 'utf8')) }
+  } })
+  const zh = engine.getFixedT('zh', 'literature')
+  const en = engine.getFixedT('en', 'literature')
+
+  for (const [code, key, zhText, enText] of FULLTEXT_OUTCOMES) {
+    assert.equal(fulltextFailureMessageKey(code), key)
+    assert.equal(zh(key), zhText)
+    assert.equal(en(key), enText)
+  }
+})
+
+test('anything outside the three outcomes still reports not found', () => {
+  // 前置校验码、渲染层自己的网络错误、原型链上的假码、以后新增的服务端码: 全部收敛成
+  // 「未找到全文」, 绝不能把原始 code 或单语诊断甩给用户。
+  const codes = [
+    'ARXIV_INVALID',
+    'DOI_INVALID',
+    'FULLTEXT_IDENTIFIER_MISSING',
+    'ARXIV_ALREADY_ATTACHED',
+    'REQUEST_FAILED',
+    'SOME_FUTURE_CODE',
+    '__proto__',
+    'toString',
+    '',
+    null,
+    undefined
+  ]
+  for (const code of codes) {
+    assert.equal(fulltextFailureMessageKey(code), 'detail.fulltextNotFound')
+  }
+})
+
+test('the detail panel routes full-text failures through the mapping only', () => {
+  const source = readFileSync(new URL('./LiteratureDetail.tsx', import.meta.url), 'utf8')
+  const reject = source.slice(source.indexOf('const rejectFulltext'), source.indexOf('const fetchArxiv'))
+
+  assert.match(reject, /fulltextFailureMessageKey\(/)
+  // 服务端诊断回到这张卡就等于报错不止三种、也不再双语。
+  assert.doesNotMatch(reject, /literatureErrorMessage/)
+  assert.doesNotMatch(reject, /reason\.message/)
+  assert.match(source, /failure \? literature\(failure\.key\) : undefined/)
 })

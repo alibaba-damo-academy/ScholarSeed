@@ -9,6 +9,7 @@ export type ProviderFailureKind =
   | 'request'
   | 'model_config'
   | 'unavailable'
+  | 'overloaded'
   | 'content_policy'
 
 const QUOTA_FAILURE = /(?:insufficient|exceeded).*(?:balance|quota|credit)|(?:balance|quota|credit).*(?:insufficient|exceeded)|余额|额度/i
@@ -39,8 +40,9 @@ const FAILURE_KIND_BY_CODE: Readonly<Partial<Record<string, ProviderFailureKind>
   invalidparameter: 'model_config',
   model_not_found: 'model_config',
   unsupported_model: 'model_config',
-  overloaded: 'unavailable',
+  overloaded: 'overloaded',
   server_error: 'unavailable',
+  server_is_overloaded: 'overloaded',
   service_unavailable: 'unavailable',
   timeout: 'unavailable'
 }
@@ -78,10 +80,19 @@ const FAILURE_TEXT = {
   credits: { messageKey: 'failure.credits.message', actionKey: 'failure.credits.action' },
   rate_limit: { messageKey: 'failure.rateLimit.message', actionKey: 'failure.rateLimit.action' },
   auth: { messageKey: 'failure.auth.message', actionKey: 'failure.auth.action' },
-  unavailable: { messageKey: 'failure.unavailable.message', actionKey: 'failure.unavailable.action' },
+  unavailable: {
+    messageKey: 'failure.unavailable.message',
+    exhaustedKey: 'failure.unavailable.exhausted',
+    actionKey: 'failure.unavailable.action'
+  },
+  overloaded: {
+    messageKey: 'failure.overloaded.message',
+    exhaustedKey: 'failure.overloaded.exhausted',
+    actionKey: 'failure.overloaded.action'
+  },
   request: { messageKey: 'failure.request.message', actionKey: 'failure.request.action' },
   model_config: { messageKey: 'failure.modelConfig.message', actionKey: 'failure.modelConfig.action' },
-  unknown: { messageKey: 'failure.runtime', actionKey: 'failure.unknown.action' }
+  unknown: { messageKey: 'failure.unknown.message', actionKey: 'failure.unknown.action' }
 } as const
 
 export function describeTurnFailure(data: {
@@ -97,7 +108,9 @@ export function describeTurnFailure(data: {
     ? FAILURE_KIND_BY_CODE[code.toLowerCase()] : undefined
   const kind = classified || fallbackKind(frame ? frame.message : rawMessage) || 'unknown'
   const fallback = frame ? 'frame' : data.message ? 'raw' : 'runtime'
-  const retry = data.retryable === true && (kind === 'rate_limit' || kind === 'unavailable' || kind === 'unknown')
+  const retry = data.retryable === true && (
+    kind === 'rate_limit' || kind === 'unavailable' || kind === 'overloaded' || kind === 'unknown'
+  )
     ? { runtimeAction: 'continue_turn' as const, actionState: 'idle' as const }
     : {}
   const automaticRetryAttempts = Number.isInteger(data.automatic_retry_attempts) &&
@@ -117,15 +130,15 @@ export function formatTurnFailure(
 ): { title: string; message: string; action: string } {
   if (!item.failure) return item
   const labels = FAILURE_TEXT[item.failure.kind]
-  const exhausted = item.failure.kind === 'unavailable' && item.failure.automaticRetryAttempts
+  const exhaustedKey = 'exhaustedKey' in labels ? labels.exhaustedKey : undefined
+  const automaticRetryAttempts = exhaustedKey ? item.failure.automaticRetryAttempts : undefined
   return {
     title: t('failure.title'),
     action: t(labels.actionKey),
-    message: exhausted
-      ? t('failure.unavailable.exhausted', { count: item.failure.automaticRetryAttempts })
+    message: automaticRetryAttempts !== undefined && exhaustedKey
+      ? t(exhaustedKey, { count: automaticRetryAttempts })
       : item.failure.kind !== 'unknown' ? t(labels.messageKey)
-      : item.failure.fallback === 'raw' ? item.message
-        : item.failure.fallback === 'frame' ? t('failure.frame') : t('failure.runtime')
+      : item.failure.fallback === 'frame' ? t('failure.frame') : t(labels.messageKey)
   }
 }
 
@@ -139,6 +152,7 @@ const LEGACY_FAILURE_MESSAGES = {
   rate_limit: '模型请求过于频繁，请稍后再试。',
   auth: '模型服务认证失败。',
   unavailable: '模型服务暂时不可用。',
+  overloaded: '上游模型服务返回过载。',
   request: '当前请求未被模型服务接受。',
   frame: '模型服务返回了无法识别的错误。',
   runtime: '请求未能到达 Codex Runtime。'

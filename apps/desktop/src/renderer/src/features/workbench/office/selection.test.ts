@@ -19,6 +19,7 @@ interface CalcSelection {
 interface CalcSelectionPolicy {
   MAXIMUM_INLINE_CELLS: number
   REFERENCE_MODE: string
+  autoscrollKind: (filename: string) => 'writer' | 'calc' | undefined
   writerFormat: (filename: string) => 'doc' | 'docx' | undefined
   captureImpress: (selection: {
     getCount: () => number

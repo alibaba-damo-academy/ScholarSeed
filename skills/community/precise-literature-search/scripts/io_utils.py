@@ -11,6 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from filesystem import FileOperation, file_operation, filesystem_path
+
+TEMPORARY_PREFIX = ".tmp-"
+TEMPORARY_SUFFIX = ".tmp"
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -18,7 +23,10 @@ def utc_now() -> str:
 
 def read_json(path: Path) -> Any:
     try:
-        with path.open("r", encoding="utf-8-sig") as handle:
+        with (
+            file_operation(FileOperation.READ),
+            filesystem_path(path).open("r", encoding="utf-8-sig") as handle,
+        ):
             return json.load(handle)
     except FileNotFoundError as exc:
         raise ValueError(f"input file does not exist: {path}") from exc
@@ -27,17 +35,24 @@ def read_json(path: Path) -> Any:
 
 
 def atomic_write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    path = filesystem_path(path)
+    with file_operation(FileOperation.CREATE_DIRECTORY):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with file_operation(FileOperation.CREATE_TEMPORARY):
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=TEMPORARY_PREFIX, suffix=TEMPORARY_SUFFIX, dir=str(path.parent)
+        )
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with (
+            file_operation(FileOperation.WRITE),
+            os.fdopen(descriptor, "w", encoding="utf-8") as handle,
+        ):
             json.dump(data, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        with file_operation(FileOperation.REPLACE):
+            os.replace(temporary, path)
     except Exception:
         try:
             os.unlink(temporary)
@@ -47,16 +62,23 @@ def atomic_write_json(path: Path, data: Any) -> None:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    path = filesystem_path(path)
+    with file_operation(FileOperation.CREATE_DIRECTORY):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    with file_operation(FileOperation.CREATE_TEMPORARY):
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=TEMPORARY_PREFIX, suffix=TEMPORARY_SUFFIX, dir=str(path.parent)
+        )
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with (
+            file_operation(FileOperation.WRITE),
+            os.fdopen(descriptor, "w", encoding="utf-8") as handle,
+        ):
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        with file_operation(FileOperation.REPLACE):
+            os.replace(temporary, path)
     except Exception:
         try:
             os.unlink(temporary)
@@ -73,10 +95,9 @@ def safe_filename(value: str) -> str:
 def safe_title_stem(value: str, max_bytes: int = 220) -> str:
     """Return a readable, portable filename stem derived from a paper title."""
     normalized = " ".join(str(value).split()) or "Untitled"
-    forbidden = {'<', '>', ':', '"', '/', '\\', '|', '?', '*'}
+    forbidden = {"<", ">", ":", '"', "/", "\\", "|", "?", "*"}
     cleaned = "".join(
-        "-" if char in forbidden or ord(char) < 32 else char
-        for char in normalized
+        "-" if char in forbidden or ord(char) < 32 else char for char in normalized
     ).strip(" .")
     cleaned = cleaned or "Untitled"
     encoded = cleaned.encode("utf-8")
@@ -128,9 +149,7 @@ def title_pdf_relative_path(
     counter = 2
     while candidate.as_posix().casefold() in taken:
         numbered_suffix = f" ({digest}-{counter})"
-        numbered_stem = safe_title_stem(
-            title, max_bytes=220 - len(numbered_suffix.encode("utf-8"))
-        )
+        numbered_stem = safe_title_stem(title, max_bytes=220 - len(numbered_suffix.encode("utf-8")))
         candidate = papers_dir / f"{numbered_stem}{numbered_suffix}.pdf"
         counter += 1
     return candidate
@@ -158,7 +177,11 @@ def write_placeholder_pdf(path: Path, paper_id: str, title: str) -> None:
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Length "
+        + str(len(stream)).encode("ascii")
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     ]
     payload = bytearray(b"%PDF-1.4\n% placeholder\n")
@@ -178,5 +201,6 @@ def write_placeholder_pdf(path: Path, paper_id: str, title: str) -> None:
             "ascii"
         )
     )
+    path = filesystem_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)

@@ -3,14 +3,16 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Clock3, FolderOpen, LibraryBig, MessageCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
-import { Button, Input } from '../../components/ui'
+import { Button, EmptyState, Input } from '../../components/ui'
 import { findSessionNode } from '../../tree'
 import type { SessionNode } from '../../model'
 import type { RecentFileEntry } from '../../../../preferences'
 import { createFormatters } from '../../../../localization/format'
 import { useApp } from '../../store'
+import { openResourceTarget } from '../../navigation'
 import { catalogue, useCatalogue } from '../literature/catalog'
-import { GlobalHit, SearchGroupCount, searchEverything } from './api'
+import type { GlobalHit, SearchGroupCount } from './api'
+import { searchEverything } from './api'
 import { highlightRanges } from './highlight'
 
 /** 搜索防抖，避免边打字边打后端。 */
@@ -109,9 +111,7 @@ export function GlobalSearch(): React.JSX.Element {
   const close = (): void => set({ globalSearchOpen: false, globalSearchMode: 'all' })
 
   const openRecentFile = (entry: RecentFileEntry): void => {
-    act.selectProject(entry.projectId)
-    act.openWorkbenchView('resource')
-    act.openResourceFile(entry.path, entry.projectId)
+    openResourceTarget(act, entry)
     close()
   }
 
@@ -290,12 +290,12 @@ export function GlobalSearch(): React.JSX.Element {
                   </Button>
                 ))
               ) : (
-                <div
-                  className="vds-search-hint px-[var(--vds-space-2)] py-[var(--vds-space-1)]"
+                <EmptyState
+                  variant="compact"
+                  icon={<Clock3 />}
                   data-testid="search-recent-empty"
-                >
-                  {t('search.recent.empty')}
-                </div>
+                  title={t('search.recent.empty')}
+                />
               )}
             </div>
           ) : loading ? (
@@ -334,12 +334,12 @@ export function GlobalSearch(): React.JSX.Element {
                     </span>
                   </div>
                   {group.rows.length === 0 ? (
-                    <div
-                      className="vds-search-hint"
+                    <EmptyState
+                      variant="compact"
+                      icon={<DomainIcon />}
                       data-testid={`search-empty-${group.domain}`}
-                    >
-                      {t('search.noHits')}
-                    </div>
+                      title={t('search.noHits')}
+                    />
                   ) : (
                     <>
                       {group.rows.slice(0, shown).map((hit) => (

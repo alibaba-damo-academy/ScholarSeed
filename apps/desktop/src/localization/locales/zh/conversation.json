@@ -1,6 +1,39 @@
 {
+  "toolOutcome": {
+    "noMatches": "未找到匹配内容",
+    "noMatchesHelp": "搜索没有找到匹配内容，这不表示任务失败。AI 可以继续处理。",
+    "commandNotFound": "命令中的程序或语句不存在。",
+    "permissionDenied": "当前步骤没有执行权限。",
+    "fileMissing": "要查找的文件或目录不存在。",
+    "nonzero": "命令未成功完成（退出码 {{code}}）。",
+    "unknown": "命令未成功完成，原因尚不明确。",
+    "toolFailed": "此工具步骤未成功完成。",
+    "failedHelp": "此步骤可能影响任务结果；AI 可以继续尝试处理。原始信息仅供排查。",
+    "technicalDetails": "技术详情",
+    "exitCode": "退出码：{{code}}"
+  },
+  "queue": {
+    "permissionDenied": "系统拒绝读取项目文件「{{path}}」，本条消息尚未提交。请检查该文件及所在目录的访问权限；如果是云盘文件，请确认已下载到本地。处理后再重新发送。",
+    "projectFile": "访问受限的文件",
+    "baselineFailed": "项目文件检查失败，本条消息尚未提交。请检查项目文件是否可访问，并查看诊断日志了解具体原因。处理后再重新发送。"
+  },
   "turn": {
     "duration": "本轮用时 {{duration}}"
+  },
+  "subagent": {
+    "waiting": "等待回应",
+    "elapsed": "已等待 {{duration}}",
+    "lastObserved": "最近确认：{{activity}} · {{age}}前",
+    "action": {
+      "message": "生成回复",
+      "reasoning": "思考",
+      "search": "检索",
+      "command": "执行命令",
+      "tool": "调用工具",
+      "edit": "编辑文件",
+      "plan": "更新计划",
+      "work": "子代理活动"
+    }
   },
   "header": {
     "recent": "最近",
@@ -51,6 +84,8 @@
       "codex_terminal_outcome_conflict": "检测到相互冲突的终态，已保留首个权威结果",
       "codex_thread_not_loaded": "Agent 会话已脱离当前进程",
       "codex_thread_closed": "Agent 会话连接已关闭",
+      "codex_repeated_tool_loop": "本轮连续执行相同工具并得到相同结果，已自动停止。可更换模型或补充资料后重试",
+      "codex_repeated_tool_interrupt_failed": "检测到重复工具调用，但自动停止失败。请手动停止本轮并重试",
       "credit_balance_exhausted": "积分余额已用尽，本次生成已停止"
     },
     "closed": "✓ 已终止整个会话，历史已保留；此会话不能继续发送。",
@@ -93,6 +128,7 @@
     "continueUnconfirmed": "Service 未确认继续操作。"
   },
   "reply": {
+    "title": "明确研究关键问题",
     "skipped": "已跳过",
     "answerLabel": "对“{{question}}”的回答：{{answer}}"
   },
@@ -129,6 +165,11 @@
       "exhausted": "模型服务暂时不可用，已自动重试 {{count}} 次",
       "action": "模型服务或网络连接暂时不可用，已保留本轮问题和上下文。"
     },
+    "overloaded": {
+      "message": "上游模型服务返回过载。",
+      "exhausted": "上游模型服务返回过载，自动尝试 {{count}} 次后仍未恢复。",
+      "action": "请稍后重试；本轮问题与上下文已保留。"
+    },
     "request": {
       "message": "当前请求未被模型服务接受。",
       "action": "请检查模型、权限与输入。"
@@ -138,6 +179,7 @@
       "action": "请检查模型名是否正确，或在设置中切换到其他模型；本轮问题和上下文已保留。"
     },
     "unknown": {
+      "message": "本次生成未完成。",
       "action": "生成过程中发生异常，已保留本轮问题和上下文。"
     }
   },
@@ -154,7 +196,7 @@
     "failed": "请求失败",
     "authentication": "请先登录",
     "resourceReviewRequired": "本轮产生了待审阅的文件改动。请先处理待审阅改动，再重新生成。",
-    "httpFailure": "请求失败（{{status}}）：{{detail}}",
+    "httpFailure": "请求失败（{{status}}），请稍后重试。",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "toolActions": {
@@ -180,7 +222,7 @@
   },
   "turnUnknown": {
     "title": "上次任务已中断",
-    "action": "是否继续对话？",
+    "action": "确认后不会自动重发旧任务；恢复检查通过后，请自行输入新消息。",
     "reason": {
       "timeout": "等待任务结果超时，部分操作可能已完成。",
       "transportLost": "任务执行期间连接中断，部分操作可能已完成。",

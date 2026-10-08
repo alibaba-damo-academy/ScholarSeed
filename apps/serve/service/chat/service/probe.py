@@ -36,7 +36,8 @@ AUTHORIZATION_HEADER = "Authorization"
 PROBE_OK_MESSAGE = "连接成功"
 PROBE_UNSUPPORTED_PROTOCOL_ERROR = "unsupported_wire_api"
 PROBE_HTTP_ERROR = "http_status"
-MODELS_OK_MESSAGE = "已拉取 {count} 个模型"
+PROBE_BASE_URL_REQUIRED_ERROR = "base_url_required"
+MODELS_OK_MESSAGE = "已加载 {count} 个模型"
 MODELS_EMPTY_MESSAGE = "该端点没有返回模型列表，请手动填写模型名"
 MODELS_DATA_KEY = "data"
 MODELS_ID_KEY = "id"
@@ -142,6 +143,7 @@ def list_upstream_models(
             "ok": False,
             "models": [],
             "message": "base_url is required",
+            "error_class": PROBE_BASE_URL_REQUIRED_ERROR,
             "latency_ms": int((time.time() - started) * 1000),
         }
     api_key, custom_headers = resolve_personal_credential(values, existing)

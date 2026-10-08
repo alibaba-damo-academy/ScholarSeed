@@ -7,6 +7,13 @@ excluded before reading; do not include failed or skipped downloads. Use the
 actual parse/read outcome, not the PDF header or download status, to choose
 `readable` or `unreadable`. An unreadable entry requires its concrete reason.
 
+`file_path` names the run-contained evidence the entry's verdict came from:
+`work-reading/<paper_id>.txt` for a managed full text read through the
+`scholarseed_bridge` `pdf read` tool operation, or the manifest `file_path` for
+a run-contained PDF. A `readable` entry must point at a real, non-empty
+run-contained evidence file, and when the stage completes its paper must still
+be a product-acquired managed entry (or a run-verified PDF).
+
 ```json
 {
   "schema_version": "1.0",
@@ -14,7 +21,10 @@ actual parse/read outcome, not the PDF header or download status, to choose
   "search_round": 1,
   "manifest_sha256": "<SHA-256 of the exact download manifest bytes>",
   "papers": [
-    {"paper_id": "<manifest paper_id>", "file_path": "downloads/papers/example.pdf",
+    {"paper_id": "<manifest paper_id>", "file_path": "work-reading/<manifest paper_id>.txt",
+     "storage": "managed", "revision": "<manifest revision>",
+     "status": "readable", "reason": null},
+    {"paper_id": "<other manifest paper_id>", "file_path": "downloads/papers/example.pdf",
      "status": "unreadable", "reason": "PDF parser could not recover any readable pages"}
   ]
 }

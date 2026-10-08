@@ -30,6 +30,14 @@ export function markdownFragmentTarget(
   const match = anchor.exec(source)
   if (!match) return null
   const lines = source.slice(match.index + match[0].length).split(/\r?\n/u)
-  const target = lines.map(line => normalizeMarkdownTargetText(line)).find(Boolean)
+  const target = lines.map((line) => normalizeMarkdownTargetText(line)).find(Boolean)
   return target ? { fragment, text: target } : null
+}
+
+export function matchesMarkdownTarget(rendered: string, target: string): boolean {
+  const text = normalizeMarkdownTargetText(rendered)
+  const targetText = normalizeMarkdownTargetText(target)
+  return (
+    text.length > 0 && targetText.length > 0 && (text === targetText || text.startsWith(targetText))
+  )
 }

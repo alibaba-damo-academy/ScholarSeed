@@ -257,7 +257,7 @@ export function AttachmentImportDialog({
             {!replacing ? <Input label={t('import.name')} value={name} onChange={(event) => setName(event.target.value)} disabled={busy} /> : null}
             {recordControls}
             {replacing ? <Alert tone="warning" title={t('import.replaceHint')} description={t('import.replaceLimit')} /> : null}
-            {preview?.conflict && !replacing ? <Alert tone="warning"><AlertTitle>{t('import.conflict')}</AlertTitle><div className="grid gap-[var(--vds-space-2)]"><span>{preview.path}</span><Button variant="secondary" onClick={() => setName(preview.suggested_name ?? name)}>{t('import.rename', { name: preview.suggested_name ?? name })}</Button><Button variant="secondary" disabled={!preview.can_replace} onClick={() => { changeAction(ACTION.replace); setTarget(preview.path) }}>{t('import.replace')}</Button></div></Alert> : null}
+            {preview?.conflict && !replacing ? <Alert action={<div className="flex gap-[var(--vds-space-2)]"><Button variant="secondary" onClick={() => setName(preview.suggested_name ?? name)}>{t('import.rename', { name: preview.suggested_name ?? name })}</Button><Button variant="secondary" disabled={!preview.can_replace} onClick={() => { changeAction(ACTION.replace); setTarget(preview.path) }}>{t('import.replace')}</Button></div>} description={preview.path} layout="stacked" title={t('import.conflict')} tone="warning" /> : null}
           </div>
         </ScrollArea>
         <DialogFooter className="min-w-0 shrink-0 flex-wrap">

@@ -1,6 +1,7 @@
 """Canonical task input and deterministic projections. No legacy task fallback."""
 from __future__ import annotations
 import copy
+import difflib
 import hashlib
 import json
 import os
@@ -10,8 +11,11 @@ from pathlib import Path
 from confirmation import lock, SECONDS
 from chapter_plan import ROLES
 from bibliography_contract import is_bibliography_title
+from citation_styles import style_ids
 
 CONTRACT_VERSION = 1
+VERBATIM_MATCH_PERCENT = 60
+VERBATIM_MATCH_THRESHOLD = VERBATIM_MATCH_PERCENT / 100
 REQUEST_FIELDS = {'local_pdfs','writing_strategy','chapter_concurrency','intent','language',
     'retrieval','publication','constraints','output_scope','selected_section_ids',
     'user_instructions','outline_review','section_instructions','length_target',
@@ -60,6 +64,18 @@ def json_input(path):
 def validate_template_value(value):
     if not isinstance(value,str) or not value.strip():
         raise ValueError('publication.template must be a nonempty string, e.g. "ctexart" or "neurips"; objects are not accepted')
+
+
+def verbatim_matches(quote, originals):
+    if not isinstance(quote,str) or not quote.strip():
+        return False
+    if any(quote in source for source in originals):
+        return True
+    return any(
+        sum(block.size for block in difflib.SequenceMatcher(None, quote, source).get_matching_blocks())
+        / len(quote) > VERBATIM_MATCH_THRESHOLD
+        for source in originals
+    )
 
 
 def validate_request(data):
@@ -127,7 +143,7 @@ def validate_request(data):
     pub=result.setdefault('publication',{})
     if not isinstance(pub,dict) or set(pub)-PUBLICATION_FIELDS: raise ValueError('publication accepts format, template, citation_style only')
     if pub.get('format','latex_pdf') not in ('latex_pdf','markdown'): raise ValueError('invalid publication.format')
-    if pub.get('citation_style','numeric') not in ('numeric','author_year','ieee','acm'): raise ValueError('invalid citation_style')
+    if pub.get('citation_style','numeric') not in style_ids(): raise ValueError('invalid citation_style; supported: ' + ', '.join(style_ids()))
     if 'template' in pub: validate_template_value(pub['template'])
     constraints=result['constraints']; seen=set()
     if not isinstance(constraints,list): raise ValueError('constraints must be an array')
@@ -137,10 +153,10 @@ def validate_request(data):
         if not isinstance(c.get('id'),str) or not c['id'] or c['id'] in seen: raise ValueError(loc+': unique id required')
         seen.add(c['id']); kind=c.get('kind'); value=c.get('value'); quote=c.get('verbatim')
         if kind not in KINDS: raise ValueError(loc+': unsupported kind '+str(kind))
-        if not isinstance(quote,str) or not quote.strip() or not any(quote in s for s in originals):
-            raise ValueError(loc+'/verbatim: must be an exact contiguous substring of intent, '
-                             'user_instructions, or one user_requests entry; do not concatenate, '
-                             'paraphrase, alter punctuation/whitespace, or quote effective_requirements')
+        if not verbatim_matches(quote,originals):
+            raise ValueError(loc+f'/verbatim: must preserve more than {VERBATIM_MATCH_PERCENT}% of the characters, in order, '
+                             'from intent, user_instructions, or one user_requests entry; '
+                             'effective_requirements is not an original source')
         if kind in ('required_section','forbidden_section'):
             if not isinstance(value,dict) or not isinstance(value.get('title'),str) or not value['title'].strip(): raise ValueError(loc+': section value needs title')
             if set(value)-{'title','position','role'}: raise ValueError(loc+': unknown section constraint fields')

@@ -4,7 +4,15 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { isFirstRun, readStartupMarkerVersion, startupMarkerPath, writeStartupMarker } from './startupmarker.ts'
+import {
+  isFirstRun,
+  readStartupMarkerVersion,
+  resolveStartupBudgetMs,
+  STARTUP_BUDGET_ONE_TIME_MS,
+  STARTUP_BUDGET_STEADY_MS,
+  startupMarkerPath,
+  writeStartupMarker,
+} from './startupmarker.ts'
 
 function home(): string {
   return mkdtempSync(join(tmpdir(), 'scholarseed-startup-'))
@@ -39,4 +47,11 @@ test('corrupt or partial marker falls back to first run', () => {
   writeFileSync(startupMarkerPath(root), '{"schema":1}')
   assert.equal(readStartupMarkerVersion(root), null)
   assert.equal(isFirstRun(root, '0.2.0'), true)
+})
+
+test('启动预算：marker 只比 semver，冷组件展开由 per-launch 标志补一次性预算', () => {
+  assert.equal(resolveStartupBudgetMs(false, false), STARTUP_BUDGET_STEADY_MS)
+  assert.equal(resolveStartupBudgetMs(true, false), STARTUP_BUDGET_ONE_TIME_MS)
+  assert.equal(resolveStartupBudgetMs(false, true), STARTUP_BUDGET_ONE_TIME_MS)
+  assert.equal(resolveStartupBudgetMs(true, true), STARTUP_BUDGET_ONE_TIME_MS)
 })

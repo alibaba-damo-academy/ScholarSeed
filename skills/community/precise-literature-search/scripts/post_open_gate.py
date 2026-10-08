@@ -9,14 +9,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from arxiv import normalize_arxiv_id
+from filesystem import canonical_path, filesystem_path
 from io_utils import read_json
 from run_state import read_state, update_status
 from validate_json import ContractError, validate_data
 
+MANAGED_STORAGE = "managed"
+PAPER_REF_PREFIX = "paper:"
+
 
 def require_under_run(run_dir: Path, path: Path, label: str) -> Path:
-    root = run_dir.resolve()
-    candidate = path.resolve()
+    """Containment-checked identity in ordinary form; I/O wraps at the boundary."""
+    root = canonical_path(run_dir)
+    candidate = canonical_path(path)
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -29,27 +35,6 @@ def resolve_under_run(run_dir: Path, value: str, label: str) -> Path:
     if relative.is_absolute():
         raise ValueError(f"{label} must be run-relative: {value}")
     return require_under_run(run_dir, run_dir / relative, label)
-
-
-def normalize_arxiv_id(value: Any) -> str | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.strip()
-    if normalized.casefold().startswith("arxiv:"):
-        normalized = normalized.split(":", 1)[1].strip()
-    else:
-        for prefix in (
-            "https://arxiv.org/abs/", "http://arxiv.org/abs/",
-            "https://arxiv.org/pdf/", "http://arxiv.org/pdf/",
-        ):
-            if normalized.casefold().startswith(prefix.casefold()):
-                normalized = normalized[len(prefix):]
-                break
-    if normalized.casefold().endswith(".pdf"):
-        normalized = normalized[:-4]
-    if not normalized or len(normalized) > 120 or any(char.isspace() for char in normalized):
-        return None
-    return normalized
 
 
 def paper_arxiv_id(paper: dict[str, Any]) -> str | None:
@@ -67,28 +52,60 @@ def paper_arxiv_id(paper: dict[str, Any]) -> str | None:
     return None
 
 
-def paper_needs_paid_download(paper: dict[str, Any]) -> bool:
-    if str(paper.get("document_type", "")).strip().casefold() in {
-        "blog", "documentation", "dataset", "web_page",
-    }:
+#: Manifest states the paper-dl route may still act on: what serve reported as
+#: unsuccessful for a granted paper, plus a paid batch awaiting user intervention.
+#: A paper the product did not grant is recorded as `skipped` and is terminal — never a
+#: download target, whatever its metadata says about access. `not_attempted` is not
+#: produced by this release and stays out of the route so a hand-written manifest cannot
+#: smuggle a target in; it can still be resolved or explicitly skipped by recovery.
+PAID_PENDING_STATUSES = frozenset({"failed", "action_required"})
+
+
+def paid_pending(item: Any) -> bool:
+    """Whether one manifest entry still needs the paper-dl route.
+
+    Eligibility comes from the manifest — i.e. from what serve actually reported for a
+    granted paper — never from metadata, so an ungranted candidate cannot be routed to
+    a downloader that ignores the product authorization. Verified entries are
+    `downloaded`, which is outside the pending set.
+    """
+    return isinstance(item, dict) and item.get("status") in PAID_PENDING_STATUSES
+
+
+def verified_managed_download(item: dict[str, Any]) -> bool:
+    """A managed entry is complete when it carries serve's ref and revision.
+
+    The bytes never enter the run directory, so there is nothing local to open: serve
+    re-verifies ref and revision against its own object map at the delivery checkpoint,
+    and every read goes through its per-ref authorization.
+    """
+    ref = item.get("ref")
+    revision = item.get("revision")
+    if not isinstance(ref, str) or not ref.startswith(PAPER_REF_PREFIX):
         return False
-    confirmed_oa = str(paper.get("open_access", "")).strip().casefold() == "yes"
-    return not (confirmed_oa and paper_arxiv_id(paper) is not None)
+    if not isinstance(revision, str) or not revision:
+        return False
+    # A managed entry with a run-directory copy would defeat the managed store.
+    return item.get("file_path") is None
 
 
 def verified_manifest_download(item: Any, run_dir: Path) -> bool:
+    """Verify one manifest entry against the truth of its own storage scope."""
     if not isinstance(item, dict):
         return False
     if item.get("status") != "downloaded" or item.get("verified_exists") is not True:
         return False
+    if item.get("storage") == MANAGED_STORAGE:
+        return verified_managed_download(item)
     file_value = item.get("file_path")
     if not isinstance(file_value, str) or not file_value:
         return False
     try:
         path = resolve_under_run(run_dir, file_value, "manifest PDF")
-        if not path.is_file():
+        file_path = filesystem_path(path)
+        if not file_path.is_file():
             return False
-        with path.open("rb") as handle:
+        with file_path.open("rb") as handle:
             return handle.read(5) == b"%PDF-"
     except (OSError, ValueError):
         return False
@@ -119,10 +136,7 @@ def choose_next_action(
         if isinstance(item, dict) and item.get("paper_id") is not None
     }
     pending = [
-        str(paper_id)
-        for paper_id in selected
-        if paper_needs_paid_download(papers_by_id[str(paper_id)])
-        and not verified_manifest_download(manifest_by_id.get(str(paper_id)), run_dir)
+        str(paper_id) for paper_id in selected if paid_pending(manifest_by_id.get(str(paper_id)))
     ]
     if selection.get("download_paid") is True and pending:
         already_confirmed = (
@@ -137,7 +151,7 @@ def choose_next_action(
             "pending_paper_ids": pending,
         }
     return {
-        "next_action": "reading_confirmation",
+        "next_action": "prepare_reading",
         "pending_count": 0,
         "pending_paper_ids": [],
     }
@@ -150,7 +164,7 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
     try:
-        run_dir = args.run_dir.resolve()
+        run_dir = canonical_path(args.run_dir)
         selection_path = require_under_run(run_dir, args.selection, "selection")
         manifest_path = require_under_run(run_dir, args.manifest, "manifest")
         selection = read_json(selection_path)

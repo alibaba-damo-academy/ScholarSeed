@@ -9,19 +9,25 @@ import {
   Folder,
   Gauge,
   Paperclip,
+  Plus,
   Plug,
   Quote,
+  X,
   type LucideIcon
 } from 'lucide-react'
 import {
   activeThread,
-  ComposerReference,
+  activeDocumentForTurn,
+  selectedLiteratureForTurn,
   assistantProject,
   selectedProjectPath,
   useApp
 } from '../../store'
 import { assistantSourceAvailable } from '../../features/assistant/candidates'
-import type { SessionSurface } from '../../store'
+import type {
+  SessionSurface,
+  ComposerReference
+} from '../../store'
 import { effectiveSessionModelKey, hasSelectableModel } from '../../catalog'
 import {
   CLOUD_PAGE_ANCHORS,
@@ -29,19 +35,24 @@ import {
   creditsBlockBuiltInModel
 } from '../../account'
 import { Icon, type IconName } from '../../icons'
-import {
+import type {
   CollaborationMode,
+  ModeInfo,
+  SkillInfo,
+  TurnInputItem,
+  UploadedAttachment
+} from '../../api'
+import {
   confirmUnknownTurn,
   deleteQueuedMessage,
   getMode,
   type GlobalPermissionMode,
+  type PermissionApplication,
   getSkills,
   interruptSession,
   isQueuedMessageNotSendable,
   listQueuedMessages,
-  ModeInfo,
   openSession,
-  postSide,
   postTurn,
   reconcileQueuedMessage,
   requestFailureFeedback,
@@ -49,13 +60,11 @@ import {
   setMode,
   setGlobalPermissionMode,
   sendQueuedMessage,
-  SkillInfo,
   type TurnContextAdmission,
-  TurnInputItem,
-  UploadedAttachment,
   uploadAttachmentFile
 } from '../../api'
 import { COMPOSER_FOCUS_EVENT } from '../../reference'
+import { restoreComposerDraft } from '../../draft'
 import { ModelMenu } from './ModelMenu'
 import { LoginPrompt } from './LoginPrompt'
 import { reasoningPreference } from '../../reasoning'
@@ -80,7 +89,7 @@ import {
   queuedReferenceSummary,
   replaceComposerTrigger
 } from '../../input'
-import type { AssistantContextCandidate, AssistantSourceFilter } from '../../contracts/assistant'
+import type { AssistantContextCandidate } from '../../contracts/assistant'
 import { promptSessionTitle } from '../../model'
 import type { ConvItem, MessageReference, QueuedMessage } from '../../model'
 import { hasDraggedFiles } from '../../drag'
@@ -93,13 +102,13 @@ import {
   projectAssistantContextRefs,
   removeOptimisticUserMessage
 } from '../../transcript'
-import { effectiveReadiness, permissionModeFeedback, readinessAdmission } from '../../runtime'
+import { canOfferTurnRecovery, effectiveReadiness, permissionModeFeedback, permissionModeNeedsConfirmation, permissionModeShowsNextTurn, readinessAdmission } from '../../runtime'
 import {
   canCancelQueuedMessage,
+  hasAcceptedMessageAwaitingRuntime,
   QUEUED_MESSAGE_SAFE_ERRORS,
-  QUEUE_STATE_MESSAGE_KEYS,
+  QUEUE_PRESENTATION_MESSAGE_KEYS,
   queueBlockedByUnconfirmed,
-  RESOURCE_WAIT_QUEUE_STATE,
   markOptimisticQueueOutcomeUnknown,
   optimisticQueuedMessage,
   queuedMessageErrorText,
@@ -115,19 +124,14 @@ import {
   releaseQueuedOutbox,
   retainQueuedOutbox
 } from '../../outbox'
-import {
-  useDocumentWorkspace,
-  useWorkspaceController
-} from '../../features/workbench/workspace'
+import { useDocumentWorkspace } from '../../features/workbench/workspace'
 import {
   RESOURCE_CONTEXT_KIND,
   resourceContextSearchTerm,
   resourceContextTriggerPath
 } from '../../features/assistant/api'
 import {
-  decideResourceReviewBatch,
   fetchResourceReviewBatches,
-  fetchReviewMemberCurrent,
   hasDirtyReviewEditor,
   type ResourceReviewBatch
 } from '../../contracts/resources'
@@ -138,21 +142,37 @@ import {
 } from '../../features/assistant/anchors'
 import {
   Alert,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPortal,
+  AlertDialogTitle,
   Button,
   Card,
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+  EmptyState,
   IconButton,
   Input,
   Popover,
   PopoverContent,
   PopoverTrigger,
+  SearchBox,
   Spinner,
   Textarea,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger
+  Tooltip
 } from '../ui'
 import { IconFont } from '../primitive'
 import aiThinking from '../../assets/ai-thinking.gif'
@@ -175,46 +195,10 @@ function plusMenuSourceIcon(icon: IconName): React.JSX.Element {
   return SourceIcon ? <SourceIcon size={15} /> : <Icon name={icon} size={15} />
 }
 
-// 技能描述最多两行, 超出截断; 仅在确实溢出时以浮层 Tooltip 展示全文。
-function ClampedSkillDescription({ text }: { text: string }): React.JSX.Element {
-  const spanRef = React.useRef<HTMLSpanElement | null>(null)
-  const [truncated, setTruncated] = React.useState(false)
-  const refreshTruncated = React.useCallback(() => {
-    const el = spanRef.current
-    if (!el) return
-    setTruncated(el.scrollHeight > el.clientHeight + 1)
-  }, [])
-  React.useEffect(refreshTruncated)
-  return (
-    <Tooltip portalled>
-      <TooltipTrigger asChild>
-        <span
-          ref={spanRef}
-          className="mt-[var(--vds-space-1)] line-clamp-2 whitespace-normal break-words text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-tertiary)]"
-          onMouseEnter={refreshTruncated}
-        >
-          {text}
-        </span>
-      </TooltipTrigger>
-      {truncated && (
-        <TooltipContent>
-          <span className="line-clamp-[12] break-words">{text}</span>
-        </TooltipContent>
-      )}
-    </Tooltip>
-  )
-}
 // 权限模式选择器 (对话框下方图标控件, 对齐 opentui Shift+Tab / webui mode-chip; 经 serve
 // /sessions/{sid}/mode 读写)。模式清单以后端 enabled_modes 为准; 此表只是前端文案。
 // 需求文档 2.1.2 ④: 菜单只展示三档权限；完全访问权限需二次确认。
 type ModeTone = 'neutral' | 'accent' | 'danger'
-class ReviewDiskReadError extends Error {
-  constructor(readonly path: string) {
-    super('review_disk_read_failed')
-    this.name = 'ReviewDiskReadError'
-  }
-}
-
 type ModeMeta = { label: string; hint: string; tone: ModeTone }
 
 const PERMISSION_MODE_OPTIONS: GlobalPermissionMode[] = [
@@ -229,13 +213,13 @@ const PERMISSION_MODE_ICON_TYPES: Record<string, string> = {
 }
 const UNKNOWN_MODE_TONE: ModeTone = 'neutral'
 const DEFAULT_MODE = 'ask'
+const MODE_CONFIRMATION_REQUIRED_ERROR = 'session_permission_confirmation_required'
 // 选择已记下但还没换到运行时 —— 换 sandbox 要重开 vendor thread, 只能等当前 turn 结束。
 // PRD 2.1.2 ③: 加号是输入框左下角的**圆形描边按钮**, 位于最左。
 const HOME_COMPOSER_MIN_HEIGHT_PX = 105
 const HOME_COMPOSER_MAX_HEIGHT_PX = 105
 const COMPOSER_MAX_HEIGHT_PX = 132
-/* assistant 面 pt-12 与 TodoPanel compact 的 -mb-8 相抵，使执行计划与输入框容器间距为 4px，
-   与 HIL dock 的 pb-4 一致（AI 面板三个容器间距统一 4px）。 */
+/* assistant 面 pt-12 与 TodoPanel compact 的 -mb-4 相抵，使执行计划与输入框容器间距为 8px。 */
 const composerRootPaddingClass = (
   home: boolean,
   surface: SessionSurface
@@ -266,7 +250,7 @@ const composerDropZoneClass = (
   ].join(' ')
 const composerToolbarClass = (home: boolean, surface: SessionSurface): string =>
   [
-    'flex items-center',
+    '@container/toolbar flex items-center',
     surface === 'assistant'
       ? 'mt-[var(--vds-space-2)] gap-[2px] pt-[var(--vds-space-0)]'
       : 'mt-[10px] gap-[7px] pt-[10px]',
@@ -298,11 +282,11 @@ const atPanelClass = [
   'bg-[var(--bg-2)] p-[var(--vds-space-0)] shadow-[0_14px_36px_rgb(41_33_20_/_0.15),0_2px_7px_rgb(41_33_20_/_0.08)]'
 ].join(' ')
 const atHeadClass = [
-  'flex min-h-[34px] items-center justify-between gap-[var(--vds-space-4)] border-b border-[var(--border-soft)]',
-  'px-[var(--vds-space-3)] text-[var(--text-3)]'
+  'flex min-h-[34px] items-center justify-between gap-[var(--vds-space-2)] border-b border-[var(--border-soft)]',
+  'px-[var(--vds-space-2)] text-[var(--text-3)]'
 ].join(' ')
 const atTitleClass =
-  'inline-flex items-center gap-[7px] text-[length:var(--vds-font-body-lv1)] font-[650] tracking-[0.02em] text-[var(--brand-ink)]'
+  'inline-flex shrink-0 items-center gap-[var(--vds-space-1)] whitespace-nowrap text-[length:var(--vds-font-body-lv1)] font-[650] tracking-[0.02em] text-[var(--brand-ink)]'
 const atBackClass = [
   'grid size-[23px] place-items-center rounded-[var(--vds-radius-2)] border-0 bg-transparent p-[var(--vds-space-0)]',
   'text-[var(--text-3)] hover:bg-[var(--hover-bg)] hover:text-[var(--text)] focus-visible:bg-[var(--hover-bg)] focus-visible:text-[var(--text)]'
@@ -339,26 +323,6 @@ const referenceTrayClass = 'mt-[5px] overflow-visible'
 const referenceTrayScrollerClass =
   'flex flex-nowrap gap-[2px] overflow-x-auto overflow-y-hidden pb-[var(--vds-space-0)] pl-[var(--vds-space-0)] pr-[2px] pt-[5px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
 const PLUS_MENU_PAGE_SIZE = 10
-const SUBMENU_GAP = 6
-const SUBMENU_CLOSE_DELAY = 160
-const SUBMENU_VIEWPORT_PADDING = 8
-const submenuFlyoutClass =
-  'fixed z-[var(--vds-z-popover)] w-max overflow-hidden rounded-[12px] bg-[var(--vds-bg-white-default)] shadow-[2px_4px_12px_0_rgba(0,0,0,0.1)] transition-[height,top] duration-[var(--vds-duration-fast)] ease-[ease] motion-reduce:transition-none'
-const plusMenuNavClass = (hasPane: boolean): string =>
-  [
-    'flex w-[176px] flex-none flex-col gap-[var(--vds-space-1)]',
-    hasPane
-      ? 'border-r border-[var(--border-soft)] pr-[var(--vds-space-1)]'
-      : ''
-  ].join(' ')
-const plusNavButtonClass = (active = false): string =>
-  [
-    'flex min-h-8 w-full min-w-0 items-center justify-start gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 bg-transparent px-[var(--vds-space-3)] py-[var(--vds-space-2)]',
-    'text-left text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] font-[var(--vds-fw-regular)] text-[var(--text-2)] shadow-none [font:inherit] hover:bg-[var(--vds-bg-white-hover)] hover:text-[var(--text)] focus-visible:bg-[var(--vds-bg-white-hover)] focus-visible:text-[var(--text)] focus-visible:outline-none',
-    active
-      ? '!bg-[var(--vds-bg-white-active)] text-[var(--vds-text-primary)]'
-      : ''
-  ].join(' ')
 const contextPaneClass =
   'max-h-[calc(min(420px,70vh)-var(--vds-space-2))] min-h-0 w-[268px] flex-none overflow-hidden bg-[var(--bg-2)]'
 const contextOptionButtonClass =
@@ -366,11 +330,11 @@ const contextOptionButtonClass =
 const contextOptionCopyClass =
   'grid min-w-0 gap-[var(--vds-space-1)] [&>small]:whitespace-normal [&>small]:break-words [&>small]:text-[length:var(--vds-font-caption)] [&>small]:leading-relaxed [&>small]:text-[var(--vds-text-tertiary)] [&>span]:whitespace-normal [&>span]:break-words [&>span]:font-medium'
 const skillPanelClass = [
-  'relative min-h-0 max-h-[min(420px,70vh)] w-[268px] min-w-0 shrink overflow-y-auto bg-[var(--vds-surface-raised)] p-0'
+  'flex max-h-[min(420px,70vh)] w-[268px] min-w-0 flex-col overflow-hidden bg-[var(--vds-surface-raised)] p-0'
 ].join(' ')
 const skillPanelHeadClass = [
-  'sticky top-[var(--vds-space-0)] flex items-center gap-[8px] border-b border-[var(--border-soft)]',
-  'bg-[var(--bg-2)] px-[12px] py-[10px]'
+  'grid flex-none gap-[var(--vds-space-2)] border-b border-[var(--border-soft)]',
+  'bg-[var(--bg-2)] px-[var(--vds-space-2)] pb-[var(--vds-space-3)] pt-[var(--vds-space-2)]'
 ].join(' ')
 const composerTextareaClass = (
   home: boolean,
@@ -378,7 +342,7 @@ const composerTextareaClass = (
   launching: boolean
 ): string =>
   [
-    'block w-full resize-none overflow-y-hidden rounded-none border-0 bg-transparent font-[var(--font-serif)] text-[var(--text)] outline-none',
+    'block w-full resize-none overflow-y-hidden rounded-none border-0 bg-transparent font-[var(--font-serif)] font-normal text-[var(--text)] outline-none',
     'shadow-none focus:outline-none focus-visible:border-0 focus-visible:shadow-none',
     surface === 'assistant'
       ? 'min-h-[44px] max-h-[132px] text-[length:var(--vds-font-body-lv2)] leading-[1.65]'
@@ -436,6 +400,7 @@ export function Composer({
   home = false,
   homeExtras,
   contextTray,
+  header,
   inputBoxRef,
   surface = 'conversation'
 }: {
@@ -444,6 +409,7 @@ export function Composer({
   homeExtras?: React.ReactNode
   /** Session context queue rendered inside the composer card above the draft text. */
   contextTray?: React.ReactNode
+  header?: (controls: { continueTurn: () => Promise<boolean>; continueDisabled: boolean }) => React.ReactNode
   /**
    * 外部对齐锚点：透传到输入框所在的会话内容列（readingColumnClass 那一列，
    * 窄时贴合面板、宽时被 --vds-conversation-content-width 封顶并居中）。
@@ -453,10 +419,9 @@ export function Composer({
   /** Preserve the owning product surface when a new Session is created. */
   surface?: SessionSurface
 }): React.JSX.Element {
-  const { state, set, appendThread, patchThread, act } = useApp()
+  const { state, set, composerDraft, appendThread, patchThread, act } = useApp()
   const { authenticated, revision: skillRevision } = useAccountAccess(state.backendReady)
   const documents = useDocumentWorkspace()
-  const workspace = useWorkspaceController()
   const { t, i18n } = useTranslation('components')
   const { t: assistantText } = useTranslation('assistant')
   const contextText = useAssistantContextText()
@@ -530,16 +495,22 @@ export function Composer({
   const INTERRUPTING_INPUT_PLACEHOLDER = t('composer.stoppingPlaceholder')
   const RUNNING_SEND_HINT_TITLE = t('composer.enqueue')
   const COMPOSER_DROP_LABEL = t('composer.drop')
-  const text = state.composerText
+  const text = React.useSyncExternalStore(
+    composerDraft.subscribe,
+    composerDraft.getSnapshot,
+    composerDraft.getSnapshot
+  )
   const thread = activeThread(state)
   const sidNow = thread.sessionId
   const running = Boolean(thread.running)
-  const waitingApproval = thread.status === 'waiting'
+  const recoveryAvailable = canOfferTurnRecovery(thread) && !thread.recoveryPending
   const queuedMessages = thread.queuedMessages ?? []
   const visibleQueuedMessages = queuedMessages.filter((message) =>
     shouldPresentQueuedMessage(message, thread.conversation)
   )
   const interrupting = Boolean(thread.interrupting)
+  const canStop =
+    running || interrupting || hasAcceptedMessageAwaitingRuntime(queuedMessages)
   const launching =
     state.turnLaunch !== null || thread.resumeState === 'pending'
   // 资源页只遮住旧对话页；文档旁的 AI 助手仍可交互，不得因此禁用候选菜单。
@@ -557,6 +528,7 @@ export function Composer({
   const [submittingMessage, setSubmittingMessage] = React.useState(false)
   const [loginPromptOpen, setLoginPromptOpen] = React.useState(false)
   const [draggingFiles, setDraggingFiles] = React.useState(false)
+  const [reviewGate, setReviewGate] = React.useState<{ projectId: string; path: string } | null>(null)
   const [queuedActionId, setQueuedActionId] = React.useState<string | null>(
     null
   )
@@ -565,7 +537,8 @@ export function Composer({
   >(() => new Set())
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false)
   const [referenceQuery, setReferenceQuery] = React.useState('')
-  const [referenceFilter, setReferenceFilter] = React.useState<AssistantSourceFilter>('all')
+  const referenceSearchSourceRef = React.useRef<string | null>(null)
+  const openingReferenceSourceRef = React.useRef<string | null>(null)
   const [collaborationMenuOpen, setCollaborationMenuOpen] =
     React.useState(false)
   // PRD 2.1.2 ③(2): 点「技能」展开已启用技能列表, 点某条即加载到本次对话。
@@ -576,20 +549,12 @@ export function Composer({
   const [skillQuery, setSkillQuery] = React.useState('')
   const [skillVisibleCount, setSkillVisibleCount] =
     React.useState(PLUS_MENU_PAGE_SIZE)
-  const submenuRef = React.useRef<HTMLDivElement | null>(null)
-  const submenuContentRef = React.useRef<HTMLDivElement | null>(null)
-  const submenuCloseTimerRef = React.useRef<number | null>(null)
-  const plusMenuNavRef = React.useRef<HTMLDivElement | null>(null)
-  const [submenuStyle, setSubmenuStyle] = React.useState<React.CSSProperties>({
-    visibility: 'hidden'
-  })
   React.useEffect(() => {
     setPlusMenuOpen(false)
     setSkillPanelOpen(false)
     setSkillQuery('')
     setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
     setReferenceQuery('')
-    setReferenceFilter('all')
     setSelIdx(0)
     setDismissed(false)
   }, [state.activeSession, home])
@@ -649,12 +614,21 @@ export function Composer({
     mode: GlobalPermissionMode
   } | null>(null)
   const [modeOpen, setModeOpen] = React.useState(false)
+  const [modeConfirmation, setModeConfirmation] = React.useState<{
+    sessionId: string
+    mode: GlobalPermissionMode
+  } | null>(null)
   const [fullAccessConfirmOpen, setFullAccessConfirmOpen] =
     React.useState(false)
   // null = 尚未显式覆盖设置页的全局默认；首页用户选了某个会话模式才写入。
   const [pendingMode, setPendingMode] = React.useState<GlobalPermissionMode | null>(null)
   const [modeChanging, setModeChanging] = React.useState(false)
   const modeRequest = React.useRef(0)
+  const modeMutation = React.useRef(0)
+  React.useEffect(() => {
+    setModeConfirmation(null)
+    setFullAccessConfirmOpen(false)
+  }, [sidNow])
   const refreshMode = React.useCallback((): void => {
     const request = ++modeRequest.current
     const sessionId = sidNow
@@ -670,15 +644,16 @@ export function Composer({
   }, [sidNow])
   React.useEffect(() => {
     ++modeRequest.current
+    ++modeMutation.current
     setModeChanging(false)
     if (!sidNow) {
       setModeInfo(null)
       return
     }
-    refreshMode()
-    // 依赖 running: turn 结束再拉一次 —— plan 批准 (ExitPlanMode) 等 agent 内部切换
-    // 只发生在后端, serve SSE 不透 mode_transition, 靠关键时点刷新保持同步。
-  }, [sidNow, running, refreshMode])
+  }, [sidNow])
+  React.useEffect(() => {
+    if (sidNow && !modeChanging) refreshMode()
+  }, [sidNow, running, thread.activeTurnId, modeChanging, refreshMode])
   const currentModeInfo = modeInfo?.sessionId === sidNow ? modeInfo.value : null
   const openedMode =
     openedModeProjection.current?.sessionId === sidNow
@@ -691,12 +666,18 @@ export function Composer({
   const permissionModeList = PERMISSION_MODE_OPTIONS.filter((m) =>
     modeList.includes(m)
   )
-  const activeModeMeta = modeMeta(curMode)
-  const modeControlLabel = waitingApproval
-    ? t('composer.modeControlWaiting', { mode: activeModeMeta.label })
-    : t('composer.modeControl', { mode: activeModeMeta.label })
+  const shownMode = currentModeInfo?.active_mode || curMode
+  const activeModeMeta = modeMeta(shownMode)
+  const showsNextTurn = permissionModeShowsNextTurn(currentModeInfo)
+  const modeLabel = showsNextTurn
+    ? t('composer.modeDeferred', {
+        active: activeModeMeta.label,
+        selected: modeMeta(curMode).label
+      })
+    : activeModeMeta.label
+  const modeControlLabel = t('composer.modeControl', { mode: modeLabel })
   const modeControlIcon =
-    PERMISSION_MODE_ICON_TYPES[curMode] ??
+    PERMISSION_MODE_ICON_TYPES[shownMode] ??
     PERMISSION_MODE_ICON_TYPES[DEFAULT_MODE]
   const persistDefaultMode = async (
     mode: GlobalPermissionMode
@@ -713,24 +694,40 @@ export function Composer({
     set({ globalPermissionMode: saved.mode })
     return true
   }
-  const applyMode = (m: GlobalPermissionMode): void => {
-    if (waitingApproval) return
+  const applyMode = (
+    m: GlobalPermissionMode,
+    application: PermissionApplication = 'auto'
+  ): void => {
+    if (modeChanging) return
     setFullAccessConfirmOpen(false)
     if (!sidNow) {
       setPendingMode(m)
-      const request = ++modeRequest.current
+      ++modeRequest.current
+      const request = ++modeMutation.current
       setModeChanging(true)
       void persistDefaultMode(m).then((saved) => {
-        if (request !== modeRequest.current) return
+        if (request !== modeMutation.current) return
         setModeChanging(false)
         if (saved) setPendingMode(null)
       })
       return
     }
-    const request = ++modeRequest.current
+    ++modeRequest.current
+    const request = ++modeMutation.current
     setModeChanging(true)
-    void setMode(sidNow, m).then(async (result) => {
-      if (request !== modeRequest.current) return
+    const continuation = application === 'interrupt_continue'
+      ? {
+          clientUserMessageId: crypto.randomUUID(),
+          ...(state.aiPanel.sessionId === sidNow && state.aiPanel.contextState === 'ready'
+            ? { assistantContextRevision: state.aiPanel.revision }
+            : {}),
+          activeDocument: activeDocumentForTurn(state) ?? undefined,
+          selectedLiteratureIds: selectedLiteratureForTurn(state),
+          ...(state.composerTaskType ? { taskType: state.composerTaskType } : {})
+        }
+      : undefined
+    void setMode(sidNow, m, application, continuation).then(async (result) => {
+      if (request !== modeMutation.current) return
       if (result.ok && result.mode) {
         const applied = result.mode
         setModeInfo((info) => ({
@@ -740,20 +737,37 @@ export function Composer({
             mode: applied,
             modes: PRE_SESSION_MODES,
             active_mode: result.active_mode,
-            deferred: result.deferred
+            deferred: result.deferred,
+            switch_warning: result.switch_warning,
+            current_turn_modes: result.current_turn_modes,
+            next_turn_selected: result.next_turn_selected
           }
         }))
         await persistDefaultMode(applied)
-        if (request === modeRequest.current) setModeChanging(false)
+        if (request === modeMutation.current) setModeChanging(false)
         return
       }
       setModeChanging(false)
       refreshMode()
+      if (result.error === MODE_CONFIRMATION_REQUIRED_ERROR) {
+        setModeConfirmation({ sessionId: sidNow, mode: m })
+        return
+      }
       set({ foregroundError: permissionModeFeedback(result) })
     })
   }
   const requestMode = (m: GlobalPermissionMode): void => {
-    if (waitingApproval) return
+    if (modeChanging) return
+    if (m === curMode && !currentModeInfo?.deferred) {
+      setModeOpen(false)
+      return
+    }
+    if (sidNow && permissionModeNeedsConfirmation(currentModeInfo, m, running)) {
+      setModeOpen(false)
+      setFullAccessConfirmOpen(false)
+      setModeConfirmation({ sessionId: sidNow, mode: m })
+      return
+    }
     if (
       m === 'bypassPermissions' &&
       curMode !== 'bypassPermissions' &&
@@ -764,6 +778,13 @@ export function Composer({
     }
     applyMode(m)
     setModeOpen(false)
+  }
+
+  const confirmMode = (application: PermissionApplication): void => {
+    if (!modeConfirmation || modeConfirmation.sessionId !== sidNow) return
+    const target = modeConfirmation.mode
+    setModeConfirmation(null)
+    applyMode(target, application)
   }
 
   // @ 与“+”复用同一组 Assistant 来源贡献；项目文件和 Skill 保留原有专用入口。
@@ -781,24 +802,9 @@ export function Composer({
   const availableContextSources = state.aiPanel.contextSources.filter(
     (source) => assistantSourceAvailable(source, assistantProjectId)
   ).map((source) => ({ ...source, label: renderFeedback(i18n, source.label), emptyLabel: renderFeedback(i18n, source.emptyLabel) }))
-  const cancelSubmenuClose = (): void => {
-    if (submenuCloseTimerRef.current !== null) {
-      window.clearTimeout(submenuCloseTimerRef.current)
-      submenuCloseTimerRef.current = null
-    }
-  }
-  const scheduleSubmenuClose = (): void => {
-    cancelSubmenuClose()
-    submenuCloseTimerRef.current = window.setTimeout(() => {
-      submenuCloseTimerRef.current = null
-      if (submenuRef.current?.contains(document.activeElement)) return
-      setSkillPanelOpen(false)
-      act.closeAiContextPicker()
-    }, SUBMENU_CLOSE_DELAY)
-  }
   const openSkillSubmenu = (): void => {
-    cancelSubmenuClose()
     clearAtTrigger()
+    openingReferenceSourceRef.current = null
     act.closeAiContextPicker()
     if (!skillPanelOpen) setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
     setSkillPanelOpen(true)
@@ -806,67 +812,18 @@ export function Composer({
   const openSourceSubmenu = (
     source: (typeof availableContextSources)[number]
   ): void => {
-    cancelSubmenuClose()
     if (
-      state.aiPanel.contextPickerOpen &&
-      state.aiPanel.contextPickerSource === source.id
+      openingReferenceSourceRef.current === source.id ||
+      (state.aiPanel.contextPickerOpen &&
+        state.aiPanel.contextPickerSource === source.id)
     )
       return
+    openingReferenceSourceRef.current = source.id
     clearAtTrigger()
     setSkillPanelOpen(false)
     setReferenceQuery('')
-    setReferenceFilter('all')
-    act.openAiContextPicker(source.id, '', 'all')
+    act.openAiContextPicker(source.id)
   }
-  // 技能列表异步加载完成后浮层高度会变化, 必须随 deps 重新定位,
-  // 否则首次打开会按加载占位的高度锁死坐标, 列表到达后弹窗错位。
-  React.useLayoutEffect(() => {
-    const el = submenuRef.current
-    const content = submenuContentRef.current
-    const nav = plusMenuNavRef.current
-    if (!el || !content || !nav) return
-    if (!(skillPanelOpen || state.aiPanel.contextPickerOpen)) return
-    const navRect = nav.getBoundingClientRect()
-    const width = content.offsetWidth
-    const height = content.offsetHeight
-    const viewportWidth = window.innerWidth
-    // 右侧宽度足够贴右侧; 不够时翻到一级菜单左侧。
-    const rightLeft = navRect.right + SUBMENU_GAP
-    const leftLeft = navRect.left - SUBMENU_GAP - width
-    const fitsRight =
-      rightLeft + width <= viewportWidth - SUBMENU_VIEWPORT_PADDING
-    const fitsLeft = leftLeft >= SUBMENU_VIEWPORT_PADDING
-    const left = fitsRight
-      ? rightLeft
-      : fitsLeft
-        ? leftLeft
-        : Math.max(
-          SUBMENU_VIEWPORT_PADDING,
-          viewportWidth - width - SUBMENU_VIEWPORT_PADDING
-        )
-    // 二级弹窗底部与一级菜单底部对齐, 向上展开; 超高时收敛到视口内。
-    const top = Math.max(SUBMENU_VIEWPORT_PADDING, navRect.bottom - height)
-    setSubmenuStyle((current) => {
-      if (
-        current.visibility === 'visible' &&
-        current.left === left &&
-        current.top === top &&
-        current.height === height
-      ) {
-        return current
-      }
-      return { height, left, top, visibility: 'visible' }
-    })
-  }, [
-    skillPanelOpen,
-    skillQuery,
-    skillRows,
-    skillRowsLoading,
-    skillVisibleCount,
-    state.aiPanel.contextCandidates,
-    state.aiPanel.contextCandidatesLoading,
-    state.aiPanel.contextPickerOpen
-  ])
   const atContextSource = availableContextSources.find(
     (source) => source.id === atKind
   )
@@ -912,7 +869,7 @@ export function Composer({
   // 只会在执行面被拒, 所以发送在这里就闭门, 并在卡片上方给出两条出路。
   const modelAvailable = hasSelectableModel(state.catalog.models)
   const canSend = canSubmitComposer({
-    runtimeReady: runtimeReady && selectedSkillsReady && activeThread(state).terminated !== true,
+    runtimeReady: runtimeReady && selectedSkillsReady && activeThread(state).terminated !== true && !thread.recoveryPending,
     creditsAvailable: !creditBlocked,
     modelAvailable,
     launching,
@@ -930,20 +887,20 @@ export function Composer({
     [set]
   )
   const clearAtTrigger = React.useCallback((): void => {
-    set((current) => ({
-      composerText: replaceComposerTrigger(current.composerText, '').replace(
+    composerDraft.set((current) =>
+      replaceComposerTrigger(current, '').replace(
         /\s+$/,
         ''
       )
-    }))
-  }, [set])
+    )
+  }, [composerDraft])
   const replaceAtTrigger = React.useCallback(
     (replacement: string): void => {
-      set((current) => ({
-        composerText: replaceComposerTrigger(current.composerText, replacement)
-      }))
+      composerDraft.set((current) =>
+        replaceComposerTrigger(current, replacement)
+      )
     },
-    [set]
+    [composerDraft]
   )
   React.useEffect(() => {
     if (atQuery === null || nonConversationSurfaceOpen) return
@@ -1148,7 +1105,7 @@ export function Composer({
   }
   const atRootRows = [
     AT_LOCAL_FILE_ROOT_ROW,
-    ...(!unifiedLocalPicker && window.scholarseed?.pickImport
+    ...(!unifiedLocalPicker && typeof window.scholarseed?.pickImport === 'function'
       ? [AT_LOCAL_DIRECTORY_ROOT_ROW]
       : []),
     ...availableContextSources.map((source) => ({
@@ -1216,17 +1173,24 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atActive, atContextSourceId, atTerm])
   React.useEffect(() => {
-    if (!plusMenuOpen || !state.aiPanel.contextPickerOpen) return undefined
+    if (!plusMenuOpen || !state.aiPanel.contextPickerOpen) {
+      referenceSearchSourceRef.current = null
+      openingReferenceSourceRef.current = null
+      return undefined
+    }
+    if (referenceSearchSourceRef.current !== state.aiPanel.contextPickerSource) {
+      referenceSearchSourceRef.current = state.aiPanel.contextPickerSource
+      return undefined
+    }
     const timer = window.setTimeout(() => {
       act.openAiContextPicker(
         state.aiPanel.contextPickerSource,
-        referenceQuery,
-        referenceFilter
+        referenceQuery
       )
     }, AT_CONTEXT_SEARCH_DELAY_MS)
     return () => window.clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plusMenuOpen, referenceFilter, referenceQuery, state.aiPanel.contextPickerOpen, state.aiPanel.contextPickerSource])
+  }, [plusMenuOpen, referenceQuery, state.aiPanel.contextPickerOpen, state.aiPanel.contextPickerSource])
   React.useEffect(() => {
     if (!atRoot || !state.aiPanel.contextPickerOpen || plusMenuOpen) return
     act.closeAiContextPicker()
@@ -1414,96 +1378,14 @@ export function Composer({
       : null
   }
 
-  const acceptReviewBatches = async (
-    projectId: string,
-    batches: ResourceReviewBatch[]
-  ): Promise<boolean> => {
-    for (const batch of batches) {
-      for (const member of batch.members) {
-        const session = Object.values(workspace.getSnapshot().sessions).find(
-          (candidate) =>
-            candidate.source.kind === 'project' &&
-            candidate.source.project === projectId &&
-            candidate.source.path === member.path
-        )
-        if (session?.dirty && !(await workspace.discardMemory(session.id))) {
-          set({
-            foregroundError: reviewText('admissionFailure.undoFailed', {
-              path: member.path
-            })
-          })
-          return false
-        }
-      }
-      const decisions = await Promise.all(
-        batch.members.map(async (member) => {
-          const action = member.state === 'completed'
-            ? member.action ?? 'accept'
-            : 'accept'
-          if (member.state === 'completed') {
-            return {
-              file_id: member.file_id,
-              review_id: member.review_id,
-              pending_revision: member.pending_revision,
-              action,
-              expected_disk_revision: member.candidate_revision
-            }
-          }
-          const current = await fetchReviewMemberCurrent(
-            projectId,
-            batch.id,
-            member.file_id
-          )
-          if (!current) throw new ReviewDiskReadError(member.path)
-          return {
-            file_id: member.file_id,
-            review_id: member.review_id,
-            pending_revision: member.pending_revision,
-            action,
-            expected_disk_revision: current.revision
-          }
-        })
-      ).catch((cause: unknown) => {
-        set({
-          foregroundError: reviewText('admissionFailure.readFailed', {
-            path: cause instanceof ReviewDiskReadError ? cause.path : '',
-            detail:
-              cause instanceof ReviewDiskReadError
-                ? ''
-                : cause instanceof Error
-                  ? cause.message
-                  : String(cause)
-          })
-        })
-        return null
-      })
-      if (!decisions) return false
-      const result = await decideResourceReviewBatch(
-        projectId,
-        batch.id,
-        decisions,
-        crypto.randomUUID()
-      )
-      if (!result.ok || result.batch?.state !== 'completed') {
-        set({
-          foregroundError: reviewText('admissionFailure.submitFailed', {
-            detail: result.error ?? ''
-          })
-        })
-        return false
-      }
-    }
-    act.invalidateResources()
-    return true
-  }
-
   const submitOnce = async (
     message: string,
-    references: ComposerReference[]
+    references: ComposerReference[],
+    preserveDraft = false
   ): Promise<boolean> => {
     // Fail closed at the action boundary as well as through disabled UI.  This
     // also covers Enter and the desktop driver during a live/authorization turn.
-    if (state.turnLaunch || interrupting || creditBlocked || !modelAvailable || !selectedSkillsReady)
+    if (state.turnLaunch || interrupting || creditBlocked || !modelAvailable || !selectedSkillsReady || thread.recoveryPending)
       return false
     const v = message.trim()
     if (!v && !references.length) return false
@@ -1529,6 +1411,8 @@ export function Composer({
       activeThread(state).queuedMessages ?? []
     )
     const clientUserMessageId = crypto.randomUUID()
+    const activeDocument = activeDocumentForTurn(state)
+    const selectedLiteratureIds = selectedLiteratureForTurn(state)
     const contextAdmission: TurnContextAdmission =
       sid &&
         state.aiPanel.sessionId === sid &&
@@ -1536,10 +1420,14 @@ export function Composer({
         ? {
           clientUserMessageId,
           assistantContextRevision: state.aiPanel.revision,
+          ...(activeDocument ? { activeDocument } : {}),
+          ...(selectedLiteratureIds.length ? { selectedLiteratureIds } : {}),
           ...(state.composerTaskType ? { taskType: state.composerTaskType } : {})
         }
         : {
           clientUserMessageId,
+          ...(activeDocument ? { activeDocument } : {}),
+          ...(selectedLiteratureIds.length ? { selectedLiteratureIds } : {}),
           ...(state.composerTaskType ? { taskType: state.composerTaskType } : {})
         }
     if (
@@ -1599,10 +1487,9 @@ export function Composer({
       itemId: clientUserMessageId
     }
     const restoreDraft = (): void => {
+      if (preserveDraft) return
+      composerDraft.set((current) => restoreComposerDraft(v, current))
       set((current) => ({
-        composerText: current.composerText.trim()
-          ? `${v}\n${current.composerText}`
-          : v,
         composerRefs: [
           ...references,
           ...current.composerRefs.filter(
@@ -1625,12 +1512,12 @@ export function Composer({
       restoreDraft()
     }
     if (presentAsUserMessage) {
+      if (!preserveDraft) composerDraft.set('')
       set({
-        composerText: '',
         composerTaskType: '',
         turnLaunch: { phase: 'admitting', optimisticUserMessage }
       })
-      setPendingRefs([])
+      if (!preserveDraft) setPendingRefs([])
       if (activeThreadId) {
         patchThread(activeThreadId, (current) => ({
           conversation: appendOptimisticUserMessage(
@@ -1655,11 +1542,12 @@ export function Composer({
         set({ foregroundError: feedback('shell', 'foreground.reviewUnknown') })
         return false
       }
-      if (
-        batches.length > 0 &&
-        !(await acceptReviewBatches(reviewProjectId, batches))
-      ) {
+      const pendingMember = batches
+        .flatMap((batch) => batch.members)
+        .find((member) => member.state !== 'completed')
+      if (pendingMember) {
         if (presentAsUserMessage) rollbackImmediatePresentation()
+        setReviewGate({ projectId: reviewProjectId, path: pendingMember.path })
         return false
       }
     }
@@ -1683,11 +1571,11 @@ export function Composer({
     let targetThreadId = activeThreadId
     let targetAdmission = contextAdmission
     if (!targetSessionId) {
+      if (!preserveDraft) composerDraft.set('')
       set({
-        composerText: '',
         turnLaunch: { phase: 'opening', optimisticUserMessage }
       })
-      setPendingRefs([])
+      if (!preserveDraft) setPendingRefs([])
       const projectPath = selectedProjectPath(state)
       const targetWorkdir =
         projectPath ?? state.defaultWorkspacePath ?? state.workspacePath ?? ''
@@ -1873,7 +1761,10 @@ export function Composer({
       clientUserMessageId,
       input,
       optimisticAssistantReferences,
-      targetAdmission.assistantContextRevision
+      targetAdmission.assistantContextRevision,
+      presentAsUserMessage ? 'direct' : 'queued',
+      targetAdmission.activeDocument,
+      targetAdmission.selectedLiteratureIds
     )
     retainQueuedOutbox(targetSessionId, optimistic)
     patchThread(targetThreadId, (current) => ({
@@ -1891,8 +1782,9 @@ export function Composer({
         : {})
     }))
     if (sid && presentAsUserMessage) set({ turnLaunch: null })
-    set({ composerText: '', composerTaskType: '' })
-    setPendingRefs([])
+    if (!preserveDraft) composerDraft.set('')
+    set({ composerTaskType: '' })
+    if (!preserveDraft) setPendingRefs([])
     const delivered = await postTurn(
       targetSessionId,
       input,
@@ -1959,7 +1851,8 @@ export function Composer({
     patchThread(targetThreadId, (current) => ({
       queuedMessages: settleOptimisticQueuedMessage(
         current.queuedMessages ?? [],
-        clientUserMessageId
+        clientUserMessageId,
+        delivered?.disposition
       ),
       ...(delivered?.turn_id
         ? {
@@ -1978,12 +1871,13 @@ export function Composer({
 
   const submit = (
     message = text,
-    references = pendingRefs
+    references = pendingRefs,
+    preserveDraft = false
   ): Promise<boolean> => {
     if (submissionInFlight.current) return Promise.resolve(false)
     submissionInFlight.current = true
     setSubmittingMessage(true)
-    return submitOnce(message, references).finally(() => {
+    return submitOnce(message, references, preserveDraft).finally(() => {
       submissionInFlight.current = false
       setSubmittingMessage(false)
     })
@@ -1998,19 +1892,14 @@ export function Composer({
 
   const stop = (): void => {
     if (interrupting) return
+    const threadId = state.activeSession
     const sid = activeThread(state).sessionId
     if (!sid) return
-    patchThread(state.activeSession, { interrupting: true })
-    appendThread(state.activeSession, {
-      kind: 'status',
-      text: t('composer.terminating'),
-      displayMessage: feedback('components', 'composer.terminating'),
-      tone: 'opinion'
-    })
+    patchThread(threadId, { interrupting: true })
     const request = interruptSession(sid)
     void request.then((result) => {
       if (result.ok && result.idle) {
-        patchThread(state.activeSession, {
+        patchThread(threadId, {
           interrupting: false,
           running: false,
           status: 'done'
@@ -2019,8 +1908,8 @@ export function Composer({
         return
       }
       if (!result.ok) {
-        patchThread(state.activeSession, { interrupting: false })
-        appendThread(state.activeSession, {
+        patchThread(threadId, { interrupting: false })
+        appendThread(threadId, {
           kind: 'notice',
           displayMessage: feedback('components', 'composer.stopFailed', { error: result.applicationFailure ? requestFailureFeedback(result.applicationFailure) : result.error ?? feedback('components', 'composer.unknownError') }),
           text: t('composer.stopFailed', {
@@ -2144,7 +2033,7 @@ export function Composer({
     const queued = (activeThread(state).queuedMessages ?? []).find(
       (message) => message.queuedMessageId === queuedMessageId
     )
-    if (!queued || queued.state === RESOURCE_WAIT_QUEUE_STATE) return
+    if (!queued || queued.state !== 'failed' || !recoveryAvailable) return
     const reviewProject =
       activeThread(state).projectPath ??
       activeThread(state).workdir ??
@@ -2159,12 +2048,12 @@ export function Composer({
         set({ foregroundError: feedback('shell', 'foreground.reviewUnknown') })
         return
       }
-      if (batches.length > 0) {
-        setQueuedActionId(queuedMessageId)
-        if (!(await acceptReviewBatches(reviewProjectId, batches))) {
-          setQueuedActionId(null)
-          return
-        }
+      const pendingMember = batches
+        .flatMap((batch) => batch.members)
+        .find((member) => member.state !== 'completed')
+      if (pendingMember) {
+        setReviewGate({ projectId: reviewProjectId, path: pendingMember.path })
+        return
       }
     }
     if (
@@ -2192,38 +2081,17 @@ export function Composer({
         state.collaborationMode,
         {
           clientUserMessageId: queuedMessageId,
-          assistantContextRevision: queued.assistantContextRevision
+          assistantContextRevision: queued.assistantContextRevision,
+          activeDocument: queued.activeDocument,
+          selectedLiteratureIds: queued.selectedLiteratureIds
         }
       )
-      if (!result?.ok && !result?.queued) {
+      if (!isComposerSubmissionAccepted(result)) {
         set({ foregroundError: feedback('components', 'composer.resendFailed') })
         setQueuedActionId(null)
         return
       }
       releaseQueuedOutbox(sessionId, queuedMessageId)
-    } else if (running) {
-      const result = await postSide(sessionId, queuedMessageId)
-      if (!result?.ok) {
-        if (isQueuedMessageNotSendable(result?.reason)) {
-          await resolveNotSendable(sessionId, queuedMessageId)
-          setQueuedActionId(null)
-          return
-        }
-        await refreshQueuedMessages(sessionId)
-        if (result?.reason === QUEUED_MESSAGE_SAFE_ERRORS.TURN_OUTCOME_UNCONFIRMED) {
-          setQueuedActionId(null)
-          return
-        }
-        set({
-          foregroundError: feedback('components', 'composer.adjustFailed', {
-            error: result?.applicationFailure
-              ? requestFailureFeedback(result.applicationFailure)
-              : queuedMessageErrorText(result?.reason ?? '', queued.state, t)
-          })
-        })
-        setQueuedActionId(null)
-        return
-      }
     } else {
       const result = await sendQueuedMessage(sessionId, queuedMessageId)
       if (!result?.ok) {
@@ -2348,7 +2216,14 @@ export function Composer({
     }
   }
 
+  const continueDisabled = canStop || launching || submittingMessage || !runtimeReady || !modelAvailable || creditBlocked || Boolean(thread.terminated) || Boolean(thread.recoveryPending) || queuedMessages.length > 0
+
   return (
+    <>
+      {header?.({
+        continueTurn: () => continueDisabled ? Promise.resolve(false) : submit(t('stream.continueInterrupted'), [], true),
+        continueDisabled
+      })}
     <div
       className={`relative z-20 isolate flex-none border-t-0 bg-transparent ${composerRootPaddingClass(home, surface)}`}
     >
@@ -2356,6 +2231,32 @@ export function Composer({
       <div ref={inputBoxRef} className={readingColumnClass(home)}>
         {/* Live Status Strip (proposal 65 v10): 真实 live 态 (运行 / 记忆命中 / 约束 / 成本) */}
         <StatusStrip />
+
+        {reviewGate && (
+          <Card
+            className="mb-[var(--vds-space-3)] flex flex-wrap items-center gap-[var(--vds-space-3)] px-[var(--vds-space-4)] py-[var(--vds-space-3)]"
+            data-testid="composer-review-admission"
+            padding="none"
+            role="alert"
+          >
+            <span className="min-w-0 flex-1 text-[var(--vds-text-primary)]">
+              {reviewText('reviewAdmission.pending')}
+            </span>
+            <Button
+              onClick={() => {
+                void act.openResourceReview(reviewGate.path, reviewGate.projectId)
+                setReviewGate(null)
+              }}
+              size="sm"
+              variant="primary"
+            >
+              {reviewText('reviewAdmission.open')}
+            </Button>
+            <Button onClick={() => setReviewGate(null)} size="sm" variant="secondary">
+              {reviewText('reviewAdmission.cancel')}
+            </Button>
+          </Card>
+        )}
 
         {creditBlocked && (
           <Card
@@ -2449,22 +2350,15 @@ export function Composer({
                 const typedReferences = queued.input.filter(
                   (item) => item.type !== 'text'
                 )
-                const waitingResources =
-                  queued.state === RESOURCE_WAIT_QUEUE_STATE
                 const blockedByUnknown =
                   queued.state === 'queued' &&
                   queueBlockedByUnconfirmed(visibleQueuedMessages)
-                const showQueuedSendAction =
-                  !waitingResources &&
-                  (!running || queued.state === 'outcome_unknown')
+                const showQueuedSendAction = (queued.state === 'failed' && recoveryAvailable)
+                  || queued.state === 'outcome_unknown'
                 const actionDisabled =
                   creditBlocked ||
                   queuedActionId !== null ||
-                  queued.state === 'submitting' ||
-                  (queued.serverPresent !== false &&
-                    queued.state !== 'outcome_unknown' &&
-                    running &&
-                    thread.capabilities?.steer === false)
+                  (queued.state === 'failed' && !recoveryAvailable)
                 const cancelAction = (
                   <Button
                     data-testid={`queued-delete-${queued.queuedMessageId}`}
@@ -2477,9 +2371,7 @@ export function Composer({
                       void retractQueuedMessage(queued.queuedMessageId)
                     }
                   >
-                    {waitingResources
-                      ? t('composer.cancelWait')
-                      : t('composer.delete')}
+                    {t('composer.delete')}
                   </Button>
                 )
                 const confirmUnknownAction = (
@@ -2542,50 +2434,34 @@ export function Composer({
                           </span>
                         </Button>
                       </CollapsibleTrigger>
-                      {waitingResources ? (
-                        <Alert
-                          className="w-full min-w-0 basis-full"
-                          data-testid={`queued-resource-wait-${queued.queuedMessageId}`}
-                          tone="info"
-                          title={t(QUEUE_STATE_MESSAGE_KEYS[queued.state])}
-                          description={t('composer.resourceWaitHint')}
-                          action={cancelAction}
-                        />
-                      ) : (
-                        <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-[var(--vds-space-2)]">
-                          <span className="whitespace-nowrap rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
-                            {blockedByUnknown
-                              ? t('composer.waitingUnknown')
-                              : t(QUEUE_STATE_MESSAGE_KEYS[queued.state])}
-                          </span>
-                          {showQueuedSendAction ? (
-                            <Button
-                              data-testid={`queued-send-${queued.queuedMessageId}`}
-                              size="sm"
-                              variant="outline"
-                              disabled={actionDisabled}
-                              onClick={() =>
-                                void (queued.state === 'outcome_unknown'
-                                  ? reconcileQueued(queued.queuedMessageId)
-                                  : sendQueued(queued.queuedMessageId))
-                              }
-                            >
-                              {queuedActionId === queued.queuedMessageId
-                                ? queued.state === 'outcome_unknown'
-                                  ? t('composer.checking')
-                                  : t('composer.submitting')
-                                : queued.state === 'outcome_unknown'
-                                  ? t('composer.checkOutcome')
-                                  : queued.state === 'failed'
-                                    ? t('composer.resend')
-                                    : t('composer.sendDirect')}
-                            </Button>
-                          ) : null}
-                          {queued.state === 'outcome_unknown'
-                            ? confirmUnknownAction
-                            : cancelAction}
-                        </div>
-                      )}
+                      <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-[var(--vds-space-2)]">
+                        <span className="whitespace-nowrap rounded-[var(--vds-radius-3)] bg-[var(--vds-surface-raised)] px-[var(--vds-space-2)] py-[var(--vds-space-1)] text-[length:var(--vds-font-caption)] text-[var(--vds-text-secondary)]">
+                          {blockedByUnknown
+                            ? t('composer.waitingUnknown')
+                            : t(QUEUE_PRESENTATION_MESSAGE_KEYS[queued.state])}
+                        </span>
+                        {showQueuedSendAction ? (
+                          <Button
+                            data-testid={`queued-send-${queued.queuedMessageId}`}
+                            size="sm"
+                            variant="outline"
+                            disabled={actionDisabled}
+                            loading={queuedActionId === queued.queuedMessageId}
+                            onClick={() =>
+                              void (queued.state === 'outcome_unknown'
+                                ? reconcileQueued(queued.queuedMessageId)
+                                : sendQueued(queued.queuedMessageId))
+                            }
+                          >
+                            {queued.state === 'outcome_unknown'
+                              ? t('composer.checkOutcome')
+                              : t('composer.resend')}
+                          </Button>
+                        ) : null}
+                        {queued.state === 'outcome_unknown'
+                          ? confirmUnknownAction
+                          : cancelAction}
+                      </div>
                       <CollapsibleContent className="w-full min-w-0 basis-full !border-0 !bg-transparent p-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv1)] leading-relaxed text-[var(--vds-text-secondary)]">
                         {queued.state === 'outcome_unknown' ? (
                           <Alert
@@ -2690,15 +2566,15 @@ export function Composer({
                             ))}
                           </section>
                         ) : null}
-                        {queued.safeErrorCode ? (
-                          <div
-                            className="mt-[var(--vds-space-3)] text-[var(--c-tension)]"
-                            data-error-code={queued.safeErrorCode}
-                          >
-                            {queuedMessageErrorText(queued.safeErrorCode, queued.state, t)}
-                          </div>
-                        ) : null}
                       </CollapsibleContent>
+                      {queued.safeErrorCode ? (
+                        <div
+                          className="w-full min-w-0 basis-full whitespace-pre-wrap break-words text-[var(--vds-error-text-primary)]"
+                          data-error-code={queued.safeErrorCode}
+                        >
+                          {queuedMessageErrorText(queued.safeErrorCode, queued.state, t, queued.safeErrorDetails)}
+                        </div>
+                      ) : null}
                     </div>
                   </Collapsible>
                 )
@@ -2737,14 +2613,6 @@ export function Composer({
                       </span>
                     </Button>
                   )}
-                  <Icon
-                    name={
-                      atSkill
-                        ? 'skills'
-                        : (atContextSource?.icon ?? 'link')
-                    }
-                    size={14}
-                  />
                   {atSkill
                     ? AT_SKILL_PANEL_LABEL
                     : atContextSource
@@ -2846,39 +2714,53 @@ export function Composer({
                     const loaded = pendingRefs.some(
                       (item) => item.type === 'skill' && item.id === skill.name
                     )
+                    const description = skillDescription(
+                      skill,
+                      i18n.resolvedLanguage || i18n.language
+                    )
                     return (
-                      <Button
+                      <Tooltip
                         key={`${skill.group}:${skill.name}`}
-                        type="button"
-                        role="option"
-                        variant="ghost"
-                        size="content"
-                        unstyled
-                        aria-selected={index === sel}
-                        aria-disabled={!selectable}
-                        data-testid={`composer-at-skill-${skill.name}`}
-                        data-atsel={index === sel ? '1' : undefined}
-                        className={atRowClass(index === sel, !selectable)}
-                        onMouseEnter={() => setSelIdx(index)}
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => chooseSkill(index)}
+                        className="!w-full"
+                        content={description}
+                        disabled={!description}
+                        portalled
+                        side="left"
                       >
-                        <span className="grid size-[27px] flex-[0_0_27px] place-items-center rounded-[9px] border border-[var(--border-soft)] bg-[var(--bg-3)] text-[var(--text-2)] group-aria-selected:border-[color-mix(in_srgb,var(--brand-ink)_42%,var(--border-soft))] group-aria-selected:bg-[color-mix(in_srgb,var(--accent-soft)_72%,var(--bg-2))] group-aria-selected:text-[var(--brand-ink)]">
-                          <Icon name="skills" size={14} />
+                        <span className="block w-full">
+                          <Button
+                            type="button"
+                            role="option"
+                            variant="ghost"
+                            size="content"
+                            unstyled
+                            aria-selected={index === sel}
+                            aria-disabled={!selectable}
+                            data-testid={`composer-at-skill-${skill.name}`}
+                            data-atsel={index === sel ? '1' : undefined}
+                            className={atRowClass(index === sel, !selectable)}
+                            onMouseEnter={() => setSelIdx(index)}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => chooseSkill(index)}
+                          >
+                            <span className="grid size-[27px] flex-[0_0_27px] place-items-center rounded-[9px] border border-[var(--border-soft)] bg-[var(--bg-3)] text-[var(--text-2)] group-aria-selected:border-[color-mix(in_srgb,var(--brand-ink)_42%,var(--border-soft))] group-aria-selected:bg-[color-mix(in_srgb,var(--accent-soft)_72%,var(--bg-2))] group-aria-selected:text-[var(--brand-ink)]">
+                              <Icon name="skills" size={14} />
+                            </span>
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-[620]">
+                                {skill.name}
+                              </span>
+                            </span>
+                            <span className="flex-none rounded-full bg-[var(--bg-3)] px-[7px] py-[2px] text-[9.5px] text-[var(--text-3)]">
+                              {loaded
+                                ? t('composer.loaded')
+                                : skill.group === 'scholarseed'
+                                  ? AT_SKILL_BUILTIN_LABEL
+                                  : AT_SKILL_USER_LABEL}
+                            </span>
+                          </Button>
                         </span>
-                        <span className="flex min-w-0 flex-1 flex-col">
-                          <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] font-[620]">
-                            {skill.name}
-                          </span>
-                        </span>
-                        <span className="flex-none rounded-full bg-[var(--bg-3)] px-[7px] py-[2px] text-[9.5px] text-[var(--text-3)]">
-                          {loaded
-                            ? t('composer.loaded')
-                            : skill.group === 'scholarseed'
-                              ? AT_SKILL_BUILTIN_LABEL
-                              : AT_SKILL_USER_LABEL}
-                        </span>
-                      </Button>
+                      </Tooltip>
                     )
                   })}
                 </div>
@@ -2945,15 +2827,14 @@ export function Composer({
                   })}
                 </div>
               ) : (
-                <div className="flex min-h-[88px] items-center justify-center gap-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--text-3)]">
-                  <Icon name="search" size={15} />
-                  <span>
-                    {atSkill
+                <EmptyState
+                  variant="compact"
+                  icon={<Icon name="search" />}
+                  title={atSkill
                       ? AT_SKILL_EMPTY_LABEL
                       : (atContextSource?.emptyLabel ??
                         t('composer.emptyContents'))}
-                  </span>
-                </div>
+                />
               )}
             </div>
           )}
@@ -3004,10 +2885,11 @@ export function Composer({
               aria-label={t('composer.inputLabel')}
               rows={1}
               wrap="soft"
+              spellCheck={false}
               unstyled
               value={text}
               onChange={(e) => {
-                set({ composerText: e.target.value })
+                composerDraft.set(e.target.value)
                 setSelIdx(0)
                 setDismissed(false)
               }}
@@ -3071,18 +2953,18 @@ export function Composer({
             />
             <div className={composerToolbarClass(home, surface)}>
               {/* PRD 2.1.2 ③: 加号在最左, 圆形描边按钮; 点击向上弹出「添加文件」「技能」。 */}
-              <Popover
+              <DropdownMenu
                 open={plusMenuOpen}
                 onOpenChange={(open) => {
                   setPlusMenuOpen(open)
                   if (!open) {
-                    cancelSubmenuClose()
+                    openingReferenceSourceRef.current = null
                     setSkillPanelOpen(false)
                     act.closeAiContextPicker()
                   }
                 }}
               >
-                <PopoverTrigger asChild>
+                <DropdownMenuTrigger asChild>
                   <IconButton
                     type="button"
                     variant="ghostIcon"
@@ -3100,363 +2982,342 @@ export function Composer({
                       )
                     }
                   />
-                </PopoverTrigger>
-                {plusMenuOpen && (
-                  <PopoverContent
-                    className="no-drag z-[var(--vds-z-popover)]"
-                    data-testid="composer-plus-menu"
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  className="no-drag"
+                  data-testid="composer-plus-menu"
+                  side="top"
+                >
+                  <DropdownMenuSub
+                    open={skillPanelOpen}
+                    onOpenChange={(open) => {
+                      if (open) openSkillSubmenu()
+                      else setSkillPanelOpen(false)
+                    }}
                   >
-                    <div
-                      className={plusMenuNavClass(false)}
-                      ref={plusMenuNavRef}
-                      onMouseEnter={cancelSubmenuClose}
-                      onMouseLeave={scheduleSubmenuClose}
+                    <DropdownMenuSubTrigger
+                      data-testid="composer-skills-menu"
+                      openOnHover
                     >
-                      <Button
-                        className={plusNavButtonClass(skillPanelOpen)}
-                        data-testid="composer-skills-menu"
-                        variant="ghost"
-                        size="sm"
-                        unstyled
-                        icon={<Plug size={15} />}
-                        onMouseEnter={openSkillSubmenu}
-                        onClick={openSkillSubmenu}
-                      >
-                        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                          {t('composer.skill')}
-                        </span>
-                        <span className="ml-auto inline-flex flex-none items-center text-[var(--text-3)]">
-                          /
-                        </span>
-                      </Button>
-                      <Button
-                        data-testid="composer-add-file"
-                        variant="ghost"
-                        size="sm"
-                        className={plusNavButtonClass()}
-                        unstyled
-                        icon={<Paperclip size={15} />}
-                        onMouseEnter={() => {
-                          setSkillPanelOpen(false)
-                          act.closeAiContextPicker()
-                        }}
-                        onClick={() => {
-                          clearAtTrigger()
-                          setPlusMenuOpen(false)
-                          act.closeAiContextPicker()
-                          void pickLocalSources(unifiedLocalPicker
-                            ? IMPORT_PICKER_TARGET.RESOURCE
-                            : IMPORT_PICKER_TARGET.FILE)
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                          {t('composer.addLocal')}
-                        </span>
-                      </Button>
-                      {!unifiedLocalPicker && window.scholarseed?.pickImport && (
-                        <Button
-                          data-testid="composer-add-folder"
-                          variant="ghost"
-                          size="sm"
-                          className={plusNavButtonClass()}
-                          unstyled
-                          icon={<Folder size={15} />}
-                          onClick={() => {
-                            setPlusMenuOpen(false)
-                            void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
-                          }}
-                        >
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                            {t('composer.addLocalFolder')}
-                          </span>
-                        </Button>
-                      )}
-                      {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
-                            本轮 typed attachment，两种语义不能合并成一套假状态。 */}
-                      {availableContextSources.map((source) => (
-                        <Button
-                          key={source.id}
-                          className={plusNavButtonClass(
-                            state.aiPanel.contextPickerOpen &&
-                            state.aiPanel.contextPickerSource === source.id
-                          )}
-                          data-testid={`composer-add-${source.id}-context`}
-                          variant="ghost"
-                          size="sm"
-                          unstyled
-                          icon={plusMenuSourceIcon(source.icon)}
-                          onMouseEnter={() => openSourceSubmenu(source)}
-                          onClick={() => openSourceSubmenu(source)}
-                        >
-                          <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
-                            {t('composer.referenceSource', {
-                              source: source.label
-                            })}
-                          </span>
-                          <span className="ml-auto inline-flex flex-none items-center text-[var(--text-3)]">
-                            <Icon name="chevron-right" size={12} />
-                          </span>
-                        </Button>
-                      ))}
-                    </div>
-                    {(skillPanelOpen || state.aiPanel.contextPickerOpen) && (
-                      <div
-                        className={submenuFlyoutClass}
-                        data-testid="composer-plus-submenu"
-                        ref={submenuRef}
-                        style={submenuStyle}
-                        onFocusCapture={cancelSubmenuClose}
-                        onMouseEnter={cancelSubmenuClose}
-                        onMouseLeave={scheduleSubmenuClose}
-                      >
-                        <div className="w-max" ref={submenuContentRef}>
-                          {state.aiPanel.contextPickerOpen && (
-                            <div
-                              className={contextPaneClass}
-                              data-testid="ai-context-picker"
-                            >
-                              <ReferencePicker
-                                candidates={state.aiPanel.contextCandidates}
-                                emptyLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
-                                  (source) => source.id === state.aiPanel.contextPickerSource
-                                )?.emptyLabel ?? t('composer.emptySource'))}
-                                filter={referenceFilter}
-                                loading={state.aiPanel.contextCandidatesLoading}
-                                onBack={() => act.closeAiContextPicker()}
-                                onFilterChange={setReferenceFilter}
-                                onQueryChange={setReferenceQuery}
-                                onSelect={(candidate) => {
-                                  void act.addContext(candidate).then((result) => {
-                                    if (result.accepted_ref_ids.length === 0) return
-                                    setPlusMenuOpen(false)
-                                    act.closeAiContextPicker()
-                                  })
-                                }}
-                                projectId={assistantProject(state).projectId}
-                                query={referenceQuery}
-                                sourceLabel={renderFeedback(i18n, state.aiPanel.contextSources.find(
-                                  (source) => source.id === state.aiPanel.contextPickerSource
-                                )?.label ?? '')}
-                              />
-                            </div>
-                          )}
-                          {/* 技能列表与导航左右排列，由页面浮层避让窗口边缘。
-                          (技能名 + 一句话说明); 点某条即载入本次对话并生成输入框内的技能标签。 */}
-                          {skillPanelOpen && (
-                            <div className={skillPanelClass}>
-                            <div className={skillPanelHeadClass}>
-                              <Icon name="search" size={14} />
-                              <Input
-                                value={skillQuery}
-                                onChange={(e) => {
-                                  setSkillQuery(e.target.value)
+                      <Plug size={15} />
+                      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                        {t('composer.skill')}
+                      </span>
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent data-testid="composer-plus-submenu">
+                      <div className={skillPanelClass}>
+                        <div className={skillPanelHeadClass}>
+                          <div className="relative">
+                            <SearchBox
+                              value={skillQuery}
+                              onChange={(event) => {
+                                setSkillQuery(event.target.value)
+                                setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
+                              }}
+                              placeholder={t('composer.searchSkills')}
+                              aria-label={t('composer.searchSkillsLabel')}
+                              size="sm"
+                            />
+                            {skillQuery && (
+                              <IconButton
+                                className="absolute right-[var(--vds-space-1)] top-1/2 -translate-y-1/2"
+                                icon={<X size={13} />}
+                                label={t('composer.clearSearch')}
+                                onClick={() => {
+                                  setSkillQuery('')
                                   setSkillVisibleCount(PLUS_MENU_PAGE_SIZE)
                                 }}
-                                placeholder={t('composer.searchSkills')}
-                                aria-label={t('composer.searchSkillsLabel')}
-                                size="sm"
-                                unstyled
-                                className="min-h-0 min-w-0 flex-1 border-0 bg-transparent p-[var(--vds-space-0)] text-[length:var(--vds-font-body-lv2)] text-[var(--text)] shadow-none outline-none placeholder:text-[var(--text-3)]"
+                                size="xs"
+                                variant="ghost"
                               />
-                            </div>
-                            {skillRowsLoading || skillRows === null ? (
-                              <p className="m-[var(--vds-space-0)] px-[14px] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
-                                {t('composer.loadSkills')}
-                              </p>
-                            ) : (
-                              (() => {
-                                const q = skillQuery.trim().toLowerCase()
-                                const language = i18n.resolvedLanguage || i18n.language
-                                // 后端已按会话 surface 投射技能；这里只保留其中当前可调用的条目。
-                                const rows = skillRows
-                                  .filter(
-                                    (s): s is SkillInfo & { path: string } =>
-                                      s.enabled !== false &&
-                                      s.active !== false &&
-                                      (!s.dependency_status ||
-                                        s.dependency_status === 'ready') &&
-                                      isAbsoluteInputPath(s.path)
-                                  )
-                                  .filter(
-                                    (s) =>
-                                      !q ||
-                                      s.name.toLowerCase().includes(q) ||
-                                      skillDescription(s, language)
-                                        .toLowerCase()
-                                        .includes(q)
-                                  )
-                                if (!rows.length) {
-                                  return (
-                                    <p className="m-[var(--vds-space-0)] px-[14px] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
-                                      {t('composer.emptySkills')}
-                                    </p>
-                                  )
-                                }
-                                const visibleRows = rows.slice(
-                                  0,
-                                  skillVisibleCount
-                                )
-                                return [
-                                  ...visibleRows.map((s) => {
-                                    const loaded = pendingRefs.some(
-                                      (r) => r.type === 'skill' && r.id === s.name
-                                    )
-                                    return (
-                                      <Button
-                                        key={s.name}
-                                        type="button"
-                                        disabled={loaded}
-                                        data-testid={`composer-skill-${s.name}`}
-                                        variant="ghost"
-                                        size="content"
-                                        unstyled
-                                        className={[
-                                          'block w-full rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[9px] text-left',
-                                          loaded
-                                            ? 'cursor-default bg-[var(--vds-bg-white-active)]'
-                                            : 'hover:bg-[var(--vds-bg-white-hover)]'
-                                        ].join(' ')}
-                                        onClick={() => {
-                                          setPendingRefs((prev) =>
-                                            prev.some(
-                                              (r) =>
-                                                r.type === 'skill' && r.id === s.name
-                                            )
-                                              ? prev
-                                              : [
-                                                ...prev,
-                                                {
-                                                  type: 'skill',
-                                                  id: s.name,
-                                                  title: s.name,
-                                                  path: s.path,
-                                                  version: s.version
-                                                }
-                                              ]
-                                          )
-                                          // PRD: 点击后菜单收起。
-                                          clearAtTrigger()
-                                          setSkillPanelOpen(false)
-                                          setPlusMenuOpen(false)
-                                          setSkillQuery('')
-                                        }}
-                                      >
-                                        <span className="flex min-w-0 flex-wrap items-center justify-between gap-[var(--vds-space-2)]">
-                                          <span className="min-w-0 whitespace-normal break-words text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
-                                            {s.name}
-                                          </span>
-                                          {loaded ? (
-                                            <span className="text-[10px] text-[var(--brand-ink)]">
-                                              {t('composer.loaded')}
-                                            </span>
-                                          ) : s.category ? (
-                                            <span className="flex-none rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[7px] py-[2px] text-[10px] text-[var(--text-3)]">
-                                              {s.category}
-                                            </span>
-                                          ) : null}
-                                        </span>
-                                        {skillDescription(s, language) && (
-                                          <ClampedSkillDescription
-                                            text={skillDescription(s, language)}
-                                          />
-                                        )}
-                                      </Button>
-                                    )
-                                  }),
-                                  rows.length > visibleRows.length ? (
-                                    <Button
-                                      type="button"
-                                      key="composer-skill-more"
-                                      data-testid="composer-skill-more"
-                                      variant="ghost"
-                                      size="content"
-                                      unstyled
-                                      className="flex w-full items-center justify-center border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)] hover:bg-[var(--vds-bg-white-hover)] hover:text-[var(--text)]"
-                                      onClick={() =>
-                                        setSkillVisibleCount(
-                                          (count) => count + PLUS_MENU_PAGE_SIZE
-                                        )
-                                      }
-                                    >
-                                      {t('composer.viewMore')} ({rows.length - visibleRows.length})
-                                    </Button>
-                                  ) : null
-                                ]
-                              })()
                             )}
-                            <div className="sticky bottom-[var(--vds-space-0)] border-t border-[var(--border-soft)] bg-[var(--bg-2)] p-[5px]">
-                              <Button
-                                type="button"
-                                data-testid="composer-skill-add"
-                                variant="ghost"
-                                size="content"
-                                unstyled
-                                className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover)]"
-                                onClick={() => {
-                                  clearAtTrigger()
-                                  setSkillPanelOpen(false)
-                                  setPlusMenuOpen(false)
-                                  set({ skillUploadOpen: true })
-                                }}
-                              >
-                                <Icon name="plus" size={13} />
-                                <span className="flex-1 text-left">
-                                  {t('composer.addSkills')}
-                                </span>
-                                <Icon name="chevron-right" size={13} />
-                              </Button>
-                              <Button
-                                type="button"
-                                data-testid="composer-skill-manage"
-                                variant="ghost"
-                                size="content"
-                                unstyled
-                                className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover)]"
-                                onClick={() => {
-                                  clearAtTrigger()
-                                  setSkillPanelOpen(false)
-                                  setPlusMenuOpen(false)
-                                  act.openCap('skill')
-                                }}
-                              >
-                                <Icon name="settings" size={13} />
-                                {t('composer.manageSkills')}
-                              </Button>
-                            </div>
-                            </div>
-                          )}
+                          </div>
+                        </div>
+                        <div className="min-h-0 overflow-y-auto overscroll-contain" data-testid="composer-skill-list">
+                        {skillRowsLoading || skillRows === null ? (
+                          <p className="m-[var(--vds-space-0)] px-[14px] py-[var(--vds-space-3)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)]">
+                            {t('composer.loadSkills')}
+                          </p>
+                        ) : (
+                          (() => {
+                            const q = skillQuery.trim().toLowerCase()
+                            const language = i18n.resolvedLanguage || i18n.language
+                            const rows = skillRows
+                              .filter(
+                                (s): s is SkillInfo & { path: string } =>
+                                  s.enabled !== false &&
+                                  s.active !== false &&
+                                  (!s.dependency_status ||
+                                    s.dependency_status === 'ready') &&
+                                  isAbsoluteInputPath(s.path)
+                              )
+                              .filter(
+                                (s) =>
+                                  !q ||
+                                  s.name.toLowerCase().includes(q) ||
+                                  skillDescription(s, language)
+                                    .toLowerCase()
+                                    .includes(q)
+                              )
+                            if (!rows.length) {
+                              return (
+                                <EmptyState variant="compact" icon={<Icon name="search" />} title={t('composer.emptySkills')} />
+                              )
+                            }
+                            const visibleRows = rows.slice(0, skillVisibleCount)
+                            return [
+                              ...visibleRows.map((s) => {
+                                const loaded = pendingRefs.some(
+                                  (r) => r.type === 'skill' && r.id === s.name
+                                )
+                                const description = skillDescription(s, language)
+                                return (
+                                  <Tooltip key={s.name} className="!w-full" content={description} disabled={!description} portalled side="right">
+                                    <span className="block w-full">
+                                  <Button
+                                    type="button"
+                                    disabled={loaded}
+                                    data-testid={`composer-skill-${s.name}`}
+                                    variant="ghost"
+                                    size="content"
+                                    unstyled
+                                    className={[
+                                      'block w-full rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-3)] py-[9px] text-left',
+                                      loaded
+                                        ? 'cursor-default bg-[var(--vds-bg-white-active)]'
+                                        : 'hover:bg-[var(--vds-bg-white-hover-transparent)]'
+                                    ].join(' ')}
+                                    onClick={() => {
+                                      setPendingRefs((prev) =>
+                                        prev.some(
+                                          (r) =>
+                                            r.type === 'skill' && r.id === s.name
+                                        )
+                                          ? prev
+                                          : [
+                                            ...prev,
+                                            {
+                                              type: 'skill',
+                                              id: s.name,
+                                              title: s.name,
+                                              path: s.path,
+                                              version: s.version
+                                            }
+                                          ]
+                                      )
+                                      clearAtTrigger()
+                                      setSkillPanelOpen(false)
+                                      setPlusMenuOpen(false)
+                                      setSkillQuery('')
+                                    }}
+                                  >
+                                    <span className="flex min-w-0 flex-wrap items-center justify-between gap-[var(--vds-space-2)]">
+                                      <span className="min-w-0 whitespace-normal break-words text-[length:var(--vds-font-body-lv2)] font-[var(--vds-fw-medium)] text-[var(--vds-text-primary)]">
+                                        {s.name}
+                                      </span>
+                                      {loaded ? (
+                                        <span className="text-[10px] text-[var(--brand-ink)]">
+                                          {t('composer.loaded')}
+                                        </span>
+                                      ) : s.category ? (
+                                        <span className="flex-none rounded-[var(--vds-radius-2)] bg-[var(--bg-3)] px-[7px] py-[2px] text-[10px] text-[var(--text-3)]">
+                                          {s.category}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </Button>
+                                    </span>
+                                  </Tooltip>
+                                )
+                              }),
+                              rows.length > visibleRows.length ? (
+                                <Button
+                                  type="button"
+                                  key="composer-skill-more"
+                                  data-testid="composer-skill-more"
+                                  variant="ghost"
+                                  size="content"
+                                  unstyled
+                                  className="flex w-full items-center justify-center border-0 px-[var(--vds-space-3)] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-3)] hover:bg-[var(--vds-bg-white-hover-transparent)] hover:text-[var(--text)]"
+                                  onClick={() =>
+                                    setSkillVisibleCount(
+                                      (count) => count + PLUS_MENU_PAGE_SIZE
+                                    )
+                                  }
+                                >
+                                  {t('composer.viewMore')} ({rows.length - visibleRows.length})
+                                </Button>
+                              ) : null
+                            ]
+                          })()
+                        )}
+                        </div>
+                        <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--bg-2)] p-[5px]">
+                          <Button
+                            type="button"
+                            data-testid="composer-skill-add"
+                            variant="ghost"
+                            size="content"
+                            unstyled
+                            className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover-transparent)]"
+                            onClick={() => {
+                              clearAtTrigger()
+                              setSkillPanelOpen(false)
+                              setPlusMenuOpen(false)
+                              set({ skillUploadOpen: true })
+                            }}
+                          >
+                            <Plus size={13} />
+                            <span className="flex-1 text-left">
+                              {t('composer.addSkills')}
+                            </span>
+                            <Icon name="chevron-right" size={13} />
+                          </Button>
+                          <Button
+                            type="button"
+                            data-testid="composer-skill-manage"
+                            variant="ghost"
+                            size="content"
+                            unstyled
+                            className="flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[10px] py-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv2)] text-[var(--text-2)] hover:bg-[var(--vds-bg-white-hover-transparent)]"
+                            onClick={() => {
+                              clearAtTrigger()
+                              setSkillPanelOpen(false)
+                              setPlusMenuOpen(false)
+                              act.openCap('skill')
+                            }}
+                          >
+                            <Icon name="settings" size={13} />
+                            {t('composer.manageSkills')}
+                          </Button>
                         </div>
                       </div>
-                    )}
-                  </PopoverContent>
-                )}
-              </Popover>
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuItem
+                    data-testid="composer-add-file"
+                    onSelect={() => {
+                      clearAtTrigger()
+                      act.closeAiContextPicker()
+                      void pickLocalSources(unifiedLocalPicker
+                        ? IMPORT_PICKER_TARGET.RESOURCE
+                        : IMPORT_PICKER_TARGET.FILE)
+                    }}
+                  >
+                    <Paperclip size={15} />
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                      {t('composer.addLocal')}
+                    </span>
+                  </DropdownMenuItem>
+                  {!unifiedLocalPicker && typeof window.scholarseed?.pickImport === 'function' && (
+                    <DropdownMenuItem
+                      data-testid="composer-add-folder"
+                      onSelect={() => {
+                        void pickLocalSources(IMPORT_PICKER_TARGET.DIRECTORY)
+                      }}
+                    >
+                      <Folder size={15} />
+                      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                        {t('composer.addLocalFolder')}
+                      </span>
+                    </DropdownMenuItem>
+                  )}
+                  {/* 资料引用进入 Session 上下文队列；上面的“添加本地文件”仍是
+                        本轮 typed attachment，两种语义不能合并成一套假状态。 */}
+                  {availableContextSources.map((source) => {
+                    const sourceOpen =
+                      state.aiPanel.contextPickerOpen &&
+                      state.aiPanel.contextPickerSource === source.id
+                    return (
+                      <DropdownMenuSub
+                        key={source.id}
+                        open={sourceOpen}
+                        onOpenChange={(open) => {
+                          if (open) openSourceSubmenu(source)
+                          else if (sourceOpen) {
+                            if (openingReferenceSourceRef.current === source.id) openingReferenceSourceRef.current = null
+                            act.closeAiContextPicker()
+                          }
+                        }}
+                      >
+                        <DropdownMenuSubTrigger
+                          data-testid={`composer-add-${source.id}-context`}
+                          openOnHover
+                        >
+                              {plusMenuSourceIcon(source.icon)}
+                              <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-left">
+                                {t('composer.referenceSource', {
+                                  source: source.label
+                                })}
+                              </span>
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent data-testid="composer-plus-submenu">
+                              <div
+                                className={contextPaneClass}
+                                data-testid="ai-context-picker"
+                              >
+                                <ReferencePicker
+                                  candidates={state.aiPanel.contextCandidates}
+                                  emptyLabel={renderFeedback(i18n, source.emptyLabel)}
+                                  loading={state.aiPanel.contextCandidatesLoading}
+                                  onQueryChange={setReferenceQuery}
+                                  onConfirm={async (candidates) => {
+                                    const result = await act.addContexts(candidates)
+                                      if (result.accepted_ref_ids.length === 0) return
+                                      setPlusMenuOpen(false)
+                                      act.closeAiContextPicker()
+                                  }}
+                                  projectId={assistantProject(state).projectId}
+                                  query={referenceQuery}
+                                  sourceId={source.id}
+                                  sourceLabel={source.label}
+                                />
+                              </div>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                    )
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Popover
                 open={modeOpen}
                 onOpenChange={(open) => {
-                  if (open && waitingApproval) return
                   if (open) refreshMode()
                   else setFullAccessConfirmOpen(false)
                   setModeOpen(open)
                 }}
               >
                 <PopoverTrigger asChild>
-                  <IconButton
+                  <Button
                     type="button"
-                    variant="ghostIcon"
-                    label={modeControlLabel}
+                    variant="ghost"
+                    size="content"
+                    aria-label={modeControlLabel}
                     title={modeControlLabel}
                     data-testid="mode-chip"
-                    disabled={modeChanging || waitingApproval}
+                    disabled={modeChanging}
                     aria-busy={modeChanging}
                     aria-haspopup="menu"
+                    className={`min-h-8 min-w-8 overflow-hidden gap-[var(--vds-space-2)] px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] ${activeModeMeta.tone === 'danger' ? '!text-[var(--vds-warning-text-primary)]' : ''}`}
                     icon={
                       <IconFont
                         type={modeControlIcon}
                         className="text-[length:var(--vds-font-body-lv2)] leading-none"
                       />
                     }
-                  />
+                  >
+                    <span className="hidden min-w-0 truncate @sm/toolbar:inline">
+                      {modeLabel}
+                    </span>
+                    {currentModeInfo?.switch_warning && (
+                      <span
+                        data-testid="mode-warning"
+                        className="whitespace-nowrap text-[length:var(--vds-font-body-lv1)] text-[var(--vds-text-secondary)]"
+                      >
+                        {t('composer.modePendingConfirmation')}
+                      </span>
+                    )}
+                  </Button>
                 </PopoverTrigger>
                 {/* 权限模式菜单: 内容照设计稿, 图标 + 档位名 + 描述; 位置由 Popover 自动上翻。 */}
                 <PopoverContent
@@ -3466,6 +3327,25 @@ export function Composer({
                   <div className="mb-[var(--vds-space-2)] pt-[10px] px-2 text-[length:var(--vds-font-body-lv2)] font-normal leading-[var(--vds-lh-body-lv2)] text-[var(--vds-text-6)]">
                     {t('composer.modeMenuTitle')}
                   </div>
+                  {currentModeInfo?.switch_warning && (
+                    <p className="px-[var(--vds-space-2)] text-[length:var(--vds-font-body-lv1)] text-[var(--vds-warning-text-primary)]">
+                      {t('composer.modeUnconfirmed')}
+                    </p>
+                  )}
+                  {(showsNextTurn || currentModeInfo?.switch_warning) && running && (
+                    <Button
+                      data-testid="mode-interrupt-continue"
+                      variant="outline"
+                      size="sm"
+                      disabled={modeChanging}
+                      onClick={() => {
+                        applyMode(curMode as GlobalPermissionMode, 'interrupt_continue')
+                        setModeOpen(false)
+                      }}
+                    >
+                      {t('composer.modeInterruptContinue')}
+                    </Button>
+                  )}
                   {permissionModeList.map((m) => {
                     const meta = modeMeta(m)
                     const active = m === curMode
@@ -3479,8 +3359,8 @@ export function Composer({
                         className={[
                           'flex w-full items-center gap-[var(--vds-space-2)] rounded-[var(--vds-radius-3)] border-0 px-[var(--vds-space-2)] py-1.5 text-left',
                           active
-                            ? 'bg-[var(--vds-bg-white-active)]'
-                            : 'bg-transparent hover:bg-[var(--vds-bg-white-hover)]'
+                            ? 'bg-[var(--vds-bg-white-active-transparent)]'
+                            : 'bg-transparent hover:bg-[var(--vds-bg-white-hover-transparent)]'
                         ].join(' ')}
                         onClick={() => requestMode(m)}
                       >
@@ -3501,9 +3381,9 @@ export function Composer({
                           >
                             {meta.label}
                             {active &&
-                              (modeInfo?.deferred ? (
+                              (currentModeInfo?.deferred ? (
                                 <span className="whitespace-nowrap text-[11.5px] text-[var(--text-3)]">
-                                  {MODE_PENDING_LABEL}
+                                  {showsNextTurn ? MODE_PENDING_LABEL : t('composer.modePendingConfirmation')}
                                 </span>
                               ) : (
                                 <span className="text-[12.5px] text-[var(--accent-ink)]">
@@ -3511,7 +3391,7 @@ export function Composer({
                                 </span>
                               ))}
                           </span>
-                          <span className="block min-w-0 whitespace-normal break-words text-left text-[length:var(--vds-font-body-lv1)] leading-[var(--vds-lh-body-lv1)] text-[var(--vds-text-6)]">
+                          <span className={`block min-w-0 whitespace-normal break-words text-left text-[length:var(--vds-font-body-lv1)] font-normal leading-[var(--vds-lh-body-lv1)] ${meta.tone === 'danger' ? 'text-[var(--vds-warning-text-primary)]' : 'text-[var(--vds-text-6)]'}`}>
                             {meta.hint}
                           </span>
                         </span>
@@ -3551,6 +3431,44 @@ export function Composer({
                   )}
                 </PopoverContent>
               </Popover>
+              <AlertDialog
+                open={Boolean(modeConfirmation?.sessionId === sidNow && modeConfirmation)}
+                onOpenChange={(open) => {
+                  if (!open) setModeConfirmation(null)
+                }}
+              >
+                <AlertDialogPortal>
+                  <AlertDialogContent data-testid="mode-application-dialog">
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        {t('composer.modeSwitchTitle', {
+                          mode: modeMeta(modeConfirmation?.mode ?? curMode).label
+                        })}
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>{t('composer.modeSwitchBody')}</AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel data-testid="mode-application-cancel">
+                        {t('composer.cancel')}
+                      </AlertDialogCancel>
+                      <AlertDialogAction
+                        data-testid="mode-application-next-turn"
+                        variant="secondary"
+                        onClick={() => confirmMode('next_turn')}
+                      >
+                        {t('composer.modeNextTurnAction')}
+                      </AlertDialogAction>
+                      <AlertDialogAction
+                        data-testid="mode-application-now"
+                        variant={modeConfirmation?.mode === 'bypassPermissions' ? 'warning' : 'primary'}
+                        onClick={() => confirmMode('interrupt_continue')}
+                      >
+                        {t('composer.modeInterruptContinue')}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialogPortal>
+              </AlertDialog>
               <Input
                 ref={attachmentInputRef}
                 data-testid="composer-file-input"
@@ -3627,7 +3545,7 @@ export function Composer({
               <span className="flex-1" />
               {surface === 'assistant' && <ModelMenu compact />}
               {surface !== 'assistant' && <ModelMenu />}
-              {(!running || canSend) && (
+              {(!canStop || canSend) && (
                 <Button
                   data-testid="composer-send"
                   data-state={
@@ -3676,7 +3594,7 @@ export function Composer({
                   )}
                 </Button>
               )}
-              {running && (
+              {canStop && (
                 <Button
                   data-testid="composer-stop"
                   onClick={stop}
@@ -3713,6 +3631,7 @@ export function Composer({
         />
       )}
     </div>
+    </>
   )
 }
 

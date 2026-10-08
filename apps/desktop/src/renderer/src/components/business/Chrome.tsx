@@ -73,11 +73,6 @@ export function Chrome(): React.JSX.Element {
     }
   }, [state.accountMenuOpen, state.modelMenuOpen, state.notifPanelOpen, state.newChooser])
 
-  // 首次检测到新版本时自动展开浮窗（PRD 第 1 条）；用户收起后不再自动弹，只留常驻入口。
-  React.useEffect(() => {
-    if (announcement.pending) setUpMenuOpen(true)
-  }, [announcement.pending])
-
   const phase = update?.phase ?? 'idle'
   const percent = update?.percent ?? 0
   const upVisible = isUpdateEntryVisible(update)

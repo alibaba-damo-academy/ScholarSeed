@@ -20,6 +20,11 @@ test('recorder review states what will be uploaded before submit', () => {
   assert.match(review, /feedbackRecorder\.review\.diagnosticsNoticeNoSession'/)
 })
 
+test('empty problem supplement does not block submission', () => {
+  assert.match(review, /data-testid="feedback-recorder-submit" disabled=\{submitting\}/)
+  assert.doesNotMatch(review, /disabled=\{!summary\.final\.trim\(\)\}/)
+})
+
 test('recorder review fills the viewport while keeping a safe title bar', () => {
   assert.match(review, /data-testid="feedback-recorder-review"/)
   assert.match(review, /!\[inset:0\]/)

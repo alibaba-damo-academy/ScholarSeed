@@ -1,5 +1,12 @@
 import { PREFERENCES_SAVE_CHANNEL, PREFERENCES_RECONCILE_CHANNEL } from '../preferences'
-import { LOGIN_WINDOW_CHANNEL, WORKSPACE_WINDOW_SIZE, WORKSPACE_WINDOW_MINIMUM, WINDOW_CLOSE_REQUEST_CHANNEL, WINDOW_CLOSE_REPLY_CHANNEL } from '../window'
+import {
+  LOGIN_WINDOW_CHANNEL,
+  WORKSPACE_WINDOW_SIZE,
+  WORKSPACE_WINDOW_MINIMUM,
+  WINDOW_CLOSE_REQUEST_CHANNEL,
+  WINDOW_CLOSE_REPLY_CHANNEL,
+  WINDOW_FULLSCREEN_CHANNEL,
+} from '../window'
 import { createLoginWindowSizing } from './window'
 // index.ts — Electron main entry.
 //
@@ -20,34 +27,49 @@ import {
   Notification,
   nativeImage,
   shell,
-  type OpenDialogOptions
+  type OpenDialogOptions,
 } from 'electron'
-import { SKILLS_CHANNEL, skillRequest, type DeviceSkillRequest, type DeviceSkillResponse } from '../skills'
-import { SUBSCRIPTION_CHANNEL, subscriptionLoginPath, subscriptionAuthorizationUrl, type SubscriptionRequest, type SubscriptionReply } from '../subscriptions'
+import {
+  SKILLS_CHANNEL,
+  skillRequest,
+  type DeviceSkillRequest,
+  type DeviceSkillResponse,
+} from '../skills'
+import {
+  SUBSCRIPTION_CHANNEL,
+  subscriptionLoginPath,
+  subscriptionAuthorizationUrl,
+  type SubscriptionRequest,
+  type SubscriptionReply,
+} from '../subscriptions'
 import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { homedir, hostname, platform as osPlatform } from 'os'
 import { join, resolve } from 'path'
+import type { BackendHandle } from './backend'
 import {
   startBackend,
   stopBackend,
   desktopHome,
   runtimeStoreRoot,
   LOGS_DIRNAME,
-  BackendHandle,
   resolveProductConfig,
   backendHostProcessKey,
-  HOST_PROCESS_HEADER
+  HOST_PROCESS_HEADER,
 } from './backend'
 import {
   FEEDBACK_CAPTURE_CHANNEL,
   FEEDBACK_CAPTURE_ERROR,
   FEEDBACK_CLIPBOARD_IMAGE_CHANNEL,
   FEEDBACK_CLIPBOARD_IMAGE_ERROR,
-  FEEDBACK_SCREENSHOT_MIME_TYPE
+  FEEDBACK_SCREENSHOT_MIME_TYPE,
 } from '../feedback'
-import { captureFeedbackScreenshot, isFeedbackCaptureSender, writeFeedbackClipboardImage } from './feedback'
+import {
+  captureFeedbackScreenshot,
+  isFeedbackCaptureSender,
+  writeFeedbackClipboardImage,
+} from './feedback'
 import {
   REFRESH_AHEAD_SECONDS,
   REFRESH_CHECK_INTERVAL_MS,
@@ -55,40 +77,54 @@ import {
   loadRefreshToken,
   refreshTokens,
   revokeRefreshFamily,
-  saveRefreshToken
+  saveRefreshToken,
 } from './auth-refresh'
 import { runShoot, runLiveTurn, runModeCheck } from './shoot'
 import { appsForFile, openPathWith } from './appsForFile'
 import { runDrive } from './drive'
 import { runWorkbenchCheck } from './workbench'
 import { runPackageCheck } from './packagecheck'
+import { installContentSecurityPolicy, mainWindowContentSecurityPolicy } from './csp'
 import { finishHeadlessCheck } from './headless'
-import { loadRendererPreferences, commitRendererPreferences, reconcileRendererPreferences } from './preferences'
+import {
+  loadRendererPreferences,
+  commitRendererPreferences,
+  reconcileRendererPreferences,
+} from './preferences'
 import { applyMainLanguage, mainLocalization, startupFailureTitle } from './localization'
 import { backendFailureMessage, updateInstallFailure, type BackendFailure } from './failure'
 import { isFirstRun } from './startupmarker'
 import {
-  DesktopHandoff,
-  type AdoptOutcome,
-  type DesktopAuthSnapshot
-} from './handoff'
+  applyDataHomeEnv,
+  commitDataHome,
+  isDataHomeConfigured,
+  isFirstLaunchEligible,
+} from './storage'
+import { DesktopHandoff, type AdoptOutcome, type DesktopAuthSnapshot } from './handoff'
 import { createHandoffCoordinator } from './handoff-local'
 import { findCallbackUrl, parseCallbackUrl } from './handoff-url'
 import { showStartupScreen, type StartupScreen } from './startup'
 import * as updater from './updater'
 import { STARTUP_BUILD_NUMBER } from './version'
-import type { StartUpdateResult, UpdateCheckResult, UpdatePhase, UpdateProgress, UpdateSnapshot } from '../updates'
+import type {
+  StartUpdateResult,
+  UpdateCheckResult,
+  UpdatePhase,
+  UpdateProgress,
+  UpdateSnapshot,
+} from '../updates'
 import { LOCAL_LANE_UPDATE_REASON, updateCandidateKey } from '../updates'
 import { AuthorizationScope, PathAuthorizer, isAuthorizationScope } from './authorization'
 import { saveFileCopy } from './save'
-import {
-  blocksRendererReload,
-  prepareRendererLoad
-} from './reload'
+import { blocksRendererReload, prepareRendererLoad } from './reload'
 import { installOfficeFontPermission } from './fonts'
 import { acquireOfficeImage } from './images'
 import { OFFICE_IMAGE_CHANNEL, type OfficeImageSource, type OfficeImageResult } from '../images'
-import { requiresSingleInstanceLock, resolveDeveloperToolsEnabled } from './environment'
+import {
+  protocolClientArguments,
+  requiresSingleInstanceLock,
+  resolveDeveloperToolsEnabled,
+} from './environment'
 import { readOfficeClipboard, writeClipboardContent } from './clipboard'
 import { canCopySelection, SELECTION_COPY_ROLE } from './contextmenu'
 import { openSystemPermission, readSystemPermissions } from './permissions'
@@ -103,13 +139,13 @@ import {
   IMPORT_PICKER_TARGET,
   isImportPickerTarget,
   supportsImportPickerTarget,
-  type ImportPickerTarget
+  type ImportPickerTarget,
 } from '../picker'
 import { TRASH_NOT_COMPLETED_ERROR, waitForTrashCompletion } from './trash'
 import {
   CLIPBOARD_PASTE_CHANNEL,
   CLIPBOARD_WRITE_CONTENT_CHANNEL,
-  type ClipboardContentPayload
+  type ClipboardContentPayload,
 } from '../clipboard'
 
 let backend: BackendHandle | null = null
@@ -122,16 +158,16 @@ const WINDOW_LIFECYCLE_LOG_FILENAME = 'window.log'
 const windowsCloseController = createWindowsCloseController({
   localizer: mainLocalization,
   revealWindow: (reason) => revealMainWindow(reason),
-  markQuitting: () => { appQuitting = true },
-  log: logWindowLifecycle
+  markQuitting: () => {
+    appQuitting = true
+  },
+  log: logWindowLifecycle,
 })
 const SCHOLARSEED_DEFAULT_WORKSPACE_ENV = 'SCHOLARSEED_DEFAULT_WORKSPACE'
 const SCHOLARSEED_DEVTOOLS_ENV = 'SCHOLARSEED_DEVTOOLS'
 const MACOS_PLATFORM = 'darwin'
 const WINDOWS_PLATFORM = 'win32'
 const MAIN_WINDOW_BACKGROUND = '#F8F8F5'
-const WINDOWS_TITLE_BAR_HEIGHT = 40
-const WINDOWS_TITLE_BAR_SYMBOL_COLOR = '#4C4C4C'
 const MOCK_KEYCHAIN_SWITCH = 'use-mock-keychain'
 const SESSION_DATA_PREFIX = 'scholarseed-desktop-session'
 const DEFAULT_API_BASE = DEFAULT_SERVE_URL
@@ -144,6 +180,12 @@ const BACKEND_PORT_REUSE_ATTEMPTS = 2
 // 仅用于 macOS 更新重启路径（安装脚本等 app 退出上限 30s，安全）；Windows 走 ready 握手，
 // commit 后立即退出、安装器等退出上限 60s，不用这个延迟（提案 108 §5.2）。
 const UPDATE_QUIT_DELAY_MS = 2500
+// 安装进行中拦截退出的上限（bug 87253073）：准备链每一步都有超时，但最坏情况累加仍可能到
+// 十几分钟；期间 before-quit 一律 preventDefault 会把用户锁在应用里（遮罩还承诺「即将关闭」）。
+// 超过这个时长仍没结束，放行退出：残留挂载由下一次启动的 stale-mount 清扫回收。
+const UPDATE_INSTALL_QUIT_BLOCK_CAP_MS = 300_000
+// 取消 IPC 在没有进行中安装时的机器可读错误：不进 UI 文案，故不走 locale（i18n 门禁同口径）。
+const NO_INSTALL_IN_PROGRESS = 'no installation in progress'
 // 一次更新正在推进时，检查结果必须丢弃：覆盖上去等于把用户点「重启完成更新」时的状态
 // 换回「发现新版本」，正在跑的下载/安装也就无从收尾。
 //
@@ -155,27 +197,30 @@ const UPDATE_IN_FLIGHT_PHASES = new Set<UpdatePhase>([
   'verifying',
   'installing',
   'restarting',
-  'manual'
+  'manual',
 ])
 const BROKEN_STREAM_ERROR_CODES = new Set(['EPIPE', 'EIO'])
 // macOS supports a unified file/directory panel. Windows and Linux resolve the
 // mixed property set as directory-only, so the renderer offers separate targets there.
-const IMPORT_PICKER_DIALOGS: Record<ImportPickerTarget, {
-  titleKey: 'dialogs.importResource' | 'dialogs.importFile' | 'dialogs.importDirectory'
-  options: OpenDialogOptions
-}> = {
+const IMPORT_PICKER_DIALOGS: Record<
+  ImportPickerTarget,
+  {
+    titleKey: 'dialogs.importResource' | 'dialogs.importFile' | 'dialogs.importDirectory'
+    options: OpenDialogOptions
+  }
+> = {
   [IMPORT_PICKER_TARGET.RESOURCE]: {
     titleKey: 'dialogs.importResource',
-    options: { properties: ['openFile', 'openDirectory', 'multiSelections'] }
+    options: { properties: ['openFile', 'openDirectory', 'multiSelections'] },
   },
   [IMPORT_PICKER_TARGET.FILE]: {
     titleKey: 'dialogs.importFile',
-    options: { properties: ['openFile', 'multiSelections'] }
+    options: { properties: ['openFile', 'multiSelections'] },
   },
   [IMPORT_PICKER_TARGET.DIRECTORY]: {
     titleKey: 'dialogs.importDirectory',
-    options: { properties: ['openDirectory', 'multiSelections'] }
-  }
+    options: { properties: ['openDirectory', 'multiSelections'] },
+  },
 }
 const isShoot = process.argv.includes('--shoot')
 const isModeCheck = process.argv.includes('--mode-check')
@@ -188,8 +233,12 @@ const isWorkbenchCheck = process.argv.includes('--workbench-check')
 const packageCheckIndex = process.argv.indexOf('--package-check')
 const packageCheckResult = packageCheckIndex >= 0 ? process.argv[packageCheckIndex + 1] : null
 const headless =
-  isShoot || isModeCheck || Boolean(sayMessage) || Boolean(driveDir) || isWorkbenchCheck
-  || Boolean(packageCheckResult)
+  isShoot ||
+  isModeCheck ||
+  Boolean(sayMessage) ||
+  Boolean(driveDir) ||
+  isWorkbenchCheck ||
+  Boolean(packageCheckResult)
 let apiBase = DEFAULT_API_BASE
 let backendManaged = false
 let appQuitting = false
@@ -201,6 +250,10 @@ let ipcHandlersRegistered = false
 let requestOfficeFontAccess: (() => Promise<boolean>) | null = null
 let updateInstallationInProgress = false
 let updateRestartRequested = false
+// 进行中安装的取消信号与拦截起点（bug 87253073）：遮罩的「取消安装」靠它 abort 准备链，
+// before-quit 的拦截靠它算已拦截时长、到上限放行。
+let updateInstallAbort: AbortController | null = null
+let updateInstallBlockingSince: number | null = null
 let updateSnapshot: UpdateSnapshot | null = null
 // 弹窗收起确认。主进程是唯一权威：渲染层 origin 含后端随机端口，写在那边的确认跨不了重启。
 let updateAnnouncedKey: string | null = null
@@ -250,16 +303,35 @@ function pushLog(line: string): void {
   logBuffer.push(line)
   while (logBuffer.length > 800) logBuffer.shift()
   writeStdout(line)
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('scholarseed:backend-log', line)
-  }
+  sendToMainWindow('scholarseed:backend-log', line)
+}
+
+function aliveMainWindow(): BrowserWindow | null {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return null
+  return mainWindow
+}
+
+function sendToMainWindow(channel: string, ...args: unknown[]): boolean {
+  const win = aliveMainWindow()
+  if (!win) return false
+  win.webContents.send(channel, ...args)
+  return true
+}
+
+function isMainWindowSender(
+  sender: Electron.WebContents,
+  senderFrame?: Electron.WebFrameMain | null
+): boolean {
+  const win = aliveMainWindow()
+  if (!win || sender !== win.webContents) return false
+  return !senderFrame || senderFrame === win.webContents.mainFrame
 }
 
 function logWindowLifecycle(line: string): void {
-  if (process.platform === WINDOWS_PLATFORM) {
-    windowLifecycleLog ??= new RotatingFileLog(join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME))
-    windowLifecycleLog.write(`${new Date().toISOString()} pid=${process.pid} ${line}`)
-  }
+  windowLifecycleLog ??= new RotatingFileLog(
+    join(desktopHome(), LOGS_DIRNAME, WINDOW_LIFECYCLE_LOG_FILENAME)
+  )
+  windowLifecycleLog.write(`${new Date().toISOString()} pid=${process.pid} ${line}`)
   pushLog(line)
 }
 
@@ -293,39 +365,47 @@ function withAnnouncedKey(snapshot: UpdateSnapshot): UpdateSnapshot {
 function publishUpdateSnapshot(next: UpdateSnapshot): UpdateSnapshot {
   const stamped = withAnnouncedKey(next)
   updateSnapshot = stamped
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('scholarseed:update-state', stamped)
-  }
+  sendToMainWindow('scholarseed:update-state', stamped)
   return stamped
+}
+
+// 安装进行中标记的唯一写入口：同时维护 before-quit 拦截的起点时刻。拦截不设上限就会把
+// 用户锁死在应用里（bug 87253073），起点时刻是上限判定的唯一依据，不能和标记分开写。
+function setUpdateInstallationInProgress(active: boolean): void {
+  updateInstallationInProgress = active
+  updateInstallBlockingSince = active ? (updateInstallBlockingSince ?? Date.now()) : null
 }
 
 // 下载与安装两段共用同一个进度出口：把进度并进权威快照后广播。渲染层只读快照，
 // 不再另开一条并行的进度通道 —— 两个通道必然各说一套。
 function publishUpdateProgress(progress: UpdateProgress): void {
-  if (progress.phase === 'installing') updateInstallationInProgress = true
+  if (progress.phase === 'installing') setUpdateInstallationInProgress(true)
   publishUpdateSnapshot({
     ...currentUpdateSnapshot(),
     phase: progress.phase,
     percent: progress.percent,
     receivedBytes: progress.receivedBytes,
     installStage: progress.install_stage,
+    installation: progress.installation,
     error: undefined,
     errorFallback: undefined,
     errorOrigin: undefined,
-    resumable: undefined
+    resumable: undefined,
   })
 }
 
 function currentUpdateSnapshot(): UpdateSnapshot {
   if (!updateSnapshot) {
     updateAnnouncedKey = updater.readAnnouncedKey()
-    updateSnapshot = withAnnouncedKey(updater.updateLaneUnsupported(pushLog)
-      ? {
-          phase: 'unsupported',
-          currentVersion: app.getVersion(),
-          reason: LOCAL_LANE_UPDATE_REASON
-        }
-      : updater.initialUpdateSnapshot(pushLog))
+    updateSnapshot = withAnnouncedKey(
+      updater.updateLaneUnsupported(pushLog)
+        ? {
+            phase: 'unsupported',
+            currentVersion: app.getVersion(),
+            reason: LOCAL_LANE_UPDATE_REASON,
+          }
+        : updater.initialUpdateSnapshot(pushLog)
+    )
   }
   return updateSnapshot
 }
@@ -352,18 +432,20 @@ function publishUpdateCheckResult(result: UpdateCheckResult): UpdateSnapshot {
     if (snapshot.error || snapshot.errorFallback) return snapshot
     if (!updater.supersedeStagedUpdate(latest, pushLog)) return snapshot
   }
-  return publishUpdateSnapshot(latest
-    ? {
-        phase: 'available',
-        currentVersion: app.getVersion(),
-        checkedAt: Date.now(),
-        candidate: latest
-      }
-    : {
-        phase: 'up-to-date',
-        currentVersion: app.getVersion(),
-        checkedAt: Date.now()
-      })
+  return publishUpdateSnapshot(
+    latest
+      ? {
+          phase: 'available',
+          currentVersion: app.getVersion(),
+          checkedAt: Date.now(),
+          candidate: latest,
+        }
+      : {
+          phase: 'up-to-date',
+          currentVersion: app.getVersion(),
+          checkedAt: Date.now(),
+        }
+  )
 }
 
 function reportStartupFailure(title: string, message: string): void {
@@ -396,11 +478,16 @@ function stopManagedBackend(): void {
   clearBackendRestart()
   const current = backend
   backend = null
+  if (current) {
+    logWindowLifecycle(
+      `[shell] backend stop requested pid=${current.proc?.pid ?? null} port=${current.port} quitting=${appQuitting} installing=${updateInstallationInProgress} restarting=${updateRestartRequested}\n`
+    )
+  }
   stopBackend(current)
 }
 
 function restartDelayMs(attempt: number): number {
-  return Math.min(BACKEND_RESTART_BASE_DELAY_MS * (2 ** attempt), BACKEND_RESTART_MAX_DELAY_MS)
+  return Math.min(BACKEND_RESTART_BASE_DELAY_MS * 2 ** attempt, BACKEND_RESTART_MAX_DELAY_MS)
 }
 
 function superviseBackend(handle: BackendHandle): void {
@@ -408,7 +495,9 @@ function superviseBackend(handle: BackendHandle): void {
     if (handle.stopping || !backendManaged || appQuitting || backend !== handle) return
     backend = null
     lastBackendPort = handle.port
-    pushLog(`[shell] backend stopped unexpectedly (code=${exit.code} signal=${exit.signal}); scheduling recovery\n`)
+    logWindowLifecycle(
+      `[shell] backend stopped unexpectedly pid=${handle.proc?.pid ?? null} port=${handle.port} code=${exit.code} signal=${exit.signal}; scheduling recovery\n`
+    )
     scheduleBackendRestart(handle.port)
   })
 }
@@ -418,7 +507,8 @@ async function startManagedBackend(preferredPort?: number): Promise<boolean> {
   lastBackendFailure = null
   const next = startBackend(pushLog, {
     ...(preferredPort == null ? {} : { port: preferredPort }),
-    testHarness: headless
+    testHarness: headless,
+    lifecycleLog: logWindowLifecycle,
   })
   backend = next
   const start = (async (): Promise<boolean> => {
@@ -430,12 +520,16 @@ async function startManagedBackend(preferredPort?: number): Promise<boolean> {
     }
     if (!ready) {
       lastBackendFailure = next.error
+      logWindowLifecycle(
+        `[shell] backend startup failed pid=${next.proc?.pid ?? null} port=${next.port} failure=${next.error?.kind ?? null}\n`
+      )
       if (backend === next) backend = null
       stopBackend(next)
       return false
     }
     apiBase = next.baseUrl || apiBase
     lastBackendPort = next.port
+    logWindowLifecycle(`[shell] backend ready pid=${next.proc?.pid ?? null} port=${next.port}\n`)
     superviseBackend(next)
     return true
   })()
@@ -453,22 +547,24 @@ function scheduleBackendRestart(previousPort?: number): void {
   const delay = restartDelayMs(attempt)
   const reusePort = attempt < BACKEND_PORT_REUSE_ATTEMPTS ? previousPort : undefined
   backendRestartAttempts += 1
-  pushLog(`[shell] backend recovery attempt ${backendRestartAttempts} in ${delay}ms${reusePort ? ` (reuse port ${reusePort})` : ''}\n`)
+  logWindowLifecycle(
+    `[shell] backend recovery attempt ${backendRestartAttempts} in ${delay}ms${reusePort ? ` (reuse port ${reusePort})` : ''}\n`
+  )
   backendRestartTimer = setTimeout(() => {
     backendRestartTimer = null
     void (async () => {
       const oldApiBase = apiBase
       const ready = await startManagedBackend(reusePort)
       if (!ready) {
-        pushLog('[shell] backend recovery failed\n')
+        logWindowLifecycle('[shell] backend recovery failed\n')
         scheduleBackendRestart(previousPort)
         return
       }
       backendRestartAttempts = 0
-      pushLog(`[shell] backend recovered at ${apiBase}\n`)
-      if (oldApiBase !== apiBase && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('scholarseed:backend-base', apiBase)
-      }
+      logWindowLifecycle(
+        `[shell] backend recovered pid=${backend?.proc?.pid ?? null} port=${backend?.port ?? null}\n`
+      )
+      if (oldApiBase !== apiBase) sendToMainWindow('scholarseed:backend-base', apiBase)
     })()
   }, delay)
 }
@@ -514,7 +610,9 @@ function isExternalUrl(url: string): boolean {
     const u = new URL(url)
     const isLocalhost = u.hostname === '127.0.0.1' || u.hostname === 'localhost'
     return u.protocol === 'https:' || (u.protocol === 'http:' && !isLocalhost)
-  } catch { return false }
+  } catch {
+    return false
+  }
 }
 
 function revealMainWindow(reason: string): boolean {
@@ -523,12 +621,16 @@ function revealMainWindow(reason: string): boolean {
     logWindowLifecycle(`[shell] reveal unavailable; ${reason}\n`)
     return false
   }
-  logWindowLifecycle(`[shell] reveal window=${win.id} visible=${win.isVisible()} minimized=${win.isMinimized()} enabled=${win.isEnabled()}; ${reason}\n`)
+  logWindowLifecycle(
+    `[shell] reveal window=${win.id} visible=${win.isVisible()} minimized=${win.isMinimized()} enabled=${win.isEnabled()}; ${reason}\n`
+  )
   if (win.isMinimized()) win.restore()
   win.show()
   if (process.platform === MACOS_PLATFORM) app.focus({ steal: true })
   win.focus()
-  logWindowLifecycle(`[shell] main window shown visible=${win.isVisible()} focused=${win.isFocused()}; ${reason}\n`)
+  logWindowLifecycle(
+    `[shell] main window shown visible=${win.isVisible()} focused=${win.isFocused()}; ${reason}\n`
+  )
   return true
 }
 
@@ -553,7 +655,7 @@ async function setAuthCookie(win: BrowserWindow, token: string): Promise<void> {
     // http 下也接受 Secure cookie。打包版同源, 这两个属性对它无影响。
     sameSite: 'no_restriction',
     secure: true,
-    expirationDate: Date.now() / 1000 + AUTH_COOKIE_TTL_SECONDS
+    expirationDate: Date.now() / 1000 + AUTH_COOKIE_TTL_SECONDS,
   })
 }
 
@@ -672,13 +774,15 @@ function resolveDeviceInfo(): { device_id: string; device_label: string } {
 
 // 拦截主窗口跳向外链：在系统浏览器打开，避免渲染层离开本机应用。
 function installExternalNavigationGuard(win: BrowserWindow): void {
-  win.webContents.on('will-navigate', (event, url) => {
+  const guard = (event: Electron.Event, url: string): void => {
     if (isExternalUrl(url)) {
       event.preventDefault()
       pushLog(`[shell] intercepted external navigation, opening in browser: ${url}\n`)
       shell.openExternal(url)
     }
-  })
+  }
+  win.webContents.on('will-navigate', guard)
+  win.webContents.on('will-redirect', guard)
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +835,7 @@ async function reportHandoffOutcome(
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: JSON.stringify({ state, outcome }),
-      signal: ctl.signal
+      signal: ctl.signal,
     })
     clearTimeout(timer)
     if (!resp.ok) pushLog(`[shell] WARN handoff outcome report rejected: http_${resp.status}\n`)
@@ -750,16 +854,14 @@ async function reportHandoffOutcome(
 function reopenLandingForFailure(error?: string): void {
   if (headless) return
   landingResolved = false
-  const win = mainWindow
-  if (!win || win.isDestroyed()) return
+  const win = aliveMainWindow()
+  if (!win) return
   revealMainWindow('desktop handoff failed')
   win.webContents.send(LANDING_REOPEN_CHANNEL, { error: error || '' })
 }
 
 function publishDesktopAuth(snapshot: DesktopAuthSnapshot): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('scholarseed:desktop-auth', snapshot)
-  }
+  sendToMainWindow('scholarseed:desktop-auth', snapshot)
   // 顺序要紧：先把快照（带错误码）送到渲染层，再让它开首页，否则首页开出来时还没有
   // 错误可显示。
   if (snapshot.phase === 'failed' && snapshot.terminal) reopenLandingForFailure(snapshot.error)
@@ -784,9 +886,9 @@ const desktopHandoff = new DesktopHandoff({
     log: pushLog,
     baseUrl: () => apiBase,
     instanceId: HANDOFF_INSTANCE_ID,
-    hostHeaders: () => ({ [HOST_PROCESS_HEADER]: backendHostProcessKey() })
+    hostHeaders: () => ({ [HOST_PROCESS_HEADER]: backendHostProcessKey() }),
   }),
-  reportOutcome: reportHandoffOutcome
+  reportOutcome: reportHandoffOutcome,
 })
 
 /** 首页被关闭（跳过或登录采纳）后，本进程内不再重新认领。 */
@@ -798,15 +900,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   if (ipcHandlersRegistered) return
   ipcHandlersRegistered = true
   ipcMain.handle(WINDOW_CLOSE_REQUEST_CHANNEL, (event) => {
-    if (event.sender !== mainWindow?.webContents || !mainWindow) return null
-    return windowsCloseController.currentRequest(mainWindow)
+    const win = aliveMainWindow()
+    if (!win || !isMainWindowSender(event.sender)) return null
+    return windowsCloseController.currentRequest(win)
   })
   ipcMain.handle(WINDOW_CLOSE_REPLY_CHANNEL, (event, reply: unknown) => {
-    if (event.sender !== mainWindow?.webContents || !mainWindow) return false
-    return windowsCloseController.respond(mainWindow, reply)
+    const win = aliveMainWindow()
+    if (!win || !isMainWindowSender(event.sender)) return false
+    return windowsCloseController.respond(win, reply)
   })
   ipcMain.handle(LOGIN_WINDOW_CHANNEL, (event, visible: unknown) => {
-    if (event.sender !== mainWindow?.webContents || typeof visible !== 'boolean') return
+    if (!isMainWindowSender(event.sender) || typeof visible !== 'boolean') return
     setLoginWindowVisible?.(visible)
   })
 
@@ -816,6 +920,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     e.returnValue = {
       apiBase,
       platform: process.platform,
+      fullscreen: mainWindow?.isFullScreen() ?? false,
       shoot: isShoot,
       backlog: logBuffer.join(''),
       version: app.getVersion(),
@@ -823,90 +928,123 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       channel: desktopConfig.channel,
       developerToolsEnabled,
       feedbackRecorderEnabled: productConfig.features.feedbackRecorder,
-      preferences: loadRendererPreferences()
+      preferences: loadRendererPreferences(),
     }
   })
   ipcMain.handle(FEEDBACK_CAPTURE_CHANNEL, (event) => {
-    if (!isFeedbackCaptureSender(event.sender, event.senderFrame, mainWindow?.webContents)) {
+    const win = aliveMainWindow()
+    if (!win || !isFeedbackCaptureSender(event.sender, event.senderFrame, win.webContents)) {
       return { ok: false, error: FEEDBACK_CAPTURE_ERROR.invalidSender }
     }
     return captureFeedbackScreenshot(event.sender)
   })
-  ipcMain.handle(SUBSCRIPTION_CHANNEL, async (event, request: SubscriptionRequest): Promise<SubscriptionReply> => {
-    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
-      throw new Error('Subscription login requires the main application window')
+  ipcMain.handle(
+    SUBSCRIPTION_CHANNEL,
+    async (event, request: SubscriptionRequest): Promise<SubscriptionReply> => {
+      if (!isMainWindowSender(event.sender, event.senderFrame)) {
+        throw new Error('Subscription login requires the main application window')
+      }
+      const endpoint = new URL(apiBase)
+      const available =
+        backendManaged && endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1'
+      if (request.action === 'available') return { available }
+      if (!available) return { available: false, errorCode: 'local_service_required' }
+      if (request.action !== 'login') throw new Error('Unsupported subscription action')
+      const base = apiBase
+      const loginSession = event.sender.session
+      const path = subscriptionLoginPath(request.connectionId)
+      const response = await loginSession.fetch(`${base}${path}`, {
+        method: 'POST',
+        redirect: 'error',
+        headers: { [HOST_PROCESS_HEADER]: backendHostProcessKey() },
+      })
+      const payload = (await response.json()) as Record<string, unknown>
+      if (!response.ok)
+        return {
+          available,
+          errorCode: 'login_failed',
+          error: payload.detail ? String(payload.detail) : undefined,
+        }
+      const cancel = async (): Promise<void> => {
+        await loginSession.fetch(
+          `${base}${path}/${encodeURIComponent(String(payload.transaction_id))}`,
+          { method: 'DELETE', redirect: 'error' }
+        )
+      }
+      if (event.sender.isDestroyed()) {
+        await cancel()
+        return { available, errorCode: 'window_closed' }
+      }
+      try {
+        await shell.openExternal(subscriptionAuthorizationUrl(payload.authorization_url))
+      } catch (error) {
+        await cancel()
+        return {
+          available,
+          errorCode: 'authorization_open_failed',
+          error: error instanceof Error ? error.message : String(error),
+        }
+      }
+      if (event.sender.isDestroyed()) {
+        await cancel()
+        return { available, errorCode: 'window_closed' }
+      }
+      return {
+        available,
+        login: {
+          transaction_id: String(payload.transaction_id),
+          state: String(payload.state),
+          expires_at: Number(payload.expires_at),
+          error: String(payload.error || ''),
+        },
+      }
     }
-    const endpoint = new URL(apiBase)
-    const available = backendManaged && endpoint.protocol === 'http:' && endpoint.hostname === '127.0.0.1'
-    if (request.action === 'available') return { available }
-    if (!available) return { available: false, errorCode: 'local_service_required' }
-    if (request.action !== 'login') throw new Error('Unsupported subscription action')
-    const base = apiBase
-    const loginSession = event.sender.session
-    const path = subscriptionLoginPath(request.connectionId)
-    const response = await loginSession.fetch(`${base}${path}`, {
-      method: 'POST', redirect: 'error', headers: { [HOST_PROCESS_HEADER]: backendHostProcessKey() }
-    })
-    const payload = await response.json() as Record<string, unknown>
-    if (!response.ok) return { available, errorCode: 'login_failed', error: payload.detail ? String(payload.detail) : undefined }
-    const cancel = async (): Promise<void> => {
-      await loginSession.fetch(`${base}${path}/${encodeURIComponent(String(payload.transaction_id))}`, { method: 'DELETE', redirect: 'error' })
+  )
+  ipcMain.handle(
+    SKILLS_CHANNEL,
+    async (event, request: DeviceSkillRequest): Promise<DeviceSkillResponse> => {
+      if (!isMainWindowSender(event.sender, event.senderFrame)) {
+        throw new Error('Device skills require the main application window')
+      }
+      const endpoint = new URL(apiBase)
+      if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1') {
+        throw new Error('Device skills require the local desktop backend')
+      }
+      const { path, init } = skillRequest(request)
+      const response = await event.sender.session.fetch(`${apiBase}${path}`, {
+        ...init,
+        redirect: 'error',
+        headers: { [HOST_PROCESS_HEADER]: backendHostProcessKey() },
+      })
+      return { status: response.status, body: await response.text() }
     }
-    if (event.sender.isDestroyed()) { await cancel(); return { available, errorCode: 'window_closed' } }
-    try {
-      await shell.openExternal(subscriptionAuthorizationUrl(payload.authorization_url))
-    } catch (error) {
-      await cancel()
-      return { available, errorCode: 'authorization_open_failed', error: error instanceof Error ? error.message : String(error) }
-    }
-    if (event.sender.isDestroyed()) { await cancel(); return { available, errorCode: 'window_closed' } }
-    return { available, login: {
-      transaction_id: String(payload.transaction_id), state: String(payload.state),
-      expires_at: Number(payload.expires_at), error: String(payload.error || '')
-    } }
-  })
-  ipcMain.handle(SKILLS_CHANNEL, async (event, request: DeviceSkillRequest): Promise<DeviceSkillResponse> => {
-    if (event.sender !== mainWindow?.webContents || event.senderFrame !== event.sender.mainFrame) {
-      throw new Error('Device skills require the main application window')
-    }
-    const endpoint = new URL(apiBase)
-    if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1') {
-      throw new Error('Device skills require the local desktop backend')
-    }
-    const { path, init } = skillRequest(request)
-    const response = await event.sender.session.fetch(`${apiBase}${path}`, {
-      ...init,
-      redirect: 'error',
-      headers: { [HOST_PROCESS_HEADER]: backendHostProcessKey() }
-    })
-    return { status: response.status, body: await response.text() }
-  })
+  )
   ipcMain.handle(PREFERENCES_SAVE_CHANNEL, (event, preferences: unknown) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('Invalid preference sender')
+    if (!isMainWindowSender(event.sender)) throw new Error('Invalid preference sender')
     return commitRendererPreferences(preferences)
   })
   ipcMain.handle(PREFERENCES_RECONCILE_CHANNEL, (event) => {
-    if (event.sender !== mainWindow?.webContents) throw new Error('Invalid preference sender')
+    if (!isMainWindowSender(event.sender)) throw new Error('Invalid preference sender')
     return reconcileRendererPreferences()
   })
-  ipcMain.handle('scholarseed:office-font-access', (event) => (
-    event.sender === mainWindow?.webContents
-      ? requestOfficeFontAccess?.() ?? false
-      : false
-  ))
+  ipcMain.handle('scholarseed:office-font-access', (event) =>
+    isMainWindowSender(event.sender) ? (requestOfficeFontAccess?.() ?? false) : false
+  )
   ipcMain.handle('scholarseed:system-permissions', () => readSystemPermissions())
-  ipcMain.handle('scholarseed:system-permission-open', (_event, id: SystemPermissionId) => (
+  ipcMain.handle('scholarseed:system-permission-open', (_event, id: SystemPermissionId) =>
     openSystemPermission(id)
-  ))
+  )
   ipcMain.handle('scholarseed:notification-show', (_event, payload: unknown) => {
     if (!Notification.isSupported()) return { ok: false, error: 'notification_unsupported' }
     const input = sanitizeDesktopNotification(payload)
     if (!input) return { ok: false, error: 'invalid_notification' }
     const notification = new Notification({ title: input.title, body: input.body, silent: true })
     notification.on('click', () => {
-      mainWindow?.show()
-      mainWindow?.focus()
-      mainWindow?.webContents.send('scholarseed:notification-click', input.sessionId)
+      const win = aliveMainWindow()
+      if (!win) return
+      win.show()
+      win.focus()
+      win.webContents.send('scholarseed:notification-click', input.sessionId)
     })
     notification.on('failed', (_event, error) => pushLog(`[notification] failed: ${error}`))
     notification.show()
@@ -976,15 +1114,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (!canonical) return []
     try {
       const candidates = await appsForFile(canonical)
-      const apps = await Promise.all(candidates.map(async (application) => {
-        if (application.icon) return application
-        try {
-          const icon = await app.getFileIcon(application.path, { size: 'small' })
-          return { ...application, icon: icon.toDataURL() }
-        } catch {
-          return application
-        }
-      }))
+      const apps = await Promise.all(
+        candidates.map(async (application) => {
+          if (application.icon) return application
+          try {
+            const icon = await app.getFileIcon(application.path, { size: 'small' })
+            return { ...application, icon: icon.toDataURL() }
+          } catch {
+            return application
+          }
+        })
+      )
       for (const application of apps) {
         try {
           allowedOpenWithApps.add(pathAuthorizerForApplication(application.path))
@@ -1007,16 +1147,18 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     } catch {
       return { ok: false, error: 'application is unavailable' }
     }
-    if (!allowedOpenWithApps.has(canonicalApp)) return { ok: false, error: 'application was not offered for this file' }
+    if (!allowedOpenWithApps.has(canonicalApp))
+      return { ok: false, error: 'application was not offered for this file' }
     return openPathWith(canonical, canonicalApp)
   })
 
   // native folder picker for "open / new workspace" (returns absolute path or null)
   ipcMain.handle('scholarseed:pick-dir', async () => {
-    if (!mainWindow) return null
-    const r = await dialog.showOpenDialog(mainWindow, {
+    const win = aliveMainWindow()
+    if (!win) return null
+    const r = await dialog.showOpenDialog(win, {
       title: mainLocalization().getFixedT(null, 'native')('dialogs.workspace'),
-      properties: ['openDirectory', 'createDirectory']
+      properties: ['openDirectory', 'createDirectory'],
     })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
@@ -1027,10 +1169,11 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // 而桌面端用户很容易在点菜单/切窗口时失焦, 那时写入会直接被拒绝。
   // 主进程的 clipboard 不受聚焦限制, 是桌面端应该走的路径。
   ipcMain.handle(OFFICE_IMAGE_CHANNEL, (event, source: OfficeImageSource) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    const win = aliveMainWindow()
+    if (!win || !isMainWindowSender(event.sender, event.senderFrame)) {
       return { status: 'error', code: 'invalid_sender' } satisfies OfficeImageResult
     }
-    return acquireOfficeImage(mainWindow, source)
+    return acquireOfficeImage(win, source)
   })
   ipcMain.handle('scholarseed:write-clipboard', async (_e, text: string) => {
     try {
@@ -1040,20 +1183,23 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
-  ipcMain.handle(CLIPBOARD_WRITE_CONTENT_CHANNEL, async (event, payload: ClipboardContentPayload) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
-      return { ok: false, error: 'clipboard_forbidden' }
+  ipcMain.handle(
+    CLIPBOARD_WRITE_CONTENT_CHANNEL,
+    async (event, payload: ClipboardContentPayload) => {
+      if (!isMainWindowSender(event.sender, event.senderFrame)) {
+        return { ok: false, error: 'clipboard_forbidden' }
+      }
+      const text = String(payload?.text ?? '')
+      const html = String(payload?.html ?? '')
+      const item = new ClipboardItem({
+        'text/plain': new Blob([text], { type: 'text/plain' }),
+        'text/html': new Blob([html], { type: 'text/html' }),
+      })
+      return writeClipboardContent(clipboard, item)
     }
-    const text = String(payload?.text ?? '')
-    const html = String(payload?.html ?? '')
-    const item = new ClipboardItem({
-      'text/plain': new Blob([text], { type: 'text/plain' }),
-      'text/html': new Blob([html], { type: 'text/html' })
-    })
-    return writeClipboardContent(clipboard, item)
-  })
+  )
   ipcMain.handle(CLIPBOARD_PASTE_CHANNEL, (event) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    if (!isMainWindowSender(event.sender, event.senderFrame)) {
       return false
     }
     event.sender.paste()
@@ -1064,7 +1210,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       const image = nativeImage.createFromBuffer(Buffer.from(bytes))
       if (image.isEmpty()) return { ok: false, error: FEEDBACK_CLIPBOARD_IMAGE_ERROR.empty }
       const item = new ClipboardItem({
-        [FEEDBACK_SCREENSHOT_MIME_TYPE]: new Blob([bytes], { type: FEEDBACK_SCREENSHOT_MIME_TYPE })
+        [FEEDBACK_SCREENSHOT_MIME_TYPE]: new Blob([bytes], { type: FEEDBACK_SCREENSHOT_MIME_TYPE }),
       })
       return await writeFeedbackClipboardImage(clipboard, item)
     } catch {
@@ -1073,7 +1219,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   })
 
   ipcMain.handle('scholarseed:read-office-clipboard', async (event) => {
-    if (!mainWindow || event.sender !== mainWindow.webContents) {
+    if (!isMainWindowSender(event.sender)) {
       return { ok: false, error: 'clipboard_forbidden' }
     }
     const items = await clipboard.read()
@@ -1086,7 +1232,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     return readOfficeClipboard({
       readHTML: () => readType('text/html'),
       readRTF: () => readType('text/rtf'),
-      readText: () => clipboard.readText()
+      readText: () => clipboard.readText(),
     })
   })
 
@@ -1094,12 +1240,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // 项目设置和文献库仍可通过 target 限定为目录或文件。
   // 返回绝对路径数组; 用户取消返回空数组。
   ipcMain.handle('scholarseed:pick-import', async (_e, target: unknown) => {
+    const win = aliveMainWindow()
     if (
-      !mainWindow
-      || !isImportPickerTarget(target)
-      || !supportsImportPickerTarget(process.platform, target)
-    ) return []
-    const r = await dialog.showOpenDialog(mainWindow, { ...IMPORT_PICKER_DIALOGS[target].options, title: mainLocalization().getFixedT(null, 'native')(IMPORT_PICKER_DIALOGS[target].titleKey) })
+      !win ||
+      !isImportPickerTarget(target) ||
+      !supportsImportPickerTarget(process.platform, target)
+    )
+      return []
+    const r = await dialog.showOpenDialog(win, {
+      ...IMPORT_PICKER_DIALOGS[target].options,
+      title: mainLocalization().getFixedT(null, 'native')(IMPORT_PICKER_DIALOGS[target].titleKey),
+    })
     return r.canceled ? [] : r.filePaths
   })
 
@@ -1116,19 +1267,23 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     try {
       // Redemption needs both the account cookie and the host-only capability.
       // Node fetch has no access to the authenticated Chromium session.
-      const response = await win.webContents.session.fetch(`${apiBase}/api/content/trash-token/redeem`, {
-        method: 'POST',
-        credentials: 'include',
-        redirect: 'error',
-        headers: {
-          'Content-Type': 'application/json',
-          [HOST_PROCESS_HEADER]: backendHostProcessKey()
-        },
-        body: JSON.stringify({ token: value })
-      })
-      const payload = (await response.json().catch(() => null)) as
-        | { absolute?: string; detail?: string }
-        | null
+      const response = await win.webContents.session.fetch(
+        `${apiBase}/api/content/trash-token/redeem`,
+        {
+          method: 'POST',
+          credentials: 'include',
+          redirect: 'error',
+          headers: {
+            'Content-Type': 'application/json',
+            [HOST_PROCESS_HEADER]: backendHostProcessKey(),
+          },
+          body: JSON.stringify({ token: value }),
+        }
+      )
+      const payload = (await response.json().catch(() => null)) as {
+        absolute?: string
+        detail?: string
+      } | null
       if (!response.ok || !payload?.absolute) {
         return { ok: false, error: payload?.detail ?? `http_${response.status}` }
       }
@@ -1155,20 +1310,18 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
             redirect: 'error',
             headers: {
               'Content-Type': 'application/json',
-              [HOST_PROCESS_HEADER]: backendHostProcessKey()
+              [HOST_PROCESS_HEADER]: backendHostProcessKey(),
             },
-            body: JSON.stringify({ token: value })
+            body: JSON.stringify({ token: value }),
           }
         )
         if (response.ok) return { ok: true }
-        const payload = (await response.json().catch(() => null)) as
-          | { detail?: string }
-          | null
+        const payload = (await response.json().catch(() => null)) as { detail?: string } | null
         const error = payload?.detail ?? `trash_receipt_http_${response.status}`
         return {
           ok: false,
           retryable: error === TRASH_NOT_COMPLETED_ERROR,
-          error
+          error,
         }
       })
       if (!completed.ok) return { ok: false, path: canonical, error: completed.error }
@@ -1177,29 +1330,31 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       return {
         ok: true,
         path: canonical,
-        error: e instanceof Error ? e.message : String(e)
+        error: e instanceof Error ? e.message : String(e),
       }
     }
   })
 
   ipcMain.handle('scholarseed:pick-executable', async () => {
-    if (!mainWindow) return null
-    const r = await dialog.showOpenDialog(mainWindow, {
+    const win = aliveMainWindow()
+    if (!win) return null
+    const r = await dialog.showOpenDialog(win, {
       title: mainLocalization().getFixedT(null, 'native')('dialogs.codex'),
-      properties: ['openFile']
+      properties: ['openFile'],
     })
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
   })
 
   ipcMain.handle('scholarseed:save-copy', async (_event, payload: unknown) => {
-    const win = mainWindow
-    if (!win || win.isDestroyed()) return { ok: false, error: 'window unavailable' }
+    const win = aliveMainWindow()
+    if (!win) return { ok: false, error: 'window unavailable' }
     return saveFileCopy(
       payload,
       async (suggestedName) => {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) return null
         const selection = await dialog.showSaveDialog(win, {
           title: mainLocalization().getFixedT(null, 'native')('dialogs.saveCopy'),
-          defaultPath: suggestedName
+          defaultPath: suggestedName,
         })
         return selection.canceled ? null : selection.filePath || null
       },
@@ -1229,7 +1384,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
 
   // ── 桌面登录交接（官网浏览器登录 + 深链回跳）──
   ipcMain.handle('scholarseed:desktop-login-start', (_event, language: unknown) =>
-    desktopHandoff.start(language === 'en' ? 'en' : 'zh'))
+    desktopHandoff.start(language === 'en' ? 'en' : 'zh')
+  )
   ipcMain.handle('scholarseed:desktop-login-cancel', () => {
     desktopHandoff.cancel()
     return { ok: true }
@@ -1253,13 +1409,23 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
   // surfaces subscribe to the same state instead of reconstructing it locally.
   ipcMain.handle('scholarseed:update-state-get', () => currentUpdateSnapshot())
   ipcMain.handle('scholarseed:update-diagnose', async () => updater.diagnoseUpdate(pushLog))
-  ipcMain.handle('scholarseed:runtime-store-path', () => runtimeStoreRoot())
+  // proposal 112：数据位置运行期只读概览；mac 首启一次性「高级」经 commit-data-home 写指针。
+  ipcMain.handle('scholarseed:storage-config', () => ({
+    home: desktopHome(),
+    runtimeStore: runtimeStoreRoot(),
+    configured: isDataHomeConfigured(),
+    canChangeDataHome: process.platform !== 'win32',
+    firstLaunchEligible: isFirstLaunchEligible(),
+  }))
+  ipcMain.handle('scholarseed:commit-data-home', (_event, parent: unknown) =>
+    commitDataHome(typeof parent === 'string' ? parent : '', process.platform)
+  )
   ipcMain.handle('scholarseed:update-check', async () => {
     if (updater.updateLaneUnsupported(pushLog)) {
       return publishUpdateSnapshot({
         phase: 'unsupported',
         currentVersion: app.getVersion(),
-        reason: LOCAL_LANE_UPDATE_REASON
+        reason: LOCAL_LANE_UPDATE_REASON,
       })
     }
     publishUpdateSnapshot({
@@ -1269,7 +1435,8 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       errorFallback: undefined,
       errorOrigin: undefined,
       percent: undefined,
-      installStage: undefined
+      installStage: undefined,
+      installation: undefined,
     })
     try {
       const result = await updater.checkForUpdate(pushLog)
@@ -1280,7 +1447,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         currentVersion: app.getVersion(),
         checkedAt: Date.now(),
         error: String(error),
-        errorOrigin: 'check'
+        errorOrigin: 'check',
       })
     }
   })
@@ -1311,7 +1478,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       error: undefined,
       errorFallback: undefined,
       errorOrigin: undefined,
-      resumable: undefined
+      resumable: undefined,
     })
     const staged = await updater.stageUpdate(id, publishUpdateProgress, pushLog)
     if (staged.ok) {
@@ -1324,7 +1491,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         error: undefined,
         errorFallback: undefined,
         errorOrigin: undefined,
-        resumable: undefined
+        resumable: undefined,
       })
       return { ok: true }
     }
@@ -1334,7 +1501,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
       error: staged.error,
       errorFallback: undefined,
       errorOrigin: 'download',
-      resumable: staged.resumable
+      resumable: staged.resumable,
     })
     return { ok: false, error: staged.error }
   })
@@ -1345,13 +1512,17 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
     if (currentUpdateSnapshot().phase !== 'ready') {
       return { ok: false, error: updater.NO_STAGED_UPDATE }
     }
+    const controller = new AbortController()
+    updateInstallAbort = controller
     let result: StartUpdateResult
     try {
-      result = await updater.installStagedUpdate(publishUpdateProgress, pushLog)
+      result = await updater.installStagedUpdate(publishUpdateProgress, pushLog, controller.signal)
     } catch (error) {
-      updateInstallationInProgress = false
+      setUpdateInstallationInProgress(false)
+      updateInstallAbort = null
       throw error
     }
+    updateInstallAbort = null
     if (result.ok && result.mode === 'auto') {
       updateRestartRequested = true
       // 不在这里清暂存态：安装器只是被拉起来，结果还没确认（Windows 侧拿不到退出码，
@@ -1362,7 +1533,7 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         ...currentUpdateSnapshot(),
         phase: 'restarting',
         percent: 100,
-        installStage: 'restarting'
+        installStage: 'restarting',
       })
       // Quit so the detached installer can swap the now-idle bundle and relaunch.
       if (process.platform === WINDOWS_PLATFORM) {
@@ -1378,10 +1549,15 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         }, UPDATE_QUIT_DELAY_MS)
       }
     } else if (result.ok && result.mode === 'manual') {
-      updateInstallationInProgress = false
-      publishUpdateSnapshot({ ...currentUpdateSnapshot(), phase: 'manual' })
+      setUpdateInstallationInProgress(false)
+      publishUpdateSnapshot({
+        ...currentUpdateSnapshot(),
+        phase: 'manual',
+        installation: undefined,
+        installStage: undefined,
+      })
     } else {
-      updateInstallationInProgress = false
+      setUpdateInstallationInProgress(false)
       // 暂存包还在 → 留在「已就绪」并带上错误，用户重试的是安装这一步；暂存包已经没了
       // （校验不过被删掉）→ 退回失败态，下一次重试是重新下载。
       const stillStaged = updater.readReadyState() !== null
@@ -1389,11 +1565,27 @@ function registerIpcHandlers(developerToolsEnabled: boolean): void {
         ...currentUpdateSnapshot(),
         phase: stillStaged ? 'ready' : 'failed',
         percent: stillStaged ? 100 : undefined,
-        ...updateInstallFailure(result),
-        resumable: stillStaged ? undefined : false
+        installation: undefined,
+        installStage: undefined,
+        ...(result.cancelled
+          ? { error: undefined, errorFallback: undefined, errorOrigin: undefined }
+          : updateInstallFailure(result)),
+        resumable: stillStaged ? undefined : false,
       })
     }
     return result
+  })
+
+  // 取消进行中的安装准备（bug 87253073）：只 abort 信号，收尾交给 install handler 的失败分支
+  // （回 ready/failed 可重试态）。这里不直接改快照，避免和进行中的安装各写一套状态。
+  ipcMain.handle('scholarseed:update-cancel', async (): Promise<StartUpdateResult> => {
+    const controller = updateInstallAbort
+    if (!controller || currentUpdateSnapshot().installStage === 'restarting') {
+      return { ok: false, error: NO_INSTALL_IN_PROGRESS }
+    }
+    pushLog('[update] install cancellation requested by user\n')
+    controller.abort()
+    return { ok: true }
   })
 
   // 弹窗收起确认。身份由主进程按当前候选自己算，不接受渲染层传来的字符串 —— 那等于把
@@ -1422,15 +1614,12 @@ async function createWindow(): Promise<void> {
     useContentSize: true,
     minWidth: WORKSPACE_WINDOW_MINIMUM.width,
     minHeight: WORKSPACE_WINDOW_MINIMUM.height,
-    titleBarStyle: process.platform === WINDOWS_PLATFORM ? 'hidden' : 'hiddenInset',
-    titleBarOverlay: process.platform === WINDOWS_PLATFORM
-      ? {
-          color: MAIN_WINDOW_BACKGROUND,
-          symbolColor: WINDOWS_TITLE_BAR_SYMBOL_COLOR,
-          height: WINDOWS_TITLE_BAR_HEIGHT
-        }
-      : undefined,
-    trafficLightPosition: { x: 14, y: 16 },
+    ...(process.platform === WINDOWS_PLATFORM
+      ? {}
+      : {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 16 },
+        }),
     backgroundColor: MAIN_WINDOW_BACKGROUND,
     show: false,
     webPreferences: {
@@ -1438,8 +1627,14 @@ async function createWindow(): Promise<void> {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false // keep the pet's RAF loop alive when hidden (shoot mode)
-    }
+      backgroundThrottling: false, // keep the pet's RAF loop alive when hidden (shoot mode)
+    },
+  })
+  mainWindow.on('enter-full-screen', () => {
+    sendToMainWindow(WINDOW_FULLSCREEN_CHANNEL, true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    sendToMainWindow(WINDOW_FULLSCREEN_CHANNEL, false)
   })
   setLoginWindowVisible = createLoginWindowSizing(mainWindow)
   if (process.platform === WINDOWS_PLATFORM) mainWindow.setMenuBarVisibility(false)
@@ -1461,13 +1656,21 @@ async function createWindow(): Promise<void> {
   })
 
   mainWindow.webContents.on('context-menu', (_event, params) => {
-    if (!mainWindow || !canCopySelection({ selectionText: params.selectionText, canCopy: params.editFlags.canCopy })) return
+    if (
+      !mainWindow ||
+      !canCopySelection({ selectionText: params.selectionText, canCopy: params.editFlags.canCopy })
+    )
+      return
     Menu.buildFromTemplate([{ role: SELECTION_COPY_ROLE }]).popup({ window: mainWindow })
   })
 
   // Prevent the main window from navigating away to external login URLs;
   // instead open them in the system browser.
   installExternalNavigationGuard(mainWindow)
+  installContentSecurityPolicy(
+    mainWindow,
+    mainWindowContentSecurityPolicy(await accountBaseUrlFromServe())
+  )
 
   mainWindow.once('ready-to-show', () => {
     if (!headless) {
@@ -1480,11 +1683,19 @@ async function createWindow(): Promise<void> {
   })
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    pushLog(`[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`)
+    pushLog(
+      `[shell] renderer process gone reason=${details.reason} exit-code=${details.exitCode}\n`
+    )
   })
   mainWindow.webContents.on('console-message', (details) => {
+    if (details.message.startsWith('[office-runtime]')) {
+      logWindowLifecycle(`[renderer] level=${details.level} ${details.message}\n`)
+      return
+    }
     if (details.level !== 'warning' && details.level !== 'error') return
-    pushLog(`[renderer] level=${details.level} ${details.message} (${details.sourceId}:${details.lineNumber})\n`)
+    pushLog(
+      `[renderer] level=${details.level} ${details.message} (${details.sourceId}:${details.lineNumber})\n`
+    )
   })
 
   // The macOS close button hides the product surface; it must not destroy the
@@ -1553,11 +1764,14 @@ const PERIODIC_UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 // 进行中的更新退回原点。
 function runBackgroundUpdateCheck(): void {
   if (updater.updateLaneUnsupported(pushLog)) return
-  void updater.checkForUpdate(pushLog).then((result) => {
-    publishUpdateCheckResult(result)
-  }).catch((error) => {
-    pushLog(`[update] background check unavailable: ${String(error)}\n`)
-  })
+  void updater
+    .checkForUpdate(pushLog)
+    .then((result) => {
+      publishUpdateCheckResult(result)
+    })
+    .catch((error) => {
+      pushLog(`[update] background check unavailable: ${String(error)}\n`)
+    })
 }
 
 // A few seconds after the window is up, silently ask the server if a newer
@@ -1583,11 +1797,22 @@ async function bootstrap(): Promise<void> {
   } else {
     backendManaged = true
     const firstRun = isFirstRun(desktopHome(), app.getVersion())
-    setStartupStatus(mainLocalization().getFixedT(null, 'foundation')(
-      firstRun ? 'startup.startingBackendFirstRun' : 'startup.startingBackend'))
+    setStartupStatus(
+      mainLocalization().getFixedT(
+        null,
+        'foundation'
+      )(firstRun ? 'startup.startingBackendFirstRun' : 'startup.startingBackend')
+    )
     const ready = await startManagedBackend()
     if (!ready) {
-      reportStartupFailure(mainLocalization().getFixedT(null, 'foundation')('startup.backendFailed'), backendFailureMessage(mainLocalization().getFixedT(null, 'foundation'), backend?.error ?? lastBackendFailure, 'notReady'))
+      reportStartupFailure(
+        mainLocalization().getFixedT(null, 'foundation')('startup.backendFailed'),
+        backendFailureMessage(
+          mainLocalization().getFixedT(null, 'foundation'),
+          backend?.error ?? lastBackendFailure,
+          'notReady'
+        )
+      )
       stopManagedBackend()
       app.quit()
       return
@@ -1619,7 +1844,10 @@ async function bootstrap(): Promise<void> {
       void desktopHandoff.handleCallback(deferred)
     }
   } catch (e) {
-    reportStartupFailure(mainLocalization().getFixedT(null, 'foundation')('startup.interfaceFailed'), String(e))
+    reportStartupFailure(
+      mainLocalization().getFixedT(null, 'foundation')('startup.interfaceFailed'),
+      String(e)
+    )
     stopManagedBackend()
     app.quit()
     return
@@ -1628,17 +1856,29 @@ async function bootstrap(): Promise<void> {
   if (!headless) scheduleStartupUpdateCheck()
 
   app.on('activate', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (aliveMainWindow()) {
       revealMainWindow('renderer session preserved')
       return
     }
     void (async () => {
       if (!(await ensureBackendForWindow())) {
-        reportStartupFailure(mainLocalization().getFixedT(null, 'foundation')('startup.backendUnavailable'), backendFailureMessage(mainLocalization().getFixedT(null, 'foundation'), backend?.error ?? lastBackendFailure, 'recovering'))
+        reportStartupFailure(
+          mainLocalization().getFixedT(null, 'foundation')('startup.backendUnavailable'),
+          backendFailureMessage(
+            mainLocalization().getFixedT(null, 'foundation'),
+            backend?.error ?? lastBackendFailure,
+            'recovering'
+          )
+        )
         return
       }
       await createWindow()
-    })().catch((e) => reportStartupFailure(mainLocalization().getFixedT(null, 'foundation')('startup.interfaceFailed'), String(e)))
+    })().catch((e) =>
+      reportStartupFailure(
+        mainLocalization().getFixedT(null, 'foundation')('startup.interfaceFailed'),
+        String(e)
+      )
+    )
   })
 }
 
@@ -1648,12 +1888,18 @@ async function bootstrap(): Promise<void> {
 
 const SCHOLARSEED_PROTOCOL = 'scholarseed'
 
+// proposal 112：home 注入必须是主进程第一条副作用，早于任何 desktopHome() 消费者
+// （logWindowLifecycle/resolveDeviceInfo/isFirstRun/resolveBackendPaths）。Windows 上
+// HKCU\Environment\SCHOLARSEED_HOME 已环境化进 process.env，此调用对它是幂等 no-op；
+// mac/dev 走 userData 指针，必须在此解析并钉进 env，否则后续消费者读到默认 home。
+applyDataHomeEnv()
+
 configureCredentialProvider()
 
 function handleProtocolUrl(url: string): void {
   // Defer a valid account callback until the main window is available.
   if (parseCallbackUrl(url)) {
-    if (!mainWindow || mainWindow.isDestroyed()) {
+    if (!aliveMainWindow()) {
       pendingProtocolUrl = url
       return
     }
@@ -1681,9 +1927,11 @@ if (!gotTheLock) {
     app.on('second-instance', (_event, argv) => {
       const url = findCallbackUrl(argv)
       if (url) handleProtocolUrl(url)
-      else if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.focus()
+      else {
+        const win = aliveMainWindow()
+        if (!win) return
+        if (win.isMinimized()) win.restore()
+        win.focus()
       }
     })
   }
@@ -1694,23 +1942,37 @@ if (!gotTheLock) {
     handleProtocolUrl(url)
   })
 
-  app.whenReady().then(() => {
-    installApplicationMenu(Boolean(process.env['ELECTRON_RENDERER_URL']) && !headless)
-    // 注册 scholarseed:// 协议
-    let protocolRegistered: boolean
-    if (process.defaultApp) {
-      // 开发模式需要传递脚本路径
-      protocolRegistered = app.setAsDefaultProtocolClient(SCHOLARSEED_PROTOCOL, process.execPath, [app.getAppPath()])
-    } else {
-      protocolRegistered = app.setAsDefaultProtocolClient(SCHOLARSEED_PROTOCOL)
-    }
-    pushLog(`[shell] protocol ${SCHOLARSEED_PROTOCOL} registration=${protocolRegistered} default=${app.isDefaultProtocolClient(SCHOLARSEED_PROTOCOL)} executable=${process.execPath}\n`)
-    return bootstrap()
-  }).catch((e) => {
-    reportStartupFailure(startupFailureTitle(), String(e))
-    stopManagedBackend()
-    app.quit()
-  })
+  app
+    .whenReady()
+    .then(() => {
+      installApplicationMenu(Boolean(process.env['ELECTRON_RENDERER_URL']) && !headless)
+      // 注册 scholarseed:// 协议
+      let protocolRegistered: boolean
+      if (process.defaultApp || process.platform === WINDOWS_PLATFORM) {
+        // 开发模式需要传递脚本路径
+        protocolRegistered = app.setAsDefaultProtocolClient(
+          SCHOLARSEED_PROTOCOL,
+          process.execPath,
+          protocolClientArguments(
+            process.platform,
+            Boolean(process.defaultApp),
+            app.getAppPath(),
+            app.getPath('userData')
+          )
+        )
+      } else {
+        protocolRegistered = app.setAsDefaultProtocolClient(SCHOLARSEED_PROTOCOL)
+      }
+      pushLog(
+        `[shell] protocol ${SCHOLARSEED_PROTOCOL} registration=${protocolRegistered} default=${app.isDefaultProtocolClient(SCHOLARSEED_PROTOCOL)} executable=${process.execPath}\n`
+      )
+      return bootstrap()
+    })
+    .catch((e) => {
+      reportStartupFailure(startupFailureTitle(), String(e))
+      stopManagedBackend()
+      app.quit()
+    })
 }
 
 app.on('window-all-closed', () => {
@@ -1722,12 +1984,23 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
-  logWindowLifecycle(`[shell] before quit installing=${updateInstallationInProgress} restarting=${updateRestartRequested}\n`)
-  if (updateInstallationInProgress && !updateRestartRequested) {
+  const blockedMs =
+    updateInstallBlockingSince === null ? 0 : Date.now() - updateInstallBlockingSince
+  logWindowLifecycle(
+    `[shell] before quit installing=${updateInstallationInProgress} restarting=${updateRestartRequested} blockedMs=${blockedMs}\n`
+  )
+  if (
+    updateInstallationInProgress &&
+    !updateRestartRequested &&
+    blockedMs < UPDATE_INSTALL_QUIT_BLOCK_CAP_MS
+  ) {
     event.preventDefault()
     mainWindow?.hide()
     pushLog('[update] close requested during staged installation; continuing in background\n')
     return
+  }
+  if (updateInstallationInProgress && !updateRestartRequested) {
+    pushLog('[update] quit block cap reached; allowing quit despite staged installation\n')
   }
   appQuitting = true
   stopManagedBackend()

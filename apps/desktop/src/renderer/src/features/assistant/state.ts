@@ -14,6 +14,7 @@ import type {
   AnswerAnnotation,
   AssistantContextCandidate,
   AssistantContextRef,
+  AssistantFailure,
   AssistantInvocationResult,
   AssistantTranslationInput,
   AssistantTranslationTarget,
@@ -21,11 +22,31 @@ import type {
   SearchScope
 } from '../../contracts/assistant'
 import type { IconName } from '../../icons'
+import type { ConvItem } from '../../model'
 import type { AnswerAnnotationLocation } from './anchors'
+import { assistantFailureDetail } from './failure.ts'
 
 export type AssistantContextError = { key: 'contextErrors.loading' | 'contextErrors.updated' | 'contextErrors.saveFailed' | 'contextErrors.syncFailed' | 'contextErrors.loadFailed' | 'contextErrors.initializeFailed' | 'contextErrors.newSaveFailed' | 'contextErrors.wrongProject' | 'contextErrors.annotationFailed' | 'contextErrors.removeFailed' | 'contextErrors.saveRetry' | 'contextErrors.projectLoading' | 'contextErrors.sourceUnavailable' | 'contextErrors.sourcePending'; detail?: string } | { raw: string }
 
+export const ASSISTANT_CLAIMED_REFS_IMMUTABLE = 'assistant_claimed_refs_immutable'
+
+export function assistantContextSaveError(failure?: AssistantFailure): AssistantContextError {
+  const detail = failure ? assistantFailureDetail(failure) : undefined
+  return detail
+    ? { key: 'contextErrors.saveFailed', detail }
+    : { key: 'contextErrors.saveRetry' }
+}
+
 export type AssistantContextLoadState = 'idle' | 'loading' | 'ready' | 'saving' | 'error'
+
+export function submittedContextRefIds(
+  refs: readonly AssistantContextRef[],
+  claimedRefIds: readonly string[],
+  queuedRefIds: readonly string[]
+): string[] {
+  const submitted = new Set([...claimedRefIds, ...queuedRefIds])
+  return refs.filter((ref) => submitted.has(ref.ref_id)).map((ref) => ref.ref_id)
+}
 
 /** 原型 `+` 两栏菜单中的业务来源；Skill/本机附件仍由 Composer 自己拥有。 */
 export type AiContextSource = string
@@ -126,6 +147,27 @@ export const INITIAL_AI_PANEL_STATE: AiPanelState = {
   answerAnnotationFocus: null,
   saveTarget: null,
   translation: null
+}
+
+export function sentAnswerAnnotationIds(
+  conversation: readonly ConvItem[],
+  refs: readonly AssistantContextRef[],
+  submittedRefIds: readonly string[]
+): Set<string> {
+  const submitted = new Set(submittedRefIds)
+  const ids = new Set(
+    refs.filter((ref) => ref.kind === 'note' && submitted.has(ref.ref_id))
+      .map((ref) => ref.source_id)
+  )
+  for (const item of conversation) {
+    if (item.kind !== 'user' || !item.turnId || item.cancelled) continue
+    for (const reference of item.refs ?? []) {
+      if (reference.type === 'assistant_context' && reference.kind === 'note' && reference.sourceId) {
+        ids.add(reference.sourceId)
+      }
+    }
+  }
+  return ids
 }
 
 export const ASSISTANT_CONTEXT_FAILURE = {

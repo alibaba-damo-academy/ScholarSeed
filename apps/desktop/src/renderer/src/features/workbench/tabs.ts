@@ -130,6 +130,15 @@ export function openFixedTab(tabs: WorkbenchTab[], tab: WorkbenchTab): Workbench
   return [...tabs, tab]
 }
 
+export function openWorkbenchTab(
+  tabs: WorkbenchTab[],
+  view: string,
+  tab: WorkbenchTab
+): WorkbenchTab[] {
+  const fixed = FIXED_TAB_BY_VIEW[view]
+  return openFixedTab(fixed ? openFixedTab(tabs, fixed) : tabs, tab)
+}
+
 /**
  * Resolve the selected item for one visible navigation tab list.
  *
@@ -218,7 +227,8 @@ export function reviewTab(projectId: string, batchId: string, fileCount: number)
     kind: 'review',
     title: `审阅修改 · ${fileCount}`,
     titleFallback: { kind: 'review', count: fileCount },
-    closable: true
+    closable: true,
+    projectId
   }
 }
 
@@ -251,6 +261,7 @@ export function openLiteratureSearchTabs(
   tabs: WorkbenchTab[],
   tasks: ReadonlyArray<{ id: string; query: string; projectId?: string | null }>
 ): WorkbenchTab[] {
+  if (tasks.length > 0) tabs = openFixedTab(tabs, LITERATURE_TAB)
   const existing = new Set(tabs.map((tab) => tab.id))
   const additions = tasks
     .map((task) => literatureSearchTab(task.id, task.query, task.projectId))

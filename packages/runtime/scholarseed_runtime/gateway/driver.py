@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -22,6 +22,8 @@ from scholarseed_runtime.contract.session import SuspendReceipt, SuspendState, S
 
 RuntimeObservation = RuntimeEvent | RuntimeCallbackRequest
 RuntimeObservationHandler = Callable[[RuntimeObservation], Awaitable[None]]
+RuntimeObservationBatchHandler = Callable[[tuple[RuntimeObservation, ...]], Awaitable[None]]
+OBSERVATION_BATCH_LIMIT = 64
 
 
 class RuntimeDriverError(RuntimeError):
@@ -69,9 +71,12 @@ class RuntimeDriver:
         self,
         session: RuntimeSession,
         on_observation: RuntimeObservationHandler,
+        *,
+        on_observations: RuntimeObservationBatchHandler | None = None,
     ) -> None:
         self._session = session
         self._on_observation = on_observation
+        self._on_observations = on_observations
         self._consumer: asyncio.Task[None] | None = None
         self._terminals: dict[str, asyncio.Future[RuntimeTurnResult]] = {}
         self._final_text: dict[str, str] = {}
@@ -174,16 +179,52 @@ class RuntimeDriver:
         return receipt
 
     async def _consume(self) -> None:
+        observations = aiter(self._session.events())
+        pending: asyncio.Task[RuntimeObservation] | None = None
+
+        async def next_observation() -> RuntimeObservation:
+            return await anext(observations)
+
         try:
-            async for observation in self._session.events():
-                self._validate(observation)
-                await self._on_observation(observation)
-                if isinstance(observation, RuntimeEvent):
-                    self._reduce(observation)
-                    async with self._projection_changed:
-                        self._projected_sequence = observation.sequence
-                        self._projection_changed.notify_all()
-            raise RuntimeDriverError("runtime event stream ended before detach")
+            while True:
+                batch: list[RuntimeObservation] = []
+                ended = False
+                if pending is None:
+                    pending = asyncio.create_task(next_observation())
+                try:
+                    batch.append(await pending)
+                except StopAsyncIteration:
+                    ended = True
+                pending = None
+                if self._on_observations is not None:
+                    while batch and len(batch) < OBSERVATION_BATCH_LIMIT:
+                        pending = asyncio.create_task(next_observation())
+                        # Collect only available observations; never wait to fill a batch.
+                        await asyncio.sleep(0)
+                        if not pending.done():
+                            break
+                        try:
+                            batch.append(pending.result())
+                        except StopAsyncIteration:
+                            ended = True
+                            pending = None
+                            break
+                        pending = None
+                for observation in batch:
+                    self._validate(observation)
+                if batch:
+                    if self._on_observations is None:
+                        await self._on_observation(batch[0])
+                    else:
+                        await self._on_observations(tuple(batch))
+                    for observation in batch:
+                        if isinstance(observation, RuntimeEvent):
+                            self._reduce(observation)
+                            async with self._projection_changed:
+                                self._projected_sequence = observation.sequence
+                                self._projection_changed.notify_all()
+                if ended:
+                    raise RuntimeDriverError("runtime event stream ended before detach")
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -195,6 +236,12 @@ class RuntimeDriver:
                 if not future.done():
                     future.set_exception(error)
             raise
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            if isinstance(observations, AsyncGenerator):
+                await observations.aclose()
 
     def _validate(self, observation: RuntimeObservation) -> None:
         binding = self._session.binding

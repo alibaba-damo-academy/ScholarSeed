@@ -42,6 +42,9 @@ import {
 import { waitForFileVersionScan } from './features/resources/settings.ts'
 import {
   appendWebSearchProjectionEvent,
+  automaticWebSearchInvocationRequest,
+  AUTOMATIC_BROWSER_SEARCH_ARTIFACT_PATH,
+  AUTOMATIC_OFFICIAL_SEARCH_ARTIFACT_PATH,
   BROWSER_SEARCH_ARTIFACT_PATH,
   BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
   createWebSearchTab,
@@ -72,6 +75,18 @@ import {
   materializeResourcePath
 } from './features/resources/lifecycle.ts'
 import type { AgentInvocationEvent } from './contracts/invocation.ts'
+
+test('opening a covered link expands its directory and loads children without remounting', () => {
+  const store = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8')
+  const action = store.slice(
+    store.indexOf('openCoveredLinkAndCancel: async'),
+    store.indexOf('openResourceMoveDialog:', store.indexOf('openCoveredLinkAndCancel: async'))
+  )
+  assert.match(action, /linkSupersedeConfirm: null/)
+  assert.match(action, /openResourceDirectory\(current\.resource, target\.mountPath\)/)
+  assert.match(action, /await actRef\.current\.ensureResourceChildren\(target\.mountPath\)/)
+  assert.doesNotMatch(action, /toggleResourceDir|authorizeResource|supersedeResource|createResourceImport/)
+})
 
 test('switching projects clears resource state without dropping open web searches', () => {
   const webSearches = {}
@@ -449,7 +464,7 @@ test('conversation entry points open the workbench assistant instead of the lega
   assert.doesNotMatch(streamSource, /act\.startDraft\(/)
 })
 
-test('project selection replaces the resource projection at the store boundary', () => {
+test('project selection replaces project-scoped projections at the store boundary', () => {
   const selectProjectStart = storeSource.indexOf('selectProject: (projectId)')
   const selectProjectEnd = storeSource.indexOf('toggleSessionChildren:', selectProjectStart)
   const selectProjectSource = storeSource.slice(selectProjectStart, selectProjectEnd)
@@ -457,12 +472,11 @@ test('project selection replaces the resource projection at the store boundary',
   assert.notEqual(selectProjectStart, -1)
   assert.notEqual(selectProjectEnd, -1)
   assert.match(selectProjectSource, /resource: resourceStateForProjectSwitch\(current\.resource\)/)
+  assert.match(selectProjectSource, /literature: literatureStateForProjectSwitch\(\)/)
 })
 
 test('resource operation results use the shared Toast atom', () => {
   assert.match(appSource, /const \{ toast \} = useToast\(\)/)
-  assert.match(appSource, /RESOURCE_NOTICE_TIMEOUT_MS = 3200/)
-  assert.match(appSource, /duration: notice\.tone === 'ok' \? RESOURCE_NOTICE_TIMEOUT_MS : false/)
   assert.match(appSource, /tone: notice\.tone === 'ok' \? 'success' : 'error'/)
   assert.match(appSource, /set\(\(current\) => \(\{ resource: \{ \.\.\.current\.resource, notice: null \} \}\)\)/)
   assert.doesNotMatch(resourcePanelSource, /<Toaster[\s\S]*?resource-notice/)
@@ -744,8 +758,14 @@ test('new Markdown selection is revealed and opened after creation', () => {
 })
 
 test('resource write feedback uses the shared toast component', () => {
-  assert.match(appSource, /toast\(\{\n\s+action:/)
-  assert.match(appSource, /duration: notice\.tone === 'ok' \? RESOURCE_NOTICE_TIMEOUT_MS : false/)
+  const bridgeStart = appSource.indexOf('function ResourceNoticeToast()')
+  const bridgeEnd = appSource.indexOf('function CreditsWarningToast()', bridgeStart)
+  assert.notEqual(bridgeStart, -1)
+  assert.notEqual(bridgeEnd, -1)
+  const bridgeSource = appSource.slice(bridgeStart, bridgeEnd)
+  assert.match(bridgeSource, /toast\(\{/)
+  assert.match(bridgeSource, /dedupeKey:/)
+  assert.doesNotMatch(bridgeSource, /duration:/)
   assert.doesNotMatch(resourcePanelSource, /<Toaster[\s\S]*data-testid="resource-notice"/)
   assert.doesNotMatch(resourcePanelSource, /<Alert[\s\S]*data-testid="resource-notice"/)
 })
@@ -791,51 +811,13 @@ test('resource tree ignores follow-up clicks from a native double click', () => 
   assert.doesNotMatch(resourcePanelSource, /RESOURCE_FILE_OPEN_DEBOUNCE_MS/)
 })
 
-test('resource file auto-context requires the AI panel to remain open', () => {
-  assert.match(
-    storeSource,
-    /const addToAssistant =[\s\S]*?current\.aiPanel\.open && project === assistantProject\(current\)\.projectId/
-  )
-  assert.match(
-    storeSource,
-    /const openedFileContext =[\s\S]*?addToAssistant &&[\s\S]*?resourceFileContextSeq\.current === contextRequestSeq &&[\s\S]*?stateRef\.current\.aiPanel\.open &&[\s\S]*?stateRef\.current\.resource\.selected === path &&[\s\S]*?session\?\.loadState === 'ready'/
-  )
-  assert.match(
-    storeSource,
-    /kind: 'file'[\s\S]*?origin: 'current_document'[\s\S]*?if \(openedFileContext\)[\s\S]*?addContext\(openedFileContext\)/
-  )
-  assert.doesNotMatch(storeSource, /currentAssistantContextCandidate/)
-  assert.doesNotMatch(storeSource, /kind: selected\.kind/)
-})
-
-test('resource file auto-context waits for the active session context to become ready', () => {
-  assert.match(
-    storeSource,
-    /const pendingResourceFileContext = useRef<[\s\S]*?requestSeq: number[\s\S]*?sessionId: string[\s\S]*?candidate: AssistantContextCandidate/
-  )
-  assert.match(
-    storeSource,
-    /latest\.aiPanel\.sessionId === sessionId[\s\S]*?latest\.aiPanel\.contextState === 'ready'[\s\S]*?actRef\.current\.addContext\(openedFileContext\)[\s\S]*?pendingResourceFileContext\.current =/
-  )
-  assert.match(
-    storeSource,
-    /pending\.requestSeq !== resourceFileContextSeq\.current[\s\S]*?pending\.sessionId !== state\.activeSession[\s\S]*?pending\.candidate\.source_id !== state\.resource\.selected[\s\S]*?state\.aiPanel\.contextState !== 'ready'[\s\S]*?actRef\.current\.addContext\(pending\.candidate\)/
-  )
-})
-
-test('automatic resource context uses one replaceable current-document slot', () => {
-  assert.match(
-    storeSource,
-    /mergeContextCandidates\(\s*current\.aiPanel\.refs,\s*admitted,\s*current\.aiPanel\.submittedRefIds/
-  )
-  assert.match(
-    storeSource,
-    /if \(!opening\) resourceFileContextSeq\.current \+= 1/
-  )
-  assert.match(
-    storeSource,
-    /assistantContextMutationQueue\.current\.then\(\(\) =>\s*actRef\.current\.addContexts\(\[candidate\]\)/
-  )
+test('current document is captured at send without a visible auto-reference', () => {
+  assert.match(storeSource, /export function activeDocumentForTurn/)
+  assert.match(storeSource, /state\.activeTab !== tabId/)
+  assert.match(composerSource, /const activeDocument = activeDocumentForTurn\(state\)/)
+  assert.match(composerSource, /activeDocument: queued\.activeDocument/)
+  assert.doesNotMatch(storeSource, /pendingResourceFileContext/)
+  assert.doesNotMatch(storeSource, /openedFileContext/)
 })
 
 test('only resource body hits ask the document viewer to reveal their retained query', () => {
@@ -876,6 +858,25 @@ test('successful resource opens update the persisted MRU after the document load
   )
 })
 
+test('project document tabs share the resource tree context queue before local attachment registration', () => {
+  const action = storeSource.slice(
+    storeSource.indexOf('    attachActiveFileToAi: async () => {'),
+    storeSource.indexOf('    openAiContextPicker:')
+  )
+  const projectBranch = action.match(
+    /if \(document\.source\.kind === 'project'\) \{([\s\S]*?)\n      \}/
+  )?.[1]
+  assert.ok(projectBranch)
+  assert.match(projectBranch, /await actRef\.current\.addAiContextRef\(\{/)
+  assert.match(projectBranch, /kind: 'file'/)
+  assert.match(projectBranch, /sourceId: document\.source\.path/)
+  assert.match(projectBranch, /label: document\.title/)
+  assert.match(projectBranch, /return\s*$/)
+  assert.doesNotMatch(projectBranch, /registerLocalPaths|composerRefs|resolveDocumentLocation/)
+  assert.ok(action.indexOf(projectBranch) < action.indexOf('resolveDocumentLocation'))
+  assert.ok(action.indexOf('contextErrors.wrongProject') < action.indexOf(projectBranch))
+})
+
 test('literature attachment tabs expose file-path actions and attach through the message file channel', () => {
   assert.match(
     documentMenuSource,
@@ -889,8 +890,9 @@ test('literature attachment tabs expose file-path actions and attach through the
   )
   assert.match(
     storeSource,
-    /attachActiveFileToAi:[\s\S]*document\.source\.kind === 'literature'[\s\S]*resolveDocumentLocation\(document\.source\)[\s\S]*registerLocalPaths\([\s\S]*\[absolute\][\s\S]*composerRefs/
+    /attachActiveFileToAi:[\s\S]*resolveDocumentLocation\(document\.source\)[\s\S]*registerLocalPaths\([\s\S]*\[absolute\][\s\S]*composerRefs/
   )
+  assert.match(storeSource, /const literatureSource = document\.source[\s\S]*previewSource: literatureSource/)
   assert.match(storeSource, /registrationRequired: true/)
   assert.match(storeSource, /const title = document\.source\.path\.split/)
   assert.match(
@@ -1274,6 +1276,23 @@ function browserInvocationEvents(publicationCount = 1): AgentInvocationEvent[] {
   ]
 }
 
+function automaticArtifactInvocationEvents(artifactPath: string): AgentInvocationEvent[] {
+  return [
+    invocationEvent('invocation.started', {
+      skill: { id: 'builtin:web-search', name: 'web-search', profile: 'automatic' },
+      execution: { permission_mode: 'bypassPermissions' }
+    }),
+    invocationEvent('artifact.published', {
+      artifact_id: 'automatic-artifact',
+      relative_path: artifactPath,
+      role: 'final',
+      mime_type: 'application/json',
+      size_bytes: 120,
+      sha256: 'a'.repeat(64)
+    }, { seq: 2, itemId: 'automatic-search-1' })
+  ]
+}
+
 function webSearchCandidatesText(
   candidates: Array<{ title: string; url: string; description: string }>
 ): string {
@@ -1323,6 +1342,13 @@ test('automatic web search prioritizes the official API before native and browse
     WEB_SEARCH_CANDIDATES_MODE,
     BROWSER_SEARCH_MODE
   ])
+  const automatic = automaticWebSearchInvocationRequest('query')
+  assert.equal(automatic.skill?.profile, 'automatic')
+  assert.equal(automatic.execution.web_search, true)
+  assert.match(automatic.prompt, /--provider official-api/)
+  assert.match(automatic.prompt, /--provider visible-browser/)
+  assert.match(automatic.prompt, /web-search-official-result\.json/)
+  assert.match(automatic.prompt, /web-search-browser-result\.json/)
   assert.deepEqual(
     webSearchModeDefinition(WEB_SEARCH_CANDIDATES_MODE).requiredCapabilities,
     ['web_search']
@@ -1511,6 +1537,39 @@ test('web search projection accepts browser-search final artifacts and validates
     startedAt: Date.parse('2026-09-08T06:30:00.000Z'),
     completedAt: Date.parse('2026-09-08T06:30:01.234Z')
   }])
+})
+
+test('automatic result projection accepts immutable official and browser artifact paths', () => {
+  for (const [mode, artifactPath] of [
+    [OFFICIAL_SEARCH_MODE, AUTOMATIC_OFFICIAL_SEARCH_ARTIFACT_PATH],
+    [BROWSER_SEARCH_MODE, AUTOMATIC_BROWSER_SEARCH_ARTIFACT_PATH]
+  ] as const) {
+    const payload = JSON.stringify({
+      schema: BROWSER_SEARCH_OUTPUT_SCHEMA_ID,
+      status: 'completed',
+      provider: mode,
+      query: 'test',
+      engine: 'bing',
+      browser: 'chrome',
+      started_at: '2026-09-08T06:30:00.000Z',
+      completed_at: '2026-09-08T06:30:01.234Z',
+      duration_ms: 1234,
+      candidates: [{ title: 'Automatic result', url: 'https://automatic.test', description: 'Description' }],
+      error: null
+    })
+    const projected = projectWebSearch(
+      automaticArtifactInvocationEvents(artifactPath),
+      mode,
+      payload,
+      'test',
+      artifactPath
+    )
+    assert.equal(projected.executionEvidenceFound, true)
+    assert.equal(projected.structuredOutputFound, true)
+    assert.deepEqual(verifiedWebSearchCandidates(projected).map((candidate) => candidate.url), [
+      'https://automatic.test/'
+    ])
+  }
 })
 
 test('web search formats the complete product completion time and duration', () => {
@@ -2150,7 +2209,8 @@ test('top navigation split uses the document width while actions reserve only tr
   assert.match(tabBarSource, /TOPBAR_TRAILING_NAVIGATION_CLASS_NAME =[\s\S]*?'vds-top-bar-navigation-trailing box-border pe-\[var\(--vds-top-bar-actions-width,0px\)\]'/)
   assert.match(tabBarSource, /renderSplitTabs\(node\.first, leading, false\)/)
   assert.match(tabBarSource, /renderSplitTabs\(node\.second, false, trailing\)/)
-  assert.match(workbenchStyles, /\.vds-top-bar-actions\s*\{[^}]*position:\s*absolute/s)
+  assert.match(topBarSource, /vds-top-bar-actions no-drag absolute/)
+  assert.match(topBarSource, /border-\[var\(--vds-divider-default\)\]/)
 })
 
 test('document tab menu groups available splits before dynamic move targets', () => {

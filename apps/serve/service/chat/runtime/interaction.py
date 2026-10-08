@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any, Mapping, Protocol
 
@@ -16,6 +17,7 @@ from service.chat.constants import (
     PRODUCT_SESSION_STATE_WAITING,
 )
 from service.chat.persistence.catalog import (
+    HilStatus,
     SessionAccessError,
     SessionCatalogStore,
     SessionHilRecord,
@@ -24,11 +26,14 @@ from service.chat.persistence.catalog import (
     UncertaintyState,
 )
 from service.chat.persistence.events import ProductEventRecord
-from service.chat.runtime.projection import INTERNAL_EVENT_KEY_PREFIX
+from service.chat.runtime.projection import INTERNAL_EVENT_KEY_PREFIX, TERMINAL_TURN_OUTCOMES
 
 USER_INPUT_METHOD = "user_input"
 PRODUCT_USER_INPUT_METHOD = "product_user_input"
 PRODUCT_INTERACTION_CANCELLED = "product_interaction_cancelled"
+PRODUCT_INTERACTION_LIFETIME = "session"
+PRODUCT_INTERACTION_TIMED_OUT = "timed_out"
+PRODUCT_INTERACTION_TIMEOUT = "timeout_seconds"
 
 
 def interaction_snapshot(record: SessionHilRecord) -> dict[str, Any]:
@@ -85,25 +90,29 @@ class SessionInteractions:
         *,
         turn_id: str,
         item_id: str = "",
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Publish and wait for a product-owned question without routing through Runtime."""
 
         request_id = str(question.get("id") or "").strip()
         if not request_id or not turn_id.strip():
             raise ValueError("product interaction identity is unavailable")
+        if timeout_seconds is not None and (
+            not math.isfinite(timeout_seconds) or timeout_seconds <= 0
+        ):
+            raise ValueError("product interaction timeout must be positive and finite")
         payload = {
             "request_id": request_id,
             "kind": "question",
             "method": USER_INPUT_METHOD,
+            "lifetime": PRODUCT_INTERACTION_LIFETIME,
             "questions": [dict(question)],
         }
         loop = asyncio.get_running_loop()
+        if timeout_seconds is not None:
+            payload[PRODUCT_INTERACTION_TIMEOUT] = timeout_seconds
         async with self._lock:
-            if request_id in self._product_waiters:
-                raise RuntimeError("product interaction is already waiting")
-            waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
-            self._product_waiters[request_id] = waiter
-            self._catalog.record_hil(
+            record = self._catalog.record_hil(
                 product_request_id=request_id,
                 session_id=self._session_id,
                 vendor_request_id=request_id,
@@ -112,23 +121,102 @@ class SessionInteractions:
                 method=PRODUCT_USER_INPUT_METHOD,
                 payload=payload,
             )
+            if record.status is HilStatus.RESOLVED:
+                return dict(record.decision or {})
+            if record.status not in {HilStatus.PENDING, HilStatus.UNKNOWN}:
+                return {"cancelled": True, "reason": PRODUCT_INTERACTION_CANCELLED}
+            existing = self._product_waiters.get(request_id)
+            waiter = existing if existing is not None else loop.create_future()
+            self._product_waiters[request_id] = waiter
+            session = self._catalog.get(self._session_id)
+            if session is not None and (
+                not session.last_turn_id
+                or (
+                    session.last_turn_id == turn_id
+                    and session.last_turn_status not in TERMINAL_TURN_OUTCOMES
+                )
+            ):
+                self._catalog.update_status(
+                    self._session_id,
+                    SessionStatus.WAITING_HIL,
+                    turn_id=turn_id,
+                    turn_status=PRODUCT_SESSION_STATE_WAITING,
+                )
+            if existing is None:
+                try:
+                    await self._publish(
+                        PRODUCT_EVENT_HIL_REQUESTED,
+                        payload,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        idempotency_key=f"product:callback:{request_id}",
+                    )
+                except BaseException:
+                    self._product_waiters.pop(request_id, None)
+                    self._catalog.resolve_hil(request_id, {"cancelled": True})
+                    raise
+        try:
+            if timeout_seconds is None:
+                return await asyncio.shield(waiter)
+            remaining = max(0, record.created_at + timeout_seconds - time.time())
+            try:
+                return await asyncio.wait_for(asyncio.shield(waiter), remaining)
+            except TimeoutError:
+                async with self._lock:
+                    await self._finish_product_input(
+                        record, {PRODUCT_INTERACTION_TIMED_OUT: True}, turn_id
+                    )
+                return await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            if existing is None:
+                async with self._lock:
+                    await self._finish_product_input(
+                        record,
+                        {"cancelled": True, "reason": PRODUCT_INTERACTION_CANCELLED},
+                        turn_id,
+                    )
+            raise
+        finally:
+            if waiter.done():
+                self._product_waiters.pop(request_id, None)
+
+    async def _finish_product_input(
+        self, record: SessionHilRecord, decision: dict[str, Any], active_turn_id: str
+    ) -> dict[str, Any] | None:
+        request_id = record.product_request_id
+        waiter = self._product_waiters.get(request_id)
+        if waiter is None or waiter.done():
+            return None
+        if not self._catalog.resolve_hil(request_id, decision):
+            stored = self._catalog.hil(request_id)
+            if stored.status not in {HilStatus.PENDING, HilStatus.UNKNOWN}:
+                waiter.set_result(dict(stored.decision or {"cancelled": True}))
+            return None
+        session = self._catalog.get(self._session_id)
+        if (
+            active_turn_id == record.vendor_turn_id
+            and session is not None
+            and session.last_turn_id == active_turn_id
+            and session.status in {SessionStatus.RUNNING, SessionStatus.WAITING_HIL}
+        ):
             self._catalog.update_status(
                 self._session_id,
-                SessionStatus.WAITING_HIL,
-                turn_id=turn_id,
-                turn_status=PRODUCT_SESSION_STATE_WAITING,
+                SessionStatus.RUNNING,
+                turn_id=active_turn_id,
+                turn_status=PRODUCT_SESSION_STATE_RUNNING,
             )
-            await self._publish(
-                PRODUCT_EVENT_HIL_REQUESTED,
-                payload,
-                turn_id=turn_id,
-                item_id=item_id,
-                idempotency_key=f"product:callback:{request_id}",
-            )
+        resolved = interaction_snapshot(self._catalog.hil(request_id))
         try:
-            return await waiter
+            await self._publish(
+                PRODUCT_EVENT_HIL_RESOLVED,
+                resolved,
+                turn_id=record.vendor_turn_id or "",
+                item_id=record.vendor_item_id or "",
+                idempotency_key=f"product:callback:{request_id}:resolved",
+            )
         finally:
-            self._product_waiters.pop(request_id, None)
+            waiter.set_result(decision)
+        return resolved
 
     def is_product_request(self, request_id: str) -> bool:
         try:
@@ -176,7 +264,12 @@ class SessionInteractions:
         return {name: payload[name] for name in safe_keys if name in payload}
 
     async def resolve(
-        self, runtime_session: RuntimeSession | None, request_id: str, response: Mapping[str, Any]
+        self,
+        runtime_session: RuntimeSession | None,
+        request_id: str,
+        response: Mapping[str, Any],
+        *,
+        active_turn_id: str = "",
     ) -> dict[str, Any] | None:
         async with self._lock:
             pending = {
@@ -187,25 +280,8 @@ class SessionInteractions:
                 return None
             decision = dict(response)
             if record.method == PRODUCT_USER_INPUT_METHOD:
-                waiter = self._product_waiters.get(request_id)
-                if waiter is None or not self._catalog.resolve_hil(request_id, decision):
-                    return None
-                self._catalog.update_status(
-                    self._session_id,
-                    SessionStatus.RUNNING,
-                    turn_id=record.vendor_turn_id or "",
-                    turn_status=PRODUCT_SESSION_STATE_RUNNING,
-                )
-                resolved = interaction_snapshot(self._catalog.hil(request_id))
-                await self._publish(
-                    PRODUCT_EVENT_HIL_RESOLVED,
-                    resolved,
-                    turn_id=record.vendor_turn_id or "",
-                    item_id=record.vendor_item_id or "",
-                    idempotency_key=f"product:callback:{request_id}:resolved",
-                )
-                waiter.set_result(decision)
-                return resolved
+                decision.pop(PRODUCT_INTERACTION_TIMED_OUT, None)
+                return await self._finish_product_input(record, decision, active_turn_id)
             if runtime_session is None:
                 raise RuntimeError("runtime session is unavailable")
             if not self._catalog.seal_hil_uncertainty(

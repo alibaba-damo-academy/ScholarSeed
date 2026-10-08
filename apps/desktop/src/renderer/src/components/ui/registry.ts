@@ -170,7 +170,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Checkbox: {
     exports: ['Checkbox'],
     intents: ['复选框', '勾选', '多选', 'checkbox', '选中状态'],
-    use: '布尔勾选与多选列表项；树或分组选择可用 checked="mixed" 表达部分选中',
+    use: '布尔勾选与多选列表项；多行文案用 align="first-line" 对齐首行，树或分组选择可用 checked="mixed" 表达部分选中',
     replaces: ['input', 'label'],
     avoid: '互斥单选用 Radio; 立即生效的开关用 Switch'
   },
@@ -297,7 +297,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   EmptyState: {
     exports: ['EmptyState'],
     intents: ['空状态', '暂无数据', '无结果', 'empty', 'placeholder', '零结果'],
-    use: '列表/面板无内容时的占位: 标题、说明、可选操作',
+    use: '列表/面板无内容时的占位: 标题、说明、可选操作; 小区域弹窗用 variant="compact"，页面级保留默认样式',
     replaces: ['div'],
     avoid: '加载中用 Spinner/Skeleton/LoadingOverlay; 错误用 Alert'
   },
@@ -453,7 +453,7 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Radio: {
     exports: ['Radio', 'RadioGroup', 'RadioGroupItem'],
     intents: ['单选', '互斥选项', '单选组', 'radio', 'radio group'],
-    use: '一组互斥选项全部可见时的单选',
+    use: '一组互斥选项全部可见时的单选；多行文案用 align="first-line" 对齐首行',
     replaces: ['input', 'label'],
     avoid: '选项多且需要收起用 Select; 段落式切换用 SegmentedControl/ToggleGroup'
   },
@@ -582,9 +582,9 @@ export const UI_REGISTRY: Readonly<Record<string, UiComponentEntry>> = {
   Toast: {
     exports: ['Toast', 'SonnerToaster', 'Toaster', 'ToastProvider', 'useToast'],
     intents: ['轻提示', '消息通知', '操作反馈', 'toast', 'notification', 'snackbar'],
-    use: '一次性操作反馈。`ToastProvider` 挂载上下文, `useToast()` 触发, `Toaster` 是容器(`SonnerToaster` 为其别名)',
+    use: '一次性操作反馈，默认6秒关闭，可手动关闭，悬停或键盘聚焦时暂停。相同纯文本错误自动去重；富文本传 dedupeKey，同 id 更新并重置计时。ToastProvider 挂载上下文，useToast() 触发，Toaster 为容器（SonnerToaster 为别名）',
     replaces: ['div', 'ol'],
-    avoid: '常驻状态说明用 Alert; 不要在 feature 里另建一套通知队列'
+    avoid: '常驻状态说明用 Alert；只有明确等待用户操作的 Notification 才传 duration: false；不要按错误类型默认常驻，也不要在 feature 里另建通知队列'
   },
   Toggle: {
     exports: ['Toggle', 'toggleVariants'],

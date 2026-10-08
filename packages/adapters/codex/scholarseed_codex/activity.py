@@ -1,19 +1,24 @@
 """Codex native activity projections and read-only quiescence inspection."""
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
+from scholarseed_codex.protocol.constants import MCP_TOOL_NAME_PREFIX
 from scholarseed_codex.protocol.mcp import JsonValue
 from scholarseed_codex.protocol.session import CodexNativeActivityCategory
 from scholarseed_codex.protocol.state import AppServerError
+from scholarseed_runtime.contract.session import RuntimeExecutionThread, RuntimeExecutionTreeBlocker
 
 NATIVE_ACTIVITY_PAGE_SIZE = 100
 NATIVE_ACTIVITY_MAX_PAGES = 100
 NATIVE_THREAD_READ_METHOD = "thread/read"
 NATIVE_THREAD_LOADED_LIST_METHOD = "thread/loaded/list"
+NATIVE_THREAD_LIST_METHOD = "thread/list"
 NATIVE_BACKGROUND_TERMINALS_LIST_METHOD = "thread/backgroundTerminals/list"
+NATIVE_BACKGROUND_TERMINALS_TERMINATE_METHOD = "thread/backgroundTerminals/terminate"
 NATIVE_GOAL_GET_METHOD = "thread/goal/get"
 NATIVE_QUEUE_LIST_METHOD = "thread/queue/list"
 NATIVE_THREAD_ID_FIELD = "threadId"
@@ -25,6 +30,16 @@ NATIVE_NEXT_CURSOR_FIELD = "nextCursor"
 NATIVE_THREAD_FIELD = "thread"
 NATIVE_ID_FIELD = "id"
 NATIVE_PARENT_THREAD_ID_FIELD = "parentThreadId"
+NATIVE_ANCESTOR_THREAD_ID_FIELD = "ancestorThreadId"
+NATIVE_SOURCE_KINDS_FIELD = "sourceKinds"
+NATIVE_ARCHIVED_FIELD = "archived"
+NATIVE_SUBAGENT_SOURCE_KINDS = (
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+)
 NATIVE_STATUS_FIELD = "status"
 NATIVE_TYPE_FIELD = "type"
 NATIVE_ACTIVE_FLAGS_FIELD = "activeFlags"
@@ -65,10 +80,17 @@ class NativeActivityBlocker(str, Enum):
     PAGINATION_INCOMPLETE = "native_activity_pagination_incomplete"
 
 
+EXECUTION_TREE_BLOCKERS = {
+    NativeActivityBlocker.TURN: RuntimeExecutionTreeBlocker.TURN.value,
+    NativeActivityBlocker.BACKGROUND_TERMINAL: RuntimeExecutionTreeBlocker.BACKGROUND_TASK.value,
+}
+
+
 @dataclass(frozen=True)
 class NativeActivityState:
     complete: bool
     blockers: tuple[str, ...]
+    execution_tree_blockers: tuple[str, ...]
     loaded_thread_ids: tuple[str, ...]
     process_generation: int
 
@@ -104,6 +126,46 @@ class NativeActivity:
         self._host = host
         self._root_thread_id = root_thread_id
         self._known_roots = frozenset(value for value in (*known_roots, root_thread_id) if value)
+
+    async def descendants(self) -> tuple[RuntimeExecutionThread, ...]:
+        generation = self._host.process_generation
+        if not self._root_thread_id:
+            raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+        candidates: dict[str, dict[str, Any]] = {}
+        for archived in (False, True):
+            rows = await self._pages(
+                NATIVE_THREAD_LIST_METHOD,
+                {
+                    NATIVE_ANCESTOR_THREAD_ID_FIELD: self._root_thread_id,
+                    NATIVE_SOURCE_KINDS_FIELD: list(NATIVE_SUBAGENT_SOURCE_KINDS),
+                    NATIVE_ARCHIVED_FIELD: archived,
+                },
+                generation,
+            )
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                thread_id = row.get(NATIVE_ID_FIELD)
+                if (
+                    not isinstance(thread_id, str)
+                    or not thread_id
+                    or thread_id == self._root_thread_id
+                ):
+                    raise _NativeActivityError(NativeActivityBlocker.INVALID_RESPONSE)
+                candidates[thread_id] = await self._thread(thread_id, generation)
+        descendants: list[RuntimeExecutionThread] = []
+        for thread_id, thread in candidates.items():
+            parent_id = thread[NATIVE_PARENT_THREAD_ID_FIELD]
+            ancestor = parent_id
+            visited = {thread_id}
+            while ancestor != self._root_thread_id:
+                if not ancestor or ancestor in visited or ancestor not in candidates:
+                    raise _NativeActivityError(NativeActivityBlocker.UNKNOWN_OWNERSHIP)
+                visited.add(ancestor)
+                ancestor = candidates[ancestor][NATIVE_PARENT_THREAD_ID_FIELD]
+            descendants.append(RuntimeExecutionThread(thread_id, parent_id))
+        self._require_generation(generation)
+        return tuple(sorted(descendants, key=lambda node: node.thread_id))
 
     async def inspect(self) -> NativeActivityState:
         generation = self._host.process_generation
@@ -149,6 +211,13 @@ class NativeActivity:
         return NativeActivityState(
             complete,
             tuple(sorted(blocker.value for blocker in blockers)),
+            tuple(
+                sorted(
+                    EXECUTION_TREE_BLOCKERS[blocker]
+                    for blocker in blockers
+                    if blocker in EXECUTION_TREE_BLOCKERS
+                )
+            ),
             loaded_ids,
             generation,
         )
@@ -325,6 +394,35 @@ CODEX_NATIVE_ACTIVITY_FAILURE_STATUSES = frozenset(
 
 
 CODEX_AUTO_APPROVAL_ACTIVITY_TYPE = "approval_review"
+CODEX_STRICT_REVIEW_ACTIVITY_TYPE = "approval_strict_review"
+CODEX_STRICT_REVIEW_STATUS = "strict_review_required"
+CODEX_STRICT_REVIEW_ITEM_PREFIX = "strict-review-"
+CODEX_AUTO_APPROVAL_REVIEW_FIELD = "review"
+CODEX_AUTO_APPROVAL_ACTION_FIELD = "action"
+CODEX_AUTO_APPROVAL_ACTION_TYPE_FIELD = "type"
+CODEX_AUTO_APPROVAL_STARTED_AT_FIELD = "startedAtMs"
+CODEX_AUTO_APPROVAL_COMPLETED_AT_FIELD = "completedAtMs"
+CODEX_AUTO_APPROVAL_IN_PROGRESS_STATUS = "inProgress"
+CODEX_AUTO_APPROVAL_COMPLETED_STATUS = "completed"
+
+# `item/autoApprovalReview/*` 的字段来自上游契约 (codex 0.155.1 app-server-protocol v2:
+# ItemGuardianApprovalReview{Started,Completed}Notification + GuardianApprovalReview)。
+# 机器审批没有用户可见卡片, 事后审计只剩这些属性, 所以按契约逐字段登记而不是挑几个:
+# 早先只投 action/riskLevel/rationale/decisionSource, 把 userAuthorization (复核者对
+# 「用户到底授权到什么程度」的判断) 和 targetItemId (审批针对哪个 item) 静默丢掉了。
+# 上游新增字段时在这里加一行数据即可, 不需要改投影逻辑。
+CODEX_AUTO_APPROVAL_PARAM_FIELDS = (
+    ("targetItemId", "target_item_id"),
+    ("decisionSource", "decision_source"),
+)
+CODEX_AUTO_APPROVAL_REVIEW_FIELDS = (
+    ("riskLevel", "risk_level"),
+    ("userAuthorization", "user_authorization"),
+    ("rationale", "rationale"),
+)
+CODEX_AUTO_APPROVAL_DURATION_FIELD = "review_duration_ms"
+CODEX_AUTO_APPROVAL_ACTION_TYPE_DETAIL = "action_type"
+CODEX_STRICT_REVIEW_STARTED_AT_DETAIL = "started_at_ms"
 
 
 @dataclass(frozen=True)
@@ -403,7 +501,7 @@ def search_payload(source: Mapping[str, Any]) -> Mapping[str, JsonValue]:
     return {
         "query": str(source.get("query") or ""),
         "action": dict(action) if isinstance(action, Mapping) else {},
-        "results": list(results) if isinstance(results, list) else [],
+        **({"results": list(results)} if isinstance(results, list) else {}),
     }
 
 
@@ -479,26 +577,77 @@ def native_activity_payload(
     }
 
 
+def auto_approval_duration_ms(params: Mapping[str, Any]) -> int | None:
+    started = params.get(CODEX_AUTO_APPROVAL_STARTED_AT_FIELD)
+    completed = params.get(CODEX_AUTO_APPROVAL_COMPLETED_AT_FIELD)
+    if isinstance(started, bool) or isinstance(completed, bool):
+        return None
+    if not isinstance(started, int) or not isinstance(completed, int):
+        return None
+    duration = completed - started
+    return duration if duration >= 0 else None
+
+
 def auto_approval_payload(
     params: Mapping[str, Any],
     *,
     completed: bool,
 ) -> Mapping[str, JsonValue]:
-    review = params.get("review")
+    review = params.get(CODEX_AUTO_APPROVAL_REVIEW_FIELD)
     review_values = dict(review) if isinstance(review, Mapping) else {}
-    status = str(review_values.get("status") or ("completed" if completed else "inProgress"))
-    details = {
-        "action": _bounded_activity_value(params.get("action")),
-        "risk_level": _bounded_activity_value(review_values.get("riskLevel")),
-        "rationale": _bounded_activity_value(review_values.get("rationale")),
-        "decision_source": _bounded_activity_value(params.get("decisionSource")),
+    action = params.get(CODEX_AUTO_APPROVAL_ACTION_FIELD)
+    action_values = dict(action) if isinstance(action, Mapping) else {}
+    status = str(
+        review_values.get(NATIVE_STATUS_FIELD)
+        or (
+            CODEX_AUTO_APPROVAL_COMPLETED_STATUS
+            if completed
+            else CODEX_AUTO_APPROVAL_IN_PROGRESS_STATUS
+        )
+    )
+    details: dict[str, JsonValue] = {
+        CODEX_AUTO_APPROVAL_ACTION_FIELD: _bounded_activity_value(action),
+        CODEX_AUTO_APPROVAL_ACTION_TYPE_DETAIL: _bounded_activity_value(
+            action_values.get(CODEX_AUTO_APPROVAL_ACTION_TYPE_FIELD)
+        ),
     }
+    for source, target in CODEX_AUTO_APPROVAL_PARAM_FIELDS:
+        details[target] = _bounded_activity_value(params.get(source))
+    for source, target in CODEX_AUTO_APPROVAL_REVIEW_FIELDS:
+        details[target] = _bounded_activity_value(review_values.get(source))
+    details[CODEX_AUTO_APPROVAL_DURATION_FIELD] = auto_approval_duration_ms(params)
     return {
         "activity_type": CODEX_AUTO_APPROVAL_ACTIVITY_TYPE,
         "category": CodexNativeActivityCategory.MODE.value,
         "details": {key: value for key, value in details.items() if value is not None},
         "status": status,
         "ok": completed and status.lower() not in CODEX_NATIVE_ACTIVITY_FAILURE_STATUSES,
+    }
+
+
+def strict_review_item_id(params: Mapping[str, Any], turn_id: str) -> str:
+    """Give the one-shot strict-review notice a stable identity of its own.
+
+    Upstream sends no reviewId here, and Serve deduplicates activities by item id, so a
+    shared placeholder would collapse every strict review of a turn into one row.
+    """
+    started = params.get(CODEX_AUTO_APPROVAL_STARTED_AT_FIELD)
+    suffix = str(started) if isinstance(started, int) and not isinstance(started, bool) else turn_id
+    return f"{CODEX_STRICT_REVIEW_ITEM_PREFIX}{suffix}"
+
+
+def strict_review_payload(params: Mapping[str, Any]) -> Mapping[str, JsonValue]:
+    details = {
+        CODEX_STRICT_REVIEW_STARTED_AT_DETAIL: _bounded_activity_value(
+            params.get(CODEX_AUTO_APPROVAL_STARTED_AT_FIELD)
+        )
+    }
+    return {
+        "activity_type": CODEX_STRICT_REVIEW_ACTIVITY_TYPE,
+        "category": CodexNativeActivityCategory.MODE.value,
+        "details": {key: value for key, value in details.items() if value is not None},
+        "status": CODEX_STRICT_REVIEW_STATUS,
+        "ok": True,
     }
 
 
@@ -545,6 +694,124 @@ def subagent_lifecycle_payload(
         },
         completed=completed,
     )
+
+
+def public_summary_parts(item: Mapping[str, Any]) -> tuple[str, ...]:
+    summary = item.get("summary")
+    if not isinstance(summary, list):
+        return ()
+    return tuple(part for part in summary if isinstance(part, str))
+
+
+def subagent_item_summary(item: Mapping[str, Any]) -> str:
+    if item.get("type") == "reasoning":
+        return "\n\n".join(public_summary_parts(item))[:CODEX_NATIVE_ACTIVITY_TEXT_LIMIT]
+    if item.get("type") != "commandExecution":
+        return ""
+    parts = []
+    command = item.get("command")
+    if isinstance(command, str) and command:
+        parts.append(command[:CODEX_NATIVE_ACTIVITY_TEXT_LIMIT])
+    output = item.get("aggregatedOutput")
+    if isinstance(output, str) and output:
+        parts.append(output[:CODEX_NATIVE_ACTIVITY_TEXT_LIMIT])
+    exit_code = item.get("exitCode")
+    if isinstance(exit_code, int):
+        parts.append(f"exit_code={exit_code}")
+    return "\n\n".join(parts)
+
+
+def subagent_status_payload(
+    *,
+    agent_thread_id: str,
+    agent_path: str,
+    activity: str,
+    phase: str,
+    activity_item_id: str = "",
+    public_summary: str = "",
+    item: Mapping[str, Any] | None = None,
+) -> Mapping[str, JsonValue]:
+    payload = dict(
+        subagent_lifecycle_payload(
+            agent_thread_id=agent_thread_id,
+            agent_path=agent_path,
+            status="running",
+            completed=False,
+        )
+    )
+    raw_details = payload.get("details")
+    details = dict(raw_details) if isinstance(raw_details, Mapping) else {}
+    details["recent_activity"] = activity
+    details["activity_phase"] = phase
+    details["activity_item_id"] = activity_item_id
+    if public_summary:
+        details["public_summary"] = public_summary
+    if item:
+        tool = tool_item_payload(item)
+        if tool is not None:
+            details["tool"] = _bounded_activity_value(
+                {
+                    **tool,
+                    **(tool_item_result(item) if phase == "completed" else {}),
+                }
+            )
+    payload["details"] = details
+    return payload
+
+
+def tool_item_payload(item: Mapping[str, Any]) -> Mapping[str, JsonValue] | None:
+    item_type = item.get("type")
+    if item_type == "commandExecution":
+        return {
+            "name": command_name(item),
+            "input": {
+                "command": item.get("command"),
+                "cwd": item.get("cwd"),
+                "actions": item.get("commandActions") or [],
+            },
+        }
+    if item_type == "fileChange":
+        return {"name": "file_change", "input": {"changes": item.get("changes") or []}}
+    if item_type == "mcpToolCall":
+        name = f"{MCP_TOOL_NAME_PREFIX}{item.get('server') or 'mcp'}__{item.get('tool') or 'tool'}"
+        return {"name": name, "input": item.get("arguments") or {}}
+    if item_type == "dynamicToolCall":
+        return {
+            "name": str(item.get("tool") or "dynamic_tool"),
+            "input": item.get("arguments") or {},
+        }
+    return None
+
+
+def tool_item_result(item: Mapping[str, Any], fallback_output: str = "") -> Mapping[str, JsonValue]:
+    item_type = item.get("type")
+    status = str(item.get("status") or "")
+    if (
+        item_type == "commandExecution"
+        and isinstance(item.get("exitCode"), int)
+        and item["exitCode"] != 0
+    ):
+        status = "failed"
+    elif item_type in {"mcpToolCall", "dynamicToolCall"} and item.get("error"):
+        status = "failed"
+    output = str(item.get("aggregatedOutput") or fallback_output)
+    output_fields = {
+        "fileChange": ("changes",),
+        "mcpToolCall": ("result", "error"),
+        "dynamicToolCall": ("contentItems", "error"),
+    }
+    if item_type in output_fields:
+        value = next(
+            (item[field] for field in output_fields[item_type] if item.get(field)),
+            {} if item_type == "mcpToolCall" else [],
+        )
+        output = json.dumps(value, ensure_ascii=False, default=str)
+    return {
+        "output": output,
+        "ok": status == "completed",
+        "status": status,
+        **({"exit_code": item.get("exitCode")} if item_type == "commandExecution" else {}),
+    }
 
 
 def _bounded_activity_value(value: Any) -> JsonValue:

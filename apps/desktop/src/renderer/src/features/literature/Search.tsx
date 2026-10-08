@@ -661,6 +661,7 @@ export function LiteratureSearchView({
                 {query ? (
                   <Trans
                     t={t}
+                    ns="literature"
                     i18nKey="search.summary"
                     values={{ query }}
                     components={{

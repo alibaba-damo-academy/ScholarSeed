@@ -8,7 +8,7 @@ import type { AssistantContextCandidate } from '../../contracts/assistant'
 import { fetchResourceCandidatePage } from '../../features/assistant/api'
 import { resourceFileIcon } from '../../features/resources/icons'
 import { Icon } from '../../icons'
-import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui'
+import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, EmptyState } from '../ui'
 
 interface ContextOptionProps {
   item: AssistantContextCandidate
@@ -136,7 +136,7 @@ export function ContextOption({ item, projectId, onSelect }: ContextOptionProps)
         ))}
         {loading && <p role="status" className="px-2 text-xs">{t('context.loading')}</p>}
         {!loading && !failed && children?.length === 0 && (
-          <p className="px-2 text-xs text-[var(--vds-text-tertiary)]">{t('context.empty')}</p>
+          <EmptyState variant="compact" icon={<Folder />} title={t('context.empty')} />
         )}
         {!loading && (failed || nextOffset !== null) && (
           <Button className="hover:!bg-[var(--vds-bg-white-hover)]" variant="ghost" size="sm" onClick={() => void load()}>

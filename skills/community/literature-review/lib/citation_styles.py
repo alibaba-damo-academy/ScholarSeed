@@ -1,4 +1,4 @@
-"""Deterministic citation-style registry shared by generation and verification.
+"""Deterministic citation-style registry shared by task input and publication.
 
 All supported LaTeX styles are vendored under ``assets/``.  The registry also
 owns the examples shown to users and the metadata contract used by the corpus
@@ -28,6 +28,30 @@ PAPERHUB_FIELD_AVAILABILITY = {
 
 
 CITATION_STYLES: dict[str, dict] = {
+    "gbt7714_2025": {
+        "label": "GB/T 7714—2025（顺序编码制）",
+        "wanted": "gbt7714-2025-numeric",
+        "bst": "gbt7714-2025-numeric",
+        "asset": "assets/citation-styles/gbt7714/gbt7714-2025-numeric.bst",
+        "natbib_options": "numbers,sort&compress",
+        "latex_preamble": "\\usepackage[UTF8,scheme=plain]{ctex}",
+        "fidelity": "exact",
+        "inline_example": "……如已有研究所示 [1]。",
+        "reference_example": "[1] Smith A，Li Bo. Agentic literature review[J]. Journal of Research，2024，12（3）：45-60.",
+        "required": ["author", "title", "year"],
+        "recommended": ["doi|url"],
+        "recommended_by_type": {
+            "article": ["journal", "volume", "number", "pages"],
+            "inproceedings": ["booktitle", "address|location", "publisher", "pages"],
+            "conference": ["booktitle", "address|location", "publisher", "pages"],
+            "book": ["address|location", "publisher"],
+            "misc": ["url", "urldate|accessed"],
+            "online": ["url", "urldate|accessed"],
+        },
+        "style_critical": ["entry_type", "journal|booktitle", "publisher", "pages"],
+        "metadata_risk": "出版地、出版者、页码和引用日期可能缺失；必须报告缺项，不能编造或将缺项称为完整著录。",
+        "note": "PDF 使用固定版本的 CTAN gbt7714 样式。Markdown 为简化的确定性布局，不作为国标投稿级排版验收。",
+    },
     "numeric": {
         "label": "通用数字顺序制",
         "wanted": "unsrtnat_scholarseed",

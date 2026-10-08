@@ -5,7 +5,6 @@ import { Icon } from '../../icons'
 import {
   Alert,
   AlertDescription,
-  AlertTitle,
   Button,
   Card,
   Collapsible,
@@ -192,16 +191,13 @@ export function Capture({ elapsedSeconds, error, floating, hasStep, note, paused
       </Collapsible>
       {confirmingCancel ? (
         <Alert
+          action={<div className="flex flex-wrap justify-end gap-[var(--vds-space-2)]"><Button size="xs" variant="secondary" onClick={keepRecording}>{t('feedbackRecorder.cancelConfirm.keep')}</Button><Button size="xs" variant="danger" onClick={onCancel}>{t('feedbackRecorder.cancelConfirm.discard')}</Button></div>}
           data-testid="feedback-recorder-cancel-confirm"
+          description={t('feedbackRecorder.cancelConfirm.description')}
+          layout="stacked"
+          title={t('feedbackRecorder.cancelConfirm.title')}
           tone="error"
-        >
-          <AlertTitle>{t('feedbackRecorder.cancelConfirm.title')}</AlertTitle>
-          <AlertDescription truncate={false}>{t('feedbackRecorder.cancelConfirm.description')}</AlertDescription>
-          <div className="flex flex-wrap justify-end gap-[var(--vds-space-2)] pt-[var(--vds-space-2)]">
-            <Button size="xs" variant="secondary" onClick={keepRecording}>{t('feedbackRecorder.cancelConfirm.keep')}</Button>
-            <Button size="xs" variant="danger" onClick={onCancel}>{t('feedbackRecorder.cancelConfirm.discard')}</Button>
-          </div>
-        </Alert>
+        />
       ) : null}
       </Card>
       <Tooltip anchorRef={dragSurfaceRef} open={dragTooltipOpen} portalled side="top">

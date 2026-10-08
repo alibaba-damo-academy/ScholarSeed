@@ -1,12 +1,16 @@
 import { Onboarding } from './contracts/onboarding'
 import { OnboardingHost } from './features/onboarding/Onboarding'
+import { StorageFirstLaunchDialog } from './components/business/StorageFirstLaunch'
 import { sessionDisplayTitle } from './session'
-import { feedback, renderFeedback } from './contracts/feedback'
+import { feedback, renderFeedback, type FeedbackDescriptor } from './contracts/feedback'
 import { taskTitleText } from './contracts/tasks'
+import { useTaskCenter } from './components/business/taskCenterContext'
 import React, { useEffect, useRef } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import { activeThread, AppState, MainView, useApp } from './store'
+import type { AppState, MainView } from './store'
+import { activeThread, useApp } from './store'
 import { useThemeEffect } from './theme'
+import { openResourceTarget } from './navigation'
 import {
   deleteSession,
   getAuthMe,
@@ -16,7 +20,7 @@ import {
   listProjects,
   type Project
 } from './api'
-import { AccountLogoutResult } from './account'
+import type { AccountLogoutResult } from './account'
 import { useCreditsLowWarning } from './credits'
 import { logoutDesktopSession } from './logout'
 import { useLiveSession } from './live'
@@ -31,10 +35,21 @@ import { WindowCloseDialog } from './shell/Close'
 import { AccountPanel } from './components/business/AccountPanel'
 import { LanguageSwitchDialog } from './components/business/Preferences'
 import { ProjectForm } from './components/business/ProjectForm'
+import { ProjectManageDialogs } from './components/business/ProjectActions'
 import { Sidebar } from './components/business/Sidebar'
 import { UpdateOverlay } from './components/business/UpdateOverlay'
+import { UpdateAnnouncement } from './components/business/UpdateAnnouncement'
 import {
   Alert,
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPortal,
+  AlertDialogTitle,
   AlertTitle,
   Button,
   Dialog,
@@ -57,6 +72,7 @@ import {
   OfficeRuntimeProvider
 } from './features/workbench/office/runtime'
 import { featureRegistry } from './app/composition'
+import { ErrorBoundary } from './app/Error'
 
 /** 0.2 工作台视图：这些 mainView 走四区外壳，其余走 0.1 双栏。 */
 const WORKBENCH_VIEWS: MainView[] = [
@@ -84,6 +100,30 @@ async function waitForSubmitEntry(): Promise<void> {
     await new Promise((resolve) =>
       window.setTimeout(resolve, SUBMIT_ENTRY_POLL_MS)
     )
+  }
+}
+
+/** 无头 harness 的前提探针：首启链未走完时点名具体卡点，而不是报泛化的「提交入口未就绪」。 */
+type HarnessBlocker = 'landing' | 'login' | 'guide' | 'noProject'
+
+function harnessBlocker(state: AppState): HarnessBlocker | null {
+  if (document.querySelector('[data-testid="landing-skip"]')) return 'landing'
+  if (state.loginOpen) return 'login'
+  if (document.querySelector('.ob-dismiss, [data-ob="guide-next"]')) return 'guide'
+  if (state.projects.length === 0) return 'noProject'
+  return null
+}
+
+function harnessBlockerFeedback(blocker: HarnessBlocker): FeedbackDescriptor {
+  switch (blocker) {
+    case 'landing':
+      return feedback('shell', 'foreground.harnessLanding')
+    case 'login':
+      return feedback('shell', 'foreground.harnessLogin')
+    case 'guide':
+      return feedback('shell', 'foreground.harnessGuide')
+    case 'noProject':
+      return feedback('shell', 'foreground.harnessNoProject')
   }
 }
 
@@ -757,6 +797,7 @@ function AppRoot(): React.JSX.Element {
         onLogout={handleLogout}
       />
       <OnboardingHost blocked={landingOpen || state.loginOpen} />
+      <StorageFirstLaunchDialog />
       <WindowCloseDialog />
       {state.loginOpen && !landingOpen && (
         <AccountLogin
@@ -889,19 +930,22 @@ function AppMain({
         }
         const submitted = await window.__scholarseedSubmitMessage?.(msg)
         if (submitted !== true) {
+          const blocker = harnessBlocker(state)
           set({
             petOverride: 'error',
             foregroundError:
               state.runtimeReadiness?.ready === false
                 ? state.runtimeReadiness.message ||
                   feedback('shell', 'foreground.runtimeNotReady')
-                : feedback('shell', 'foreground.submitNotReady')
+                : blocker
+                  ? harnessBlockerFeedback(blocker)
+                  : feedback('shell', 'foreground.submitNotReady')
           })
         }
       })()
     })
     return () => off?.()
-  }, [act, set, state.runtimeReadiness])
+  }, [act, set, state.runtimeReadiness, state.projects.length, state.loginOpen])
 
   // non-blocking backend health (shell renders seed data immediately). Poll fast
   // until the backend is ready, then a slow heartbeat so we don't hit /api/healthz
@@ -976,7 +1020,7 @@ function AppMain({
     }
   }, [])
 
-  const workspaceReady = state.workspaceLoadState === 'ready'
+  const workspaceReady = state.workspaceLoadState === 'ready' && state.navigationRestored
   const workspaceFailed = state.workspaceLoadState === 'error'
   const needsLogin = workspaceFailed && authRequired
   const retryWorkspaceLoad = (): void => {
@@ -1024,7 +1068,9 @@ function AppMain({
             ) : (
               <>
                 <Sidebar />
-                <Conversation key={state.activeSession ?? 'draft'} />
+                <ErrorBoundary embedded key={state.activeSession ?? 'draft'}>
+                  <Conversation key={state.activeSession ?? 'draft'} />
+                </ErrorBoundary>
               </>
             )}
           </div>
@@ -1063,6 +1109,8 @@ function AppMain({
 
         {workspaceReady && state.projectForm && <ProjectFormHost />}
 
+        {workspaceReady && <ProjectManageDialogs />}
+
         {workspaceReady && state.confirmDelete && <ConfirmDialog />}
 
         <LanguageSwitchDialog />
@@ -1074,6 +1122,7 @@ function AppMain({
         {/* 安装/重启遮罩挂在视图分支之外：安装可从活动栏、0.1 侧栏或「关于书深」任一处
           发起，而那些表面按 mainView 互斥挂载。 */}
         <UpdateOverlay />
+        <UpdateAnnouncement />
         {/* 积分预警同理挂在视图分支之外：对话轮在工作台与会话视图都会发生。 */}
         <CreditsWarningToast />
         {featureRegistry.globalSurfaces.map((surface) => (
@@ -1166,9 +1215,6 @@ function ForegroundNotice(): null {
   return null
 }
 
-/** 成功操作 Toast 的展示时间；错误提示保留到用户主动关闭。 */
-const RESOURCE_NOTICE_TIMEOUT_MS = 3200
-
 /**
  * 资料库操作反馈的全局 Toast 桥：notice 由任意视图写入（如 AI 会话导入资料
  * 库），过去只在资料库面板内受控渲染，面板未挂载时用户看不到任何反馈。这里
@@ -1180,6 +1226,7 @@ function ResourceNoticeToast(): null {
   const { t: taskText } = useTranslation('tasks')
   const { state, set, act } = useApp()
   const { toast } = useToast()
+  const { setOpen: setTaskCenterOpen } = useTaskCenter()
   const notice = state.resource.notice
   // StrictMode 下 effect 会连跑两次，用已推送消息引用去重，避免 toast 重复弹出。
   const pushedRef = useRef<typeof notice>(null)
@@ -1187,7 +1234,24 @@ function ResourceNoticeToast(): null {
     if (!notice || pushedRef.current === notice) return
     pushedRef.current = notice
     toast({
-      action: notice.retryDraft ? (
+      dedupeKey: JSON.stringify(['resource-notice', notice.tone,
+        'namespace' in notice.text
+          ? { ...notice.text, errorContent: undefined }
+          : notice.text]),
+      title: 'namespace' in notice.text && notice.text.key === 'feedback.incomplete'
+        ? taskText(notice.text.key, { name: taskTitleText(notice.text.name, taskText) })
+        : undefined,
+      action: 'namespace' in notice.text && notice.text.openTaskCenter ? (
+        <Button
+          data-testid="resource-notice-task-center"
+          size="sm"
+          type="button"
+          variant="link"
+          onClick={() => setTaskCenterOpen(true)}
+        >
+          {taskText('feedback.viewTaskCenter')}
+        </Button>
+      ) : notice.retryDraft ? (
         <Button
           data-testid="resource-notice-retry"
           size="sm"
@@ -1204,10 +1268,7 @@ function ResourceNoticeToast(): null {
           type="button"
           variant="link"
           onClick={() =>
-            void act.openResourceFile(
-              notice.openTarget!.path,
-              notice.openTarget!.projectId
-            )
+            openResourceTarget(act, notice.openTarget!)
           }
         >
           {uiText('open')}
@@ -1215,7 +1276,9 @@ function ResourceNoticeToast(): null {
       ) : undefined,
       description: (
         <>
-          {'namespace' in notice.text
+          {'namespace' in notice.text && notice.text.key === 'feedback.incomplete'
+            ? null
+            : 'namespace' in notice.text
             ? taskText(notice.text.key, {
                 name: taskTitleText(notice.text.name, taskText)
               })
@@ -1242,11 +1305,10 @@ function ResourceNoticeToast(): null {
           {notice.text.detail && <span> {notice.text.detail}</span>}
         </>
       ),
-      duration: notice.tone === 'ok' ? RESOURCE_NOTICE_TIMEOUT_MS : false,
       tone: notice.tone === 'ok' ? 'success' : 'error'
     })
     set((current) => ({ resource: { ...current.resource, notice: null } }))
-  }, [notice, set, toast, t, taskText, uiText, act])
+  }, [notice, set, toast, t, taskText, uiText, act, setTaskCenterOpen])
   return null
 }
 
@@ -1269,6 +1331,10 @@ function ConfirmDialog(): React.JSX.Element {
   const [err, setErr] = React.useState<
     'delete.running' | 'delete.failed' | null
   >(null)
+  const title = sessionDisplayTitle(
+    { title: cd.label, title_fallback: cd.title_fallback },
+    assistantText
+  )
 
   const onDelete = async (): Promise<void> => {
     // sessionId 缺失 → 能力卡占位删除 (暂无端点), 仅关闭对话框。
@@ -1297,153 +1363,30 @@ function ConfirmDialog(): React.JSX.Element {
   }
 
   return (
-    <div
-      style={{
-        position: 'absolute',
-        inset: 0,
-        zIndex: 90,
-        display: 'grid',
-        placeItems: 'center'
-      }}
-    >
-      <div
-        onClick={() => !busy && set({ confirmDelete: null })}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'rgba(10,9,6,0.5)'
-        }}
-      />
-      <div
-        data-testid="session-delete-confirm"
-        style={{
-          position: 'relative',
-          width: 340,
-          background: 'var(--bg-2)',
-          border: '1px solid var(--border)',
-          borderRadius: 14,
-          padding: 20,
-          boxShadow: 'var(--shadow)',
-          animation: 'cardIn .2s ease both'
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 9,
-            marginBottom: 10
-          }}
-        >
-          <span
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: '50%',
-              display: 'grid',
-              placeItems: 'center',
-              background: 'var(--c-tension)',
-              color: '#fff',
-              fontSize: 13
-            }}
-          >
-            !
-          </span>
-          <span style={{ fontSize: 14, color: 'var(--text)' }}>
-            {t('delete.title')}
-          </span>
-        </div>
-        <div
-          style={{
-            fontSize: 12,
-            color: 'var(--text-2)',
-            lineHeight: 1.6,
-            marginBottom: err ? 10 : 16
-          }}
-        >
-          {cd.sessionId ? (
-            <>
-              <div>{t('delete.filesRetained')}</div>
-              <div style={{ marginTop: 6 }}>
-                <Trans
-                  t={t}
-                  ns="shell"
-                  i18nKey="delete.irreversible"
-                  components={{
-                    name: (
-                      <b style={{ color: 'var(--text)' }}>
-                        {sessionDisplayTitle(
-                          {
-                            title: cd.label,
-                            title_fallback: cd.title_fallback
-                          },
-                          assistantText
-                        )}
-                      </b>
-                    )
-                  }}
-                />
-              </div>
-            </>
-          ) : (
-            <>
+    <AlertDialog open onOpenChange={(open) => { if (!open && !busy) set({ confirmDelete: null }) }}>
+      <AlertDialogPortal>
+        <AlertDialogContent data-testid="session-delete-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('delete.title')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {cd.sessionId && <>{t('delete.filesRetained')} {' '}</>}
               <Trans
                 t={t}
                 ns="shell"
                 i18nKey="delete.irreversible"
-                components={{
-                  name: (
-                    <b style={{ color: 'var(--text)' }}>
-                      {sessionDisplayTitle(
-                        { title: cd.label, title_fallback: cd.title_fallback },
-                        assistantText
-                      )}
-                    </b>
-                  )
-                }}
+                components={{ name: <b>{title}</b> }}
               />
-            </>
-          )}
-        </div>
-        {err && (
-          <div
-            style={{
-              fontSize: 11.5,
-              color: 'var(--c-tension)',
-              lineHeight: 1.5,
-              marginBottom: 14
-            }}
-          >
-            {t(err)}
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9 }}>
-          <Button
-            unstyled
-            className="chip"
-            onClick={() => set({ confirmDelete: null })}
-            disabled={busy}
-          >
-            {t('delete.cancel')}
-          </Button>
-          <Button
-            unstyled
-            onClick={onDelete}
-            disabled={busy}
-            style={{
-              background: 'var(--c-tension)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 8,
-              padding: '6px 14px',
-              fontSize: 11.5,
-              opacity: busy ? 0.6 : 1
-            }}
-          >
-            {t(busy ? 'delete.deleting' : 'delete.confirm')}
-          </Button>
-        </div>
-      </div>
-    </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {err && <Alert tone="error" description={t(err)} />}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>{t('delete.cancel')}</AlertDialogCancel>
+            <AlertDialogAction variant="danger" disabled={busy} onClick={(event) => { event.preventDefault(); void onDelete() }}>
+              {t(busy ? 'delete.deleting' : 'delete.confirm')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialog>
   )
 }

@@ -10,7 +10,7 @@ import { useApp } from '../store'
 import { resourceFileIcon } from '../features/resources/icons'
 import { firstLeaf, nodeTabCount, type DockLeaf, type DockNode } from '../features/workbench/layout'
 import { DocumentNavigationTabs } from '../features/workbench/Dragging'
-import { DocumentTabMenu } from '../features/workbench/Menu'
+import { DocumentTabMenu, WorkbenchTabMenu } from '../features/workbench/Menu'
 import {
   activeNavigationTabId,
   tabMatchesProject,
@@ -89,6 +89,7 @@ export function TabBar(): React.JSX.Element {
     if (session?.source.kind === 'project') act.selectResourceFile(session.source.path)
   }, [focusedDocumentTabId])
   const documentTabIds = documentTabs.map((tab) => tab.id)
+  const closableTabIds = tabs.filter((tab) => tab.closable !== false).map((tab) => tab.id)
   const showOverview = state.mainView !== 'literature' || Boolean(state.homeSelectedProjectId)
   const fallbackTabId = showOverview
     ? OVERVIEW_TAB.id
@@ -109,7 +110,10 @@ export function TabBar(): React.JSX.Element {
       workspace.focusTab(id)
       const session = documents.sessions[documentTab.sessionId]
       if (session?.source.kind === 'project') act.selectResourceFile(session.source.path)
-      set((current) => ({ ...current, mainView: session ? documentNavigationView(documentTab, session) : 'resource', activeTab: id }))
+      set({
+        mainView: session ? documentNavigationView(documentTab, session) : 'resource',
+        activeTab: id,
+      })
       return
     }
     act.activateTab(id)
@@ -145,6 +149,7 @@ export function TabBar(): React.JSX.Element {
       return item ? [item] : []
     })
     const tabs = leading ? workbenchTabs.concat(leafTabs) : leafTabs
+    const closableLeafTabIds = tabs.filter((tab) => tab.closable !== false).map((tab) => tab.id)
     const visibleIds = new Set([
       ...(leading && showOverview ? [OVERVIEW_TAB.id] : []),
       ...tabs.map((tab) => tab.id)
@@ -167,7 +172,9 @@ export function TabBar(): React.JSX.Element {
         overviewIcon={<LayoutDashboard size={13} strokeWidth={1.8} />}
         renderContextMenu={(tab) => documents.tabs[tab.id]
           ? <DocumentTabMenu tabId={tab.id} tabIds={leaf.tabIds} />
-          : null}
+          : tab.closable !== false
+            ? <WorkbenchTabMenu tabId={tab.id} tabIds={closableLeafTabIds} />
+            : null}
         showOverview={leading && showOverview}
         tabs={tabs}
         value={value}
@@ -186,7 +193,7 @@ export function TabBar(): React.JSX.Element {
         style={{ gridTemplateColumns: `${node.ratio}fr 5px ${1 - node.ratio}fr` }}
       >
         {renderSplitTabs(node.first, leading, false)}
-        <div data-testid="navigation-split-divider" className="border-b border-[var(--vds-border-default)] bg-[var(--vds-divider-default)]" />
+        <div data-testid="navigation-split-divider" className="border-b border-[var(--vds-divider-default)] bg-[var(--vds-divider-default)]" />
         {renderSplitTabs(node.second, false, trailing)}
       </div>
     )
@@ -214,7 +221,9 @@ export function TabBar(): React.JSX.Element {
       value={activeValue}
       renderContextMenu={(tab) => documents.tabs[tab.id]
         ? <DocumentTabMenu tabId={tab.id} tabIds={documentTabIds} />
-        : null}
+        : tab.closable !== false
+          ? <WorkbenchTabMenu tabId={tab.id} tabIds={closableTabIds} />
+          : null}
     />
   )
 }

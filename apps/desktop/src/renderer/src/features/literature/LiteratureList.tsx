@@ -1,4 +1,10 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -59,7 +65,7 @@ import emptyImage from '../../assets/empty_img.webp'
 import { hasDraggedFiles } from '../../drag'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'
-import { ArrowDownToLine, ArrowLeft, FileDown, Link, MonitorDown, Trash } from 'lucide-react'
+import { ArrowLeft, ArrowUpFromLine, FileDown, Link, LogOut, MonitorDown, Trash } from 'lucide-react'
 import { fileIconForName, IconFont } from '../../components/primitive'
 import { IMPORT_SOURCES } from './imports'
 import {
@@ -93,9 +99,15 @@ import {
   type LiteratureErrorMessage
 } from './error'
 import { saveBibtex } from './export'
-import { LiteratureDetail } from './LiteratureDetail'
+import {
+  LiteratureDetail,
+  type LiteratureDetailIntent
+} from './LiteratureDetail'
+import { LiteratureRowMenu, type RowMenuActions } from './RowMenu'
+import { MetadataBatch } from './MetadataBatch'
 import {
   mergeLiteratureSummaries,
+  literatureCollections,
   replaceLiteratureSummary,
   timestampLabel
 } from './projection'
@@ -261,6 +273,8 @@ function Row({
   expanded,
   focused,
   isNew,
+  menu,
+  projectId,
   onOpen,
   onOpenFulltext,
   onToggle
@@ -272,12 +286,15 @@ function Row({
   expanded: boolean
   focused: boolean
   isNew: boolean
+  menu: RowMenuActions
+  projectId?: string
   onOpen: () => void
   onOpenFulltext: (attachmentId: string) => void
   onToggle: () => void
 }): React.JSX.Element {
   const { t: literature, i18n } = useTranslation('literature')
   const format = createFormatters(i18n.resolvedLanguage === 'en' ? 'en' : 'zh')
+  const collections = literatureCollections(item, projectId)
   const facetNames = (values: Array<{ name: string }>): string =>
     values.map((value) => value.name).join('、') || EMPTY_CELL
   // 双击的目标是主附件(全文)。判空必须在渲染层做完: store 的 openLiteratureAttachment
@@ -296,7 +313,7 @@ function Row({
         tooltipPortalled
         wrapperClassName="lit-title-cell"
       >
-        <strong>{item.title}</strong>
+        <span className="font-[var(--vds-fw-medium)]">{item.title}</span>
       </EllipsisText>
     ) : key === 'creator' ? (
       <EllipsisText key={key} tooltipPortalled tooltipContentClassName="[--vds-tooltip-max-height:var(--vds-literature-author-tooltip-max-height)]">
@@ -317,21 +334,10 @@ function Row({
     ) : key === 'projects' ? (
       // 一篇文献可归属多个项目: 列内只画第一个项目, 其余折叠成 +N 芯片。
       // 折叠后单元格通常不再溢出, 所以完整名单由 +N 自己的 tooltip 承担; 单元格 tooltip 仍是全量兜底。
-      <EllipsisText
-        key={key}
-        tooltip={
-          item.projects.length === 0
-            ? literature('list.noProject')
-            : facetNames(item.projects)
-        }
-        tooltipPortalled
-      >
+      // 无归属项目时与作者/出版物/标签列保持一致: 只留空单元格占位, 不画品牌色芯片。
+      <EllipsisText key={key} tooltip={facetNames(item.projects)} tooltipPortalled>
         <span className={CHIP_CELL_CLASS}>
-          {item.projects.length === 0 ? (
-            <Badge className={CHIP_CLASS} tone="brand">
-              {literature('list.noProject')}
-            </Badge>
-          ) : (
+          {item.projects.length === 0 ? EMPTY_CELL : (
             <>
               <Badge className={CHIP_CLASS} tone="brand">
                 {item.projects[0].name}
@@ -404,11 +410,11 @@ function Row({
         </span>
       </EllipsisText>
     ) : key === 'collections' ? (
-      <EllipsisText key={key} tooltip={facetNames(item[key])} tooltipPortalled>
+      <EllipsisText key={key} tooltip={facetNames(collections)} tooltipPortalled>
         <span className={CHIP_CELL_CLASS}>
-          {item[key].length === 0
+          {collections.length === 0
             ? EMPTY_CELL
-            : item[key].map((facet) => (
+            : collections.map((facet) => (
                 <Badge className={CHIP_CLASS} key={facet.id} tone="brand">
                   {facet.name}
                 </Badge>
@@ -430,60 +436,62 @@ function Row({
       </EllipsisText>
     )
   return (
-    <div
-      className={`lit-row${checked ? ' is-selected' : ''}${focused ? ' is-focused' : ''}`}
-      style={{ gridTemplateColumns: grid }}
-      onClick={onOpen}
-      onDoubleClick={
-        primaryAttachment
-          ? () => onOpenFulltext(primaryAttachment.id)
-          : undefined
-      }
-    >
-      <div className="lit-sticky-cells">
-        <span
-          className={`lit-unread${isNew ? ' is-on' : ''}`}
-          title={isNew ? literature('list.newImport') : undefined}
-        />
-        <span
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          <Checkbox
-            checked={checked}
-            label={literature('list.select', { title: item.title })}
-            onCheckedChange={(value) => catalogue.select(item.id, value)}
+    <LiteratureRowMenu actions={menu} item={item} projectId={projectId}>
+      <div
+        className={`lit-row font-normal${checked ? ' is-selected' : ''}${focused ? ' is-focused' : ''}`}
+        style={{ gridTemplateColumns: grid }}
+        onClick={onOpen}
+        onDoubleClick={
+          primaryAttachment
+            ? () => onOpenFulltext(primaryAttachment.id)
+            : undefined
+        }
+      >
+        <div className="lit-sticky-cells">
+          <span
+            className={`lit-unread${isNew ? ' is-on' : ''}`}
+            title={isNew ? literature('list.newImport') : undefined}
           />
-        </span>
-        <span
-          className="lit-pdf-cell"
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-        >
-          {item.attachments.length ? (
-            <IconButton
-              label={
-                expanded
-                  ? literature('list.collapseAttachments')
-                  : literature('list.expandAttachments')
-              }
-              variant="ghostIcon"
-              size="sm"
-              icon={
-                <Icon
-                  name={expanded ? 'chevron-down' : 'chevron-right'}
-                  size={13}
-                />
-              }
-              onClick={onToggle}
+          <span
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <Checkbox
+              checked={checked}
+              label={literature('list.select', { title: item.title })}
+              onCheckedChange={(value) => catalogue.select(item.id, value)}
             />
-          ) : null}
-        </span>
+          </span>
+          <span
+            className="lit-pdf-cell"
+            onClick={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            {item.attachments.length ? (
+              <IconButton
+                label={
+                  expanded
+                    ? literature('list.collapseAttachments')
+                    : literature('list.expandAttachments')
+                }
+                variant="ghostIcon"
+                size="sm"
+                icon={
+                  <Icon
+                    name={expanded ? 'chevron-down' : 'chevron-right'}
+                    size={13}
+                  />
+                }
+                onClick={onToggle}
+              />
+            ) : null}
+          </span>
+        </div>
+        {columns
+          .filter((column) => column.visible)
+          .map((column) => cell(column.key))}
       </div>
-      {columns
-        .filter((column) => column.visible)
-        .map((column) => cell(column.key))}
-    </div>
+    </LiteratureRowMenu>
   )
 }
 
@@ -629,15 +637,21 @@ export function LiteratureList(): React.JSX.Element {
     selected,
     focusedId,
     focusedAttachmentId,
+    itemsReady,
     reload,
     importRequest
   } = useCatalogue()
   const projectId = query.project_id
-  const [items, setItems] = useState<LiteratureSummary[]>([])
+  const [items, setItems] = useState<LiteratureSummary[]>(
+    () => catalogue.getSnapshot().items
+  )
   const [search, setSearch] = useState(query.q ?? '')
   // 导入落点 = 左侧当前选择; PDF / Bib-RIS / Zotero 三条渠道共用这一份推导。
   const destination = importDestination(query)
-  const [loading, setLoading] = useState(true)
+  const importDestinationOverride = useRef<typeof destination | null>(null)
+  const activeImportDestination = (): typeof destination =>
+    importDestinationOverride.current ?? destination
+  const [loading, setLoading] = useState(!itemsReady)
   const [error, setError] = useState<LiteratureErrorMessage | null>(null)
   const [task, setTask] = useState<LiteratureTask | null>(null)
   const taskError =
@@ -679,7 +693,26 @@ export function LiteratureList(): React.JSX.Element {
   const [batchLoading, setBatchLoading] = useState(false)
   const [batchExpanded, setBatchExpanded] = useState<Set<string>>(new Set())
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [emptyImportOpen, setEmptyImportOpen] = useState(false)
+  // 行右键菜单的「打开详情后立刻做什么」: 详情面板消费一次后回收, nonce 让同一条
+  // 文献连续两次选同一项也能重新触发 (面板已经开着时 id 不变, 靠 nonce 区分)。
+  const [detailIntent, setDetailIntent] =
+    useState<LiteratureDetailIntent | null>(null)
+  const clearDetailIntent = useCallback(() => setDetailIntent(null), [])
+  const retainedFocus = useRef({
+    id: focusedId,
+    attachmentId: focusedAttachmentId
+  })
+  if (focusedId) {
+    retainedFocus.current = {
+      id: focusedId,
+      attachmentId: focusedAttachmentId
+    }
+  }
+  // 单条移出/删除的确认目标; 与批量条的 deleteConfirmOpen 分开, 文案里的数量不同。
+  const [removeTarget, setRemoveTarget] = useState<LiteratureSummary | null>(
+    null
+  )
+  const [removing, setRemoving] = useState(false)
   const localUpdates = useRef(
     new Map<
       string,
@@ -759,7 +792,12 @@ export function LiteratureList(): React.JSX.Element {
         sort?: LiteratureQuery['sort']
         order?: LiteratureQuery['order']
       } | null
-      if (saved?.sort && saved.order) catalogue.query(saved)
+      if (
+        saved?.sort &&
+        saved.order &&
+        (saved.sort !== query.sort || saved.order !== query.order)
+      )
+        catalogue.query(saved)
     } catch {
       /* use catalogue defaults */
     }
@@ -774,11 +812,12 @@ export function LiteratureList(): React.JSX.Element {
     return () => window.clearTimeout(timer)
   }, [query.q, search])
   useEffect(() => {
+    if (catalogue.itemsFresh()) return
     let active = true
     const request = ++listRequest.current
     pendingListRequest.current = request
     const controller = new AbortController()
-    setLoading(true)
+    if (!catalogue.getSnapshot().itemsReady) setLoading(true)
     setError(null)
     listAllLiteratures(query, controller.signal)
       .then((value) => {
@@ -870,30 +909,32 @@ export function LiteratureList(): React.JSX.Element {
     setTask(null)
   }, [task, literature, toast])
 
-  const allChecked =
-    items.length > 0 && items.every((item) => selected.includes(item.id))
+  const picked = useMemo(() => new Set(selected), [selected])
+  const visibleSelectedCount = items.filter((item) => picked.has(item.id)).length
+  const selectAllState = visibleSelectedCount === 0
+    ? false
+    : visibleSelectedCount === items.length ? true : 'mixed'
   const filtered = hasActiveListRefinement(query)
   const libraryEmpty = items.length === 0 && !filtered
-  const picked = useMemo(() => new Set(selected), [selected])
-  const deletePicked = async (): Promise<void> => {
-    const count = selected.length
-    setDeleteConfirmOpen(false)
+  /**
+   * 移出项目 / 删除文献的真实动作, 批量条与行右键菜单共用。
+   *
+   * 语义由作用域决定: 项目文献库里是「移出项目」(文献仍留在文献全览), 文献全览里
+   * 才是删除。失败统一走同一条 toast, 调用方只拿布尔结果决定要不要收尾。
+   */
+  const removeLiteratures = async (
+    ids: readonly string[]
+  ): Promise<boolean> => {
+    if (!ids.length) return false
     try {
       if (projectId) {
-        await bulkLiteratures(selected, 'unlink_project', {
+        await bulkLiteratures([...ids], 'unlink_project', {
           project_id: projectId
         })
       } else {
-        await deleteLiteratures(selected)
+        await deleteLiteratures([...ids])
       }
-      catalogue.clear()
-      catalogue.reload()
-      toast({
-        title: projectId
-          ? literature('batch.removeSucceeded', { count })
-          : literature('batch.deleteSucceeded', { count }),
-        tone: 'success'
-      })
+      return true
     } catch (reason: unknown) {
       const message = literatureErrorMessage(
         reason instanceof LiteratureApiError ? reason.failure.code : undefined,
@@ -905,7 +946,56 @@ export function LiteratureList(): React.JSX.Element {
         title: literature('batch.deleteFailed'),
         tone: 'error'
       })
+      return false
     }
+  }
+  const removedToast = (count: number): void => {
+    toast({
+      title: projectId
+        ? literature('batch.removeSucceeded', { count })
+        : literature('batch.deleteSucceeded', { count }),
+      tone: 'success'
+    })
+  }
+  const deletePicked = async (): Promise<void> => {
+    const count = selected.length
+    setDeleteConfirmOpen(false)
+    if (!(await removeLiteratures(selected))) return
+    catalogue.clear()
+    catalogue.reload()
+    removedToast(count)
+  }
+  /** 行右键菜单的移出/删除: 只动这一条, 不牵连批量勾选。 */
+  const confirmRemoveItem = async (): Promise<void> => {
+    const target = removeTarget
+    if (!target || removing) return
+    setRemoving(true)
+    const removed = await removeLiteratures([target.id])
+    setRemoving(false)
+    if (!removed) return
+    setRemoveTarget(null)
+    // select(id, false) 同时收掉焦点: 行已经不在了, 详情面板不该继续指着它。
+    catalogue.select(target.id, false)
+    catalogue.reload()
+    removedToast(1)
+  }
+  /**
+   * 打开详情面板: 行单击与右键菜单的「查看基本信息 / 添加笔记 / 添加附件」共用。
+   *
+   * 「本次新导入」的小蓝点在打开详情后就不再有意义, 所以三条入口都顺手清掉它。
+   */
+  const openDetail = (
+    item: LiteratureSummary,
+    action?: LiteratureDetailIntent['action']
+  ): void => {
+    setNewlyImported((current) => {
+      if (!current.has(item.id)) return current
+      const next = new Set(current)
+      next.delete(item.id)
+      return next
+    })
+    setDetailIntent(action ? { action, nonce: Date.now() } : null)
+    catalogue.focus(item.id)
   }
   const runBulk = async (operation: string): Promise<void> => {
     try {
@@ -1133,18 +1223,19 @@ export function LiteratureList(): React.JSX.Element {
    * 绝不能因为它挡住导入。
    */
   const resolveDestinationLabel = async (): Promise<string> => {
-    const scope = query.without_collection
+    const importDestination = activeImportDestination()
+    const scope = importDestinationOverride.current === null && query.without_collection
       ? literature('panel.unfiled')
-      : destination.projectId
+      : importDestination.projectId
         ? literature('navigation.project')
         : literature('navigation.overview')
     try {
       const [facets, projects] = await Promise.all([
-        getLiteratureFacets({ project_id: destination.projectId || undefined }),
+        getLiteratureFacets({ project_id: importDestination.projectId || undefined }),
         getLiteratureProjects()
       ])
       return importDestinationLabel(
-        destination,
+        importDestination,
         facets.collections,
         projects.projects,
         scope
@@ -1214,6 +1305,7 @@ export function LiteratureList(): React.JSX.Element {
   useEffect(() => {
     if (!importRequest) return
     catalogue.consumeImportRequest()
+    importDestinationOverride.current = importRequest.destination
     void startImport(importRequest.source)
   }, [importRequest])
   const startZoteroImport = async (): Promise<void> => {
@@ -1224,11 +1316,12 @@ export function LiteratureList(): React.JSX.Element {
     setZoteroError(null)
     try {
       if (!zoteroPreview) return
+      const importDestination = activeImportDestination()
       const selection = zoteroSelectionDirectives(zoteroSelection)
       setTask(
         await createImportTask('zotero', {
-          project_id: destination.projectId,
-          collection_id: destination.collectionId,
+          project_id: importDestination.projectId,
+          collection_id: importDestination.collectionId,
           selection,
           include_unfiled: zoteroUnfiled,
           import_collections: zoteroCollections,
@@ -1236,6 +1329,7 @@ export function LiteratureList(): React.JSX.Element {
         }, zoteroSubmitKey.current)
       )
       setZoteroOpen(false)
+      importDestinationOverride.current = null
     } catch (reason) {
       setZoteroError(
         literatureErrorMessage(
@@ -1259,7 +1353,8 @@ export function LiteratureList(): React.JSX.Element {
     })
   }
   const importPdfFiles = async (
-    input: FileList | readonly File[]
+    input: FileList | readonly File[],
+    importDestination = destination
   ): Promise<void> => {
     const files = Array.from(input)
     if (!files.length) return
@@ -1303,8 +1398,8 @@ export function LiteratureList(): React.JSX.Element {
           record.file,
           (progress, phase) =>
             updateImport(record.id, { progress, status: phase }),
-          destination.projectId,
-          destination.collectionId
+          importDestination.projectId,
+          importDestination.collectionId
         )
         updateImport(record.id, {
           progress: 100,
@@ -1333,7 +1428,9 @@ export function LiteratureList(): React.JSX.Element {
   const uploadPdf = (event: React.ChangeEvent<HTMLInputElement>): void => {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
-    void importPdfFiles(files)
+    const importDestination = activeImportDestination()
+    importDestinationOverride.current = null
+    void importPdfFiles(files, importDestination)
   }
   const clearPdfDrop = (): void => {
     pdfDragDepth.current = 0
@@ -1345,11 +1442,13 @@ export function LiteratureList(): React.JSX.Element {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
     if (!files.length) return
+    const importDestination = activeImportDestination()
+    importDestinationOverride.current = null
     setError(null)
     try {
       const result = await importBibliography(files, {
-        projectId: destination.projectId,
-        collectionId: destination.collectionId
+        projectId: importDestination.projectId,
+        collectionId: importDestination.collectionId
       })
       setNewlyImported(
         (current) =>
@@ -1368,6 +1467,52 @@ export function LiteratureList(): React.JSX.Element {
       )
     }
   }
+  const renderImportMenu = (iconOnly = false): React.JSX.Element => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        {iconOnly ? (
+            <IconButton data-testid="literature-toolbar-import" variant="outline" label={literature('panel.import')} icon={<IconFont type="icon-line-operation-add" />} />
+          ) : (
+            <Button variant="outline" icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}>
+              {literature('panel.import')}
+            </Button>
+          )}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-52">
+        {projectId ? (
+          <>
+            <DropdownMenuItem
+              onSelect={() => {
+                act.openWorkbenchView('literature', { returnProjectId: projectId })
+              }}
+            >
+              <Link />
+              {literature('panel.linkFromOverview')}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {IMPORT_SOURCES.map((source) => (
+          <DropdownMenuItem
+            key={source.value}
+            onSelect={() => {
+              importDestinationOverride.current = null
+              void startImport(source.value)
+            }}
+          >
+            {source.icon === 'local-pdf' ? (
+              <MonitorDown />
+            ) : source.icon === 'bib-ris' ? (
+              <FileDown />
+            ) : (
+              <IconFont type="icon-zotero" />
+            )}
+            {literature(source.labelKey)}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
   return (
     <section className="lit-page" data-testid="literature-overview">
       <Input
@@ -1507,7 +1652,10 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <Dialog open={zoteroOpen} onOpenChange={setZoteroOpen}>
+      <Dialog open={zoteroOpen} onOpenChange={(open) => {
+        setZoteroOpen(open)
+        if (!open) importDestinationOverride.current = null
+      }}>
         <DialogContent
           data-ways="zotero"
           className="w-[min(720px,calc(100vw-48px))]"
@@ -1590,7 +1738,10 @@ export function LiteratureList(): React.JSX.Element {
             ) : null}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setZoteroOpen(false)}>
+            <Button variant="outline" onClick={() => {
+              setZoteroOpen(false)
+              importDestinationOverride.current = null
+            }}>
               {literature('batch.cancel')}
             </Button>
             <Button
@@ -1608,7 +1759,7 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <header className="lit-toolbar" data-workbench-divider>
+      <header className="lit-toolbar min-w-0 flex-wrap" data-workbench-divider>
         {returnProject ? (
           <Button
             data-testid="literature-return-project"
@@ -1625,10 +1776,11 @@ export function LiteratureList(): React.JSX.Element {
           </Button>
         ) : null}
         {selected.length > 0 ? (
-          <div className="lit-batch">
-            <strong>
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-[var(--vds-space-2)]">
+            <span className="font-normal">
               {literature('batch.selected', { count: selected.length })}
-            </strong>
+            </span>
+            <MetadataBatch entries={selected.map((id) => ({ id, title: items.find((item) => item.id === id)?.title ?? id }))} projectId={projectId} />
             {!projectId ? (
               <Button
                 size="md"
@@ -1660,7 +1812,7 @@ export function LiteratureList(): React.JSX.Element {
             <Button
               size="md"
               variant="secondary"
-              icon={<ArrowDownToLine size={14} />}
+              icon={<ArrowUpFromLine size={14} />}
               onClick={() => void exportSelected()}
             >
               {literature('batch.export')}
@@ -1668,7 +1820,7 @@ export function LiteratureList(): React.JSX.Element {
             <Button
               size="md"
               variant="danger"
-              icon={<Trash size={14} />}
+              icon={projectId ? <LogOut size={14} /> : <Trash size={14} />}
               onClick={() => setDeleteConfirmOpen(true)}
             >
               {projectId ? literature('batch.removeProject') : ui('delete')}
@@ -1720,6 +1872,8 @@ export function LiteratureList(): React.JSX.Element {
           </div>
         ) : (
           <div className="lit-actions">
+            <MetadataBatch entries={[]} projectId={projectId} />
+            {renderImportMenu(true)}
             <form
               className="lit-search"
               onSubmit={(event) => event.preventDefault()}
@@ -1765,6 +1919,11 @@ export function LiteratureList(): React.JSX.Element {
           className="relative flex flex-1 min-w-0"
           data-drop-active={pdfDropActive ? 'true' : 'false'}
           data-testid="literature-drop-target"
+          onPointerDownCapture={(event) => {
+            if (event.button !== 0 || !focusedId) return
+            catalogue.focus(null)
+            setDetailIntent(null)
+          }}
           onDragEnter={(event) => {
             if (!hasDraggedFiles(event.dataTransfer)) return
             event.preventDefault()
@@ -1800,7 +1959,7 @@ export function LiteratureList(): React.JSX.Element {
               <div className="lit-sticky-cells">
                 <span />
                 <Checkbox
-                  checked={allChecked}
+                  checked={selectAllState}
                   label={literature('list.selectAll')}
                   onCheckedChange={(checked) =>
                     catalogue.selectAll(
@@ -1882,47 +2041,7 @@ export function LiteratureList(): React.JSX.Element {
                 <EmptyState
                   image={{ src: emptyImage, alt: '' }}
                   title={literature('list.empty')}
-                  action={
-                    <DropdownMenu open={emptyImportOpen} onOpenChange={setEmptyImportOpen}>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" icon={<IconFont type="icon-line-operation-add" className="inline-flex shrink-0 items-center justify-center size-[var(--vds-icon-7)] !text-[length:var(--vds-icon-7)] !leading-none" />}>
-                          {literature('panel.import')}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent className="w-52">
-                        {projectId ? (
-                          <>
-                            <DropdownMenuItem
-                              onSelect={() => {
-                                act.openWorkbenchView('literature', { returnProjectId: projectId })
-                              }}
-                            >
-                              <Link />
-                              {literature('panel.linkFromOverview')}
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                          </>
-                        ) : null}
-                        {IMPORT_SOURCES.map((source) => (
-                          <DropdownMenuItem
-                            key={source.value}
-                            onSelect={() => {
-                              void startImport(source.value)
-                            }}
-                          >
-                            {source.icon === 'local-pdf' ? (
-                              <MonitorDown />
-                            ) : source.icon === 'bib-ris' ? (
-                              <FileDown />
-                            ) : (
-                              <IconFont type="icon-zotero" />
-                            )}
-                            {literature(source.labelKey)}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  }
+                  action={renderImportMenu()}
                 />
               ) : (
                 <EmptyState
@@ -1942,6 +2061,15 @@ export function LiteratureList(): React.JSX.Element {
                   isNew={newlyImported.has(item.id)}
                   expanded={expanded.has(item.id)}
                   focused={focusedId === item.id && !focusedAttachmentId}
+                  projectId={projectId}
+                  menu={{
+                    viewPdf: (attachmentId) =>
+                      act.openLiteratureAttachment(item.id, attachmentId),
+                    viewInfo: () => openDetail(item),
+                    addNote: () => openDetail(item, 'note'),
+                    addAttachment: () => openDetail(item, 'attachment'),
+                    remove: () => setRemoveTarget(item)
+                  }}
                   onToggle={() =>
                     setExpanded((current) => {
                       const next = new Set(current)
@@ -1950,15 +2078,7 @@ export function LiteratureList(): React.JSX.Element {
                       return next
                     })
                   }
-                  onOpen={() => {
-                    setNewlyImported((current) => {
-                      if (!current.has(item.id)) return current
-                      const next = new Set(current)
-                      next.delete(item.id)
-                      return next
-                    })
-                    catalogue.focus(item.id)
-                  }}
+                  onOpen={() => openDetail(item)}
                   onOpenFulltext={(attachmentId) =>
                     act.openLiteratureAttachment(item.id, attachmentId)
                   }
@@ -2069,13 +2189,24 @@ export function LiteratureList(): React.JSX.Element {
         <Sheet
           open={Boolean(focusedId)}
           onOpenChange={(open) => {
-            if (!open) catalogue.focus(null)
+            if (open) return
+            catalogue.focus(null)
+            setDetailIntent(null)
           }}
         >
           <LiteratureDetail
-            id={focusedId}
-            attachmentId={focusedAttachmentId}
-            onClose={() => catalogue.focus(null)}
+            id={focusedId ?? retainedFocus.current.id}
+            attachmentId={
+              focusedId
+                ? focusedAttachmentId
+                : retainedFocus.current.attachmentId
+            }
+            intent={detailIntent}
+            onClose={() => {
+              catalogue.focus(null)
+              setDetailIntent(null)
+            }}
+            onIntentConsumed={clearDetailIntent}
             onItemUpdated={updateVisibleItem}
           />
         </Sheet>
@@ -2102,9 +2233,7 @@ export function LiteratureList(): React.JSX.Element {
             </DialogDescription>
           </DialogHeader>
           {batchDialog === 'project' && batchProjects.length === 0 ? (
-            <p className="m-0 text-xs leading-5 text-[var(--vds-text-secondary)]">
-              {literature('batch.noProjects')}
-            </p>
+            <EmptyState variant="compact" icon={<Icon name="folder" />} title={literature('batch.noProjects')} />
           ) : batchDialog === 'project' ? (
             <Select
               disabled={batchLoading || batchSaving}
@@ -2195,6 +2324,48 @@ export function LiteratureList(): React.JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <AlertDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !removing) setRemoveTarget(null)
+        }}
+      >
+        <AlertDialogContent data-testid="literature-row-remove-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {projectId
+                ? literature('batch.removeProject')
+                : literature('batch.deleteTitle')}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {projectId
+                ? literature('list.rowMenu.removeDescription', {
+                    title: removeTarget?.title ?? ''
+                  })
+                : literature('list.rowMenu.deleteDescription', {
+                    title: removeTarget?.title ?? ''
+                  })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={removing}>
+              {ui('cancel')}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="![background:var(--vds-error-bg-default)] ![color:var(--vds-static-white)]"
+              disabled={removing}
+              onClick={(event) => {
+                event.preventDefault()
+                void confirmRemoveItem()
+              }}
+            >
+              {projectId
+                ? literature('batch.confirmRemove')
+                : literature('batch.confirmDelete')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

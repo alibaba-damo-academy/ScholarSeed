@@ -7,14 +7,15 @@ import { apiBase, DesktopSession, enterWorkbenchShell, liveStatus, waitForFinish
 import { createRuntime, seedLiveConfig } from './fixtures/runtime'
 import { sseData } from '../src/renderer/src/sse'
 import type { AssistantSelectionActionResult } from '../src/renderer/src/contracts/assistant'
+import { ONBOARDING_GROUPS } from '../src/onboarding'
 
 const RUNTIME_READY_TIMEOUT_MS = 45_000
 const TURN_COMPLETE_TIMEOUT_MS = 180_000
 const MENU_ANIMATION_SETTLE_MS = 250
+const REFERENCE_PICKER_LIST_HEIGHT = 265
 const FIRST_PROMPT = '请只用一句话回答：上下文运行时验收已开始。'
 const ANNOTATION_COMMENT = '请保留这条验收结论。'
 const UPDATED_ANNOTATION_COMMENT = '请保留并明确强调这条验收结论。'
-const HISTORY_ANNOTATION_COMMENT = '从消息列表修改的注释。'
 const DELETED_ANNOTATION_COMMENT = '这条注释用于验证删除。'
 const CONTEXT_PROMPT = '请只用一句话确认：已收到上一条注释。'
 const INTERNAL_CONTEXT_MARKER = '[SCHOLARSEED_ASSISTANT_CONTEXT v1]'
@@ -23,6 +24,10 @@ const MANAGED_RESOURCES_DIR = 'resources'
 const CONTEXT_FILE_NAME = '真实上下文.md'
 const CONTEXT_FILE_RELATIVE = `${MANAGED_RESOURCES_DIR}/${CONTEXT_FILE_NAME}`
 const CONTEXT_NONCE = 'scholarseed-context-nonce-8f34d2'
+const PROJECT_TAB_TEST_TITLE = 'project document tab and resource tree share one context and send real turns'
+const PROJECT_TAB_PROMPT = '请读取加入对话的文件，只回复文件中的随机标记，不要添加其他文字。'
+const PROJECT_TAB_FOLLOWUP = '请重新读取当前加入对话的文件，只回复文件中的随机标记，不要引用上一轮回答。'
+const PROJECT_TAB_PREFERENCES_FILE = 'renderer-preferences.json'
 const CONTEXT_FOLDER_NAME = '目录上下文'
 const CONTEXT_FOLDER_RELATIVE = `${MANAGED_RESOURCES_DIR}/${CONTEXT_FOLDER_NAME}`
 const CONTEXT_NESTED_FILE_NAME = '嵌套证据.md'
@@ -35,6 +40,12 @@ const FILE_CONTEXT_PROMPT = '请读取所有已附加资料，只回复其中三
 const TRANSLATION_PROJECT_NAME = 'AI 翻译验收项目'
 const TRANSLATION_FILE_RELATIVE = 'resources/translation.md'
 const TRANSLATION_SOURCE = 'The orbital validation nonce is helios-translation-47.'
+const PDF_QUOTE_TEST_TITLE = 'PDF accepts a second quote during a real reply and sends only that pending quote next'
+const PDF_QUOTE_PAPER_TITLE = 'PDF running reply quotes'
+const PDF_FIRST_QUOTE = 'First evidence is quartz-alpha-87348500.'
+const PDF_SECOND_QUOTE = 'Second evidence is cobalt-beta-87348500.'
+const PDF_FIRST_PROMPT = '先完整复述所附选区，再用40个编号条目说明如何核验这段资料，每项写两句话。'
+const PDF_SECOND_PROMPT = '请完整复述本次新加入的选区，只输出选区原文，不要复述上一轮资料。'
 
 async function submitAnnotation(page: Page, sessionId: string, comment: string): Promise<void> {
   const input = page.getByLabel('批注内容')
@@ -97,6 +108,99 @@ async function sessionCount(page: Page): Promise<number> {
     return payload.sessions?.length ?? 0
   }, await apiBase(page))
 }
+
+test(PDF_QUOTE_TEST_TITLE, async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const blocker = seedLiveConfig(runtime)
+  test.skip(Boolean(blocker), blocker ?? '')
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { home: true, project: true, globalLib: true, pdf: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo, { preserveRuntime: true })
+  try {
+    const page = await desktop.launch()
+    const pdf = await PDFDocument.create()
+    pdf.setTitle(PDF_QUOTE_PAPER_TITLE)
+    const font = await pdf.embedFont(StandardFonts.Helvetica)
+    const pdfPage = pdf.addPage([612, 792])
+    pdfPage.drawText(PDF_FIRST_QUOTE, { x: 50, y: 650, size: 12, font })
+    pdfPage.drawText(PDF_SECOND_QUOTE, { x: 50, y: 620, size: 12, font })
+    const imported = await page.request.post(`${await apiBase(page)}/api/v1/imports/pdf`, {
+      multipart: { file: { name: 'running-quotes.pdf', mimeType: 'application/pdf', buffer: Buffer.from(await pdf.save()) } }
+    })
+    expect(imported.ok(), await imported.text()).toBe(true)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('activity-literature').click()
+    await page.locator('.lit-row').filter({ hasText: PDF_QUOTE_PAPER_TITLE }).first().click()
+    await page.getByRole('button', { name: '打开', exact: true }).click()
+    const selectQuote = async (text: string): Promise<void> => {
+      const textSpan = page.getByTestId('pdf-page-1').locator('.textLayer span').filter({ hasText: text }).first()
+      await expect(textSpan).toBeVisible()
+      const bounds = await textSpan.boundingBox()
+      if (!bounds) throw new Error('PDF quote bounds unavailable')
+      await page.mouse.move(bounds.x + 1, bounds.y + bounds.height / 2)
+      await page.mouse.down()
+      await page.mouse.move(bounds.x + bounds.width - 1, bounds.y + bounds.height / 2, { steps: 20 })
+      await page.mouse.up()
+      await expect(page.getByTestId('selection-action-host')).toBeVisible()
+    }
+    await selectQuote(PDF_FIRST_QUOTE)
+    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加到对话', exact: true }).click()
+    const panel = page.getByTestId('ai-panel')
+    await expect(panel.getByTestId('ai-context-ref')).toHaveCount(1)
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, { timeout: RUNTIME_READY_TIMEOUT_MS }).toBe(true)
+    await send(panel, PDF_FIRST_PROMPT)
+    await expect.poll(async () => Boolean((await liveStatus(page))?.running)).toBe(true)
+    const sessionId = (await liveStatus(page))?.activeSession
+    expect(sessionId).toBeTruthy()
+    await expect(panel.getByTestId('ai-context-ref')).toHaveCount(0)
+
+    await selectQuote(PDF_SECOND_QUOTE)
+    expect((await liveStatus(page))?.running).toBe(true)
+    const appendedResponse = page.waitForResponse(response => (
+      response.request().method() === 'PATCH'
+      && response.url().endsWith(`/api/assistant/sessions/${sessionId}/context`)
+    ))
+    await page.getByTestId('selection-action-host').getByRole('button', { name: '添加到对话', exact: true }).click()
+    const appended = await appendedResponse
+    expect(appended.status(), await appended.text()).toBe(200)
+    const selection = await appended.json()
+    expect(selection.claimed_ref_ids).toHaveLength(1)
+    expect(selection.refs.filter((ref: { ref_id: string }) => !selection.claimed_ref_ids.includes(ref.ref_id)))
+      .toHaveLength(1)
+    await expect(panel.getByTestId('ai-context-ref')).toHaveCount(1)
+    await panel.getByTestId('ai-context-ref').hover()
+    await expect(page.getByTestId('assistant-selection-quote')).toContainText(PDF_SECOND_QUOTE)
+    await expect(panel).not.toContainText('上下文保存失败')
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-quote-B-during-reply.png') })
+    await waitForFinishedTurn(page)
+    await expect(panel).toContainText(PDF_FIRST_QUOTE)
+
+    const secondTurnResponse = page.waitForResponse(response => (
+      response.request().method() === 'POST'
+      && response.url().endsWith(`/api/serve/sessions/${sessionId}/turns`)
+    ))
+    await send(panel, PDF_SECOND_PROMPT)
+    expect((await secondTurnResponse).status()).toBe(202)
+    await expect.poll(async () => Boolean((await liveStatus(page))?.running)).toBe(true)
+    await waitForFinishedTurn(page)
+    await expect(panel.locator('.answer-annotation-root').last()).toContainText(PDF_SECOND_QUOTE)
+    await expect(panel.locator('.answer-annotation-root').last()).not.toContainText(PDF_FIRST_QUOTE)
+    await expect(panel.getByTestId('ai-context-ref')).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'pdf-quote-B-next-reply.png') })
+    await testInfo.attach('pdf-quote-context', {
+      body: JSON.stringify({ sessionId, status: appended.status(), claimedRefIds: selection.claimed_ref_ids,
+        references: selection.refs.map((ref: { ref_id: string; anchor?: { snapshot_text: string } }) => ({
+          id: ref.ref_id, text: ref.anchor?.snapshot_text
+        })) }, null, 2), contentType: 'application/json'
+    })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
 
 test('Assistant context persists per Session and never leaks its model card into user history', async ({}, testInfo) => {
   const runtime = createRuntime(testInfo)
@@ -164,35 +268,17 @@ test('Assistant context persists per Session and never leaks its model card into
     }).toBe(false)
     await expect(page.getByTestId('user-bubble').last()).toContainText(CONTEXT_PROMPT)
     await expect(page.getByTestId('user-bubble').last()).not.toContainText(INTERNAL_CONTEXT_MARKER)
+    await expect(inlineAnnotation).toHaveCount(0)
     const historyAnnotationSummary = page.getByTestId('user-bubble').last()
       .getByRole('button', { name: '1 条注释' })
     await historyAnnotationSummary.hover()
+    await expect(page.getByTestId(/^answer-annotation-details-/)).toContainText(UPDATED_ANNOTATION_COMMENT)
+    await expect(page.getByRole('button', { name: '编辑注释 1' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '移除注释 1' })).toHaveCount(0)
     await page.getByTestId(/^answer-annotation-open-/).click()
     const focusedAnnotation = page.locator('[data-scholarseed-answer-annotation-focused="true"]')
     await expect(focusedAnnotation).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('assistant-annotation-history-focus.png') })
-
-    await historyAnnotationSummary.hover()
-    await page.getByRole('button', { name: '编辑注释 1' }).click()
-    await editInput.fill(HISTORY_ANNOTATION_COMMENT)
-    const historyUpdateResponse = page.waitForResponse((response) => (
-      response.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
-      && response.request().method() === 'PATCH'
-    ))
-    await editInput.press('Enter')
-    expect((await historyUpdateResponse).status()).toBe(200)
-    await expect(page.getByTestId(/^answer-annotation-details-/)).toContainText(HISTORY_ANNOTATION_COMMENT)
-    const updatedInlineAnnotation = page.getByRole('button', { name: new RegExp(HISTORY_ANNOTATION_COMMENT) })
-    await expect(updatedInlineAnnotation).toBeVisible()
-    await page.screenshot({ path: testInfo.outputPath('assistant-annotation-history-edited.png') })
-    const historyDeleteResponse = page.waitForResponse((response) => (
-      response.url().includes(`/api/assistant/sessions/${sessionId}/annotations/`)
-      && response.request().method() === 'DELETE'
-    ))
-    await page.getByRole('button', { name: '移除注释 1' }).click()
-    expect((await historyDeleteResponse).status()).toBe(200)
-    await expect(historyAnnotationSummary).toHaveCount(0)
-    await expect(updatedInlineAnnotation).toHaveCount(0)
 
     const latestAnswerLeaf = page.locator('.answer-annotation-root [data-md-source-start]').last()
     await expect(latestAnswerLeaf).toBeVisible()
@@ -263,7 +349,13 @@ test('Assistant context persists per Session and never leaks its model card into
     }).toBe(sessionId)
     await expect(page.getByTestId('user-bubble').last()).toContainText(CONTEXT_PROMPT)
     await expect(page.getByTestId('user-bubble').last()).not.toContainText(INTERNAL_CONTEXT_MARKER)
-    await expect(page.getByTestId('user-message-annotations')).toHaveCount(0)
+    const resumedAnnotationSummary = page.getByTestId('user-bubble').last()
+      .getByRole('button', { name: '1 条注释' })
+    await resumedAnnotationSummary.hover()
+    await expect(page.getByTestId(/^answer-annotation-details-/)).toContainText(UPDATED_ANNOTATION_COMMENT)
+    await expect(page.getByRole('button', { name: '编辑注释 1' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '移除注释 1' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: new RegExp(UPDATED_ANNOTATION_COMMENT) })).toHaveCount(0)
     const resumedContext = await page.evaluate(async ({ base, sid }) => {
       const response = await fetch(`${base}/api/assistant/sessions/${sid}/context`)
       return response.json() as Promise<{ revision: number; search_scope: string }>
@@ -511,7 +603,7 @@ test('Folder expands', async ({}, testInfo) => {
   }
 })
 
-test('Assistant reference filters keep one visible animated flyout', async ({}, testInfo) => {
+test('Assistant reference picker keeps one visible flyout', async ({}, testInfo) => {
   test.skip(
     !CONTEXT_SOURCES_E2E_ENABLED,
     'requires Resource and Literature features to register their Assistant source contributions'
@@ -532,21 +624,16 @@ test('Assistant reference filters keep one visible animated flyout', async ({}, 
     const referenceSubmenu = page.getByTestId('composer-plus-submenu')
     const referenceSubmenuElement = await referenceSubmenu.elementHandle()
     if (!referenceSubmenuElement) throw new Error('reference_submenu_missing')
-    const transitionProperties = await referenceSubmenu.evaluate((element) => (
-      getComputedStyle(element).transitionProperty.split(',').map((property) => property.trim())
-    ))
-    expect(transitionProperties).toEqual(expect.arrayContaining(['height', 'top']))
-
-    for (const filter of ['recent', 'newest', 'all'] as const) {
-      await page.getByTestId(`reference-picker-filter-${filter}`).click()
-      await expect(page.getByTestId(`reference-picker-filter-${filter}`)).toHaveAttribute('aria-pressed', 'true')
-      await expect(referenceSubmenu).toBeVisible()
-      expect(await referenceSubmenu.evaluate(
-        (element, initialElement) => element === initialElement,
-        referenceSubmenuElement
-      )).toBe(true)
-    }
+    await expect(page.getByTestId('reference-picker-back')).toHaveCount(0)
+    await expect(page.locator('[data-testid^="reference-picker-filter-"]')).toHaveCount(0)
+    await expect(referenceSubmenu).toBeVisible()
+    expect(await referenceSubmenu.evaluate(
+      (element, initialElement) => element === initialElement,
+      referenceSubmenuElement
+    )).toBe(true)
     await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
+    const sessionPickerHeight = await page.getByTestId('reference-picker').evaluate((element) => element.getBoundingClientRect().height)
+    expect(await page.getByTestId('reference-picker-list').evaluate((element) => element.getBoundingClientRect().height)).toBe(REFERENCE_PICKER_LIST_HEIGHT)
     const search = page.getByTestId('reference-picker-search')
     await search.fill('啊')
     await page.mouse.move(0, 0)
@@ -555,9 +642,268 @@ test('Assistant reference filters keep one visible animated flyout', async ({}, 
     await expect(search).toBeFocused()
     await search.pressSequentially('发')
     await expect(search).toHaveValue('啊发')
-    await page.screenshot({ path: testInfo.outputPath('assistant-reference-filters-stable.png') })
+    expect(await page.getByTestId('reference-picker').evaluate((element) => element.getBoundingClientRect().height)).toBe(sessionPickerHeight)
+    const empty = referenceSubmenu.locator('.vds-empty-state')
+    await expect(empty).toHaveAttribute('data-variant', 'compact')
+    await expect(empty).toHaveCSS('row-gap', '16px')
+    await expect(empty.locator('.vds-empty-state__title')).toHaveCSS('font-size', '14px')
+    await expect(empty.locator('.vds-empty-state__title')).toHaveCSS('font-weight', '400')
+    await expect(empty.locator('.vds-empty-state__icon')).toHaveCSS('width', '36px')
+    await expect(empty.locator('.vds-empty-state__icon')).toHaveCSS('border-radius', '8px')
+    await expect(empty.locator('svg')).toHaveCSS('width', '16px')
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-stable.png') })
     await search.press('Escape')
     await expect(referenceSubmenu).toHaveCount(0)
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test('Assistant reference picker selects across folders before adding references', async ({}, testInfo) => {
+  test.skip(!CONTEXT_SOURCES_E2E_ENABLED, 'requires Resource and Literature source contributions')
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: { globalLib: true, home: true, pdf: true, project: true } }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  try {
+    const page = await desktop.launch()
+    const project = await page.evaluate(async ({ base, name }) => {
+      const response = await fetch(`${base}/api/content/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      })
+      if (!response.ok) throw new Error(`project_create_${response.status}`)
+      return response.json() as Promise<CreatedProject>
+    }, { base: await apiBase(page), name: CONTEXT_PROJECT_NAME })
+    writeFileSync(join(project.root, CONTEXT_FILE_RELATIVE), `${CONTEXT_NONCE}\n`)
+    const plainFileRelative = `${MANAGED_RESOURCES_DIR}/test.txt`
+    writeFileSync(join(project.root, plainFileRelative), 'test\n')
+    mkdirSync(join(project.root, CONTEXT_FOLDER_RELATIVE), { recursive: true })
+    writeFileSync(join(project.root, CONTEXT_NESTED_FILE_RELATIVE), `${CONTEXT_FOLDER_NONCE}\n`)
+    const longFolderName = '超长标题'.repeat(12)
+    const longFolderRelative = `${MANAGED_RESOURCES_DIR}/${longFolderName}`
+    const longFileName = `${'超长文件名'.repeat(10)}.md`
+    const longFileRelative = `${CONTEXT_FOLDER_RELATIVE}/${longFileName}`
+    mkdirSync(join(project.root, longFolderRelative), { recursive: true })
+    writeFileSync(join(project.root, longFileRelative), `${CONTEXT_FOLDER_NONCE}\n`)
+    const literatureTitle = 'A Long Literature Title for Checking the Two-Line Truncation and Side Tooltip in the Reference Picker'
+    const literaturePath = join(project.root, CONTEXT_LITERATURE_FILE)
+    writeFileSync(literaturePath, `@article{reference-picker-tooltip, title = {${literatureTitle}}, author = {Researcher, Context}, year = {2026}}\n`)
+    const literatureId = await page.evaluate(async ({ base, projectId, source }) => {
+      const response = await fetch(`${base}/api/literature/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: projectId, source: 'local', sources: [source] })
+      })
+      if (!response.ok) throw new Error(`literature_import_${response.status}`)
+      const payload = await response.json() as { item_ids?: string[] }
+      const identifier = payload.item_ids?.[0]
+      if (!identifier) throw new Error('literature_import_missing_id')
+      return identifier
+    }, { base: await apiBase(page), projectId: project.id, source: literaturePath })
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${CONTEXT_PROJECT_NAME}`).click()
+    const panel = page.getByTestId('ai-panel')
+    if (!await panel.isVisible()) await page.getByTestId('topbar-ai').click()
+    const pickerRequests: string[] = []
+    page.on('request', (request) => {
+      const url = new URL(request.url())
+      if (
+        (url.pathname === '/api/resource/tree' && url.searchParams.get('depth') === '1' && !url.searchParams.has('path'))
+        || (url.pathname === '/api/v1/literatures' && url.searchParams.get('page_size') === '200')
+      ) pickerRequests.push(request.url())
+    })
+    await panel.getByTestId('composer-plus').click()
+    await page.getByTestId('composer-add-resource-context').click()
+    await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
+    expect(pickerRequests.filter((url) => url.includes('/api/resource/tree?'))).toHaveLength(1)
+    expect(await page.getByTestId('reference-picker-list').evaluate((element) => element.getBoundingClientRect().height)).toBe(REFERENCE_PICKER_LIST_HEIGHT)
+    await expect(page.getByTestId(`ai-context-option-file-${CONTEXT_FILE_RELATIVE}`).locator('svg.lucide-file')).toBeVisible()
+    await expect(page.getByTestId(`ai-context-option-file-${plainFileRelative}`).locator('svg.lucide-file')).toBeVisible()
+    const longFolderOption = page.getByTestId(`ai-context-option-dir-${longFolderRelative}`)
+    await expect(longFolderOption.locator('.line-clamp-2')).toBeVisible()
+    await expect(longFolderOption.locator('small')).toHaveText('文件夹 · 0项')
+    await longFolderOption.hover()
+    await expect(page.getByRole('tooltip')).toContainText(longFolderName)
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-long-folder-tooltip.png') })
+    await longFolderOption.click()
+    const breadcrumb = page.getByTestId('reference-picker-breadcrumb')
+    await expect(breadcrumb).toBeVisible()
+    await expect(breadcrumb.locator('[aria-current="page"]')).toHaveText('超长…')
+    const breadcrumbMetrics = await breadcrumb.locator('ol').evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight)
+    }))
+    expect(breadcrumbMetrics.height).toBeLessThanOrEqual(breadcrumbMetrics.lineHeight + 2)
+    expect(await page.getByTestId('reference-picker-list').evaluate((element) => element.getBoundingClientRect().height)).toBe(REFERENCE_PICKER_LIST_HEIGHT)
+    await breadcrumb.locator('[aria-current="page"]').hover()
+    await expect(page.getByRole('tooltip')).toContainText(longFolderName)
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-single-line-breadcrumb.png') })
+    await breadcrumb.getByRole('link', { name: '资料库' }).click()
+    const resourceFolderOption = page.getByTestId(`ai-context-option-dir-${CONTEXT_FOLDER_RELATIVE}`)
+    await expect(resourceFolderOption).toBeVisible()
+    await expect(resourceFolderOption.locator('small')).toHaveText('文件夹 · 2项')
+    const resourceTitleBounds = await resourceFolderOption.locator('span.font-medium').boundingBox()
+    const resourceLineHeight = await resourceFolderOption.locator('span.font-medium').evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight))
+    const resourceCheckboxBounds = await page.getByTestId(`ai-context-select-dir-${CONTEXT_FOLDER_RELATIVE}`).locator('.vds-checkbox__box').boundingBox()
+    const resourceIconBounds = await resourceFolderOption.locator('svg').first().boundingBox()
+    if (!resourceTitleBounds || !resourceCheckboxBounds || !resourceIconBounds) throw new Error('resource_row_bounds_missing')
+    const resourceFirstLineCenter = resourceTitleBounds.y + resourceLineHeight / 2
+    expect(Math.abs(resourceFirstLineCenter - resourceCheckboxBounds.y - resourceCheckboxBounds.height / 2)).toBeLessThanOrEqual(2)
+    expect(Math.abs(resourceFirstLineCenter - resourceIconBounds.y - resourceIconBounds.height / 2)).toBeLessThanOrEqual(2)
+    await resourceFolderOption.click()
+    await expect(page.getByTestId(`ai-context-select-file-${CONTEXT_NESTED_FILE_RELATIVE}`)).toBeVisible()
+    expect(await page.getByTestId('reference-picker-list').evaluate((element) => element.getBoundingClientRect().height)).toBe(REFERENCE_PICKER_LIST_HEIGHT)
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-folder-fixed-height.png') })
+    const longFileOption = page.getByTestId(`ai-context-option-file-${longFileRelative}`)
+    await expect(longFileOption.locator('.line-clamp-2')).toBeVisible()
+    await expect(longFileOption.locator('small')).toHaveText('文件')
+    await longFileOption.hover()
+    await expect(page.getByRole('tooltip')).toContainText(longFileName)
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-long-file-tooltip.png') })
+    await page.getByTestId(`ai-context-select-file-${CONTEXT_NESTED_FILE_RELATIVE}`).click()
+    await page.getByTestId('ai-context-picker').getByRole('link', { name: '资料库' }).click()
+    await page.getByTestId(`ai-context-select-file-${CONTEXT_FILE_RELATIVE}`).click()
+    await expect(page.getByTestId('ai-context-picker')).toContainText('已选择 2 项')
+    await page.screenshot({ path: testInfo.outputPath('assistant-reference-picker-multiselect.png') })
+    await page.getByTestId('reference-picker-confirm').click()
+    await expect(panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_FILE_NAME })).toBeVisible()
+    await expect(panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_NESTED_FILE_NAME })).toBeVisible()
+    await panel.getByTestId('composer-plus').click()
+    await page.getByTestId('composer-add-literature-context').click()
+    await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
+    expect(pickerRequests.filter((url) => url.includes('/api/v1/literatures?'))).toHaveLength(1)
+    const literatureOption = page.getByTestId(`ai-context-option-literature-${literatureId}`)
+    await expect(literatureOption).toBeVisible()
+    const literaturePickerHeight = await page.getByTestId('reference-picker').evaluate((element) => element.getBoundingClientRect().height)
+    expect(await page.getByTestId('reference-picker-list').evaluate((element) => element.getBoundingClientRect().height)).toBe(REFERENCE_PICKER_LIST_HEIGHT)
+    await page.getByTestId('reference-picker-search').fill('Long')
+    await expect.poll(() => pickerRequests.filter((url) => url.includes('/api/v1/literatures?')).length).toBe(2)
+    await expect(literatureOption).toBeVisible()
+    await expect(literatureOption.locator('small')).toHaveCount(0)
+    await expect(literatureOption.locator('.line-clamp-2')).toBeVisible()
+    const literatureTitleBounds = await literatureOption.locator('.line-clamp-2').boundingBox()
+    const literatureLineHeight = await literatureOption.locator('.line-clamp-2').evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight))
+    const literatureCheckboxBounds = await page.getByTestId(`ai-context-select-literature-${literatureId}`).locator('.vds-checkbox__box').boundingBox()
+    const literatureIconBounds = await literatureOption.locator('svg').first().boundingBox()
+    if (!literatureTitleBounds || !literatureCheckboxBounds || !literatureIconBounds) throw new Error('literature_row_bounds_missing')
+    const firstLineCenter = literatureTitleBounds.y + literatureLineHeight / 2
+    expect(Math.abs(firstLineCenter - literatureCheckboxBounds.y - literatureCheckboxBounds.height / 2)).toBeLessThanOrEqual(2)
+    expect(Math.abs(firstLineCenter - literatureIconBounds.y - literatureIconBounds.height / 2)).toBeLessThanOrEqual(2)
+    await literatureOption.hover()
+    await expect(page.getByRole('tooltip')).toContainText(literatureTitle)
+    await page.screenshot({ path: testInfo.outputPath('assistant-literature-reference-tooltip.png') })
+    await page.getByTestId('reference-picker-search').fill('no-matching-literature')
+    await expect(page.getByTestId('reference-picker-list').locator('.vds-empty-state')).toBeVisible()
+    expect(await page.getByTestId('reference-picker').evaluate((element) => element.getBoundingClientRect().height)).toBe(literaturePickerHeight)
+    await page.screenshot({ path: testInfo.outputPath('assistant-literature-reference-empty-height.png') })
+    desktop.assertNoPageErrors()
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
+test(PROJECT_TAB_TEST_TITLE, async ({}, testInfo) => {
+  const runtime = createRuntime(testInfo)
+  const preferences = join(runtime.userData, PROJECT_TAB_PREFERENCES_FILE)
+  writeFileSync(preferences, JSON.stringify({
+    ...JSON.parse(readFileSync(preferences, 'utf8')),
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map((group) => [group, true])) }
+  }))
+  const blocker = seedLiveConfig(runtime)
+  if (blocker) throw new Error(blocker)
+  const realHome = process.env.SCHOLARSEED_REAL_HOME!
+  for (const relative of ['model_profiles.json', 'service/settings.json']) {
+    const source = join(realHome, relative)
+    if (existsSync(source)) copyFileSync(source, join(runtime.home, relative))
+  }
+  const desktop = new DesktopSession(runtime, testInfo)
+  const registrationRequests: string[] = []
+  try {
+    const page = await desktop.launch()
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/file-references')) {
+        registrationRequests.push(request.postData() ?? '')
+      }
+    })
+    await expect.poll(async () => (await liveStatus(page))?.runtimeReady, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    const project = await page.evaluate(async ({ base, name }) => {
+      const response = await fetch(`${base}/api/content/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      })
+      if (!response.ok) throw new Error(`project_create_${response.status}`)
+      return response.json() as Promise<CreatedProject>
+    }, { base: await apiBase(page), name: CONTEXT_PROJECT_NAME })
+    writeFileSync(join(project.root, CONTEXT_FILE_RELATIVE), `${CONTEXT_NONCE}\n`)
+    await page.reload()
+    await enterWorkbenchShell(page)
+    await page.getByTestId('topbar-project').click()
+    await page.getByTestId(`project-menu-option-${CONTEXT_PROJECT_NAME}`).click()
+    await page.getByTestId('activity-resource').click()
+    const panel = page.getByTestId('ai-panel')
+    if (!await panel.isVisible()) await page.getByTestId('topbar-ai').click()
+    const treeFile = page.getByTestId(`tree-${CONTEXT_FILE_RELATIVE}`)
+    await treeFile.dblclick()
+    const tab = page.getByRole('tab').filter({ hasText: CONTEXT_FILE_NAME })
+    await tab.click({ button: 'right' })
+    await page.getByTestId('tab-add-to-conversation').click()
+    const chip = panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_FILE_NAME })
+    await expect(chip).toHaveCount(1)
+    await treeFile.click({ button: 'right' })
+    await page.getByTestId('menu-ai-context').click()
+    await expect(chip).toHaveCount(1)
+    await page.screenshot({ path: testInfo.outputPath('project-tab-draft-deduplicated.png') })
+    await send(panel, PROJECT_TAB_PROMPT)
+    await waitForFinishedTurn(page)
+    await expect(panel.getByTestId('ai-stream')).toContainText(CONTEXT_NONCE, {
+      timeout: TURN_COMPLETE_TIMEOUT_MS
+    })
+    await expect(panel.locator('.answer-annotation-root').last()).toContainText(CONTEXT_NONCE)
+    const sessionId = (await liveStatus(page))?.activeSession ?? ''
+    const persisted = await page.evaluate(async ({ base, sid }) => {
+      const response = await fetch(`${base}/api/assistant/sessions/${sid}/context`)
+      if (!response.ok) throw new Error(`context_read_${response.status}`)
+      return response.json() as Promise<{ refs: { kind: string; source_id: string; origin: string; retention: string }[] }>
+    }, { base: await apiBase(page), sid: sessionId })
+    expect(persisted.refs.filter((ref) => ref.kind === 'file' && ref.source_id === CONTEXT_FILE_RELATIVE)).toEqual([
+      expect.objectContaining({ origin: 'explicit', retention: 'session' })
+    ])
+    expect(registrationRequests).toEqual([])
+    await page.screenshot({ path: testInfo.outputPath('project-tab-new-conversation.png') })
+    await tab.click({ button: 'right' })
+    await page.getByTestId('tab-add-to-conversation').click()
+    await expect(chip).toHaveCount(1)
+    await treeFile.click({ button: 'right' })
+    await page.getByTestId('menu-ai-context').click()
+    await expect(chip).toHaveCount(1)
+    const nextNonce = `${CONTEXT_NONCE}-second`
+    writeFileSync(join(project.root, CONTEXT_FILE_RELATIVE), `${nextNonce}\n`)
+    const previousMessages = await panel.getByTestId('user-bubble').count()
+    await send(panel, PROJECT_TAB_FOLLOWUP)
+    await expect(panel.getByTestId('user-bubble')).toHaveCount(previousMessages + 1)
+    await expect.poll(async () => (await liveStatus(page))?.running, {
+      timeout: RUNTIME_READY_TIMEOUT_MS
+    }).toBe(true)
+    await waitForFinishedTurn(page)
+    await expect(panel.getByTestId('ai-stream')).toContainText(nextNonce, {
+      timeout: TURN_COMPLETE_TIMEOUT_MS
+    })
+    await expect(panel.locator('.answer-annotation-root').last()).toContainText(nextNonce)
+    expect((await liveStatus(page))?.activeSession).toBe(sessionId)
+    expect(registrationRequests).toEqual([])
+    await expect(chip).toHaveCount(1)
+    await expect(panel.getByTestId('assistant-working')).toHaveCount(0)
+    await page.screenshot({ path: testInfo.outputPath('project-tab-existing-conversation.png') })
     desktop.assertNoPageErrors()
   } finally {
     await desktop.attachArtifacts()
@@ -636,25 +982,31 @@ test('Assistant resources and literature enter through the prototype queue and r
     })
     expect(skillPickerInsideViewport).toBe(true)
     await page.screenshot({ path: testInfo.outputPath('assistant-plus-skills.png') })
-    await panel.getByTestId('composer-add-resource-context').click()
-    await expect(panel.getByTestId('ai-context-picker')).toBeVisible()
+    await page.getByTestId('composer-add-resource-context').click()
+    await expect(page.getByTestId('ai-context-picker')).toBeVisible()
     await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
     await page.screenshot({ path: testInfo.outputPath('assistant-plus-resources.png') })
-    const folderOption = panel.getByTestId(`ai-context-option-dir-${CONTEXT_FOLDER_RELATIVE}`)
+    const folderOption = page.getByTestId(`ai-context-option-dir-${CONTEXT_FOLDER_RELATIVE}`)
     await folderOption.click()
-    await expect(folderOption).toHaveAttribute('aria-expanded', 'true')
-    await expect(panel.getByTestId(`ai-context-option-file-${CONTEXT_NESTED_FILE_RELATIVE}`)).toBeVisible()
+    await expect(page.getByTestId(`ai-context-option-file-${CONTEXT_NESTED_FILE_RELATIVE}`)).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('assistant-plus-resources-folder-expanded.png') })
-    await panel.getByTestId(`ai-context-option-file-${CONTEXT_FILE_RELATIVE}`).click()
+    await page.getByTestId(`ai-context-select-file-${CONTEXT_NESTED_FILE_RELATIVE}`).click()
+    await page.getByTestId('ai-context-picker').getByRole('link', { name: '资料库' }).click()
+    await page.getByTestId(`ai-context-select-file-${CONTEXT_FILE_RELATIVE}`).click()
+    await expect(page.getByTestId('reference-picker-confirm')).toBeEnabled()
+    await page.screenshot({ path: testInfo.outputPath('assistant-plus-resources-selected.png') })
+    await page.getByTestId('reference-picker-confirm').click()
     const contextChip = panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_FILE_NAME })
     await expect(contextChip).toBeVisible()
+    await expect(panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_NESTED_FILE_NAME })).toBeVisible()
 
     await panel.getByTestId('composer-plus').click()
-    await panel.getByTestId('composer-add-literature-context').click()
-    await expect(panel.getByTestId(`ai-context-option-literature-${literatureId}`)).toBeVisible()
+    await page.getByTestId('composer-add-literature-context').click()
+    await expect(page.getByTestId(`ai-context-option-literature-${literatureId}`)).toBeVisible()
     await page.waitForTimeout(MENU_ANIMATION_SETTLE_MS)
     await page.screenshot({ path: testInfo.outputPath('assistant-plus-literature.png') })
-    await panel.getByTestId(`ai-context-option-literature-${literatureId}`).click()
+    await page.getByTestId(`ai-context-select-literature-${literatureId}`).click()
+    await page.getByTestId('reference-picker-confirm').click()
     const literatureChip = panel.getByTestId('ai-context-ref').filter({ hasText: CONTEXT_LITERATURE_TITLE })
     await expect(literatureChip).toBeVisible()
 

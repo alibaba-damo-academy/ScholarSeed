@@ -12,8 +12,11 @@ export {
 export {
   Alert,
   AlertDescription,
+  AlertIcon,
   AlertTitle,
   type AlertDescriptionProps,
+  type AlertIconProps,
+  type AlertLayout,
   type AlertProps,
   type AlertTitleProps,
   type AlertTone

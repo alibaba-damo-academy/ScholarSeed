@@ -15,7 +15,8 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { basename, dirname, join, resolve, sep } from 'path'
 
-import { BrowserWindow, clipboard } from 'electron'
+import type { BrowserWindow } from 'electron'
+import { clipboard } from 'electron'
 
 import { IMPORT_PICKER_TARGET, supportsImportPickerTarget } from '../picker'
 import { typeInputValue } from './drive'
@@ -1129,6 +1130,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
     steps.push({ name, ok, detail })
     log(`[workbench] ${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}\n`)
   }
+  let literaturePdf = ''
 
   // ---- 固件：先有项目才有资料库 ----
   //
@@ -1234,7 +1236,7 @@ export async function runWorkbenchCheck(win: BrowserWindow, log: LogSink): Promi
       copyFileSync(officeFixture, join(fixture.root, RESOURCES_DIR, OFFICE_FIXTURE_NAME))
     }
     const bibliography = join(fixture.root, LITERATURE_DIR, LITERATURE_FIXTURE_NAME)
-    const literaturePdf = join(fixture.root, LITERATURE_DIR, LITERATURE_PDF_NAME)
+    literaturePdf = join(fixture.root, LITERATURE_DIR, LITERATURE_PDF_NAME)
     writeFileSync(bibliography, LITERATURE_FIXTURE, 'utf-8')
     copyFileSync(
       join(dirname(dirname(__dirname)), 'e2e', 'fixtures', 'preview_pdf_1MB.pdf'),

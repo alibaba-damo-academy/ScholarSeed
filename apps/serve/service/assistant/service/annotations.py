@@ -30,8 +30,9 @@ from service.platform.context import (
 ANNOTATION_REVISION_INITIAL = 1
 PROVIDER_VERSION = "answer-annotation/v1"
 USER_FEEDBACK_HEADER = "[SCHOLARSEED_USER_FEEDBACK v1]"
+USER_FEEDBACK_MEDIA_TYPE = "application/vnd.scholarseed.user-feedback+json"
+QUOTE_MEDIA_TYPE = "text/plain"
 ERROR_ANSWER_UNSUPPORTED = "answer_annotation_unsupported"
-ERROR_ANSWER_REVISION = "answer_revision_conflict"
 ERROR_RANGE_INVALID = "answer_range_invalid"
 ERROR_QUOTE_MISMATCH = "answer_quote_mismatch"
 ERROR_ANNOTATION_MISSING = "answer_annotation_missing"
@@ -108,7 +109,6 @@ class AnswerAnnotationService:
         answer, selected_text = self._validated_answer_range(
             session_id=session_id,
             answer_id=answer_id,
-            answer_revision=answer_revision,
             start_utf16=start_utf16,
             end_utf16=end_utf16,
             selected_text_hash=selected_text_hash,
@@ -238,28 +238,34 @@ class AnswerAnnotationService:
             answer, selected_text = self._validated_answer_range(
                 session_id=annotation.session_id,
                 answer_id=annotation.answer_id,
-                answer_revision=annotation.answer_revision,
                 start_utf16=annotation.start_utf16,
                 end_utf16=annotation.end_utf16,
                 selected_text_hash=annotation.selected_text_hash,
             )
         except AnswerAnnotationValidationError as exc:
             return self._failure(ContextResolutionState.STALE, exc.code)
-        payload = {
-            "annotation_id": annotation.annotation_id,
-            "prior_assistant_quote": selected_text,
-            "user_comment": annotation.comment,
-            "source": {
-                "answer_id": answer.answer_id,
-                "range_utf16": [annotation.start_utf16, annotation.end_utf16],
-            },
-        }
-        text = "\n".join(
-            (
-                USER_FEEDBACK_HEADER,
-                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        if annotation.comment:
+            payload = {
+                "annotation_id": annotation.annotation_id,
+                "prior_assistant_quote": selected_text,
+                "user_comment": annotation.comment,
+                "source": {
+                    "answer_id": answer.answer_id,
+                    "range_utf16": [annotation.start_utf16, annotation.end_utf16],
+                },
+            }
+            text = "\n".join(
+                (
+                    USER_FEEDBACK_HEADER,
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
             )
-        )
+            authority = ContextAuthority.USER_FEEDBACK
+            media_type = USER_FEEDBACK_MEDIA_TYPE
+        else:
+            text = selected_text
+            authority = ContextAuthority.SOURCE_MATERIAL
+            media_type = QUOTE_MEDIA_TYPE
         excerpt = text[: request.budget.max_chars]
         truncated = len(excerpt) < len(text)
         return AssistantContextResolution(
@@ -273,7 +279,7 @@ class AnswerAnnotationService:
                     label=self._label(annotation),
                     source_revision=str(annotation.revision),
                     text=excerpt,
-                    authority=ContextAuthority.USER_FEEDBACK,
+                    authority=authority,
                     surface={
                         "answer_id": annotation.answer_id,
                         # The queue detail must show the exact range sent to the Agent.
@@ -285,7 +291,7 @@ class AnswerAnnotationService:
                         "end_utf16": annotation.end_utf16,
                     },
                     content_hash=text_revision(excerpt),
-                    media_type="application/vnd.scholarseed.user-feedback+json",
+                    media_type=media_type,
                     content_level="selection",
                     truncated=truncated,
                 ),
@@ -297,7 +303,6 @@ class AnswerAnnotationService:
         *,
         session_id: str,
         answer_id: str,
-        answer_revision: str,
         start_utf16: int,
         end_utf16: int,
         selected_text_hash: str,
@@ -305,8 +310,6 @@ class AnswerAnnotationService:
         answer = self._answers.answer(session_id=session_id, answer_id=answer_id)
         if answer is None:
             raise AnswerAnnotationValidationError(ERROR_ANSWER_UNSUPPORTED)
-        if answer.revision != answer_revision:
-            raise AnswerAnnotationValidationError(ERROR_ANSWER_REVISION)
         selected_text = utf16_slice(answer.markdown, start_utf16, end_utf16)
         if text_revision(selected_text) != selected_text_hash:
             raise AnswerAnnotationValidationError(ERROR_QUOTE_MISMATCH)

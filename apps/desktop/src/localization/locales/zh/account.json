@@ -60,6 +60,9 @@
       "gatewayCredentialRequired": "登录后可使用内置模型",
       "subscriptionConnectionRequired": "请在模型服务中连接 ChatGPT"
     },
+    "disabledTags": {
+      "gatewayCredentialRequired": "登录可用"
+    },
     "capabilitiesTitle": "模型能力管理",
     "capabilitiesDescription": "在右侧按模型管理思考档位、上下文窗口和输入模态；厂商口径仅作默认建议，保存后的模型声明优先用于会话。",
     "contextWindowHint": "留空表示使用厂商默认值",
@@ -168,6 +171,7 @@
     "local_logout_failed": "本地登录凭据未能清除，请重试",
     "logout_revocation_failed": "本机执行凭据清理失败，请重试退出登录。",
     "http_failure": "请求失败（{{status}}）",
+    "unknown": "操作未完成，请重试。",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "modelSettings": {

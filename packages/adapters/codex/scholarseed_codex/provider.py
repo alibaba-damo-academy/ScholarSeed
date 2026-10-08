@@ -14,6 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 from time import time
 
+from scholarseed_codex.activity import NativeActivity
 from scholarseed_codex.capacity import CapacityPolicy
 from scholarseed_codex.control import CodexRuntimeControl
 from scholarseed_codex.environment import (
@@ -39,6 +40,7 @@ from scholarseed_runtime.contract import (
     CommandReceipt,
     CommandState,
     InventoryKind,
+    LaunchSecretScope,
     OpenSessionRequest,
     ResumeSessionRequest,
     RuntimeDescriptor,
@@ -50,6 +52,7 @@ from scholarseed_runtime.contract import (
     RuntimeStatus,
     RuntimeValue,
 )
+from scholarseed_runtime.contract.binding import RuntimeBinding
 from scholarseed_runtime.contract.command import SkillConfigurationRequest
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.resource import (
@@ -61,6 +64,7 @@ from scholarseed_runtime.contract.resource import (
     ResourceState,
 )
 from scholarseed_runtime.contract.runtime import ProviderConfiguration
+from scholarseed_runtime.contract.session import RuntimeExecutionThread
 
 PROVIDER_CONFIGURE_COMMAND = "provider.configure"
 PROVIDER_CONFIGURATION_INVALID = "runtime_provider_configuration_invalid"
@@ -86,7 +90,7 @@ def _discard_prepared(
 
 async def _resolve_launch_secrets(
     request: OpenSessionRequest | RuntimeInspectionRequest,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
     bindings = request.launch_secrets.bindings
     if any(
         not ENVIRONMENT_NAME_PATTERN.fullmatch(name)
@@ -94,18 +98,26 @@ async def _resolve_launch_secrets(
     ):
         raise ValueError("runtime removed environment name is invalid")
     if not bindings:
-        return {}
+        return {}, {}
     if request.secret_port is None:
         raise ValueError("runtime secret port is required")
     environment: dict[str, str] = {}
+    tool_environment: dict[str, str] = {}
     for binding in bindings:
         if not ENVIRONMENT_NAME_PATTERN.fullmatch(binding.name):
             raise ValueError("runtime secret environment name is invalid")
-        if binding.name in environment:
+        target = (
+            environment
+            if binding.scope is LaunchSecretScope.PROCESS
+            else tool_environment if binding.scope is LaunchSecretScope.TOOL else None
+        )
+        if target is None:
+            raise ValueError("runtime secret scope is invalid")
+        if binding.name in target:
             raise ValueError("runtime secret environment name is duplicated")
         material = await request.secret_port.resolve(binding.secret_ref)
-        environment[binding.name] = material.value
-    return environment
+        target[binding.name] = material.value
+    return environment, tool_environment
 
 
 class CodexRuntimeProvider:
@@ -164,6 +176,7 @@ class CodexRuntimeProvider:
         return OpenSessionRequest(
             product_session_id=binding.product_session_id,
             cwd=request.cwd,
+            execution_scope=request.execution_scope,
             model=request.model,
             credential_port=request.credential_port,
             launch_secrets=request.launch_secrets,
@@ -171,6 +184,7 @@ class CodexRuntimeProvider:
             permission=request.permission,
             base_instructions=request.base_instructions,
             developer_instructions=request.developer_instructions,
+            service_tools=request.service_tools,
             skill_roots=request.skill_roots,
             skill_configurations=request.skill_configurations,
             artifact_directives=request.artifact_directives,
@@ -206,7 +220,7 @@ class CodexRuntimeProvider:
                     return self._pool.receipt(reservation)
             open_request = self._open_request(request.session_request)
             with timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
-                launch_environment = await _resolve_launch_secrets(open_request)
+                launch_environment, tool_environment = await _resolve_launch_secrets(open_request)
             session = CodexRuntimeSession(
                 open_request,
                 resume_binding=(
@@ -215,6 +229,7 @@ class CodexRuntimeProvider:
                     else None
                 ),
                 launch_environment=launch_environment,
+                tool_environment=tool_environment,
                 host_pool=self._pool,
             )
             reservation = await session.prepare_resource(request.request_id, request.deadline)
@@ -385,7 +400,9 @@ class CodexRuntimeProvider:
         """Inspect App Server state without creating or resuming a Codex thread."""
 
         with request.timing.measure(CodexActivationStage.LAUNCH_CREDENTIALS):
-            environment = await _resolve_launch_secrets(request)
+            environment, tool_environment = await _resolve_launch_secrets(request)
+        if tool_environment:
+            raise ValueError("runtime inspection does not support tool-scoped secrets")
         control = await self._control(
             cwd=request.cwd,
             roots=request.roots,
@@ -402,6 +419,8 @@ class CodexRuntimeProvider:
                     models = await control.model_control.list_models()
                     values[kind.value] = json_value(models)
                 elif kind is InventoryKind.SKILLS:
+                    if request.inventory.refresh:
+                        await control.host.reassert_skill_roots(request.roots)
                     skills = await control.skill_control.list_skills(
                         cwd=request.cwd,
                         force_reload=request.inventory.refresh,
@@ -414,6 +433,22 @@ class CodexRuntimeProvider:
                 revision=":".join(part for part in revisions if part),
                 values=values,
             )
+        finally:
+            await control.aclose()
+
+    async def execution_threads(
+        self, binding: RuntimeBinding, cwd: Path
+    ) -> tuple[RuntimeExecutionThread, ...]:
+        if binding.runtime_id != CODEX_RUNTIME_ID or not binding.opaque_session_ref:
+            raise ValueError("runtime binding does not identify a Codex thread")
+        control = await self._control(
+            cwd=cwd,
+            roots=(),
+            environment={},
+            authentication_required=False,
+        )
+        try:
+            return await NativeActivity(control.host, binding.opaque_session_ref).descendants()
         finally:
             await control.aclose()
 

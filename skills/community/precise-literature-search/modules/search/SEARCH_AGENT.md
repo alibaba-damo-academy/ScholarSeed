@@ -1,10 +1,12 @@
 # Dedicated Literature Search Agent — Quick Search
 
+For user-facing summaries, follow [User-facing language](../../SKILL.md#user-facing-language).
+Numeric tiers remain internal selection fields, not display labels.
+
 Use the supplied `PLS_PYTHON` and locally generated `PLS_STAGE_TOKEN` for script
-commands. Run the Web route in "Execute title and web paths once" (the sibling
-`web-search` skill when `WEB_SEARCH_INVOKE` is supplied, else native Web) and save
-the actual queries, durations, statuses and raw results through the recording
-steps below, including failures.
+commands. Use [Web search capability](DECISION_INPUTS.md#web-search-capability)
+and save the actual queries, durations, statuses and raw results through the
+recording steps below, including failures.
 This is retrospective accounting: scripts cannot enforce Web call counts.
 Reuse saved outcomes on resume; replaying them or repairing classification does
 not constitute a new search. Research-stage state, tokens and budgets still apply.
@@ -68,11 +70,12 @@ scholarseed-skill-python "$SKILL_DIR/modules/search/tools/search_round.py" \
   --work-dir "$WORK"
 ```
 
-The runner uses this keyword query as the network-capability gate. Start its
-first invocation with the host's required public-network capability; in Codex
-use `sandbox_permissions=require_escalated` on the complete command. If it
-still returns `execution_blocked`, return that environment blocker immediately;
-it counts as zero queries and does not authorize a changed endpoint or query.
+The runner uses this keyword query as the network-capability gate.
+Public-network capability is provided by the product runtime; never request
+sandbox escalation or any elevated permission for retrieval or download
+commands. If it still returns `execution_blocked`, return that
+environment blocker immediately; it counts as zero queries and does not
+authorize a changed endpoint or query.
 
 If the request reaches PaperHub but fails at the transport layer, log
 one `transport_error` and skip the remaining PaperHub-dependent paths. On
@@ -91,20 +94,9 @@ finished, so `state.json`, `pool.json`, and `query-log.json` always have a singl
 writer. When asynchronous execution is unavailable, run title then web
 sequentially.
 
-For exactly one representative natural-language query, run this Web route. When
-`WEB_SEARCH_INVOKE` is non-empty, first run
-`"$PLS_PYTHON" "$WEB_SEARCH_INVOKE" --provider official-api --query "<q>" --limit 20`
-from `WORK`, then read `WORK/web-search-result.json` (ignore its exit code, which
-reports artifact publication; map `duration_ms` to elapsed seconds; each candidate
-carries `title`,`url`,`description`). On `completed`, use its candidates. On
-`empty` or `unavailable` (error `credential_unavailable`, no `SCHOLARSEED_API_KEY`)
-— a fall-through signal, never a recorded status — or when `WEB_SEARCH_INVOKE` is
-empty, use the executor's own web search tool for the same query; if that yields
-nothing usable and `WEB_SEARCH_INVOKE` is non-empty, you may run `--provider
-visible-browser` once and read the same artifact. Record the actual status/timing
-of the leg that produced the observation; a `failed` authorization rejection
-(401/403) is `authentication_error`, a transport/response failure is
-`transport_error`. Keep only the strongest paper landing
+For exactly one representative natural-language query, use the shared
+[Web search capability](DECISION_INPUTS.md#web-search-capability), including its
+terminal empty semantics and distinct raw artifact per attempt. Keep only the strongest paper landing
 page from a scholarly publisher, DOI, arXiv, journal, conference, preprint, or
 repository; ignore blogs, news, and code repositories.
 
@@ -153,7 +145,7 @@ still exclude a paper. The one-paper limit is a maximum, not a requirement: retu
 zero when no useful candidate exists. Read `SELECTION_CONTRACT.md`, then write and
 validate `work/selection.json`.
 
-Run `finalize.py` to create the round's `metadata.json` and `report.md`, then
+Run `finalize.py` to create the round's `metadata.json` and `search_report.md`, then
 validate the metadata. The report must identify itself as
 a candidate assessment, report actual query and candidate counts separately
 for PaperHub and Search Agent web, state whether citation expansion was executed

@@ -1,4 +1,4 @@
-"""Offline Chrome login templates; never copy a live profile or replace a slot."""
+"""Offline browser login templates; never copy a live profile or replace a slot."""
 from __future__ import annotations
 
 from platform_support import WINDOWS, is_reparse, lock_file, open_regular_nofollow, private_directory
@@ -13,6 +13,12 @@ import tempfile
 from io_utils import atomic_write_json, read_json
 
 MARKER = ".paper-dl-template.json"
+TEMPLATE_DIRECTORIES = {"chrome": "profile-template", "edge": "edge-profile-template"}
+WINDOWS_PROFILE_VENDORS = {
+    "chrome.exe": "Google/Chrome",
+    "chromium.exe": "Chromium",
+    "msedge.exe": "Microsoft/Edge",
+}
 SESSION_FILES = {
     "Sessions", "Current Session", "Current Tabs", "Last Session", "Last Tabs",
     "History", "History-journal", "History-wal", "History-shm",
@@ -28,19 +34,19 @@ def require_offline(profile):
     # Even a stale singleton is ambiguous. Never remove the source's locks.
     if any(os.path.lexists(profile / name) for name in
            ("SingletonLock", "SingletonCookie", "SingletonSocket")):
-        raise ProfileInUse("Profile has Chrome singleton files; fully quit its Chrome before reusing or copying it")
+        raise ProfileInUse("Profile has browser singleton files; fully quit its browser before reusing or copying it")
     if WINDOWS:
         from windows_support import command_arguments, process_commands
         try:
             commands = process_commands()
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            raise ValueError("Cannot verify that the source Chrome has exited") from exc
+            raise ValueError("Cannot verify that the source browser has exited") from exc
         # A Chrome command line that cannot be read cannot prove the profile offline.
         for entry in commands:
             command = entry.get("CommandLine") or ""
-            chrome = str(entry.get("Name", "")).lower() in {"chrome.exe", "chromium.exe"}
-            if chrome and not command:
-                raise ProfileInUse("Cannot inspect a running Chrome; fully quit Chrome before copying")
+            vendor = WINDOWS_PROFILE_VENDORS.get(str(entry.get("Name", "")).lower())
+            if vendor and not command:
+                raise ProfileInUse("Cannot inspect a running browser; fully quit the browser before copying")
             arguments = command_arguments(command) if command else []
             profile_argument = None
             for index, argument in enumerate(arguments):
@@ -49,24 +55,24 @@ def require_offline(profile):
                 elif argument.lower() == "--user-data-dir" and index + 1 < len(arguments):
                     profile_argument = arguments[index + 1]
             if profile_argument and os.path.normcase(os.path.abspath(profile_argument)) == os.path.normcase(str(profile)):
-                raise ProfileInUse("Profile is in use; fully quit its Chrome before copying")
-            if chrome and not profile_argument:
+                raise ProfileInUse("Profile is in use; fully quit its browser before copying")
+            if vendor and not profile_argument:
                 local = os.getenv("LOCALAPPDATA")
-                defaults = [Path(local) / vendor / "User Data" for vendor in ("Google/Chrome", "Chromium")] if local else []
+                defaults = [Path(local) / vendor / "User Data"] if local else []
                 if not defaults or any(p.resolve() == profile.resolve() for p in defaults):
-                    raise ProfileInUse("Default Chrome profile may be in use; fully quit Chrome before copying")
+                    raise ProfileInUse("Default browser profile may be in use; fully quit the browser before copying")
         return
     try:
         result = subprocess.run(["ps", "-axo", "command="], capture_output=True,
                                 text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError("Cannot verify that the source Chrome has exited") from exc
+        raise ValueError("Cannot verify that the source browser has exited") from exc
     if result.returncode:
-        raise ValueError("Cannot verify that the source Chrome has exited")
+        raise ValueError("Cannot verify that the source browser has exited")
     argument = re.compile(r"--user-data-dir(?:=|\s+)[\"']?" + re.escape(str(profile))
                           + r"[\"']?(?=\s|$)")
     if any(argument.search(line) for line in result.stdout.splitlines()):
-        raise ProfileInUse("Profile is in use; fully quit its Chrome before reusing or copying it")
+        raise ProfileInUse("Profile is in use; fully quit its browser before reusing or copying it")
 
 
 def inventory(profile):
@@ -89,9 +95,9 @@ def inventory(profile):
     for name in ("Local State", "Default"):
         visit(profile / name)
     if not stat.S_ISREG(entries["Local State"][0]) or not stat.S_ISDIR(entries["Default"][0]):
-        raise ValueError("Source must be a Chrome user-data directory with Local State and Default")
+        raise ValueError("Source must be a Chrome or Edge user-data directory with Local State and Default")
     if "Default/Preferences" not in entries or not stat.S_ISREG(entries["Default/Preferences"][0]):
-        raise ValueError("Source must contain Default/Preferences; other Chrome profile names are not supported")
+        raise ValueError("Source must contain Default/Preferences; other browser profile names are not supported")
     return entries
 
 
@@ -143,7 +149,7 @@ def sanitize_profile(profile):
     (profile / "DevToolsActivePort").unlink(missing_ok=True)
 
 
-def copy_offline(source, destination, *, template=False):
+def copy_offline(source, destination, *, template=False, browser="chrome"):
     source = Path(source).expanduser().resolve()
     destination = Path(destination).expanduser().absolute()
     resolved_destination = destination.resolve()
@@ -162,10 +168,10 @@ def copy_offline(source, destination, *, template=False):
         copy_entries(source, staging, before)
         require_offline(source)
         if inventory(source) != before:
-            raise ValueError("Source profile changed during copying; keep Chrome closed and retry")
+            raise ValueError("Source profile changed during copying; keep the browser closed and retry")
         sanitize_profile(staging)
         if template:
-            atomic_write_json(staging / MARKER, {"version": 1, "profile_directory": "Default"})
+            atomic_write_json(staging / MARKER, template_marker(browser))
         # Serialize publication only, not copying or process inspection.
         with (destination.parent / ".profile-template.lock").open("a+") as lock:
             lock_file(lock)
@@ -178,18 +184,31 @@ def copy_offline(source, destination, *, template=False):
     return destination
 
 
-def create_template(source, destination):
-    return copy_offline(source, destination, template=True)
+def template_marker(browser):
+    marker = {"version": 1, "profile_directory": "Default"}
+    if browser == "edge":
+        marker["browser"] = "edge"
+    return marker
 
 
-def initialize_profile(profile, pool_root):
+def create_template(source, destination, *, browser="chrome"):
+    return copy_offline(source, destination, template=True, browser=browser)
+
+
+def initialize_profile(profile, pool_root, *, browser="chrome"):
     # Existing profiles (including empty ones) belong to their slot already.
     if os.path.lexists(profile):
         return
     configured = os.getenv("PAPER_DL_PROFILE_TEMPLATE")
-    template = Path(configured).expanduser() if configured else pool_root / "profile-template"
+    template = Path(configured).expanduser() if configured else pool_root / TEMPLATE_DIRECTORIES[browser]
     if not configured and not os.path.lexists(template):
+        if any(os.path.lexists(pool_root / directory)
+               for kind, directory in TEMPLATE_DIRECTORIES.items() if kind != browser):
+            raise ValueError(
+                f"No {browser} profile template; another browser's template exists. "
+                f"Use browser_pool.py create-template --browser {browser}, or select the matching browser executable."
+            )
         return
-    if read_json(template / MARKER) != {"version": 1, "profile_directory": "Default"}:
-        raise ValueError("Invalid profile template; use browser_pool.py create-template")
+    if read_json(template / MARKER) != template_marker(browser):
+        raise ValueError("Invalid or wrong-browser profile template; use browser_pool.py create-template --browser chrome|edge")
     copy_offline(template, profile)

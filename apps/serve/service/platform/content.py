@@ -21,6 +21,14 @@ IMPORT_CANCELLED_ERROR = "import_cancelled"
 DISK_FULL_ERROR = "disk_full"
 
 
+class ArtifactSnapshotFailure(str, Enum):
+    BUSY = "artifact_snapshot_busy"
+    ACCESS_DENIED = "artifact_snapshot_access_denied"
+    UNSUPPORTED = "artifact_snapshot_unsupported"
+    DISK_FULL = "artifact_snapshot_disk_full"
+    UNAVAILABLE = "artifact_snapshot_unavailable"
+
+
 #: 导入时的处理方式 (PRD「资料导入」的复制 / 关联双卡片)。
 class ImportMode(str, Enum):
     """COPY 在项目空间内落一份副本; LINK 不搬移原文件。"""

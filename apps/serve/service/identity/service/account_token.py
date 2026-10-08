@@ -94,12 +94,14 @@ class AccountTokenHolder:
         """登出时清掉（本地不再持有该用户凭据）。"""
 
         token = self._tokens.pop(str(user_id or "").strip(), None)
+        logger.info("account_token_forgotten token_present=%s", bool(token))
         if token:
             self._revoked.add(sha256(token.encode()).hexdigest())
 
     def clear_all(self) -> None:
         """运行期切到免鉴权模式时全量失效（proposal 18：切换不迁移凭据）。"""
 
+        logger.info("account_tokens_cleared entry_count=%d", len(self._tokens))
         self._tokens.clear()
 
 

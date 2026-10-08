@@ -19,9 +19,16 @@
 - `profile.py`：协议身份、版本兼容策略和能力声明的唯一来源。
 - `executable.py`：官方可执行文件发现、版本和启动检查。
 - `environment.py`：运行目录与认证同步；会话恢复不读取或复制 Codex 私有数据库中的 rollout。
-- `isolation.py`：托管 App Server 的发现 Home 与最高优先级配置，禁止从用户 Home 或项目 cwd 继承 instructions、Skill、Plugin、Hook 和 MCP；用户 Home 只回投给派生 shell。
+- `isolation.py`：托管 App Server 的发现 Home 与最高优先级配置，禁止从用户 Home 或项目 cwd 继承 instructions、Skill、Plugin、Hook 和 MCP；用户 Home 只回投给派生 shell。书深不提供 ChatGPT Remote Control，托管进程启动时禁用该功能，避免无 ChatGPT 登录时后台反复重载认证；原生模型认证不受影响。
 - `permission.py`：统一权限意图、审批策略及本地服务授权到 Codex 原生配置的映射。
 - `model.py`、`skill.py`、`mcp.py`、`control.py`：原生能力映射、查询与控制。
+
+托管 App Server 的 Remote Control 启动行为：
+
+| 平台 | 启动环境 | 预期行为 |
+| --- | --- | --- |
+| macOS | 为托管进程设置 `CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED=1` | 不读取 ChatGPT Remote Control 偏好；模型认证照常进行 |
+| Windows | 为托管进程设置同一环境变量，不依赖 POSIX 路径或信号 | 与 macOS 一致；仍需在 Windows 真实 Desktop 流程验证 |
 
 Adapter 不直接输出 SSE 或文件卡片；产物登记、消息队列、用户身份和前端事件投影由 Serve 负责。
 

@@ -1,4 +1,4 @@
-import { Cognitive } from './model'
+import type { Cognitive } from './model'
 
 /** cognitive-category colors — single source across sidebar / recall / graph / memory */
 export const TONE: Record<Cognitive, string> = {

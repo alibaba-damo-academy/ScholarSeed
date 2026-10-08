@@ -7,6 +7,7 @@ import { resolveDocumentWorkspaceProject } from './scope.ts'
 const dockSource = readFileSync(new URL('./Dock.tsx', import.meta.url), 'utf8')
 const mainSource = readFileSync(new URL('../../main.tsx', import.meta.url), 'utf8')
 const layoutSource = readFileSync(new URL('../../design/layout.css', import.meta.url), 'utf8')
+const workbenchStyles = readFileSync(new URL('../../shell/workbench.css', import.meta.url), 'utf8')
 const literatureSource = readFileSync(new URL('../literature/LiteratureList.tsx', import.meta.url), 'utf8')
 const literatureStyles = readFileSync(new URL('../literature/literature.css', import.meta.url), 'utf8')
 const preferencesSource = readFileSync(new URL('../../components/business/Preferences.tsx', import.meta.url), 'utf8')
@@ -24,13 +25,14 @@ const workbenchSplitSource = shellSource.slice(
 
 test('workbench module divider spans the top bar and only bridges marked content toolbars', () => {
   assert.match(shellSource, /className=\{WORKBENCH_SPLIT_CLASS_NAME\}/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-active-guide-color:var\(--vds-border-default\)/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-active-guide-edge-color:var\(--vds-border-default\)/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-current-guide-color:var\(--vds-border-default\)/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-current-guide-edge-color:var\(--vds-border-default\)/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-drag-guide-color:var\(--vds-border-default\)/)
-  assert.match(workbenchSplitSource, /--vds-resizable-handle-drag-guide-edge-color:var\(--vds-border-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-active-guide-color:var\(--vds-divider-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-active-guide-edge-color:var\(--vds-divider-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-current-guide-color:var\(--vds-divider-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-current-guide-edge-color:var\(--vds-divider-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-drag-guide-color:var\(--vds-divider-default\)/)
+  assert.match(workbenchSplitSource, /--vds-resizable-handle-drag-guide-edge-color:var\(--vds-divider-default\)/)
   assert.equal(shellSource.includes(String.raw`[&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-image:linear-gradient`), true)
+  assert.match(workbenchSplitSource, /var\(--vds-border-default\)_0_var\(--vds-workbench-content-toolbar-height\)/)
   assert.equal(shellSource.includes(String.raw`[&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-position:right_top]`), true)
   assert.equal(shellSource.includes(String.raw`[&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-repeat:no-repeat]`), true)
   assert.equal(shellSource.includes(String.raw`[&:has([data-workbench-divider])>.vds-resizable-split\_\_handle]:[background-size:50%_100%]`), true)
@@ -39,7 +41,7 @@ test('workbench module divider spans the top bar and only bridges marked content
   assert.equal(shellSource.includes(String.raw`[&>.vds-resizable-split\_\_panel--left]:shrink-0`), true)
   assert.match(shellSource, /var\(--vds-workbench-content-toolbar-height\)/)
   assert.doesNotMatch(workbenchSplitSource, /var\(--vds-workbench-header-height\)/)
-  assert.match(literatureSource, /<header className="lit-toolbar" data-workbench-divider>/)
+  assert.match(literatureSource, /<header className="lit-toolbar(?: [^"]+)?" data-workbench-divider>/)
   assert.match(literatureStyles, /min-height: var\(--vds-workbench-content-toolbar-height\)/)
   assert.match(layoutSource, /--vds-workbench-content-toolbar-height: 52px;/)
   assert.match(shellSource, /topBarLeftWidth\(modulePanelWidth, modulePanelVisible\)/)
@@ -47,10 +49,12 @@ test('workbench module divider spans the top bar and only bridges marked content
   assert.match(shellSource, /leftWidthStep=\{MODULE_PANEL_WIDTH_STEP\}/)
   assert.match(resizableSource, /Math\.round\(constrainedPixels \/ leftWidthStep\) \* leftWidthStep/)
   assert.match(railSource, /vds-activity-rail[^'\n]*box-border[^'\n]*w-14[^'\n]*flex-none/)
-  assert.match(topBarSource, /items-center border-y border-l border-\[var\(--vds-border-default\)\]/)
+  assert.match(topBarSource, /items-center border-y border-l border-\[var\(--vds-divider-default\)\]/)
   assert.match(topBarSource, /after:right-0 after:top-0 after:h-full after:w-px/)
   assert.match(topBarSource, /showRightBorder \? TOPBAR_RIGHT_DIVIDER_CLASS_NAME : ''/)
   assert.doesNotMatch(topBarSource, /showRightBorder \? ' border-r'/)
+  assert.match(shellSource, /var\(--vds-border-default\)_0_var\(--vds-workbench-header-height\)/)
+  assert.match(workbenchStyles, /\.vds-ai-head\s*\{[^}]*border-bottom:\s*1px solid var\(--vds-border-default\)/s)
 })
 
 test('module splitter panels preserve the workbench height chain', () => {
@@ -121,9 +125,12 @@ test('personal auto-save setting persists and leaving the document dock saves on
   assert.match(preferencesSource, /onCheckedChange=\{act\.setAutoSave\}/)
   assert.match(storeSource, /setAutoSave: \(autoSave\)/)
   assert.match(storeSource, /autoSave: state\.autoSave/)
-  assert.match(dockSource, /onBlurCapture=/)
-  assert.match(dockSource, /if \(!appState\.autoSave\) return/)
+  assert.match(dockSource, /document\.addEventListener\('focusin', handleOutsideFocus, true\)/)
+  assert.match(dockSource, /document\.addEventListener\('pointerdown', handleOutsidePointer, true\)/)
+  assert.match(dockSource, /window\.addEventListener\('blur', handleWindowBlur\)/)
+  assert.match(dockSource, /host\.contains\(event\.target\)/)
   assert.match(dockSource, /workspace\.saveFocused\(\)/)
+  assert.doesNotMatch(dockSource, /onBlurCapture=/)
   assert.match(workspaceSource, /saveFocused\(\)[\s\S]*return this\.save\(session\.id\)/)
 })
 
@@ -147,6 +154,21 @@ test('project overview literature import keeps the selected project scope', () =
   )
   assert.match(button, /openWorkbenchView\('literature', \{ preserveProject: true \}\)/)
   assert.doesNotMatch(button, /openWorkbenchView\('literature'\)/)
+})
+
+test('project changes reload literature and reject responses from the previous project', () => {
+  assert.match(
+    storeSource,
+    /useEffect\(\(\) => \{\s*void actRef\.current\.reloadLiterature\(\)\s*\}, \[state\.homeSelectedProjectId\]\)/
+  )
+  assert.match(
+    storeSource,
+    /homeSelectedProjectId !== stateRef\.current\.homeSelectedProjectId/
+  )
+  assert.match(
+    storeSource,
+    /if \(current\.homeSelectedProjectId !== homeSelectedProjectId\) return current/
+  )
 })
 
 test('workbench return project belongs only to an explicitly contextual navigation', () => {

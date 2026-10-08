@@ -71,14 +71,19 @@ export function clearContinuity(record: ContinuityRecord, scopeKey: string): Con
 
 /**
  * 当前作用域的记录 key。无法归属时返回 null，调用方跳过写入 —— 例如会话的
- * projectPath 是 undefined（目录外会话）或项目已从列表消失，此时不能把记录
- * 误写到文献库 key 下。
+ * projectPath 是 undefined（目录外会话）、项目已从列表消失、或无项目会话并不在
+ * 文献库视图里：这些情况都不能把记录误写到文献库 key 下。
  */
 export function continuityScopeKey(input: ContinuityScopeInput): string | null {
   const { activeSession, threadProjectPath, homeSelectedProjectId, mainView, projects } = input
   if (activeSession) {
     if (threadProjectPath === undefined) return null
-    if (threadProjectPath === null) return LITERATURE_SCOPE_KEY
+    // 无项目会话不等于文献库会话：首页/对话面的全局对话没有作用域归属，只有在
+    // 文献库视图里进行的才记文献库 key，否则「文献库上次打开的对话」会退化成
+    // 「全应用最后一个无项目对话」。
+    if (threadProjectPath === null) {
+      return mainView === LITERATURE_SCOPE_KEY ? LITERATURE_SCOPE_KEY : null
+    }
     return projects.find((project) => project.path === threadProjectPath)?.id ?? null
   }
   if (homeSelectedProjectId) return homeSelectedProjectId

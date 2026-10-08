@@ -867,6 +867,7 @@ export async function fetchResourceCandidatePage(
         source_id: node.path,
         label: node.name,
         hint: node.kind === 'dir' ? 'folder' : resourceFileKindLabel(node.name),
+        ...(node.kind === 'dir' ? { child_count: node.count ?? 0 } : {}),
         retention: 'next_turn' as const,
         origin: 'explicit' as const
       })),

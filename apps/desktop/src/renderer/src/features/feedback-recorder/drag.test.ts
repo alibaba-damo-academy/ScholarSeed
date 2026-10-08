@@ -13,12 +13,12 @@ test('feedback recorder floating offset stays inside the viewport', () => {
 })
 
 test('feedback recorder whole-surface drag excludes interactive descendants', () => {
-  const surface = {}
-  const target = (matched: object | null): EventTarget => ({
+  const surface = new EventTarget()
+  const target = (matched: EventTarget | null): EventTarget => ({
     closest: () => matched
   }) as unknown as EventTarget
 
-  assert.equal(isRecorderDragBlockedTarget(target({}), surface), true)
+  assert.equal(isRecorderDragBlockedTarget(target(new EventTarget()), surface), true)
   assert.equal(isRecorderDragBlockedTarget(target(surface), surface), false)
   assert.equal(isRecorderDragBlockedTarget(target(null), surface), false)
   assert.equal(isRecorderDragBlockedTarget(null), false)

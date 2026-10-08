@@ -93,9 +93,13 @@ test('容器行、不可打开、不属于该作用域的会话都视为失效�
   }
 })
 
-test('作用域 key：会话归属项目、无项目归属文献库、无法归属返回 null', () => {
+test('作用域 key：会话归属项目、无项目会话仅在文献库视图归属文献库、无法归属返回 null', () => {
   assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: '/work/甲' })), 'p1')
-  assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: null, mainView: 'conversation' })), LITERATURE_SCOPE_KEY)
+  assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: null, mainView: LITERATURE_SCOPE_KEY })), LITERATURE_SCOPE_KEY)
+  // 首页/对话面的无项目全局对话不属于文献库作用域，不能写进文献库 key。
+  assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: null, mainView: 'conversation' })), null)
+  assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: null, mainView: 'home' })), null)
+  assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: null, mainView: 'resource' })), null)
   assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: undefined })), null)
   assert.equal(continuityScopeKey(scopeInput({ activeSession: 's1', threadProjectPath: '/gone' })), null)
   assert.equal(continuityScopeKey(scopeInput({ homeSelectedProjectId: 'p2' })), 'p2')

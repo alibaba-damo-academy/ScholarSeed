@@ -12,6 +12,7 @@ SKILL_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from download_access import download_access
+from filesystem import filesystem_path
 from io_utils import (  # noqa: E402
     atomic_write_json,
     read_json,
@@ -82,7 +83,7 @@ def main() -> int:
             results.append({
                 "paper_id": str(paper_id), "title": str(paper.get("title", "Untitled")), **download_access(paper, "open-download"),
                 "status": status, "file_path": file_path, "content_type": "application/pdf" if file_path else None,
-                "verified_exists": bool(file_path and (args.run_dir / file_path).is_file()), "message": message,
+                "verified_exists": bool(file_path and filesystem_path(args.run_dir / file_path).is_file()), "message": message,
             })
         manifest = {
             "schema_version": "1.0", "run_id": selection.get("run_id", args.run_dir.name),

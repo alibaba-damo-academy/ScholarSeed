@@ -57,6 +57,9 @@ LITERATURE_SEARCH_DIR: Path = SERVICE_DIR / "aisearch"
 LITERATURE_SEARCH_TASK_PREFIX = "task-"
 LITERATURE_SEARCH_QUERY_FILENAME = "query.txt"
 LITERATURE_SEARCH_STATE_FILENAME = "search.json"
+# Windows 上任务目录可能因为子进程仍持有 cwd 或杀软句柄而删不掉。删除意图落在这个标记文件里,
+# 目录对用户立即消失, 真正的删除由下次启动清扫完成。
+LITERATURE_SEARCH_DELETE_FLAG_FILENAME = "deleted.flag"
 SESSION_CATALOG_DB: Path = SERVICE_DIR / "sessions.sqlite3"
 # proposal 47: content 域的项目身份、关联授权根、事件游标与审计。
 # Project identities have a separate lifecycle from session execution records.
@@ -85,6 +88,39 @@ SERVICE_SKILL_ROOTS: tuple[Path, ...] = (SERVICE_BUNDLED_SKILLS_DIR, SERVICE_SKI
 SERVICE_SKILL_STATE_FILE: Path = SERVICE_DIR / "skills.json"
 SERVICE_PROJECTS_FILE: Path = SERVICE_DIR / "projects.json"
 SERVICE_CASES_DIR: Path = SCHOLARSEED_HOME / "test_sessions"
+
+#: SQLite 的边车文件名后缀: WAL 里是最新写入, 只 deny 主库等于留一个读口。
+SQLITE_SIDE_CAR_SUFFIXES: tuple[str, ...] = ("-wal", "-shm")
+SERVICE_DATABASES: tuple[Path, ...] = (
+    MODEL_CREDENTIALS_DB,
+    SERVICE_LITERATURE_DATABASE,
+    SERVICE_ACTIONS_DB,
+    SESSION_CATALOG_DB,
+    CONTENT_DB,
+    RESOURCE_IMPORTS_DB,
+    DESKTOP_HANDOFF_DB,
+)
+
+
+def service_deny_read_roots() -> tuple[Path, ...]:
+    """serve 自有、Agent 沙箱不得读取的落盘面（proposal 116 P4）。
+
+    逐个文件而不 deny `SERVICE_DIR` 前缀: 该目录下还有 bridge 的 Unix socket 与
+    `sessions/` 里的会话工作目录, 前缀式 deny 会一起打死。边车文件不论当前是否存在
+    都列出——Codex 的 deny 按路径在访问时判定（0.155.1 darwin 实测: 对启动时不存在的
+    路径 deny, 之后创建再读仍 EPERM）, 而 WAL 往往在回合中途才出现。
+    """
+    databases = set(SERVICE_DATABASES)
+    if SERVICE_DIR.is_dir():
+        databases.update(SERVICE_DIR.glob("*.sqlite3"))
+    roots = [SERVICE_LITERATURE_FILES_DIR]
+    for database in sorted(databases):
+        roots.append(database)
+        roots.extend(
+            database.with_name(database.name + suffix) for suffix in SQLITE_SIDE_CAR_SUFFIXES
+        )
+    return tuple(roots)
+
 
 # ── 项目级落盘 (相对项目根) ────────────────────────────────────────────
 # 上面每一条都是 import 时求值的**绝对**路径, 因为用户级根在 import 时就已知。
@@ -135,7 +171,7 @@ RUNTIME_DIRNAME = "runtime"
 RUNTIME_STAGING_DIRNAME = "staging"
 RUNTIME_MANIFESTS_DIRNAME = "manifests"
 RUNTIME_LOCKS_DIRNAME = "locks"
-RUNTIME_COMPONENT_KINDS = ("python", "texlive")
+RUNTIME_COMPONENT_KINDS = ("python", "texlive", "powershell")
 RUNTIME_DIR: Path = SCHOLARSEED_HOME / RUNTIME_DIRNAME
 RUNTIME_STAGING_DIR: Path = RUNTIME_DIR / RUNTIME_STAGING_DIRNAME
 RUNTIME_MANIFESTS_DIR: Path = RUNTIME_DIR / RUNTIME_MANIFESTS_DIRNAME
@@ -186,6 +222,7 @@ __all__ = [
     "LITERATURE_SEARCH_TASK_PREFIX",
     "LITERATURE_SEARCH_QUERY_FILENAME",
     "LITERATURE_SEARCH_STATE_FILENAME",
+    "LITERATURE_SEARCH_DELETE_FLAG_FILENAME",
     "SESSION_CATALOG_DB",
     "CONTENT_DB",
     "RESOURCE_IMPORTS_DB",

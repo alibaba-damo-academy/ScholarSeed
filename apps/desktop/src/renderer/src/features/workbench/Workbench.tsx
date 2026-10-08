@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BookOpenText, Folders } from 'lucide-react'
 
@@ -8,6 +8,7 @@ import { Icon } from '../../icons'
 import { Pending } from '../../shell/Pending'
 import { PROJECT_POPOVER_CONTENT_CLASS, ProjectMenu } from '../../shell/ProjectMenu'
 import { hasProjectScope, selectedProject, useApp } from '../../store'
+import { getLiteratureCounts } from '../literature/api'
 import { DocumentDock } from './Dock'
 import { FIXED_TAB_BY_VIEW, OVERVIEW_TAB, tabMatchesProject, viewerForPath } from './tabs'
 import { documentNavigationView, useDocumentWorkspace } from './workspace'
@@ -26,33 +27,34 @@ export function Workbench(): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { state, set } = useApp()
   const documents = useDocumentWorkspace()
-  const activeTab = state.tabs.find((entry) => entry.id === state.activeTab && tabMatchesProject(entry, state.homeSelectedProjectId))
+  const activeTab = state.tabs.find(
+    (entry) => entry.id === state.activeTab && tabMatchesProject(entry, state.homeSelectedProjectId)
+  )
   const focusedTab = documents.focusedTabId ? documents.tabs[documents.focusedTabId] : undefined
   const focusedSession = focusedTab ? documents.sessions[focusedTab.sessionId] : undefined
-  const focusedDocument = focusedTab && focusedSession
-    && documentNavigationView(focusedTab, focusedSession) === state.mainView
+  const focusedDocument =
+    focusedTab &&
+    focusedSession &&
+    documentNavigationView(focusedTab, focusedSession) === state.mainView
       ? focusedTab
       : undefined
-  const fallbackTabId = focusedDocument?.id
-    ?? FIXED_TAB_BY_VIEW[state.mainView]?.id
-    ?? OVERVIEW_TAB.id
+  const fallbackTabId =
+    focusedDocument?.id ?? FIXED_TAB_BY_VIEW[state.mainView]?.id ?? OVERVIEW_TAB.id
   const activeTabNeedsSync = !activeTab && !documents.tabs[state.activeTab]
-  const tab = activeTab ?? (
-    activeTabNeedsSync && !focusedDocument
+  const tab =
+    activeTab ??
+    (activeTabNeedsSync && !focusedDocument
       ? state.tabs.find((entry) => entry.id === fallbackTabId)
-      : undefined
-  )
+      : undefined)
   const kind = tab?.kind === 'file' ? viewerForPath(tab.id) : tab?.kind
   const viewer = kind ? featureRegistry.viewers.get(kind) : undefined
   const contributedViewActive = Boolean(tab && tab.kind !== 'file' && viewer)
 
   useEffect(() => {
     if (!activeTabNeedsSync) return
-    set((current) => (
-      current.activeTab === fallbackTabId
-        ? current
-        : { ...current, activeTab: fallbackTabId }
-    ))
+    set((current) =>
+      current.activeTab === fallbackTabId ? current : { ...current, activeTab: fallbackTabId }
+    )
   }, [activeTabNeedsSync, fallbackTabId, set])
 
   // Closing a split document updates the document workspace first. The app-level
@@ -86,6 +88,30 @@ export function Workbench(): React.JSX.Element {
 function Overview(): React.JSX.Element {
   const { t } = useTranslation('workbench')
   const { state, set, act } = useApp()
+  const projectId = state.homeSelectedProjectId
+  // 「项目有无文献」必须与文献库权威计数同源。旧 app-store 文献切片里的 total
+  // 既不随项目切换/启动恢复刷新，又带 scope/搜索/pdf 筛选语义，拿它当判据会把有文献的
+  // 项目误判为空（Bug 87192946）。这里按当前项目直接取 /literatures/counts 的 all。
+  const [literatureTotal, setLiteratureTotal] = useState<number | null>(null)
+  useEffect(() => {
+    if (projectId === null) {
+      setLiteratureTotal(null)
+      return
+    }
+    let alive = true
+    setLiteratureTotal(null)
+    getLiteratureCounts(projectId)
+      .then((counts) => {
+        if (alive) setLiteratureTotal(counts.all)
+      })
+      .catch(() => {
+        // 取数失败保持未知态：宁可少报空态，也不能把有文献的项目说成「暂无」。
+        if (alive) setLiteratureTotal(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [projectId])
   const activeProject = selectedProject(state)
   if (!hasProjectScope(state)) return <BlankProject />
   // 标题取名优先级：已选项目名 > 后端实际解析出的工作区目录名。
@@ -96,10 +122,14 @@ function Overview(): React.JSX.Element {
     : ''
   const title = activeProject?.name || workspaceName
   // PRD「新建项目」: 空项目要给「暂无资料或文献」与两个接入入口, 不能说「已关联」。
-  const empty = state.resource.tree.length === 0 && state.literature.total === 0
+  // 计数未到位（null）时不按空态渲染，避免加载期误报。
+  const empty = state.resource.tree.length === 0 && literatureTotal === 0
 
   return (
-    <div className="vds-overview" data-testid="workbench-overview">
+    <div
+      className="vds-overview box-border h-full min-h-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]"
+      data-testid="workbench-overview"
+    >
       <div className="vds-overview-inner">
         <div className="vds-overview-kicker">
           <Icon name="folder" size={13} />
@@ -113,7 +143,12 @@ function Overview(): React.JSX.Element {
         )}
         {empty ? (
           <>
-            <p className="vds-overview-empty cursor-text select-text" data-testid="workbench-overview-empty">{t('overview.empty')}</p>
+            <p
+              className="vds-overview-empty cursor-text select-text"
+              data-testid="workbench-overview-empty"
+            >
+              {t('overview.empty')}
+            </p>
             <div className="vds-overview-acts">
               <Button
                 data-testid="overview-import-literature"
@@ -131,18 +166,22 @@ function Overview(): React.JSX.Element {
               <Button
                 data-testid="overview-import-resource"
                 icon={<Folders size={14} strokeWidth={1.6} />}
-                onClick={() => set({ resource: { ...state.resource, importDialog: { phase: 'select', targetDir: '' } } })}
+                onClick={() =>
+                  set({
+                    resource: {
+                      ...state.resource,
+                      importDialog: { phase: 'select', targetDir: '' },
+                    },
+                  })
+                }
               >
                 {t('overview.importResources')}
               </Button>
             </div>
           </>
         ) : (
-          <p className="vds-overview-desc cursor-text select-text">
-            {t('overview.description')}
-          </p>
+          <p className="vds-overview-desc cursor-text select-text">{t('overview.description')}</p>
         )}
-
       </div>
     </div>
   )
@@ -188,10 +227,7 @@ function BlankProject(): React.JSX.Element {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className={`${PROJECT_POPOVER_CONTENT_CLASS} text-left`}>
-                <ProjectMenu
-                  onClose={() => setPickerOpen(false)}
-                  createEntry={false}
-                />
+                <ProjectMenu onClose={() => setPickerOpen(false)} createEntry={false} />
               </PopoverContent>
             </div>
           </Popover>

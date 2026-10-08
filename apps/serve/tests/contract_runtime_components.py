@@ -16,7 +16,7 @@ class RuntimeComponentPaths(unittest.TestCase):
         self.assertEqual(paths.RUNTIME_STAGING_DIRNAME, "staging")
         self.assertEqual(paths.RUNTIME_MANIFESTS_DIRNAME, "manifests")
         self.assertEqual(paths.RUNTIME_LOCKS_DIRNAME, "locks")
-        self.assertEqual(paths.RUNTIME_COMPONENT_KINDS, ("python", "texlive"))
+        self.assertEqual(paths.RUNTIME_COMPONENT_KINDS, ("python", "texlive", "powershell"))
 
     def test_store_paths_derive_from_home(self):
         self.assertEqual(paths.RUNTIME_DIR, paths.SCHOLARSEED_HOME / "runtime")

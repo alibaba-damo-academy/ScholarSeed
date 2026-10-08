@@ -12,9 +12,14 @@ from starlette.status import (
     HTTP_400_BAD_REQUEST,
     HTTP_403_FORBIDDEN,
     HTTP_413_CONTENT_TOO_LARGE,
+    HTTP_503_SERVICE_UNAVAILABLE,
 )
 
 from service.chat.api.bridge import scoped_bridge_caller
+from service.chat.runtime.projection import (
+    ARTIFACT_PUBLISH_ACCESS_DENIED,
+    ARTIFACT_PUBLISH_IO_FAILED,
+)
 from service.platform.bridge import (
     ARTIFACT_PUBLISH_ROUTE,
     BRIDGE_MAX_REQUEST_BYTES,
@@ -23,6 +28,15 @@ from service.platform.bridge import (
     ArtifactPublisher,
     ArtifactPublishFailure,
 )
+from service.platform.content import ArtifactSnapshotFailure
+
+ARTIFACT_FAILURE_MESSAGES = {
+    ArtifactSnapshotFailure.BUSY.value: "The file or snapshot storage is in use. Close applications holding the file and retry publication. Your source file has not been deleted.",
+    ArtifactSnapshotFailure.ACCESS_DENIED.value: "Snapshot access was denied. Ask your administrator to restore access to the source file and project storage, then retry. Do not disable security protection.",
+    ArtifactSnapshotFailure.UNSUPPORTED.value: "The storage does not support the filesystem operations required for immutable snapshots. Use a supported local project filesystem and retry publication.",
+    ArtifactSnapshotFailure.DISK_FULL.value: "Snapshot storage is full. Free disk space and retry publication. Your source file has not been deleted.",
+    ArtifactSnapshotFailure.UNAVAILABLE.value: "The snapshot could not be created. Check the application logs for the failing filesystem operation before retrying. The source file may still be available.",
+}
 
 
 def register_artifact_routes(
@@ -59,7 +73,22 @@ def register_artifact_routes(
         try:
             artifact = await caller.publish_artifact(command.path, command.role, turn_id=turn_id)
         except ArtifactPublishFailure as error:
-            return JSONResponse({"ok": False, "error": error.code}, HTTP_400_BAD_REQUEST)
+            status_by_code = {
+                ARTIFACT_PUBLISH_ACCESS_DENIED: HTTP_403_FORBIDDEN,
+                ARTIFACT_PUBLISH_IO_FAILED: HTTP_503_SERVICE_UNAVAILABLE,
+            }
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": error.code,
+                    **(
+                        {"message": ARTIFACT_FAILURE_MESSAGES[error.code]}
+                        if error.code in ARTIFACT_FAILURE_MESSAGES
+                        else {}
+                    ),
+                },
+                status_by_code.get(error.code, HTTP_400_BAD_REQUEST),
+            )
         return JSONResponse({"ok": True, "artifact": artifact})
 
     app.include_router(router)

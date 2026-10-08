@@ -7,10 +7,12 @@ import hashlib
 import json
 import logging
 import math
+import os
 import uuid
 from collections import OrderedDict, deque
 from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from time import monotonic, time
 from typing import Any, Coroutine, Mapping
 
@@ -27,6 +29,7 @@ from scholarseed_codex.environment import (
     CODEX_HOME_ENV,
     CODEX_REMOTE_AUTH_CONFIG,
     CODEX_REMOTE_CONFIG_OPTION,
+    CODEX_RUNTIME_HOME,
     prepare_codex_runtime_home,
 )
 from scholarseed_codex.executable import (
@@ -44,6 +47,7 @@ from scholarseed_codex.protocol.session import (
 )
 from scholarseed_codex.protocol.state import (
     CODEX_DIAGNOSTIC_ENCODING,
+    CODEX_MAX_THREADS_PER_HOST,
     CODEX_PREFLIGHT_TIMEOUT_ERROR,
     CODEX_READINESS_CACHE_TTL_SECONDS,
     CODEX_UNAVAILABLE_ERROR,
@@ -56,6 +60,7 @@ from scholarseed_runtime.contract.resource import (
     RESOURCE_LIFECYCLE_LOGGER,
     RESOURCE_QUEUE_FULL,
     RESOURCE_RESERVATION_INVALID,
+    RESOURCE_THREAD_CAPACITY,
     RESOURCE_WAIT_TIMEOUT,
     ResourceCapacity,
     ResourceEvidence,
@@ -98,8 +103,7 @@ def _environment_digest(
     process_environment: Mapping[str, str],
     remove_environment: tuple[str, ...],
     resolved_arguments: tuple[str, ...],
-    configuration: Mapping[str, object] | None = None,
-    session_scope: str = "",
+    execution_scope: str = "",
 ) -> str:
     """Stable digest of everything that changes what the launched process sees."""
 
@@ -109,8 +113,7 @@ def _environment_digest(
                 "environment": sorted(process_environment.items()),
                 "remove_environment": sorted(set(remove_environment)),
                 "arguments": resolved_arguments,
-                "configuration": dict(configuration or {}),
-                "session_scope": session_scope,
+                "execution_scope": execution_scope,
             },
             sort_keys=True,
         ).encode(CODEX_DIAGNOSTIC_ENCODING)
@@ -130,6 +133,7 @@ class _HostSlot:
     startup_error: str = ""
     close_safe: bool = False
     close_generation: int = 0
+    idle_timer: asyncio.TimerHandle | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -196,24 +200,29 @@ class HostLease:
     def evidence(self) -> ResourceEvidence:
         return self._pool.evidence(self._reservation)
 
-    async def close(self, *, safe: bool = False, expected_generation: int | None = None) -> None:
+    async def close(
+        self, *, safe: bool = False, expected_generation: int | None = None, retain: bool = False
+    ) -> None:
         if self._closing is None:
             if safe and expected_generation is None:
                 expected_generation = self.host.readiness.process_generation
             self._closing = self._pool._background(
                 self._pool._release(
-                    self._reservation, safe=safe, expected_generation=expected_generation
+                    self._reservation,
+                    safe=safe,
+                    expected_generation=expected_generation,
+                    retain=retain,
                 )
             )
         await asyncio.shield(self._closing)
 
-    async def retry_close(self, *, expected_generation: int) -> None:
+    async def retry_close(self, *, expected_generation: int, retain: bool = False) -> None:
         """Ensure a safe close, or retry a rejected pre-EOF close in its original generation."""
         if self._closing is None:
             # The preceding thread unsubscribe may have failed before lease release began.
             if expected_generation != self.host.readiness.process_generation:
                 raise AppServerError(RUNTIME_SUSPEND_STALE, safe_error=RUNTIME_SUSPEND_STALE)
-            await self.close(safe=True, expected_generation=expected_generation)
+            await self.close(safe=True, expected_generation=expected_generation, retain=retain)
             return
         if self._closing.done() and not self._closing.cancelled():
             if self._closing.exception() is not None:
@@ -235,6 +244,7 @@ class CodexHostPool:
         self._tombstones: OrderedDict[str, asyncio.TimerHandle] = OrderedDict()
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
+        self._sandbox_setup_locks: dict[str, asyncio.Lock] = {}
         self._closed = False
         self._closing: asyncio.Task[None] | None = None
         self._readiness_cache: dict[ReadinessKey, tuple[float, CodexRuntimeReadiness]] = {}
@@ -432,16 +442,11 @@ class CodexHostPool:
         resolved_arguments = _resolve_launch_arguments(
             launch_arguments, environment, request.remove_environment
         )
-        configuration = (
-            request.thread_config if isinstance(request, CodexSessionOpenRequest) else {}
-        )
-        session_scope = request.request_id if role is HostRole.EXECUTION else ""
         digest = _environment_digest(
             environment,
             request.remove_environment,
             resolved_arguments,
-            configuration,
-            session_scope,
+            request.execution_scope if isinstance(request, CodexSessionOpenRequest) else "",
         )
         fingerprint = self._digest(
             {
@@ -500,11 +505,25 @@ class CodexHostPool:
                 )
             self._wake(role)
             slot = self._hosts.get(key)
+            if (
+                role is HostRole.EXECUTION
+                and slot is not None
+                and len(slot.owners) >= CODEX_MAX_THREADS_PER_HOST
+            ):
+                return self._rejected(
+                    request_id,
+                    role,
+                    actual_deadline,
+                    key,
+                    fingerprint,
+                    RESOURCE_THREAD_CAPACITY,
+                )
             used = sum(value.role is role for value in self._hosts.values())
+            limit = self.policy.limit(role)
             can_share = (
                 slot is not None and slot.state in SHAREABLE_HOST_STATES and not self._waiting[role]
             )
-            can_start = slot is None and used < self.policy.limit(role) and not self._waiting[role]
+            can_start = slot is None and (limit is None or used < limit) and not self._waiting[role]
             if (
                 not can_share
                 and not can_start
@@ -606,7 +625,17 @@ class CodexHostPool:
         slot = self._hosts.get(reservation.key)
         if slot is None:
             try:
-                host = CodexProcessHost(**reservation.arguments)
+                inherited_home = (
+                    str(CODEX_RUNTIME_HOME)
+                    if CODEX_HOME_ENV in reservation.arguments["remove_environment"]
+                    else os.environ.get(CODEX_HOME_ENV, str(CODEX_RUNTIME_HOME))
+                )
+                runtime_home = reservation.arguments["process_environment"].get(
+                    CODEX_HOME_ENV, inherited_home
+                )
+                setup_key = os.path.normcase(str(Path(runtime_home).expanduser().resolve()))
+                setup_lock = self._sandbox_setup_locks.setdefault(setup_key, asyncio.Lock())
+                host = CodexProcessHost(**reservation.arguments, sandbox_setup_lock=setup_lock)
             except Exception as error:
                 self._finish(
                     reservation,
@@ -627,6 +656,9 @@ class CodexHostPool:
             )
             self._hosts[slot.key] = slot
             slot.startup = self._background(self._start(slot, reservation.timing))
+        if slot.idle_timer is not None:
+            slot.idle_timer.cancel()
+            slot.idle_timer = None
         slot.owners.add(reservation.reservation_id)
         reservation.slot = slot
         reservation.arguments.clear()
@@ -674,8 +706,9 @@ class CodexHostPool:
                 continue
             slot = self._hosts.get(reservation.key)
             used = sum(value.role is role for value in self._hosts.values())
+            limit = self.policy.limit(role)
             if (slot is not None and slot.state not in SHAREABLE_HOST_STATES) or (
-                slot is None and used >= self.policy.limit(role)
+                slot is None and limit is not None and used >= limit
             ):
                 if role is HostRole.CONTROL:
                     idle = next(
@@ -796,7 +829,12 @@ class CodexHostPool:
         self._remember(reservation)
 
     def _release_locked(
-        self, reservation: PoolReservation, *, safe: bool, expected_generation: int | None = None
+        self,
+        reservation: PoolReservation,
+        *,
+        safe: bool,
+        expected_generation: int | None = None,
+        retain: bool = False,
     ) -> asyncio.Task[None] | None:
         slot = reservation.slot
         if slot is None:
@@ -810,6 +848,18 @@ class CodexHostPool:
             self._detach(reservation, HostState.STOPPED.value)
         elif slot.owners:
             self._detach(reservation, HOST_LEASE_RELEASED)
+        elif (
+            slot.role is HostRole.EXECUTION
+            and slot.state is HostState.READY
+            and reservation.state is ResourceState.CONSUMED
+            and safe
+            and retain
+            and not self._closed
+        ):
+            self._detach(reservation, HOST_LEASE_RELEASED)
+            slot.idle_timer = asyncio.get_running_loop().call_later(
+                self.policy.idle_seconds, self._expire_idle_host, slot
+            )
         elif (
             slot.role is HostRole.CONTROL
             and slot.state is HostState.READY
@@ -826,12 +876,39 @@ class CodexHostPool:
             )
         return reservation.closing
 
+    def _expire_idle_host(self, slot: _HostSlot) -> None:
+        self._background(self._close_idle_host(slot))
+
+    async def _close_idle_host(self, slot: _HostSlot) -> None:
+        async with self._lock:
+            slot.idle_timer = None
+            if self._hosts.get(slot.key) is not slot or slot.owners or self._closed:
+                return
+            closing = self._stop_task(slot, safe=True)
+        try:
+            await asyncio.shield(closing)
+        except AppServerError as error:
+            if error.safe_error != RUNTIME_SUSPEND_BUSY or slot.host.stop_committed:
+                raise
+            async with self._lock:
+                if self._hosts.get(slot.key) is slot and not slot.owners and not self._closed:
+                    slot.state = HostState.READY
+                    slot.closing = None
+                    slot.idle_timer = asyncio.get_running_loop().call_later(
+                        self.policy.idle_seconds, self._expire_idle_host, slot
+                    )
+
     async def _release(
-        self, reservation: PoolReservation, *, safe: bool, expected_generation: int | None = None
+        self,
+        reservation: PoolReservation,
+        *,
+        safe: bool,
+        expected_generation: int | None = None,
+        retain: bool = False,
     ) -> None:
         async with self._lock:
             closing = self._release_locked(
-                reservation, safe=safe, expected_generation=expected_generation
+                reservation, safe=safe, expected_generation=expected_generation, retain=retain
             )
         if closing is not None:
             await asyncio.shield(closing)
@@ -839,6 +916,9 @@ class CodexHostPool:
     def _stop_task(
         self, slot: _HostSlot, *, safe: bool, expected_generation: int | None = None
     ) -> asyncio.Task[None]:
+        if slot.idle_timer is not None:
+            slot.idle_timer.cancel()
+            slot.idle_timer = None
         if slot.closing is None:
             slot.state = HostState.STOPPING
             generation = (
@@ -895,7 +975,11 @@ class CodexHostPool:
     async def _stop(self, slot: _HostSlot, *, safe: bool, expected_generation: int) -> None:
         try:
             if slot.startup is not None:
-                await asyncio.shield(slot.startup)
+                if not safe and not slot.startup.done():
+                    slot.startup.cancel()
+                    await asyncio.gather(slot.startup, return_exceptions=True)
+                else:
+                    await asyncio.shield(slot.startup)
             if safe:
                 await slot.host.stop_idle(expected_generation)
             else:

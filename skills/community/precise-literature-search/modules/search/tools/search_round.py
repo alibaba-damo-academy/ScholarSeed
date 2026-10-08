@@ -24,6 +24,7 @@ import pool_inspect  # noqa: E402
 import state as state_tool  # noqa: E402
 from platform_support import WINDOWS, utf8_environment
 from io_utils import atomic_write_json, read_json  # noqa: E402
+from filesystem import path_exists
 from execution_policy import request_timeout, validate_batch, allows_transport_retry, require_search_worker
 from balance_policy import RetrievalBudgetExhausted
 
@@ -202,7 +203,7 @@ def _attempt(
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
     elapsed = round(time.monotonic() - started, 3)
-    if completed.returncode == 0 and output_path.exists():
+    if completed.returncode == 0 and path_exists(output_path):
         payload = read_json(output_path)
         return {
             "status": "success",
@@ -326,7 +327,7 @@ def _persist_operation(
 
 def _pool_size(work_dir: Path) -> int:
     path = work_dir / "pool.json"
-    if not path.exists():
+    if not path_exists(path):
         return 0
     value = read_json(path)
     papers = value.get("papers", []) if isinstance(value, dict) else []
@@ -341,14 +342,14 @@ def _resumed_operation(
     result_path: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     current = state_tool.initialize(work_dir)
-    if query not in current.get("searched_queries", []) or not result_path.exists():
+    if query not in current.get("searched_queries", []) or not path_exists(result_path):
         return None
     payload = read_json(result_path)
     if not isinstance(payload, dict):
         return None
     new_ids: list[str] = []
     log_path = work_dir / "query-log.json"
-    if log_path.exists():
+    if path_exists(log_path):
         log = read_json(log_path)
         entries = log.get("queries", []) if isinstance(log, dict) else []
         for entry in reversed(entries):

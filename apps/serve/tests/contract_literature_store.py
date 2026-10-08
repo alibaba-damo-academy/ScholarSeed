@@ -1119,9 +1119,7 @@ class LiteratureStoreTests(unittest.TestCase):
             {"Important": 2, "Shared": 2, "Unused": 0},
         )
         # 选中父分类要按递归子树收敛, 与列表的 collection 口径一致。
-        subtree = repository.scoped_tags(
-            project_id=self.project.id, collection_ids=(parent["id"],)
-        )
+        subtree = repository.scoped_tags(project_id=self.project.id, collection_ids=(parent["id"],))
         self.assertEqual(
             {tag["name"]: tag["count"] for tag in subtree},
             {"Important": 2, "Shared": 1, "Unused": 0},

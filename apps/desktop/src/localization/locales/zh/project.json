@@ -42,14 +42,13 @@
     "too_many_entries": "项目根下条目过多，请先自行整理",
     "cannot_forget_current_project": "这是当前项目，请先切换到其他项目",
     "cannot_archive_current_project": "这是当前项目，请先切换到其他项目再归档",
+    "reveal_unavailable": "无法显示项目目录：{{path}}（目录可能不存在或无法访问）",
     "name_too_long": "项目名称最长 {{max}} 个字符"
   },
   "notices": {
     "renamed": "已改名（本地目录名不变）",
     "archived": "已归档，项目从默认列表收起，可随时在归档区恢复",
     "unarchived": "已取消归档，项目回到默认列表",
-    "savedRestart": "已保存，重启书深后新建的项目落到新根",
-    "saved": "已保存",
     "linked": "已关联，Agent 在下一轮对话获得写权限",
     "planFailed": "读取迁移清单失败",
     "managed": "迁移完成，项目已使用内置双库",
@@ -69,12 +68,9 @@
     "link": "关联本地目录",
     "revoke": "撤销",
     "interrupt": "撤销时立即中断正在运行的任务（否则该任务到下一轮才收回写权限）",
-    "root": "新建项目的落地根",
-    "fromStartup": "（来自启动参数，未显式设置）",
     "openTrash": "在废纸篓中查看",
     "trashHint": "删除走的是系统废纸篓，在那里「放回原处」即可恢复到下面列出的原位置。",
-    "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}",
-    "effectiveRoot": "当前生效：{{path}}"
+    "migrationTitle": "迁移「{{name}}」到内置双库 · 共 {{size}}"
   },
   "cards": {
     "title": "项目",

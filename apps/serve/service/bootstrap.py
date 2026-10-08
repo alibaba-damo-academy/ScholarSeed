@@ -21,7 +21,7 @@ from service.assistant.service.actions import AssistantActionService
 from service.assistant.service.annotations import AnswerAnnotationService
 from service.assistant.service.authorization import FulltextAuthorizer
 from service.assistant.service.citations import CitationService
-from service.assistant.service.context import AssistantService
+from service.assistant.service.context import AssistantService, protect_answer
 from service.assistant.service.links import LibraryLinkProjection
 from service.assistant.service.literature import AssistantLiteratureService
 from service.assistant.service.resources import AssistantResourceService
@@ -31,6 +31,7 @@ from service.chat.api.cards import register_card_routes
 from service.chat.api.history import register_history_routes
 from service.chat.api.plan import register_plan_routes
 from service.chat.api.routes import DEFAULT_STORAGE_PROFILE, create_chat_app
+from service.chat.api.search import register_conversation_search_routes
 from service.chat.api.sessions import ARTIFACT_EDITABLE_HEADER
 from service.chat.api.tasks import register_task_routes
 from service.chat.constants import SESSION_PROJECT_NOT_REGISTERED_ERROR
@@ -40,9 +41,11 @@ from service.chat.service.attachments import AttachmentService
 from service.chat.service.cards import CardRegistry
 from service.chat.service.completions import MODEL_BRIDGE_ROUTE_PREFIX
 from service.chat.service.context import SessionContextProvider
+from service.chat.service.coverage import CitationCoverage
 from service.chat.service.history import HistoryService
 from service.chat.service.inference import AgentOneShotProvider
 from service.chat.service.publication import PublicationService, SessionArtifactStorage
+from service.chat.service.search import SearchService
 from service.chat.service.settings import SettingsService
 from service.chat.service.terminals import TurnTerminalReader
 from service.content.api.routes import register_content_routes
@@ -58,11 +61,13 @@ from service.inference.transport import InferenceProvider
 from service.invocation.api.routes import register_invocation_routes
 from service.invocation.service.runtime import InvocationService
 from service.invocation.service.skills import InvocationSkillResolver
+from service.literature.api.acquire import register_acquire_routes
 from service.literature.api.analysis import register_analysis_routes
 from service.literature.api.evidence import register_card_bridge
 from service.literature.api.gate import FulltextGate
 from service.literature.api.papermeta import register_papermeta_routes
 from service.literature.api.reading import register_reading_routes
+from service.literature.api.receipt import register_receipt_routes
 from service.literature.api.result import register_result_routes
 from service.literature.api.review import register_literature_review_routes
 from service.literature.api.routes import register_literature_routes
@@ -76,6 +81,7 @@ from service.literature.service.cards import (
 )
 from service.literature.service.context import LiteratureContextProvider
 from service.literature.service.evidence import LiteratureEvidenceService
+from service.literature.service.fulltexts import ManagedFulltexts
 from service.literature.service.pdf import LiteraturePdf
 from service.literature.service.records import AttachmentRecords
 from service.literature.service.reference import LiteratureReferenceService
@@ -97,10 +103,16 @@ from service.platform.bridge import (
 )
 from service.platform.citations import PDF_INDEX_STATE
 from service.platform.content import ArtifactScopeKind, ProjectRef, RootKind
-from service.platform.context import AssistantContextProvider, AssistantTurnSnapshot, ContextRefKind
+from service.platform.context import (
+    AssistantContextProvider,
+    AssistantTurnSnapshot,
+    ContextRefKind,
+    SearchScope,
+)
 from service.platform.excerpts import ExcerptSourceKind
 from service.platform.local import local_listener
 from service.platform.search import register_search_routes
+from service.platform.storage import grant_current_user_directory_access
 from service.platform.web import mount_renderer, register_cross_origin_isolation
 from service.resources.api.ai import register_resource_ai_routes
 from service.resources.api.bridge import register_resource_bridge
@@ -237,7 +249,9 @@ def _bind_writable_roots(app: FastAPI, content: ContentService) -> None:
         try:
             root = content.root(project.id, RootKind.SESSIONS)
             directory = content.ensure_directory(project.id, root.path, session_id)
-            return Path(content.resolve(project.id, directory.path))
+            resolved = Path(content.resolve(project.id, directory.path))
+            grant_current_user_directory_access(resolved)
+            return resolved
         except ContentError as error:
             raise ValueError(error.code) from error
 
@@ -478,8 +492,10 @@ def create_app(
         ),
         records=annotation_store,
         preview=PdfPreviewService(),
+        fulltexts=ManagedFulltexts(),
     )
     app.state.runtime_service.bind_answer_filter(app.state.assistant_citations.filter_answer)
+    app.state.runtime_service.bind_answer_guard(protect_answer)
     app.state.fulltext_authorizer = FulltextAuthorizer(
         assistant_store.database, app.state.session_catalog
     )
@@ -527,6 +543,10 @@ def create_app(
             project.id if (project := project_for_session(session_id)) is not None else None
         ),
         providers=context_providers,
+        active_document_resolvers={
+            ContextRefKind.FILE: content_context,
+            ContextRefKind.LITERATURE: literature_context,
+        },
     )
     history_router = register_history_routes(
         app, app.state.session_service, history, app.state.assistant
@@ -544,12 +564,26 @@ def create_app(
         ResultStatusService(),
         app.state.product_events,
         app.state.artifact_service,
+        app.state.fulltext_gate,
         app.state.fulltext_authorizer,
     )
+    acquire_router = register_acquire_routes(
+        app, app.state.session_service, app.state.fulltext_authorizer
+    )
+    receipt_router = register_receipt_routes(
+        app, app.state.session_service, app.state.fulltext_authorizer
+    )
     plan_router = register_plan_routes(app, app.state.session_service)
+    search_router = register_conversation_search_routes(
+        app,
+        app.state.session_service,
+        SearchService(invocation_service),
+        lambda session_id, turn_id: (snapshot := citation_snapshot(session_id, turn_id)) is not None
+        and snapshot.search_scope is SearchScope.WEB,
+    )
     task_router = register_task_routes(app, app.state.session_service)
     review_router = register_literature_review_routes(
-        app, app.state.session_service, app.state.fulltext_authorizer
+        app, app.state.session_service, app.state.fulltext_gate
     )
     citation_router = register_citation_bridge(
         app,
@@ -566,8 +600,11 @@ def create_app(
         bridge_router.include_router(skill_router)
         bridge_router.include_router(card_router)
         bridge_router.include_router(result_router)
+        bridge_router.include_router(acquire_router)
+        bridge_router.include_router(receipt_router)
         bridge_router.include_router(review_router)
         bridge_router.include_router(plan_router)
+        bridge_router.include_router(search_router)
         bridge_router.include_router(task_router)
         bridge_router.include_router(evidence_router)
         bridge_router.include_router(citation_router)
@@ -658,17 +695,27 @@ def create_app(
         literature_pdf,
         format_policy,
     )
+    direct_model = InferenceProvider(
+        app.state.model_service,
+        AgentOneShotProvider(
+            app.state.runtime_service,
+            app.state.settings_service,
+            one_shot_environment,
+            ephemeral=True,
+        ),
+    )
+    app.state.runtime_service.bind_citation_coverage(
+        CitationCoverage(
+            web_fetcher,
+            direct_model,
+            lambda session_id, turn_id: (snapshot := citation_snapshot(session_id, turn_id))
+            is not None
+            and snapshot.search_scope is SearchScope.WEB,
+        )
+    )
     direct_actions = AssistantActionService(
         assistant_invocations,
-        model=InferenceProvider(
-            app.state.model_service,
-            AgentOneShotProvider(
-                app.state.runtime_service,
-                app.state.settings_service,
-                one_shot_environment,
-                ephemeral=True,
-            ),
-        ),
+        model=direct_model,
     )
     register_resource_ai_routes(
         app,

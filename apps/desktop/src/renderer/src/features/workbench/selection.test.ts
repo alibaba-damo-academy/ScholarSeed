@@ -3,6 +3,65 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { preserveTextSelectionForContextMenu } from './focus.ts'
 import { whitespaceSelection } from './mapping.ts'
+import { captureSelectionSnapshot } from './api.ts'
+
+test('large spreadsheet snapshot captures full material before adding its reference', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  let requestBody: Record<string, unknown> | undefined
+  let requestUrl: unknown
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: { scholarseed: { getApiBase: () => 'http://127.0.0.1:9999' } }
+  })
+  globalThis.fetch = async (input, options) => {
+    requestUrl = input
+    assert.equal(options?.method, 'POST')
+    requestBody = JSON.parse(String(options?.body))
+    return Response.json({
+      snapshot_text: 'first cell\nlast cell',
+      source_revision: 'sha256:frozen'
+    })
+  }
+  try {
+    const snapshot = await captureSelectionSnapshot(
+      { kind: 'project', project: 'project-a', path: 'resources/data.xlsx' },
+      'sha256:source',
+      {
+        document_id: 'document',
+        document_session_id: 'viewer',
+        revision: 'sha256:source',
+        status: 'exact',
+        text: 'data.xlsx · Evidence!A1:A151',
+        locator: { kind: 'calc', sheet: 'Evidence', range: 'A1:A151', content_mode: 'reference' }
+      }
+    )
+    assert.equal(snapshot.snapshot_text, 'first cell\nlast cell')
+    assert.equal(requestUrl, 'http://127.0.0.1:9999/api/workbench/selection/snapshot')
+    assert.equal(requestBody?.project_id, 'project-a')
+    assert.equal(requestBody?.source_id, 'resources/data.xlsx')
+    assert.match(String(requestBody?.selected_text_hash), /^sha256:[0-9a-f]{64}$/)
+    await captureSelectionSnapshot(
+      { kind: 'literature', literatureId: 'paper-a', attachmentId: 'attachment-a', path: 'data.xlsx',
+        recordTarget: { owner: 'literature_attachment', scope_id: 'paper-a', subject_id: 'attachment-a' } },
+      'sha256:source',
+      {
+        document_id: 'document-a', document_session_id: 'viewer', revision: 'sha256:source',
+        status: 'exact', text: 'data.xlsx · Evidence!A1:A151',
+        locator: { kind: 'calc', sheet: 'Evidence', range: 'A1:A151', content_mode: 'reference' }
+      }
+    )
+    assert.equal(requestBody?.source_revision, 'sha256:source')
+    assert.equal(requestBody?.sheet, 'Evidence')
+    assert.equal(requestBody?.range, 'A1:A151')
+    assert.equal(requestUrl, 'http://127.0.0.1:9999/api/v1/literatures/paper-a/attachments/attachment-a/selection-snapshot')
+    assert.equal(snapshot.source_revision, 'sha256:frozen')
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 
 test('secondary pointer inside selected AI text preserves the complete selection', () => {
   let prevented = false
@@ -89,6 +148,15 @@ test('literature PDF selections expose add-to-conversation through AssistantIngr
   assert.match(host, /document_id: source\.attachmentId/)
   assert.match(host, /w\(['"]selection\.add['"]\)/)
   assert.match(host, /kind: literature \? ['"]literature['"] : ['"]selection['"]/)
+})
+
+test('all add-to-conversation selections freeze the complete text for the next turn', () => {
+  const host = readFileSync(new URL('./Selection.tsx', import.meta.url), 'utf8')
+
+  assert.match(host, /let snapshotText = selection\.text/)
+  assert.match(host, /snapshot_text: snapshotText/)
+  assert.doesNotMatch(host, /selection\.locator\.kind === ['"]pdf['"] \? \{ snapshot_text:/)
+  assert.match(host, /preview_text: selection\.text/)
 })
 
 test('PDF selection actions share one compact order across resource and literature sources', () => {
@@ -198,6 +266,7 @@ test('resource AI results pin only the popup lifecycle and remain draggable', ()
   assert.match(host, /retainsDocumentSelection\(null, event\.target\)/)
   assert.match(host, /addEventListener\(["']pointerdown["'], dismissOutsidePointer, true\)/)
   assert.match(suggestion, /aria-pressed=\{pinned\}/)
+  assert.match(suggestion, /submitted && \(action === 'explain' \|\| action === 'translate'\) \? <IconButton aria-pressed=\{pinned\}/)
   assert.match(suggestion, /onPointerDown=\{startDrag\}/)
   assert.match(suggestion, /onPointerMove=\{moveDrag\}/)
   assert.match(suggestion, /onPointerUp=\{stopDrag\}/)
@@ -212,11 +281,11 @@ test('resource AI input keeps the selection toolbar visible and marks the active
   assert.match(host, /activeAttachedToSelection/)
   assert.match(host, /aria-pressed=\{activeAction === ["']explain["']\}/)
   assert.match(host, /toolbarActions=\{toolbarActions\}/)
-  assert.match(host, /anchorWidth=\{position\.width\}/)
+  assert.match(host, /anchorWidth=\{position\?\.width\}/)
   assert.match(host, /ref=\{toolbarRef\}/)
   assert.match(host, /getBoundingClientRect\(\)\.width/)
   assert.doesNotMatch(host, /useLayoutEffect\(\(\) => \{[\s\S]*if \(!toolbarRef\.current\) return;/)
-  assert.equal(host.match(/<div \{\.\.\.documentSelectionInteractionProps\} className="contents">/g)?.length, 2)
+  assert.equal(host.match(/<ResourceSuggestion\b/g)?.length, 1)
   assert.match(suggestion, /toolbarActions\?: ReactNode/)
   assert.match(suggestion, /toolbarActions && !submitted/)
   assert.match(suggestion, /actions=\{suggestionActions\}/)
@@ -246,7 +315,7 @@ test('resource AI exposes PDF annotation only through the active viewer contribu
 test('resource AI generated content remains text-selectable without changing whole-result copy', () => {
   const suggestion = readFileSync(new URL('../resources/Suggestion.tsx', import.meta.url), 'utf8')
 
-  assert.match(suggestion, /viewportClassName="[^"]*cursor-text select-text[^"]*"/)
+  assert.match(suggestion, /className="[^"]*cursor-text select-text[^"]*"/)
   assert.match(suggestion, /action === 'polish' && onApply \? <Button[\s\S]*: <CopyButton/)
   assert.match(suggestion, /<CopyButton[^>]*value=\{output\}/)
 })

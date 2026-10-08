@@ -11,6 +11,8 @@ from scholarseed_runtime.contract.history import MessagePhase, TurnStatus
 from scholarseed_runtime.contract.incident import RuntimeIncident
 
 CODEX_DEFAULT_TURN_TIMEOUT_SECONDS = 12 * 60 * 60
+CODEX_REASONING_SUMMARY_CONFIG = "model_reasoning_summary"
+CODEX_REASONING_SUMMARY_AUTO = "auto"
 
 
 class CodexApprovalReviewer(str, Enum):
@@ -49,6 +51,7 @@ class CodexSessionEventKind(str, Enum):
     ASSISTANT_DELTA = "assistant_delta"
     ASSISTANT_COMPLETED = "assistant_completed"
     REASONING_DELTA = "reasoning_delta"
+    REASONING_COMPLETED = "reasoning_completed"
     TOOL_STARTED = "tool_started"
     TOOL_PROGRESS = "tool_progress"
     TOOL_COMPLETED = "tool_completed"
@@ -62,6 +65,7 @@ class CodexSessionEventKind(str, Enum):
     SKILL_COMPLETED = "skill_completed"
     NATIVE_ACTIVITY_STARTED = "native_activity_started"
     NATIVE_ACTIVITY_COMPLETED = "native_activity_completed"
+    SUBAGENT_ACTIVITY = "subagent_activity"
     FILE_CHANGED = "file_changed"
     PLAN_UPDATED = "plan_updated"
     PLAN_DELTA = "plan_delta"
@@ -205,6 +209,7 @@ class CodexSessionOpenRequest:
     network_access: bool = False
     created_at: str | None = None
     ephemeral: bool = False
+    execution_scope: str = ""
     timing: RuntimeTimingPort = field(default=NOOP_RUNTIME_TIMING, compare=False, repr=False)
 
 

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from service.invocation.service.skills import InvocationSkillRuntimeError
 from service.literature.api.search import register_literature_search_routes
 from service.literature.persistence.search import LiteratureSearchError, LiteratureSearchService
+from service.paths import LITERATURE_SEARCH_DELETE_FLAG_FILENAME
 
 OWNER_ID = "owner-1"
 USER_ID = "user-1"
@@ -264,6 +266,58 @@ class LiteratureSearchContract(unittest.IsolatedAsyncioTestCase):
             await service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    async def test_delete_marks_workspace_when_removal_fails(self) -> None:
+        task = await self.service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
+        await asyncio.wait_for(self.service._live[task["id"]].task, timeout=2)
+        workspace = self.root / task["id"]
+        flag = workspace / LITERATURE_SEARCH_DELETE_FLAG_FILENAME
+
+        # Windows 上子进程仍把任务目录当 cwd, 或实时扫描仍持有句柄时, rmtree 会失败。
+        with mock.patch(
+            "shutil.rmtree", side_effect=PermissionError(13, "used by another process")
+        ):
+            await self.service.delete(task["id"], owner_id=OWNER_ID)
+
+        # 失败不冒泡成用户可见错误: 目录留下标记, 任务立刻从所有读路径消失。
+        self.assertTrue(workspace.is_dir())
+        self.assertTrue(flag.is_file())
+        self.assertEqual(self.service.list(owner_id=OWNER_ID), [])
+        with self.assertRaises(LiteratureSearchError):
+            self.service.get(task["id"], owner_id=OWNER_ID)
+        with self.assertRaises(LiteratureSearchError):
+            await self.service.delete(task["id"], owner_id=OWNER_ID)
+
+    async def test_startup_sweep_removes_only_flagged_workspaces(self) -> None:
+        doomed = await self.service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
+        await asyncio.wait_for(self.service._live[doomed["id"]].task, timeout=2)
+        kept = await self.service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
+        await asyncio.wait_for(self.service._live[kept["id"]].task, timeout=2)
+        (self.root / doomed["id"] / LITERATURE_SEARCH_DELETE_FLAG_FILENAME).touch()
+
+        restarted = LiteratureSearchService(FakeInvocations(), root=self.root)
+
+        self.assertFalse((self.root / doomed["id"]).exists())
+        self.assertTrue((self.root / kept["id"]).is_dir())
+        self.assertEqual([row["id"] for row in restarted.list(owner_id=OWNER_ID)], [kept["id"]])
+
+    async def test_startup_sweep_restores_flag_when_removal_fails_again(self) -> None:
+        task = await self.service.create("agent systems", owner_id=OWNER_ID, user_id=USER_ID)
+        await asyncio.wait_for(self.service._live[task["id"]].task, timeout=2)
+        workspace = self.root / task["id"]
+        flag = workspace / LITERATURE_SEARCH_DELETE_FLAG_FILENAME
+        flag.touch()
+
+        def partially_delete(target, *args, **kwargs) -> None:
+            # 部分成功: 标记文件本身已经被吃掉, 但目录仍然删不掉。
+            (Path(target) / LITERATURE_SEARCH_DELETE_FLAG_FILENAME).unlink(missing_ok=True)
+            raise PermissionError(13, "used by another process")
+
+        with mock.patch("shutil.rmtree", side_effect=partially_delete):
+            LiteratureSearchService(FakeInvocations(), root=self.root)
+
+        self.assertTrue(workspace.is_dir())
+        self.assertTrue(flag.is_file())
+
 
 class LiteratureSearchRouteContract(unittest.TestCase):
     def test_signed_out_search_is_rejected_without_starting_task(self) -> None:
@@ -300,6 +354,37 @@ class LiteratureSearchRouteContract(unittest.TestCase):
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.json(), {"detail": "invocation_runtime_unavailable"})
             self.assertEqual(list(root.iterdir()), [])
+
+    def test_deferred_directory_removal_still_returns_204(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "aisearch"
+            app = FastAPI()
+            service = LiteratureSearchService(FakeInvocations(), root=root)
+            app.state.literature_searches = service
+            register_literature_search_routes(app)
+
+            @app.middleware("http")
+            async def authenticated(request, call_next):
+                request.state.user_id = USER_ID
+                return await call_next(request)
+
+            client = TestClient(app)
+            created = client.post("/api/literature/searches", json={"query": "agent systems"})
+            self.assertEqual(created.status_code, 202)
+            task_id = created.json()["task"]["id"]
+
+            # 目录删不掉(Windows 上子进程仍持有 cwd)不能变成 500, 否则前端关不掉标签页。
+            with mock.patch(
+                "shutil.rmtree", side_effect=PermissionError(13, "used by another process")
+            ):
+                removed = client.delete(f"/api/literature/searches/{task_id}")
+
+            self.assertEqual(removed.status_code, 204)
+            self.assertTrue((root / task_id / LITERATURE_SEARCH_DELETE_FLAG_FILENAME).is_file())
+            self.assertEqual(client.get("/api/literature/searches").json(), {"items": []})
+            self.assertEqual(
+                client.get(f"/api/literature/searches/{task_id}/events").status_code, 404
+            )
 
 
 if __name__ == "__main__":

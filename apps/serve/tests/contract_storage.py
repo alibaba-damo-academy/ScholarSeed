@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from service.platform.storage import (
     NOFOLLOW,
     NONBLOCK,
+    grant_current_user_directory_access,
     open_directory,
     preserve_mode,
     stable_read_matches,
@@ -43,6 +45,40 @@ def _identity(
 
 
 class StorageContract(unittest.TestCase):
+    def test_missing_file_preserves_native_error_classification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = open_directory(Path(temporary).resolve(), ())
+            try:
+                with self.assertRaises(FileNotFoundError) as caught:
+                    directory.open("missing.bin", os.O_RDONLY | NOFOLLOW)
+                self.assertEqual(caught.exception.errno, errno.ENOENT)
+                if os.name == "nt":
+                    self.assertIsNotNone(caught.exception.winerror)
+            finally:
+                directory.close()
+
+    def test_exclusive_creation_preserves_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "existing.bin").write_bytes(PAYLOAD)
+            directory = open_directory(root, ())
+            try:
+                with self.assertRaises(FileExistsError) as caught:
+                    directory.open("existing.bin", os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                self.assertEqual(caught.exception.errno, errno.EEXIST)
+                self.assertEqual((root / "existing.bin").read_bytes(), PAYLOAD)
+            finally:
+                directory.close()
+
+    def test_session_directory_preserves_host_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary).resolve() / "session"
+            target.mkdir()
+            grant_current_user_directory_access(target)
+            child = target / "artifact.md"
+            child.write_text("host-readable", encoding="utf-8")
+            self.assertEqual(child.read_text(encoding="utf-8"), "host-readable")
+
     def test_windows_cross_api_change_time_difference_is_not_source_change(self) -> None:
         handle = _identity()
         path = _identity(changed_at=CHANGED_AT)

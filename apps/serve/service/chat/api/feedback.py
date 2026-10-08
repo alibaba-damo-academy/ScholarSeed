@@ -15,13 +15,16 @@ from starlette.status import (
 )
 
 from damoatrace.recording.diagnostics import DIAGNOSTIC_MEDIA_TYPE
+from scholarseed_runtime.contract.session import RuntimeExecutionThread
 from service.chat.persistence.catalog import (
     SessionAccessError,
     SessionCatalogStore,
     SessionPrincipal,
 )
+from service.chat.runtime.composition import LiveSessionService
 from service.chat.service.diagnostics import DIAGNOSTIC_FILENAME, export_diagnostics
 from service.chat.service.feedback import (
+    MAX_FEEDBACK_EXECUTION_THREADS,
     MAX_IMAGE_SIZE,
     MAX_IMAGES,
     MAX_IMAGES_TOTAL_SIZE,
@@ -60,6 +63,7 @@ def mount_feedback_routes(
     feedback: FeedbackService,
     catalog: SessionCatalogStore,
     credentials: SkillCredentialService,
+    runtime: LiveSessionService | None = None,
 ) -> None:
     """Expose the desktop feedback submit endpoint."""
 
@@ -87,7 +91,7 @@ def mount_feedback_routes(
             },
         )
 
-    def resolve_vendor_thread(session_id: str, owner: str) -> str:
+    def resolve_vendor_thread(session_id: str, owner: str) -> str | None:
         """Map the active product session to its Codex thread id.
 
         必须校归属: session_id 是前端传的, 不校就等于让任何登录用户填别人的
@@ -100,16 +104,16 @@ def mount_feedback_routes(
         """
 
         if not session_id:
-            return ""
+            return None
         record = catalog.get(session_id)
         if record is None:
             logger.info("feedback: unknown session_id, conversation set skipped")
-            return ""
+            return None
         try:
             catalog.require(session_id, SessionPrincipal(user_id=owner))
         except SessionAccessError:
             logger.warning("feedback: session_id not owned by caller, conversation set skipped")
-            return ""
+            return None
         return str(getattr(record, "vendor_thread_id", "") or "")
 
     @app.post("/api/serve/feedback")
@@ -122,6 +126,7 @@ def mount_feedback_routes(
         session_id: str = Form(""),
         images: list[UploadFile] = File(default_factory=list),
         recording_report: UploadFile | None = File(None),
+        renderer_diagnostics: UploadFile | None = File(None),
     ) -> dict:
         if len(images) > MAX_IMAGES:
             raise HTTPException(422, f"at most {MAX_IMAGES} images")
@@ -175,12 +180,60 @@ def mount_feedback_routes(
             ):
                 raise HTTPException(422, "recording report schema is unsupported")
 
+        renderer_diagnostics_bytes = b""
+        if renderer_diagnostics is not None:
+            declared = (
+                renderer_diagnostics.size if isinstance(renderer_diagnostics.size, int) else None
+            )
+            if declared is not None and declared > MAX_RECORDING_REPORT_SIZE:
+                raise HTTPException(422, "renderer diagnostics exceed 2MB")
+            content_type = (
+                str(renderer_diagnostics.content_type or "").split(";", 1)[0].strip().lower()
+            )
+            if content_type != RECORDING_REPORT_MEDIA_TYPE:
+                raise HTTPException(422, "renderer diagnostics must be application/json")
+            renderer_diagnostics_bytes = await renderer_diagnostics.read(
+                MAX_RECORDING_REPORT_SIZE + 1
+            )
+            if len(renderer_diagnostics_bytes) > MAX_RECORDING_REPORT_SIZE:
+                raise HTTPException(422, "renderer diagnostics exceed 2MB")
+            try:
+                renderer_diagnostics_payload = json.loads(renderer_diagnostics_bytes)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise HTTPException(422, "renderer diagnostics must contain valid JSON") from error
+            if (
+                not isinstance(renderer_diagnostics_payload, dict)
+                or renderer_diagnostics_payload.get("schemaVersion")
+                != RECORDING_REPORT_SCHEMA_VERSION
+            ):
+                raise HTTPException(422, "renderer diagnostics schema is unsupported")
+
         # 复用替登录用户备好的那把 ssk- API key（skill 也用它）。上游账号服务的机器面
         # 只认 API key、拒用户 JWT —— 用户 JWT 是全权限凭据, 一个只需要「这是谁」的
         # 服务不该拿到。ensure 缓存命中就沿用、没有就签一把; 拿不到 (未登录/未配账号
         # 服务) 就返回空, 反馈照收、只是落成匿名。
         credential_env = await credentials.ensure(actor_id, bearer_or_cookie(request))
         api_key = credential_env.get(SKILL_API_KEY_ENV, "")
+
+        vendor_thread_id = resolve_vendor_thread(session_id, owner_id)
+        authorized_session_id = session_id if vendor_thread_id is not None else ""
+        execution_threads: tuple[RuntimeExecutionThread, ...] = ()
+        execution_tree_status = "unavailable"
+        if include_logs and include_trace and vendor_thread_id and runtime is not None:
+            try:
+                execution_threads = await runtime.execution_threads(session_id)
+                if len(execution_threads) > MAX_FEEDBACK_EXECUTION_THREADS:
+                    execution_threads = ()
+                    execution_tree_status = "thread_limit_exceeded"
+                else:
+                    execution_tree_status = "complete"
+            except (RuntimeError, ValueError) as error:
+                logger.warning("feedback: execution tree unavailable: %s", type(error).__name__)
+            logger.info(
+                "feedback: execution tree status=%s threads=%d",
+                execution_tree_status,
+                len(execution_threads),
+            )
 
         submission = FeedbackSubmission(
             description=description,
@@ -194,10 +247,13 @@ def mount_feedback_routes(
             # trace 是用户的研究内容, 只有 include_logs 同时成立才有意义 ——
             # 单独勾 trace 不该悄悄触发一次日志打包。
             include_trace=include_trace and include_logs,
-            session_id=session_id,
-            vendor_thread_id=resolve_vendor_thread(session_id, owner_id),
+            session_id=authorized_session_id,
+            vendor_thread_id=vendor_thread_id or "",
+            execution_threads=execution_threads,
+            execution_tree_status=execution_tree_status,
             images=tuple(attachments),
             recording_report=report_bytes,
+            renderer_diagnostics=renderer_diagnostics_bytes,
         )
         try:
             # submit 是同步的 (zip 打包 + 阻塞 httpx): 一个 40MB 的日志包上传要好几秒,

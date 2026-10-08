@@ -105,19 +105,6 @@
   z-index: var(--vds-z-tooltip);
 }
 
-.vds-top-bar-actions {
-  position: absolute;
-  inset-block-start: 0;
-  inset-inline-end: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--vds-space-3);
-  flex: 0 0 auto;
-  height: 48px;
-  padding-right: var(--vds-top-bar-inline-end);
-  border-bottom: 1px solid var(--vds-border-default);
-}
-
 .vds-brand {
   border: 0;
   background: transparent;
@@ -1374,7 +1361,7 @@
 
 .vds-ai-panel.is-floating {
   position: fixed;
-  z-index: 120;
+  z-index: var(--vds-z-floating-panel);
   top: 64px;
   right: 20px;
   width: min(320px, calc(100vw - 32px));
@@ -1389,7 +1376,7 @@
     0 16px 42px rgb(30 28 18 / 16%),
     0 2px 8px rgb(30 28 18 / 8%);
   overflow: hidden;
-  resize: both;
+  resize: none;
 }
 
 .vds-ai-panel.is-floating .vds-ai-head {
@@ -1423,7 +1410,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 0 9px 0 14px;
-  border-bottom: 1px solid var(--wb-line-soft);
+  border-bottom: 1px solid var(--vds-border-default);
   background: var(--vds-bg-gray-default);
 }
 
@@ -3032,77 +3019,6 @@
   --crepe-color-inline-area: var(--vds-bg-component);
 }
 
-.vds-markdown-workbench.is-format-hidden
-  .vds-markdown-crepe
-  > .milkdown
-  .milkdown-top-bar {
-  display: none;
-}
-
-/* Layout and theme integration for Crepe's native controls. */
-.vds-markdown-crepe > .milkdown .milkdown-top-bar {
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  box-sizing: border-box;
-  min-height: 48px;
-  height: auto;
-  padding: 6px 16px;
-  overflow-x: auto;
-  border: 0;
-  border-bottom: 1px solid var(--border-soft);
-  border-radius: 0;
-  background: var(--paper);
-  box-shadow: none;
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-inner {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-  width: max-content;
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-divider {
-  flex: 0 0 1px;
-  height: 26px;
-  margin: 0 8px;
-  background: var(--border-soft);
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
-  margin: 0;
-  padding: 6px;
-  border: 0;
-  border-radius: 6px;
-  color: var(--text-1);
-  background: transparent;
-  font: inherit;
-  font-size: 16px;
-  font-weight: 500;
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item svg {
-  width: 24px;
-  height: 24px;
-  color: inherit;
-  fill: currentColor;
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item:hover,
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item.active {
-  background: var(--bg-2);
-}
-.vds-markdown-crepe > .milkdown .milkdown-top-bar .top-bar-item:focus-visible {
-  outline: 2px solid var(--text-2);
-  outline-offset: -2px;
-}
 .vds-markdown-crepe .milkdown-table-block .handle[data-show='false'] {
   pointer-events: none;
 }
@@ -3216,11 +3132,6 @@
   }
 }
 
-@container (max-width: 760px) {
-  .vds-markdown-crepe .milkdown-top-bar {
-    padding-right: 12px;
-  }
-}
 .vds-dock-empty {
   display: grid;
   place-items: center;

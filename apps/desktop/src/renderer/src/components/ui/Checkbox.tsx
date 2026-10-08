@@ -11,6 +11,7 @@ import {
 import { cx } from './utils'
 
 export interface CheckboxProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onChange' | 'role'> {
+  align?: 'center' | 'first-line'
   checked?: boolean | 'mixed'
   defaultChecked?: boolean
   label?: string
@@ -18,7 +19,7 @@ export interface CheckboxProps extends Omit<ButtonHTMLAttributes<HTMLButtonEleme
 }
 
 export const Checkbox = forwardRef<HTMLButtonElement, CheckboxProps>(
-  ({ checked, className, defaultChecked = false, disabled, label, onCheckedChange, type = 'button', ...props }, ref) => {
+  ({ align = 'center', checked, children, className, defaultChecked = false, disabled, label, onCheckedChange, type = 'button', ...props }, ref) => {
     const [internalChecked, setInternalChecked] = useState(defaultChecked)
     const isChecked = checked ?? internalChecked
 
@@ -26,7 +27,7 @@ export const Checkbox = forwardRef<HTMLButtonElement, CheckboxProps>(
       <button
         aria-checked={isChecked}
         aria-label={label}
-        className={cx(checkboxClassName({ checked: isChecked, className }), checkboxStyleClassName())}
+        className={cx(checkboxClassName({ checked: isChecked, className }), checkboxStyleClassName(), align === 'first-line' && 'items-start')}
         disabled={disabled}
         ref={ref}
         role="checkbox"
@@ -39,10 +40,11 @@ export const Checkbox = forwardRef<HTMLButtonElement, CheckboxProps>(
         }}
         {...props}
       >
-        <span aria-hidden="true" className={checkboxBoxClassName}>
+        <span aria-hidden="true" className={cx(checkboxBoxClassName, align === 'first-line' && 'mt-[calc((var(--vds-lh-body-lv2)_-_var(--vds-checkbox-size))_/_2)]')}>
           <span aria-hidden="true" className={checkboxMarkClassName} />
         </span>
         {label ? <span className={cx('vds-checkbox__label', controlLabelClassName)}>{label}</span> : null}
+        {children}
       </button>
     )
   }

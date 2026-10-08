@@ -14,6 +14,7 @@ SKILL_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SKILL_DIR / "scripts"))
 
 from io_utils import atomic_write_json, atomic_write_text, read_json, utc_now  # noqa: E402
+from filesystem import canonical_path, path_exists
 from validate_json import validate_data  # noqa: E402
 from normalize import normalize_paper  # noqa: E402
 from intent_constraints import assess_intent
@@ -24,6 +25,12 @@ from paper_select import select_papers  # noqa: E402
 SOURCE_LABELS = {
     "paperhub": "PaperHub",
     "agent_web": "Search agent web",
+}
+
+TIER_LABELS = {
+    1: "Core matches / 核心相关",
+    2: "Broader matches / 拓展相关",
+    3: "Supporting references / 补充参考",
 }
 
 DEGRADED_SOURCE_STATUSES = {
@@ -181,11 +188,11 @@ def _invalid_candidate_count(pool: dict[str, Any]) -> int:
 def _result_summary(papers: list[dict[str, Any]], coverage: str) -> str:
     if not papers:
         return "No eligible candidate papers were found; consult the search report for source errors and coverage gaps."
-    tier_counts = {tier: sum(1 for paper in papers if paper.get("tier") == tier) for tier in (1, 2, 3)}
-    return (
-        f"Selected {len(papers)} metadata candidate(s): {tier_counts[1]} Tier 1, "
-        f"{tier_counts[2]} Tier 2, and {tier_counts[3]} Tier 3. {coverage}"
-    ).strip()
+    groups = "; ".join(
+        f"{label}: {sum(1 for paper in papers if paper.get('tier') == tier)}"
+        for tier, label in TIER_LABELS.items()
+    )
+    return f"Selected {len(papers)} candidate papers: {groups}. Full texts not read / 未读取原文. {coverage}".strip()
 
 
 def render_report(
@@ -229,16 +236,18 @@ def render_report(
             lines.append(f"- {subtopic}: {marker}")
         lines.append("")
     papers = metadata.get("papers", [])
-    for tier in (1, 2, 3):
+    paper_number = 0
+    for tier, label in TIER_LABELS.items():
         tier_papers = [paper for paper in papers if paper.get("tier") == tier]
-        lines.extend([f"## Tier {tier}", ""])
+        lines.extend([f"## {label} ({len(tier_papers)})", ""])
         if not tier_papers:
-            lines.extend(["No papers selected for this tier.", ""])
+            lines.extend(["No papers selected for this group.", ""])
             continue
-        for index, paper in enumerate(tier_papers, start=1):
+        for paper in tier_papers:
+            paper_number += 1
             reasons = paper.get("relevance", {}).get("reasons", [])
             lines.extend([
-                f"### {index}. {paper.get('title', 'Untitled')}",
+                f"### {paper_number}. {paper.get('title', 'Untitled')}",
                 "",
                 f"- Paper ID: `{paper.get('id', '')}`",
                 f"- Year / venue: {paper.get('year') or 'unknown'} / {paper.get('venue') or 'unknown'}",
@@ -254,7 +263,7 @@ def render_report(
     if related:
         lines.extend(["## Closest Related Papers — Not Confirmed Matches", "",
                       "These metadata recommendations do not satisfy all confirmed requirements. "
-                      "They are not tiered matches or authorized downloads; confirm a revised scope before selecting them. "
+                      "They are not in-scope matches or authorized downloads; confirm a revised scope before selecting them. "
                       "Connections are agent assessments; source quotes are checked for provenance, not semantic entailment.", ""])
         for index, item in enumerate(related, start=1):
             paper = item["paper"]
@@ -420,14 +429,14 @@ def main() -> int:
     parser.add_argument("--report-output", type=Path)
     parser.add_argument("--run-dir", type=Path)
     args = parser.parse_args()
-    report_path = args.report_output or args.output.with_name("report.md")
+    report_path = args.report_output or args.output.with_name("search_report.md")
     try:
         if args.run_dir is not None:
             from stage_guard import require_worker
-            require_worker(args.run_dir.resolve(), "search")
+            require_worker(canonical_path(args.run_dir), "search")
         finalize_search(
             read_json(args.input),
-            read_json(args.work_dir / "plan.json") if (args.work_dir / "plan.json").exists() else None,
+            read_json(args.work_dir / "plan.json") if path_exists(args.work_dir / "plan.json") else None,
             read_json(args.work_dir / "state.json"),
             read_json(args.work_dir / "pool.json"),
             read_json(args.work_dir / "selection.json"),

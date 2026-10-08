@@ -676,7 +676,7 @@ async function main(argv = process.argv.slice(2)) {
     fs.copyFileSync(context.lock, path.join(backend, 'skills.lock.json'))
     fs.copyFileSync(context.dependencies, path.join(backend, 'dependencies.json'))
     if (args.platform === 'win32') {
-      // 所有需要松散 python/texlive 树的验证都已跑完；现在冻结证据、打组件 zip、删松散树。
+      // 所有需要松散 python/texlive/powershell 树的验证都已跑完；现在冻结证据、打组件 zip、删松散树。
       context.components = packWindowsComponents(context, args, environment)
     }
     if (args.platform === 'darwin') context.browser = await prepareBrowser(resourceRoot, args.arch)

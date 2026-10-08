@@ -8,6 +8,7 @@ import {
   MAX_TRACKED_RECENT_SESSIONS,
   MAX_MODEL_KEY_LENGTH,
   defaultRendererPreferences,
+  rendererPreferencesEqual,
   sanitizeRecentFiles,
   sanitizeRecentLiterature,
   sanitizeRecentSessions,
@@ -20,16 +21,39 @@ import {
   touchRecentSession
 } from './preferences.ts'
 
+test('last page survives preference round trip without transient UI state', () => {
+  const lastLocation = {
+    view: 'resource', projectId: 'project-a', sessionId: 'session-a', sessionProjectId: 'project-a',
+    settingsPage: 'skills', aiPanelOpen: true, aiPanelCover: false,
+    target: {
+      kind: 'document', viewKind: 'edit', title: 'note.md',
+      source: { kind: 'project', project: 'project-a', path: 'resources/note.md' }
+    }
+  }
+  const preferences = sanitizeRendererPreferences({ lastLocation, loginOpen: true })
+  assert.deepEqual(preferences.lastLocation, lastLocation)
+  assert.deepEqual(sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences))).lastLocation, lastLocation)
+  assert.equal('loginOpen' in preferences, false)
+  assert.equal(rendererPreferencesEqual(preferences, sanitizeRendererPreferences({})), false)
+})
+
+test('old and invalid preferences have no saved location', () => {
+  assert.equal(sanitizeRendererPreferences({}).lastLocation, null)
+  assert.equal(sanitizeRendererPreferences({ lastLocation: { view: 'removed-page' } }).lastLocation, null)
+})
+
 test('literature AI model preferences keep only known actions and valid model keys', () => {
   assert.deepEqual(sanitizeLiteratureAiModels({
     document_translation: 'qwen3.8-max',
     interpretation: 'personal-profile:gpt-5.6-sol',
     figure_explanation: 'qwen-vl-max',
     selection_translation: 'qwen3.8-max',
+    selection_explanation: 'personal-profile:explain-model',
     unknown: 'ignored'
   }), {
     document_translation: 'qwen3.8-max',
     selection_translation: 'qwen3.8-max',
+    selection_explanation: 'personal-profile:explain-model',
     interpretation: 'personal-profile:gpt-5.6-sol',
     figure_explanation: 'qwen-vl-max'
   })
@@ -41,6 +65,15 @@ test('literature AI model preferences keep only known actions and valid model ke
   assert.deepEqual(sanitizeRendererPreferences({
     literatureAiModels: { interpretation: 'gpt-5.6-sol' }
   }).literatureAiModels, { interpretation: 'gpt-5.6-sol' })
+})
+
+test('selection explanation model survives preference serialization independently of translation', () => {
+  const preferences = sanitizeRendererPreferences({
+    literatureAiModels: { selection_explanation: 'personal:explain', selection_translation: 'builtin:translate' }
+  })
+  const restored = sanitizeRendererPreferences(JSON.parse(JSON.stringify(preferences)))
+  assert.equal(restored.literatureAiModels.selection_explanation, 'personal:explain')
+  assert.equal(restored.literatureAiModels.selection_translation, 'builtin:translate')
 })
 
 test('notification preferences persist while privacy mode remains fail-closed', () => {

@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const crypto = require('node:crypto')
 const { artifact, bundledCodex, publishRuntime, resolveVendoredCodex, verifyArchive } = require('./codex.cjs')
+const REVIEWED_CODEX_VERSION = '0.159.0'
 
 test('Windows publication retries transient locks with a bounded budget', async () => {
   const delays = []
@@ -56,11 +57,13 @@ test('vendored manifest selects only reviewed platforms', () => {
   const mac = artifact(desktop, 'darwin', 'arm64')
   const intelMac = artifact(desktop, 'darwin', 'x64')
   const windows = artifact(desktop, 'win32', 'x64')
-  assert.equal(mac.version, '0.155.1')
   assert.equal(mac.target, 'aarch64-apple-darwin')
   assert.equal(intelMac.target, 'x86_64-apple-darwin')
   assert.equal(windows.target, 'x86_64-pc-windows-msvc')
   for (const selected of [mac, intelMac, windows]) {
+    assert.equal(selected.version, REVIEWED_CODEX_VERSION)
+    assert.equal(selected.file, `codex-${REVIEWED_CODEX_VERSION}-${selected.key}.tgz`)
+    assert.ok(selected.url.endsWith(`/${selected.file}`))
     assert.match(selected.url, /^https:\/\//)
     assert.match(selected.sha256, /^[a-f0-9]{64}$/)
     assert.ok(selected.bytes > 0)
@@ -100,5 +103,5 @@ test('Intel macOS runtime probe tolerates Rosetta bootstrap latency', {
 }, async () => {
   const desktop = path.resolve(__dirname, '..')
   const runtime = await resolveVendoredCodex(desktop, 'darwin', 'x64')
-  assert.equal(runtime.reported_version, '0.155.1')
+  assert.equal(runtime.reported_version, REVIEWED_CODEX_VERSION)
 })

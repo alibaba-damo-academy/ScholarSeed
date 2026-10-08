@@ -19,7 +19,8 @@ from service.assistant.persistence.invocations import (
 )
 from service.assistant.service.actions import AssistantActionService
 from service.chat.service.events import sse_encode
-from service.chat.service.models import ModelService
+from service.chat.service.models import ModelService, SessionModelUnavailableError
+from service.content.domain.model import ContentError
 from service.identity.utils import request_user_id
 from service.literature.persistence.analysis import AnalysisStore
 from service.literature.persistence.store import LiteratureRepository
@@ -35,18 +36,32 @@ from service.literature.service.analysis import (
     prepare,
     read_source,
     validate_result,
+    verify_translation_coverage,
 )
 from service.literature.service.figure import FigureActionService, FigureCommand
 from service.literature.service.pdf import LiteraturePdf
+from service.literature.service.preview import PREVIEW_ACTIONS, project_preview
 from service.platform.citations import PdfIndexPort
 from service.platform.content import ContentPort
-from service.platform.inference import ModelInvocationStatus
+from service.platform.inference import (
+    ModelInvocationEvent,
+    ModelInvocationEventKind,
+    ModelInvocationStatus,
+)
 
 PREFIX = "/api/literature/ai"
 EVENT_POLL_SECONDS = 0.25
 ACTIVE = {ModelInvocationStatus.PENDING, ModelInvocationStatus.RUNNING}
 LOGGER = logging.getLogger(__name__)
 WORKFLOW_ID_MAX_CHARS = 128
+MISSING_LITERATURE_CONTENT_ERRORS = frozenset(
+    {
+        "literature_attachment_missing",
+        "literature_pdf_missing",
+        "file_not_found",
+        "prepared_content_unavailable",
+    }
+)
 
 
 def workflow_id(root: str, phase: str, index: int) -> str:
@@ -57,7 +72,20 @@ def workflow_id(root: str, phase: str, index: int) -> str:
 def failure_detail(error: Exception, fallback: AnalysisErrorCode) -> dict[str, str]:
     if isinstance(error, AnalysisError):
         return {"code": error.code.value, "diagnostic": ""}
+    if isinstance(error, SessionModelUnavailableError):
+        return {"code": AnalysisErrorCode.MODEL_UNAVAILABLE.value, "diagnostic": ""}
     return {"code": fallback.value, "diagnostic": str(error)}
+
+
+def preparation_failure_detail(error: Exception) -> dict[str, str]:
+    if isinstance(error, ContentError):
+        code = (
+            AnalysisErrorCode.LITERATURE_MISSING
+            if error.code in MISSING_LITERATURE_CONTENT_ERRORS
+            else AnalysisErrorCode.SOURCE_INVALID
+        )
+        return {"code": code.value, "diagnostic": ""}
+    return failure_detail(error, AnalysisErrorCode.PREPARATION_FAILED)
 
 
 def register_analysis_routes(
@@ -128,14 +156,13 @@ def register_analysis_routes(
                     connection.get("context_window")
                 ),
             )
-        except (ValueError, OSError, RuntimeError) as error:
-            raise HTTPException(
-                422, failure_detail(error, AnalysisErrorCode.PREPARATION_FAILED)
-            ) from error
+        except (ContentError, ValueError, OSError, RuntimeError) as error:
+            raise HTTPException(422, preparation_failure_detail(error)) from error
 
     async def execute(prepared: PreparedAnalysis, owner: str) -> None:
         request = prepared.request
         key = (owner, request.client_attempt_id)
+        translated_blocks: list[dict] = []
 
         async def invoke(
             compiled,
@@ -143,6 +170,21 @@ def register_analysis_routes(
             client_action_id: str,
             client_attempt_id: str,
         ) -> AssistantInvocationRecord:
+            output = ""
+
+            async def observe(event: ModelInvocationEvent) -> None:
+                nonlocal output
+                if event.kind is ModelInvocationEventKind.OUTPUT_DELTA:
+                    output += event.text
+                elif event.kind is ModelInvocationEventKind.OUTPUT_COMPLETED:
+                    output = event.text
+                else:
+                    return
+                preview = project_preview(output, request, translated_blocks)
+                state = states.get(key)
+                if preview and state and state["status"] == ModelInvocationStatus.RUNNING:
+                    states[key] = {**state, "preview": preview}
+
             return await actions.invoke_compiled(
                 owner_id=owner,
                 client_action_id=client_action_id,
@@ -154,6 +196,7 @@ def register_analysis_routes(
                 evidence_hash=hashlib.sha256(compiled.input_text.encode()).hexdigest(),
                 compiled=compiled,
                 model_key=request.model_key,
+                **({"observer": observe} if request.kind in PREVIEW_ACTIONS else {}),
             )
 
         def record_failure(record: AssistantInvocationRecord) -> bool:
@@ -304,6 +347,79 @@ def register_analysis_routes(
                     ):
                         raise AnalysisError(AnalysisErrorCode.DOCUMENT_TOO_LARGE)
                     summaries = reduced
+            elif prepared.translation_segments:
+                source_languages: set[str] = set()
+                root_record: AssistantInvocationRecord | None = None
+                for index, compiled in enumerate(prepared.translation_segments, 1):
+                    states[key] = {
+                        **states[key],
+                        "task_id": key[1],
+                        "status": "running",
+                        "progress": {
+                            "phase": "translation",
+                            "current": index,
+                            "total": len(prepared.translation_segments),
+                        },
+                    }
+                    segment_record = await invoke(
+                        compiled,
+                        client_action_id=(
+                            request.client_action_id
+                            if index == 1
+                            else workflow_id(request.client_action_id, "translation", index)
+                        ),
+                        client_attempt_id=(
+                            request.client_attempt_id
+                            if index == 1
+                            else workflow_id(request.client_attempt_id, "translation", index)
+                        ),
+                    )
+                    if index == 1:
+                        root_record = segment_record
+                    if record_failure(segment_record):
+                        if index != 1 and root_record is not None:
+                            tasks.save(
+                                replace(
+                                    root_record,
+                                    status=segment_record.status,
+                                    output_text="",
+                                    error_code=states[key]["error_code"],
+                                    error_detail=segment_record.error_detail,
+                                )
+                            )
+                        return
+                    segment_result = validate_result(segment_record.output_text, prepared)
+                    verify_translation_coverage(
+                        segment_result["pages"][0]["blocks"],
+                        json.loads(compiled.input_text)["document_pages"][0]["text"],
+                    )
+                    source_languages.add(segment_result["source_language"])
+                    translated_blocks.extend(segment_result["pages"][0]["blocks"])
+                    if index == 1 and root_record is not None:
+                        tasks.save(
+                            replace(
+                                root_record,
+                                status=ModelInvocationStatus.RUNNING,
+                                output_text="",
+                            )
+                        )
+                if root_record is None:
+                    raise AnalysisError(AnalysisErrorCode.PREPARATION_FAILED)
+                record = replace(
+                    root_record,
+                    output_text=json.dumps(
+                        {
+                            "source_language": (
+                                next(iter(source_languages))
+                                if len(source_languages) == 1
+                                else "mixed"
+                            ),
+                            "target_language": request.target_language.value,
+                            "pages": [{"page": request.page, "blocks": translated_blocks}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
             else:
                 if prepared.compiled is None:
                     raise AnalysisError(AnalysisErrorCode.PREPARATION_FAILED)
@@ -480,7 +596,7 @@ def register_analysis_routes(
                     break
                 await asyncio.sleep(EVENT_POLL_SECONDS)
 
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        return StreamingResponse(stream(), media_type=SSE_MEDIA_TYPE, headers=SSE_HEADERS)
 
     @app.post(f"{PREFIX}/tasks/{{task_id}}/cancel")
     async def cancel(task_id: str, request: Request) -> dict:

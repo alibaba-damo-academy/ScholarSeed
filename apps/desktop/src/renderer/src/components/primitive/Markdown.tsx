@@ -5,19 +5,34 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import rehypeKatex from 'rehype-katex'
 import remarkBreaks from 'remark-breaks'
 import remarkCjkFriendly from 'remark-cjk-friendly'
-import remarkMath from 'remark-math'
 import 'katex/dist/katex.min.css'
 
 import type { EvidenceAnnotation, EvidencePriority } from '../../model'
 import { isCitationUrl, type CitationLinkRange } from '../../contracts/citations'
-import { Button, Checkbox, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui'
+import {
+  Button,
+  Checkbox,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../ui'
 import {
   type MarkdownAnswerAnnotation,
-  rehypeScholarSeedDecorations
+  type MarkdownCitationOccurrence,
+  rehypeScholarSeedDecorations,
 } from '../markdown/decorate'
 import { GFM_PLUGIN } from '../markdown/gfm'
+import {
+  CITATION_MARKER,
+  CITATION_PENDING,
+  type MarkdownCitationReference,
+} from '../markdown/citations'
 import { relativeSessionFilePath } from '../markdown/links'
-import { prepareMarkdownSource, visibleMarkdownText } from '../markdown/source'
+import { prepareMarkdownSource, prepareMathSource, visibleMarkdownText } from '../markdown/source'
+import { remarkAnswerMath } from '../markdown/math'
 
 export { visibleMarkdownText }
 export type { MarkdownAnswerAnnotation }
@@ -33,7 +48,7 @@ const MARKDOWN_CLASS_NAME = [
   '[&_code]:bg-[var(--bg-3)] [&_code]:px-[5px] [&_code]:py-px [&_code]:font-[var(--font-mono)]',
   '[&_code]:text-[0.86em] [&_code]:[overflow-wrap:anywhere] [&_code]:break-words',
   '[&_code]:[-webkit-box-decoration-break:clone] [&_code]:[box-decoration-break:clone]',
-  '[&_a]:font-[550] [&_a]:text-[var(--text)] [&_a]:underline'
+  '[&_a]:font-[550] [&_a]:text-[var(--text)] [&_a]:underline',
 ].join(' ')
 const MARKDOWN_PARAGRAPH_CLASS_NAME = 'md-p my-2'
 const MARKDOWN_HEADING_CLASS_NAME = 'md-h my-2 mt-4 font-semibold leading-[1.3]'
@@ -43,17 +58,19 @@ const MARKDOWN_HEADING_LEVEL_CLASS_NAMES = {
   3: 'md-h3 text-base text-[var(--text)]',
   4: 'md-h4 text-sm text-[var(--text-2)]',
   5: 'md-h5 text-sm text-[var(--text-2)]',
-  6: 'md-h6 text-sm text-[var(--text-2)]'
+  6: 'md-h6 text-sm text-[var(--text-2)]',
 } as const
 const MARKDOWN_LIST_CLASS_NAME = 'my-2 pl-[22px] [&_li]:my-1'
 const MARKDOWN_PRE_CLASS_NAME = [
   'md-pre my-2.5 box-border max-w-full overflow-x-auto rounded-lg border border-[var(--border)]',
   'bg-[var(--bg-3)] px-3.5 py-3',
   '[&_code]:border-0 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[12.5px]',
-  '[&_code]:leading-[1.6] [&_code]:text-[var(--text-2)] [&_code]:whitespace-pre-wrap'
+  '[&_code]:leading-[1.6] [&_code]:text-[var(--text-2)] [&_code]:whitespace-pre-wrap',
 ].join(' ')
-const MARKDOWN_QUOTE_CLASS_NAME = 'md-quote my-2.5 border-0 border-l-2 border-solid border-l-[var(--border)] pl-3 text-[var(--text-2)]'
-const MARKDOWN_HR_CLASS_NAME = 'md-hr my-4 border-0 border-t border-solid border-t-[var(--border-soft)]'
+const MARKDOWN_QUOTE_CLASS_NAME =
+  'md-quote my-2.5 border-0 border-l-2 border-solid border-l-[var(--border)] pl-3 text-[var(--text-2)]'
+const MARKDOWN_HR_CLASS_NAME =
+  'md-hr my-4 border-0 border-t border-solid border-t-[var(--border-soft)]'
 const MARKDOWN_TABLE_CLASS_NAME = [
   'md-table my-2.5 block box-border max-w-full overflow-x-auto border-collapse font-[var(--font-sans)] text-[13.5px]',
   '[.conversation-stream_&]:!my-0 [.conversation-stream_&]:!table [.conversation-stream_&]:!overflow-visible',
@@ -62,24 +79,28 @@ const MARKDOWN_TABLE_CLASS_NAME = [
   '[.conversation-stream_&_th]:!bg-[var(--vds-other-overlay-1)]',
   '[&_th]:border [&_td]:border [&_th]:border-[var(--border)] [&_td]:border-[var(--border)]',
   '[&_th]:px-[11px] [&_td]:px-[11px] [&_th]:py-1.5 [&_td]:py-1.5',
-  '[&_th]:text-left [&_td]:text-left [&_th]:bg-[var(--bg-2)] [&_th]:font-semibold [&_th]:text-[var(--text-2)]'
+  '[&_th]:text-left [&_td]:text-left [&_th]:bg-[var(--bg-2)] [&_th]:font-semibold [&_th]:text-[var(--text-2)]',
 ].join(' ')
-const MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME = 'md-answer-annotation rounded-[3px] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-inherit'
-const MARKDOWN_ANSWER_ANNOTATION_FOCUSED_CLASS_NAME = 'bg-[color-mix(in_srgb,var(--vds-notice-5)_28%,transparent)] ring-2 ring-[var(--vds-notice-5)] ring-offset-2 ring-offset-[var(--vds-bg-page)]'
+const MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME =
+  'md-answer-annotation rounded-[3px] bg-[color-mix(in_srgb,var(--accent)_14%,transparent)] text-inherit'
+const MARKDOWN_ANSWER_ANNOTATION_FOCUSED_CLASS_NAME =
+  'bg-[color-mix(in_srgb,var(--vds-notice-5)_28%,transparent)] ring-2 ring-[var(--vds-notice-5)] ring-offset-2 ring-offset-[var(--vds-bg-page)]'
 const EMPTY_CITATION_URLS: string[] = []
+const EMPTY_CITATION_REFERENCES: MarkdownCitationReference[] = []
+const EMPTY_CITATION_OCCURRENCES: MarkdownCitationOccurrence[] = []
 
 const EVIDENCE_COLORS: Record<EvidencePriority, string> = {
   supported: 'var(--c-experience)',
   mixed: 'var(--c-opinion)',
   limited: 'var(--c-tension)',
-  unverified: 'var(--text-3)'
+  unverified: 'var(--text-3)',
 }
 
 const EVIDENCE_LABEL_KEYS = {
   supported: 'evidence.priority.supported',
   mixed: 'evidence.priority.mixed',
   limited: 'evidence.priority.limited',
-  unverified: 'evidence.priority.unverified'
+  unverified: 'evidence.priority.unverified',
 } as const satisfies Record<EvidencePriority, string>
 
 const URL_REFERENCE_PREFIX = 'url:'
@@ -131,25 +152,30 @@ function sourcePreview(reference: string, t: TFunction<'assistant'>): EvidenceSo
       ref: reference,
       title: sourceFallbackTitle(reference, t),
       excerpt: t('evidence.externalExcerpt'),
-      externalUrl: directUrl
+      externalUrl: directUrl,
     }
   }
   return {
     ref: reference,
     title: sourceFallbackTitle(reference, t),
     excerpt: reference.slice(0, SOURCE_PREVIEW_LIMIT),
-    externalUrl: ''
+    externalUrl: '',
   }
 }
 
 function useEvidenceSourcePreviews(
-  sourceRefs: string[], active: boolean, t: TFunction<'assistant'>
+  sourceRefs: string[],
+  active: boolean,
+  t: TFunction<'assistant'>
 ): Record<string, EvidenceSourcePreview> {
   const sourceKey = sourceRefs.join('\u001f')
   return React.useMemo(
-    () => active
-      ? Object.fromEntries(sourceRefs.map((reference) => [reference, sourcePreview(reference, t)]))
-      : {},
+    () =>
+      active
+        ? Object.fromEntries(
+            sourceRefs.map((reference) => [reference, sourcePreview(reference, t)])
+          )
+        : {},
     [active, sourceKey, t]
   )
 }
@@ -166,7 +192,7 @@ function openExternalSource(url: string): void {
 function EvidenceReferenceSpan({
   annotation,
   terminal,
-  children
+  children,
 }: {
   annotation: EvidenceAnnotation
   terminal: boolean
@@ -198,7 +224,10 @@ function EvidenceReferenceSpan({
       <button
         type="button"
         data-testid="evidence-reference"
-        aria-label={t('evidence.referenceLabel', { priority: t(EVIDENCE_LABEL_KEYS[annotation.priority]), citation: citationText || t('evidence.unnumbered') })}
+        aria-label={t('evidence.referenceLabel', {
+          priority: t(EVIDENCE_LABEL_KEYS[annotation.priority]),
+          citation: citationText || t('evidence.unnumbered'),
+        })}
         aria-expanded={expanded}
         onClick={toggle}
         style={{
@@ -214,11 +243,15 @@ function EvidenceReferenceSpan({
           textDecorationThickness: 2,
           textUnderlineOffset: 3,
           background: `color-mix(in srgb, ${color} 10%, transparent)`,
-          borderRadius: 2
+          borderRadius: 2,
         }}
       >
         {children}
-        {terminal && <sup style={{ marginLeft: 3, color, fontSize: 9, fontWeight: 700 }}>{citationText || '[?]'}</sup>}
+        {terminal && (
+          <sup style={{ marginLeft: 3, color, fontSize: 9, fontWeight: 700 }}>
+            {citationText || '[?]'}
+          </sup>
+        )}
       </button>
       {expanded && (
         <span
@@ -236,23 +269,94 @@ function EvidenceReferenceSpan({
             color: 'var(--text)',
             fontSize: 11,
             lineHeight: 1.5,
-            textDecoration: 'none'
+            textDecoration: 'none',
           }}
         >
-          <span style={{ display: 'block', color, fontWeight: 700 }}>{t(EVIDENCE_LABEL_KEYS[annotation.priority])} · {citationText || t('evidence.unnumbered')}</span>
-          <span style={{ display: 'block', marginTop: 5, color: 'var(--text)', fontSize: 12, fontWeight: 600 }}>{t('evidence.claim')}</span>
+          <span style={{ display: 'block', color, fontWeight: 700 }}>
+            {t(EVIDENCE_LABEL_KEYS[annotation.priority])} ·{' '}
+            {citationText || t('evidence.unnumbered')}
+          </span>
+          <span
+            style={{
+              display: 'block',
+              marginTop: 5,
+              color: 'var(--text)',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            {t('evidence.claim')}
+          </span>
           <span style={{ display: 'block', marginTop: 3, color: 'var(--text-2)' }}>{children}</span>
           {sources.length ? (
             <span style={{ display: 'block', marginTop: 10 }}>
-              <span style={{ display: 'block', color: 'var(--text)', fontSize: 12, fontWeight: 600, marginBottom: 5 }}>{t('evidence.references')}</span>
+              <span
+                style={{
+                  display: 'block',
+                  color: 'var(--text)',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  marginBottom: 5,
+                }}
+              >
+                {t('evidence.references')}
+              </span>
               {sources.map((source, index) => {
                 const preview = previews[source] ?? sourcePreview(source, t)
                 return (
-                  <span key={source} style={{ display: 'block', padding: '8px 9px', marginTop: 5, border: '1px solid var(--border-soft)', borderRadius: 6, background: 'var(--bg)' }}>
-                    <span style={{ display: 'block', color: 'var(--text)', fontSize: 11.5, fontWeight: 600 }}>{annotation.citation_nums[index] ? `[${annotation.citation_nums[index]}] ` : ''}{preview.title}</span>
-                    <span style={{ display: 'block', marginTop: 3, color: 'var(--text-2)', fontSize: 10.5 }}>{preview.excerpt || t('evidence.previewUnavailable')}</span>
+                  <span
+                    key={source}
+                    style={{
+                      display: 'block',
+                      padding: '8px 9px',
+                      marginTop: 5,
+                      border: '1px solid var(--border-soft)',
+                      borderRadius: 6,
+                      background: 'var(--bg)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'block',
+                        color: 'var(--text)',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {annotation.citation_nums[index]
+                        ? `[${annotation.citation_nums[index]}] `
+                        : ''}
+                      {preview.title}
+                    </span>
+                    <span
+                      style={{
+                        display: 'block',
+                        marginTop: 3,
+                        color: 'var(--text-2)',
+                        fontSize: 10.5,
+                      }}
+                    >
+                      {preview.excerpt || t('evidence.previewUnavailable')}
+                    </span>
                     <span style={{ display: 'flex', gap: 10, marginTop: 6 }}>
-                      {preview.externalUrl && <button type="button" data-testid={`evidence-open-external:${annotation.citation_nums[index] ?? index}`} onClick={(event) => openExternal(event, preview.externalUrl)} style={{ padding: 0, border: 0, background: 'transparent', color: 'var(--accent-ink)', cursor: 'pointer', font: 'inherit', textDecoration: 'underline' }}>{t('evidence.openOriginal')}</button>}
+                      {preview.externalUrl && (
+                        <button
+                          type="button"
+                          data-testid={`evidence-open-external:${annotation.citation_nums[index] ?? index}`}
+                          onClick={(event) => openExternal(event, preview.externalUrl)}
+                          style={{
+                            padding: 0,
+                            border: 0,
+                            background: 'transparent',
+                            color: 'var(--accent-ink)',
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            textDecoration: 'underline',
+                          }}
+                        >
+                          {t('evidence.openOriginal')}
+                        </button>
+                      )}
                     </span>
                   </span>
                 )
@@ -279,21 +383,29 @@ function EvidenceReferenceSpan({
             fontSize: 11,
             lineHeight: 1.45,
             textDecoration: 'none',
-            cursor: 'default'
+            cursor: 'default',
           }}
           onClick={(event) => event.stopPropagation()}
         >
-          <span style={{ display: 'block', color, fontWeight: 700 }}>{t(EVIDENCE_LABEL_KEYS[annotation.priority])} · {t('evidence.sourceCount', { count: annotation.source_refs.length })}</span>
+          <span style={{ display: 'block', color, fontWeight: 700 }}>
+            {t(EVIDENCE_LABEL_KEYS[annotation.priority])} ·{' '}
+            {t('evidence.sourceCount', { count: annotation.source_refs.length })}
+          </span>
           <span style={{ display: 'block', marginTop: 5, color: 'var(--text-2)' }}>{children}</span>
           {sources.length ? (
             <span style={{ display: 'block', marginTop: 6, color: 'var(--text-2)' }}>
-              {sources.map((source, index) => {
-                const preview = previews[source] ?? sourcePreview(source, t)
-                return `${annotation.citation_nums[index] ? `[${annotation.citation_nums[index]}] ` : ''}${preview.title}`
-              }).join(' · ')}{annotation.source_refs.length > sources.length ? ' …' : ''}
+              {sources
+                .map((source, index) => {
+                  const preview = previews[source] ?? sourcePreview(source, t)
+                  return `${annotation.citation_nums[index] ? `[${annotation.citation_nums[index]}] ` : ''}${preview.title}`
+                })
+                .join(' · ')}
+              {annotation.source_refs.length > sources.length ? ' …' : ''}
             </span>
           ) : null}
-          <span style={{ display: 'block', marginTop: 7, color: 'var(--accent-ink)' }}>{t('evidence.expandClaim')}</span>
+          <span style={{ display: 'block', marginTop: 7, color: 'var(--accent-ink)' }}>
+            {t('evidence.expandClaim')}
+          </span>
         </span>
       )}
     </span>
@@ -303,28 +415,81 @@ function EvidenceReferenceSpan({
 interface MarkdownRenderOptions {
   evidence: Map<string, EvidenceAnnotation>
   annotations: Map<string, MarkdownAnswerAnnotation>
-  citationUrls: ReadonlySet<string>
   renderMarker?: (annotation: MarkdownAnswerAnnotation) => React.ReactNode
-  renderCitation?: (range: CitationLinkRange, children: React.ReactNode, href: string) => React.ReactNode
+  renderCitation?: (
+    range: CitationLinkRange,
+    children: React.ReactNode,
+    href: string
+  ) => React.ReactNode
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
 }
 const MarkdownRenderContext = React.createContext<MarkdownRenderOptions>({
-  evidence: new Map(), annotations: new Map(), citationUrls: new Set()
+  evidence: new Map(),
+  annotations: new Map(),
 })
+
+function PendingCitation(): React.JSX.Element {
+  const { t } = useTranslation('ui')
+  return (
+    <sup
+      aria-label={t('loading')}
+      data-citation-pending
+      className="[font-weight:var(--vds-fw-regular)] text-[var(--vds-text-tertiary)]"
+    >
+      …
+    </sup>
+  )
+}
 
 function markdownComponents(): Components {
   return {
     p: ({ node: _node, ...props }) => <p className={MARKDOWN_PARAGRAPH_CLASS_NAME} {...props} />,
-    h1: ({ node: _node, ...props }) => <h1 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[1]}`} {...props} />,
-    h2: ({ node: _node, ...props }) => <h2 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[2]}`} {...props} />,
-    h3: ({ node: _node, ...props }) => <h3 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[3]}`} {...props} />,
-    h4: ({ node: _node, ...props }) => <h4 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[4]}`} {...props} />,
-    h5: ({ node: _node, ...props }) => <h5 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[5]}`} {...props} />,
-    h6: ({ node: _node, ...props }) => <h6 className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[6]}`} {...props} />,
-    ul: ({ node: _node, ...props }) => <ul className={`md-ul list-disc ${MARKDOWN_LIST_CLASS_NAME}`} {...props} />,
-    ol: ({ node: _node, ...props }) => <ol className={`md-ol list-decimal ${MARKDOWN_LIST_CLASS_NAME}`} {...props} />,
-    blockquote: ({ node: _node, ...props }) => <blockquote className={MARKDOWN_QUOTE_CLASS_NAME} {...props} />,
+    h1: ({ node: _node, ...props }) => (
+      <h1
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[1]}`}
+        {...props}
+      />
+    ),
+    h2: ({ node: _node, ...props }) => (
+      <h2
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[2]}`}
+        {...props}
+      />
+    ),
+    h3: ({ node: _node, ...props }) => (
+      <h3
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[3]}`}
+        {...props}
+      />
+    ),
+    h4: ({ node: _node, ...props }) => (
+      <h4
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[4]}`}
+        {...props}
+      />
+    ),
+    h5: ({ node: _node, ...props }) => (
+      <h5
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[5]}`}
+        {...props}
+      />
+    ),
+    h6: ({ node: _node, ...props }) => (
+      <h6
+        className={`${MARKDOWN_HEADING_CLASS_NAME} ${MARKDOWN_HEADING_LEVEL_CLASS_NAMES[6]}`}
+        {...props}
+      />
+    ),
+    ul: ({ node: _node, ...props }) => (
+      <ul className={`md-ul list-disc ${MARKDOWN_LIST_CLASS_NAME}`} {...props} />
+    ),
+    ol: ({ node: _node, ...props }) => (
+      <ol className={`md-ol list-decimal ${MARKDOWN_LIST_CLASS_NAME}`} {...props} />
+    ),
+    blockquote: ({ node: _node, ...props }) => (
+      <blockquote className={MARKDOWN_QUOTE_CLASS_NAME} {...props} />
+    ),
     hr: ({ node: _node, ...props }) => <hr className={MARKDOWN_HR_CLASS_NAME} {...props} />,
     pre: ({ node: _node, ...props }) => <pre className={MARKDOWN_PRE_CLASS_NAME} {...props} />,
     table: ({ node: _node, ...props }) => (
@@ -341,16 +506,20 @@ function markdownComponents(): Components {
     td: ({ node: _node, ...props }) => <TableCell {...props} />,
     input: ({ node: _node, checked }) => {
       const { t } = useTranslation('ui')
-      return <Checkbox
-        aria-label={t(checked ? 'markdown.taskComplete' : 'markdown.taskIncomplete')}
-        checked={Boolean(checked)}
-        className="md-task-checkbox"
-        disabled
-      />
+      return (
+        <Checkbox
+          aria-label={t(checked ? 'markdown.taskComplete' : 'markdown.taskIncomplete')}
+          checked={Boolean(checked)}
+          className="md-task-checkbox"
+          disabled
+        />
+      )
     },
     a: ({ node: _node, href, children, ...props }) => {
-      const { citationUrls, renderCitation, onOpenSessionFile, renderSessionFileLink } = React.useContext(MarkdownRenderContext)
-      if (renderCitation && href && (isCitationUrl(href) || citationUrls.has(href))) {
+      const { renderCitation, onOpenSessionFile, renderSessionFileLink } =
+        React.useContext(MarkdownRenderContext)
+      if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
+      if (renderCitation && href && _node?.properties[CITATION_MARKER]) {
         const start = _node?.position?.start.offset
         const end = _node?.position?.end.offset
         if (start !== undefined && end !== undefined) {
@@ -359,28 +528,44 @@ function markdownComponents(): Components {
         }
       }
       const url = safeExternalUrl(href ?? '')
-      const filePath = (onOpenSessionFile || renderSessionFileLink) && href ? relativeSessionFilePath(href) : null
+      const filePath =
+        (onOpenSessionFile || renderSessionFileLink) && href ? relativeSessionFilePath(href) : null
       if (filePath) {
         if (renderSessionFileLink) return <>{renderSessionFileLink(filePath, children)}</>
-        return <Button
-          unstyled
-          className="inline cursor-pointer border-0 bg-transparent p-0 [font:inherit] text-[var(--vds-link)] underline hover:text-[var(--vds-link-hover)] focus-visible:[box-shadow:var(--vds-focus-brand)]"
-          data-testid="session-file-link"
-          onClick={() => onOpenSessionFile?.(filePath)}
-        >{children}</Button>
+        return (
+          <Button
+            unstyled
+            className="inline cursor-pointer border-0 bg-transparent p-0 [font:inherit] text-[var(--vds-link)] underline hover:text-[var(--vds-link-hover)] focus-visible:[box-shadow:var(--vds-focus-brand)]"
+            data-testid="session-file-link"
+            onClick={() => onOpenSessionFile?.(filePath)}
+          >
+            {children}
+          </Button>
+        )
       }
-      return url
-        ? <a {...props} href={url} rel="noopener noreferrer" onClick={(event) => { event.preventDefault(); openExternalSource(url) }}>{children}</a>
-        : <span>{children}</span>
+      return url ? (
+        <a
+          {...props}
+          href={url}
+          rel="noopener noreferrer"
+          onClick={(event) => {
+            event.preventDefault()
+            openExternalSource(url)
+          }}
+        >
+          {children}
+        </a>
+      ) : (
+        <span>{children}</span>
+      )
     },
     img: ({ node: _node, alt }) => {
       const { t } = useTranslation('ui')
       return <span className="md-image-placeholder">{alt || t('markdown.image')}</span>
     },
     mark: ({ node: _node, className: _className, ...props }) => {
-      const focused = (props as Record<string, unknown>)[
-        'data-scholarseed-answer-annotation-focused'
-      ] === 'true'
+      const focused =
+        (props as Record<string, unknown>)['data-scholarseed-answer-annotation-focused'] === 'true'
       return (
         <mark
           className={`${MARKDOWN_ANSWER_ANNOTATION_CLASS_NAME} ${
@@ -392,6 +577,7 @@ function markdownComponents(): Components {
     },
     span: ({ node: _node, children, ...props }) => {
       const { evidence, annotations, renderMarker } = React.useContext(MarkdownRenderContext)
+      if (_node?.properties[CITATION_PENDING]) return <PendingCitation />
       const data = props as Record<string, unknown>
       const evidenceId = data['data-scholarseed-evidence-id'] as string | undefined
       const markerId = data['data-scholarseed-answer-marker'] as string | undefined
@@ -411,7 +597,7 @@ function markdownComponents(): Components {
       const marker = markerId ? annotations.get(markerId) : undefined
       if (marker) return <>{renderMarker?.(marker)}</>
       return <span {...props}>{children}</span>
-    }
+    },
   }
 }
 
@@ -430,7 +616,10 @@ export function Markdown({
   renderCitation,
   onOpenSessionFile,
   renderSessionFileLink,
-  citationUrls = EMPTY_CITATION_URLS
+  citationUrls = EMPTY_CITATION_URLS,
+  citationReferences = EMPTY_CITATION_REFERENCES,
+  citationOccurrences = EMPTY_CITATION_OCCURRENCES,
+  citationPending = false,
 }: {
   text: string
   className?: string
@@ -441,14 +630,22 @@ export function Markdown({
   sourceMapped?: boolean
   answerAnnotations?: MarkdownAnswerAnnotation[]
   renderAnswerAnnotationMarker?: (annotation: MarkdownAnswerAnnotation) => React.ReactNode
-  renderCitation?: (range: CitationLinkRange, children: React.ReactNode, href: string) => React.ReactNode
+  renderCitation?: (
+    range: CitationLinkRange,
+    children: React.ReactNode,
+    href: string
+  ) => React.ReactNode
   onOpenSessionFile?: (path: string) => void
   renderSessionFileLink?: (path: string, children: React.ReactNode) => React.ReactNode
   citationUrls?: string[]
+  citationReferences?: MarkdownCitationReference[]
+  citationOccurrences?: MarkdownCitationOccurrence[]
+  citationPending?: boolean
 }): React.JSX.Element {
   const renderMath = math ?? texMath
   const source = String(text || '')
-  const renderedSource = prepareMarkdownSource(source)
+  const preparedSource = prepareMarkdownSource(source)
+  const renderedSource = renderMath ? prepareMathSource(preparedSource) : preparedSource
   const evidenceById = React.useMemo(
     () => new Map(evidence.map((annotation) => [annotation.claim_ref, annotation])),
     [evidence]
@@ -459,26 +656,69 @@ export function Markdown({
   )
   const citationUrlSet = React.useMemo(() => new Set(citationUrls), [citationUrls])
   const renderOptions = React.useMemo(
-    () => ({ evidence: evidenceById, annotations: answersById, citationUrls: citationUrlSet, renderMarker: renderAnswerAnnotationMarker, renderCitation, onOpenSessionFile, renderSessionFileLink }),
-    [answersById, citationUrlSet, evidenceById, renderAnswerAnnotationMarker, renderCitation, onOpenSessionFile, renderSessionFileLink]
+    () => ({
+      evidence: evidenceById,
+      annotations: answersById,
+      renderMarker: renderAnswerAnnotationMarker,
+      renderCitation,
+      onOpenSessionFile,
+      renderSessionFileLink,
+    }),
+    [
+      answersById,
+      evidenceById,
+      renderAnswerAnnotationMarker,
+      renderCitation,
+      onOpenSessionFile,
+      renderSessionFileLink,
+    ]
   )
   const decoration = React.useMemo(
-    () => rehypeScholarSeedDecorations({ source, sourceMapped, evidence, answers: answerAnnotations, citationUrls: citationUrlSet }),
-    [answerAnnotations, citationUrlSet, evidence, source, sourceMapped]
+    () =>
+      rehypeScholarSeedDecorations({
+        source,
+        sourceMapped,
+        evidence,
+        answers: answerAnnotations,
+        citationUrls: citationUrlSet,
+        citationReferences,
+        citationOccurrences,
+        citationPending,
+      }),
+    [
+      answerAnnotations,
+      citationUrlSet,
+      citationReferences,
+      citationOccurrences,
+      citationPending,
+      evidence,
+      source,
+      sourceMapped,
+    ]
   )
   return (
-    <MarkdownRenderContext.Provider value={renderOptions}><div className={`${MARKDOWN_CLASS_NAME} ${className ?? ''}`}>
-      <ReactMarkdown
-        components={MARKDOWN_COMPONENTS}
-        rehypePlugins={renderMath ? [decoration, rehypeKatex] : [decoration]}
-        remarkPlugins={renderMath ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkMath] : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks]}
-        skipHtml
-        urlTransform={(url) => renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
-          ? url
-          : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url) ? url : safeExternalUrl(url)}
-      >
-        {renderedSource}
-      </ReactMarkdown>
-    </div></MarkdownRenderContext.Provider>
+    <MarkdownRenderContext.Provider value={renderOptions}>
+      <div className={`${MARKDOWN_CLASS_NAME} ${className ?? ''}`}>
+        <ReactMarkdown
+          components={MARKDOWN_COMPONENTS}
+          rehypePlugins={renderMath ? [decoration, rehypeKatex] : [decoration]}
+          remarkPlugins={
+            renderMath
+              ? [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks, remarkAnswerMath]
+              : [GFM_PLUGIN, remarkCjkFriendly, remarkBreaks]
+          }
+          skipHtml
+          urlTransform={(url) =>
+            renderCitation && (isCitationUrl(url) || citationUrlSet.has(url))
+              ? url
+              : (onOpenSessionFile || renderSessionFileLink) && relativeSessionFilePath(url)
+                ? url
+                : safeExternalUrl(url)
+          }
+        >
+          {renderedSource}
+        </ReactMarkdown>
+      </div>
+    </MarkdownRenderContext.Provider>
   )
 }

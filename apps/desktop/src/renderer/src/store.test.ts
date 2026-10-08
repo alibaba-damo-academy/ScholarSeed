@@ -17,7 +17,7 @@ const storeSource = readFileSync(new URL('./store.tsx', import.meta.url), 'utf8'
 
 const initialBlock = block(storeSource, 'const INITIAL: AppState = {', 'const MENU_KEYS')
 const menuKeysBlock = block(storeSource, 'const MENU_KEYS', 'const SURFACE_RESET')
-const selectorBlock = block(storeSource, 'export const activeThread', 'function currentLiteratureContextCandidate')
+const selectorBlock = block(storeSource, 'export const activeThread', 'export function activeDocumentForTurn')
 const storeInterface = block(storeSource, 'export interface Store {', 'function PreferenceFailure')
 
 test('the store context is a real React context whose default value is null', () => {
@@ -43,10 +43,11 @@ test('the context lives in its own module so store.tsx stays a single Fast Refre
   assert.match(storeSource, /if \(!value\) throw new Error\('useApp outside StoreProvider'\)/)
 })
 
-test('the store surface handed to consumers is exactly state plus the five entry points', () => {
+test('the store surface exposes the isolated composer draft plus the existing entry points', () => {
   for (const member of [
     'state: AppState',
     'set: (patch: Patch) => void',
+    'composerDraft: ComposerDraftStore',
     'closeMenus: () => void',
     'act: Actions',
     'patchThread:',
@@ -54,10 +55,9 @@ test('the store surface handed to consumers is exactly state plus the five entry
   ]) {
     assert.match(storeInterface, new RegExp(member.replace(/[()]/g, '\\$&')))
   }
-  assert.match(
-    storeSource,
-    /const value = useMemo\(\s*\(\) => \(\{ state, set, closeMenus, act, patchThread, appendThread \}\),\s*\[state, set, closeMenus, act, patchThread, appendThread\]\s*\)/
-  )
+  const valueBlock = block(storeSource, 'const value = useMemo(', 'return <StoreContext.Provider')
+  assert.match(valueBlock, /composerDraft: composerDraft\.current!/)
+  assert.match(valueBlock, /\[state, set, closeMenus, act, patchThread, appendThread\]/)
 })
 
 test('initial state starts on the home space with no project, session or backend', () => {
@@ -184,12 +184,15 @@ test('every transient menu flag starts closed and closeMenus clears exactly that
   assert.doesNotMatch(closeMenus, /modulePanelOpen/)
 })
 
-test('set merges an object patch or a functional patch computed from the current state', () => {
+test('set routes composer text to its isolated store before merging the remaining patch', () => {
   assert.match(storeSource, /type Patch = Partial<AppState> \| \(\(state: AppState\) => Partial<AppState>\)/)
-  assert.match(
-    storeSource,
-    /const set = useCallback\(\(patch: Patch\) => \{\s*setState\(\(current\) => \(\{\s*\.\.\.current,\s*\.\.\.\(typeof patch === 'function' \? patch\(current\) : patch\)\s*\}\)\)\s*\}, \[\]\)/
-  )
+  const setBlock = block(storeSource, 'const set = useCallback', 'const closeMenus = useCallback')
+  assert.match(setBlock, /const delta = typeof patch === 'function' \? patch\(current\) : patch/)
+  assert.match(setBlock, /Object\.prototype\.hasOwnProperty\.call\(delta, 'composerText'\)/)
+  assert.match(setBlock, /composerDraft\.current!\.set\(delta\.composerText \?\? ''\)/)
+  assert.match(setBlock, /const \{ composerText: _composerText, \.\.\.stateDelta \} = delta/)
+  assert.match(setBlock, /if \(Object\.keys\(stateDelta\)\.length === 0\) return current/)
+  assert.match(setBlock, /return \{ \.\.\.current, \.\.\.stateDelta \}/)
 })
 
 test('patchThread is a no-op for a missing id or unknown thread and never invents one', () => {
@@ -220,7 +223,7 @@ test('appendThread appends to an existing thread conversation without mutating i
   assert.match(appendThread, /conversation: \[\.\.\.thread\.conversation, item\]/)
 })
 
-test('reset bundles compose so returning home cannot keep a stale composer or surface', () => {
+test('reset bundles compose so returning home cannot keep stale metadata or surface state', () => {
   const surfaceReset = block(storeSource, 'const SURFACE_RESET: Partial<AppState> = {', 'const COMPOSER_RESET')
   assert.match(surfaceReset, /workbenchReturnProjectId: null/)
   assert.match(surfaceReset, /foregroundError: null/)
@@ -231,7 +234,7 @@ test('reset bundles compose so returning home cannot keep a stale composer or su
   assert.match(surfaceReset, /sessionRename: null/)
 
   const composerReset = block(storeSource, 'const COMPOSER_RESET: Partial<AppState> = {', 'function assistantScopeReset')
-  assert.match(composerReset, /composerText: ''/)
+  assert.doesNotMatch(composerReset, /composerText/)
   assert.match(composerReset, /composerTaskType: ''/)
   assert.match(composerReset, /composerRefs: \[\]/)
 
@@ -254,6 +257,15 @@ test('reset bundles compose so returning home cannot keep a stale composer or su
   assert.match(assistantReset, /\.\.\.INITIAL_AI_PANEL_STATE/)
   for (const preserved of ['open', 'docked', 'cover', 'contextSources']) {
     assert.match(assistantReset, new RegExp(`${preserved}: current\\.aiPanel\\.${preserved}`))
+  }
+
+  const clearSession = block(storeSource, 'clearSessionSelection: () => {', 'openSettings:')
+  assert.match(clearSession, /composerDraft\.current!\.set\(''\)/)
+  const startPanelDraft = block(storeSource, 'startPanelDraft: (seed = {}) => {', 'activateTab:')
+  const startDraft = block(storeSource, 'startDraft: (seed = {}) => {', 'applyModelCatalog:')
+  for (const draftStart of [startPanelDraft, startDraft]) {
+    assert.match(draftStart, /composerDraft\.current!\.set\(seed\.composerText \?\? ''\)/)
+    assert.doesNotMatch(draftStart, /composerText: seed\.composerText/)
   }
 })
 

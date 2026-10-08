@@ -51,6 +51,23 @@ export function TaskCenterProvider({
     (task: ProductTask): string => taskDetailText(task, sources, t),
     [sources, t]
   )
+  const failures = useCallback(
+    (task: ProductTask) => sources.find((source) => source.id === task.sourceId)?.present(task, t).failures ?? [],
+    [sources, t]
+  )
+  const failureDetail = useCallback((task: ProductTask): string => {
+    const sourceFailures = failures(task)
+    const first = sourceFailures[0]
+    const reason = first
+      ? t('failure', { name: first.name, reason: first.reason })
+      : errorText(task) || t('feedback.reasonUnavailable')
+    const remaining = sourceFailures.length - 1
+    return [
+      reason,
+      detailText(task),
+      remaining > 0 ? t('feedback.moreFailures', { count: remaining }) : ''
+    ].filter(Boolean).join(' ')
+  }, [detailText, errorText, failures, t])
 
   const replaceTask = useCallback((task: ProductTask): void => {
     const next = [
@@ -103,7 +120,8 @@ export function TaskCenterProvider({
                   namespace: 'tasks',
                   key: 'feedback.incomplete',
                   name: task.title,
-                  detail: errorText(task) || undefined
+                  detail: failureDetail(task),
+                  openTaskCenter: true
                 }
           )
         }
@@ -111,7 +129,7 @@ export function TaskCenterProvider({
     } finally {
       finalizing.current = false
     }
-  }, [act, detailText, errorText])
+  }, [act, detailText, failureDetail])
 
   const finalize = useCallback(
     (task: ProductTask, announce: boolean): void => {
@@ -160,11 +178,12 @@ export function TaskCenterProvider({
               namespace: 'tasks',
               key: 'feedback.incomplete',
               name: task.title,
-              detail: errorText(task) || undefined
+              detail: failureDetail(task),
+              openTaskCenter: true
             }
       )
     },
-    [act, errorText, finalize, replaceTask, state.homeSelectedProjectId]
+    [act, failureDetail, finalize, replaceTask, state.homeSelectedProjectId]
   )
 
   const refresh = useCallback(async (announce = true): Promise<void> => {
@@ -281,9 +300,10 @@ export function TaskCenterProvider({
       setOpen,
       cancel: (task) => mutate(task, 'cancel'),
       retry: (task) => mutate(task, 'retry'),
-      errorText
+      errorText,
+      failures
     }),
-    [errorText, mutate, open, tasks]
+    [errorText, failures, mutate, open, tasks]
   )
 
   return <TaskCenterContext.Provider value={value}>{children}</TaskCenterContext.Provider>
@@ -313,7 +333,7 @@ const STATUS_MESSAGE_KEYS = {
 export function TaskCenter(): React.JSX.Element {
   const { t } = useTranslation('tasks')
   const { t: uiText } = useTranslation('ui')
-  const { tasks, cancel, retry, errorText } = useTaskCenter()
+  const { tasks, cancel, retry, errorText, failures } = useTaskCenter()
   return (
     <section
       className="w-full min-w-0 overflow-hidden"
@@ -341,6 +361,7 @@ export function TaskCenter(): React.JSX.Element {
               const canCancel = task.status === 'queued' || task.status === 'running'
               const canRetry = task.status === 'failed' || task.status === 'partial' || task.status === 'cancelled'
               const progress = taskProgressPresentation(task, t)
+              const sourceFailures = failures(task)
               return (
                 <article
                   key={`${task.sourceId}:${task.id}`}
@@ -362,9 +383,17 @@ export function TaskCenter(): React.JSX.Element {
                       value={progress.value}
                     />
                   ) : null}
-                  {task.error ? (
+                  {sourceFailures.length > 0 ? (
+                    <div className="mt-2 grid gap-1 text-[11px] text-[var(--vds-error-text-primary)]">
+                      {sourceFailures.map((failure, index) => (
+                        <p key={`${index}:${failure.name}`} className="m-0 break-words">
+                          {t('failure', failure)}
+                        </p>
+                      ))}
+                    </div>
+                  ) : task.status === 'failed' || task.status === 'partial' ? (
                     <p className="m-0 mt-2 text-[11px] text-[var(--vds-error-text-primary)]">
-                      {errorText(task)}
+                      {errorText(task) || t('feedback.reasonUnavailable')}
                     </p>
                   ) : null}
                   {canCancel || canRetry ? (

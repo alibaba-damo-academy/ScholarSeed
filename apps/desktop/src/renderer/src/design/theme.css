@@ -88,6 +88,8 @@
   --vds-update-notes-width: min(360px, calc(100vw - 48px));
   /* 点「查看更多更新内容」后换成更宽的「更新内容」版式（设计稿 190:23576）。 */
   --vds-update-notes-expanded-width: min(480px, calc(100vw - 48px));
+  --vds-update-dialog-width: min(420px, calc(100vw - 48px));
+  --vds-update-dialog-max-height: calc(100dvh - 48px);
   /* 顶部装饰光晕高度：两稿的蒙版组都是 142。 */
   --vds-update-notes-sheen-height: 142px;
   /* 头部·分割线·内容三段之间，以及标题与版本行之间，设计稿都是 2px。 */
@@ -107,6 +109,8 @@
   --vds-update-notes-progress-height: var(--vds-space-1);
   --vds-update-progress-line: 3px;
   --vds-update-ready-dot-size: 9px;
+  --vds-update-entry-badge-size: var(--vds-icon-7);
+  --vds-update-entry-badge-offset: var(--vds-space-half);
   /* 相位小点压在图标按钮的圆角内，所以是正向内缩而不是外扩 */
   --vds-update-ready-dot-offset: var(--vds-space-1);
   --vds-update-ready-dot-border: 1.5px;
@@ -233,7 +237,7 @@
   --vds-drawer-radius: var(--vds-radius-5);
   --vds-drawer-side-width: 360px;
   --vds-model-menu-max-width: min(320px, calc(100vw - var(--vds-space-6)));
-  --vds-model-menu-width: min(200px, calc(100vw - var(--vds-space-6)));
+  --vds-model-menu-width: min(320px, calc(100vw - var(--vds-space-6)));
   --vds-model-controls-width: min(240px, calc(100vw - var(--vds-space-6)));
   --vds-tooltip-z-index: var(--vds-z-tooltip);
   --vds-tooltip-max-width: 240px;

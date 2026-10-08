@@ -1,6 +1,39 @@
 {
+  "toolOutcome": {
+    "noMatches": "No matches found",
+    "noMatchesHelp": "The search found no matches. This does not mean the task failed; the agent can continue.",
+    "commandNotFound": "A program or statement in the command was not found.",
+    "permissionDenied": "This step did not have permission to run.",
+    "fileMissing": "The file or directory to search does not exist.",
+    "nonzero": "The command did not complete successfully (exit code {{code}}).",
+    "unknown": "The command did not complete successfully; the cause is not yet known.",
+    "toolFailed": "This tool step did not complete successfully.",
+    "failedHelp": "This step may affect the task result. The agent can continue trying. Raw information is for troubleshooting only.",
+    "technicalDetails": "Technical details",
+    "exitCode": "Exit code: {{code}}"
+  },
+  "queue": {
+    "permissionDenied": "The system denied access to the project file “{{path}}”. This message has not been submitted. Check access permissions for the file and its containing folder. If it is stored in the cloud, make sure it has been downloaded locally. Resolve the issue, then send the message again.",
+    "projectFile": "file with restricted access",
+    "baselineFailed": "The project file check failed. This message has not been submitted. Check that the project files are accessible and consult the diagnostic logs for the specific cause. Resolve the issue, then send the message again."
+  },
   "turn": {
     "duration": "Turn duration: {{duration}}"
+  },
+  "subagent": {
+    "waiting": "Awaiting response",
+    "elapsed": "Waiting {{duration}}",
+    "lastObserved": "Last confirmed: {{activity}} · {{age}} ago",
+    "action": {
+      "message": "Writing a response",
+      "reasoning": "Reasoning",
+      "search": "Searching",
+      "command": "Running a command",
+      "tool": "Using a tool",
+      "edit": "Editing a file",
+      "plan": "Updating the plan",
+      "work": "Subagent activity"
+    }
   },
   "header": {
     "recent": "Recent",
@@ -51,6 +84,8 @@
       "codex_terminal_outcome_conflict": "Conflicting terminal outcomes detected; the first authoritative result was retained",
       "codex_thread_not_loaded": "The Agent session is no longer attached to this process",
       "codex_thread_closed": "The Agent session connection closed",
+      "codex_repeated_tool_loop": "This turn repeated the same tool call with the same result and was stopped. Try another model or add source material before retrying",
+      "codex_repeated_tool_interrupt_failed": "Repeated tool calls were detected, but automatic stopping failed. Stop this turn manually before retrying",
       "credit_balance_exhausted": "The account credit balance is exhausted"
     },
     "closed": "✓ The entire session has been terminated. History is retained; you cannot send more messages in this session.",
@@ -93,6 +128,7 @@
     "continueUnconfirmed": "The service did not confirm continuing."
   },
   "reply": {
+    "title": "Clarify key research questions",
     "skipped": "Skipped",
     "answerLabel": "Answer to “{{question}}”: {{answer}}"
   },
@@ -129,6 +165,11 @@
       "exhausted": "The model service is temporarily unavailable after {{count}} automatic attempts",
       "action": "The model service or network connection is temporarily unavailable. Your question and context have been retained."
     },
+    "overloaded": {
+      "message": "The upstream model service reported overload.",
+      "exhausted": "The upstream model service reported overload and remains unavailable after {{count}} automatic attempts.",
+      "action": "Try again later. Your question and context for this turn have been retained."
+    },
     "request": {
       "message": "The model service did not accept this request.",
       "action": "Check the model, permissions, and input."
@@ -138,6 +179,7 @@
       "action": "Check that the model name is correct, or switch to another model in settings. Your question and context have been retained."
     },
     "unknown": {
+      "message": "Generation did not complete.",
       "action": "An error occurred during generation. Your question and context have been retained."
     }
   },
@@ -154,7 +196,7 @@
     "failed": "Request failed",
     "authentication": "Authentication required",
     "resourceReviewRequired": "This turn created file changes that still need review. Review them before regenerating.",
-    "httpFailure": "Request failed ({{status}}): {{detail}}",
+    "httpFailure": "Request failed ({{status}}). Please try again later.",
     "diagnostic": "{{message}}\n{{detail}}"
   },
   "toolActions": {
@@ -180,7 +222,7 @@
   },
   "turnUnknown": {
     "title": "Previous task interrupted",
-    "action": "Continue the conversation?",
+    "action": "Confirming will not replay the previous task. After recovery is verified, enter a new message yourself.",
     "reason": {
       "timeout": "Waiting for the task result timed out. Some operations may have completed.",
       "transportLost": "The connection was interrupted during the task. Some operations may have completed.",

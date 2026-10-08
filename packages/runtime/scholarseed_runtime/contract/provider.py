@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol
 
+from scholarseed_runtime.contract.binding import RuntimeBinding
 from scholarseed_runtime.contract.command import (
     CommandReceipt,
     OpenSessionRequest,
@@ -18,7 +20,7 @@ from scholarseed_runtime.contract.runtime import (
     RuntimeDescriptor,
     RuntimeReadiness,
 )
-from scholarseed_runtime.contract.session import RuntimeSession
+from scholarseed_runtime.contract.session import RuntimeExecutionThread, RuntimeSession
 
 
 class RuntimeProvider(Protocol):
@@ -39,6 +41,10 @@ class RuntimeProvider(Protocol):
     async def probe(self) -> RuntimeReadiness: ...
 
     async def inspect(self, request: RuntimeInspectionRequest) -> RuntimeInventory: ...
+
+    async def execution_threads(
+        self, binding: RuntimeBinding, cwd: Path
+    ) -> tuple[RuntimeExecutionThread, ...]: ...
 
     async def configure_skills(self, request: SkillConfigurationRequest) -> CommandReceipt: ...
 

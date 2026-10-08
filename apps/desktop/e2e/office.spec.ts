@@ -1,8 +1,9 @@
 import { createHash } from 'crypto'
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { expect, test } from '@playwright/test'
 import { strToU8, zipSync } from 'fflate'
+import { ONBOARDING_GROUPS } from '../src/onboarding'
 
 import { apiBase, DesktopSession, waitForFinishedTurn } from './fixtures/electron'
 import { createRuntime, seedLiveConfig } from './fixtures/runtime'
@@ -12,6 +13,13 @@ const OFFICE_READY_TIMEOUT_MS = 180_000
 const OFFICE_PAINT_SETTLE_MS = 2_000
 const ONE_SHOT_E2E_ENABLED = process.env.SCHOLARSEED_ONE_SHOT_E2E === '1'
 const OFFICE_CORPUS_ROOT = process.env.SCHOLARSEED_OFFICE_CORPUS
+const OFFICE_REGRESSION_DOCUMENT = process.env.SCHOLARSEED_OFFICE_DOCUMENT
+const OFFICE_RETRY_TEST_TIMEOUT_MS = 600_000
+const OFFICE_RETRY_EXHAUSTION_TIMEOUT_MS = 240_000
+const OFFICE_RETRY_PROGRESS_POLL_MS = 50
+const OFFICE_IMMEDIATE_RETRY_TIMEOUT_MS = 5_000
+const OFFICE_CANCELLED_RETRY_OBSERVATION_MS = 20_000
+const OFFICE_NARROW_VIEWPORT = { width: 900, height: 720 }
 const SELECTION_MENU_BUDGET_MS = 500
 const LEGACY_DOC_SELECTION_MENU_TIMEOUT_MS = 1_000
 const CALC_SELECTION_MENU_TIMEOUT_MS = 2_000
@@ -53,9 +61,122 @@ interface OfficeDiagnostic {
   presentationDelayMs?: number
 }
 
+test('Original Office document loads and real WASM failures recover visibly', async ({}, testInfo) => {
+  test.skip(!OFFICE_REGRESSION_DOCUMENT, 'requires SCHOLARSEED_OFFICE_DOCUMENT with the original regression document')
+  test.setTimeout(OFFICE_RETRY_TEST_TIMEOUT_MS)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const name = basename(OFFICE_REGRESSION_DOCUMENT!)
+  const wasmRoute = '**/soffice.wasm'
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    copyFileSync(OFFICE_REGRESSION_DOCUMENT!, join(resources, name))
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, name)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await page.screenshot({ path: join(runtime.artifacts, 'original-resource-ready.png') })
+    await page.context().route(wasmRoute, route => route.abort('failed'))
+    await page.reload()
+    const loading = page.getByTestId('office-loading')
+    await expect(loading).toHaveAttribute('data-retry-pending', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(loading).toContainText('自动重试')
+    await expect(page.getByTestId('office-loading-retry')).toHaveText('立即重试')
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-retry-countdown.png') })
+    await page.context().unroute(wasmRoute)
+    await page.waitForFunction(() => {
+      const status = document.querySelector<HTMLElement>('[data-testid="office-loading"]')
+      return status?.dataset.attempt === '1' && status.dataset.stage === 'reading'
+    }, undefined, { polling: OFFICE_RETRY_PROGRESS_POLL_MS, timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(loading.getByRole('progressbar')).toHaveAttribute('aria-valuenow', /\d+/)
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-retry-progress.png') })
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(loading).toHaveCount(0)
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-auto-recovered.png') })
+    await page.context().route(wasmRoute, route => route.abort('failed'))
+    await page.reload()
+    const retry = page.getByTestId('office-loading-retry')
+    await expect(loading).toHaveAttribute('data-attempt', '3', { timeout: OFFICE_RETRY_EXHAUSTION_TIMEOUT_MS })
+    await expect(loading).toHaveAttribute('data-retry-pending', 'false', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(retry).toBeVisible()
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-retries-exhausted.png') })
+    await page.context().unroute(wasmRoute)
+    await retry.focus()
+    await retry.press('Enter')
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-manual-recovered.png') })
+    const diagnostics = readFileSync(join(runtime.home, 'logs', 'window.log'), 'utf8')
+    expect(diagnostics).toContain('warmup-failed')
+    expect(diagnostics).toContain('Failed to fetch')
+    expect(diagnostics).toContain('document-ready')
+    await testInfo.attach('persistent-office-diagnostics', { body: diagnostics, contentType: 'text/plain' })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
+
 function archive(entries: Record<string, string>): Uint8Array {
   return zipSync(Object.fromEntries(Object.entries(entries).map(([name, source]) => [name, strToU8(source)])))
 }
+
+test('Office recovery feedback remains visible in a narrow dark Desktop', async ({}, testInfo) => {
+  test.skip(!OFFICE_REGRESSION_DOCUMENT, 'requires SCHOLARSEED_OFFICE_DOCUMENT with the original regression document')
+  test.setTimeout(OFFICE_RETRY_TEST_TIMEOUT_MS)
+  const runtime = createRuntime(testInfo)
+  writeFileSync(join(runtime.userData, 'renderer-preferences.json'), JSON.stringify({
+    language: 'zh',
+    theme: 'dark',
+    onboarding: { seen: Object.fromEntries(ONBOARDING_GROUPS.map(group => [group, true])) }
+  }))
+  const desktop = new DesktopSession(runtime, testInfo)
+  const name = basename(OFFICE_REGRESSION_DOCUMENT!)
+  const wasmRoute = '**/soffice.wasm'
+  try {
+    const page = await desktop.launch()
+    const resources = await seedProject(page, runtime)
+    copyFileSync(OFFICE_REGRESSION_DOCUMENT!, join(resources, name))
+    await page.getByTestId('resource-refresh').click()
+    await openFile(page, name)
+    const frame = page.locator(`iframe[data-testid="office-editor"][title="${name}"]`)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await page.setViewportSize(OFFICE_NARROW_VIEWPORT)
+    await page.context().route(wasmRoute, route => route.abort('failed'))
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    const loading = page.getByTestId('office-loading')
+    await expect(loading).toHaveAttribute('data-retry-pending', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await page.keyboard.press('Escape')
+    await expect(loading).toBeVisible()
+    const retry = page.getByTestId('office-loading-retry')
+    await expect(retry).toHaveText('立即重试', { timeout: OFFICE_IMMEDIATE_RETRY_TIMEOUT_MS })
+    const failedFrameSource = await frame.getAttribute('srcdoc')
+    let wasmRequests = 0
+    page.on('request', request => {
+      if (request.url().endsWith('/soffice.wasm')) wasmRequests += 1
+    })
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-retry-dark-narrow.png') })
+    await page.context().unroute(wasmRoute)
+    await retry.focus()
+    await retry.press('Enter')
+    await expect.poll(() => frame.getAttribute('srcdoc'), { timeout: OFFICE_IMMEDIATE_RETRY_TIMEOUT_MS }).not.toBe(failedFrameSource)
+    await expect(retry).toHaveCount(0)
+    await expect.poll(() => wasmRequests, { timeout: OFFICE_READY_TIMEOUT_MS }).toBe(1)
+    await expect(frame).toHaveAttribute('data-document-ready', 'true', { timeout: OFFICE_READY_TIMEOUT_MS })
+    await expect(loading).toHaveCount(0)
+    const recoveredFrameSource = await frame.getAttribute('srcdoc')
+    await page.waitForTimeout(OFFICE_CANCELLED_RETRY_OBSERVATION_MS)
+    expect(wasmRequests).toBe(1)
+    await expect(frame).toHaveAttribute('srcdoc', recoveredFrameSource!)
+    await page.screenshot({ path: join(runtime.artifacts, 'wasm-recovered-dark-narrow.png') })
+  } finally {
+    await desktop.attachArtifacts()
+  }
+})
 
 function documentArchive(): Uint8Array {
   const entries = {

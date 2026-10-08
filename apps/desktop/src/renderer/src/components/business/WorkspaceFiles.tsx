@@ -1,7 +1,8 @@
 import React from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { FileItem, FilesResp, getSessionFiles, getWorkspaceFiles, openSystemPath, revealSystemPath } from '../../api'
+import type { FileItem, FilesResp } from '../../api'
+import { getSessionFiles, getWorkspaceFiles, openSystemPath, revealSystemPath } from '../../api'
 import { openByDefault } from '../../fileOpen'
 import { Icon } from '../../icons'
 import { useApp } from '../../store'

@@ -22,6 +22,7 @@ class ResourceVersionEvent(str, Enum):
     SCAN_COMPLETED = "resources.versions.scan.completed"
     OBSERVE_DRIFT = "resources.versions.observe.drift"
     VERSION_CREATED = "resources.versions.version.created"
+    VERSION_UPDATED = "resources.versions.version.updated"
     PENDING_CREATED = "resources.versions.pending.created"
     PENDING_UPDATED = "resources.versions.pending.updated"
     CONTEXT_PREPARED = "resources.versions.context.prepared"

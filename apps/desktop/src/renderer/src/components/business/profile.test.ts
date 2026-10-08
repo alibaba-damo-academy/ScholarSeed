@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createInstance } from 'i18next'
 
-import { modelDisabledReason, modelDisplayLabels, modelProviderLabel, providerPresetText } from './profile.ts'
+import { modelDisabledReason, modelDisabledTag, modelDisplayLabels, modelProviderLabel, probeFailureDetail, providerPresetText, PROBE_REASON_KEYS, PROBE_SUGGESTION_KEYS, PROBE_TITLE_KEYS } from './profile.ts'
+import type { ProbeFailureKind } from './profile.ts'
 
 const resources = Object.fromEntries(['zh', 'en'].map((language) => [language, {
   account: JSON.parse(readFileSync(new URL(`../../../../localization/locales/${language}/account.json`, import.meta.url), 'utf8')),
@@ -19,10 +20,15 @@ test('model disabled reason follows explicit provenance and language without cha
   ]
   const original = structuredClone(reasons)
   for (const reason of reasons) assert.equal(modelDisabledReason(reason, localization.getFixedT(null, 'account')), reason.disabled_reason)
+  // 置灰行短 tag: 只有登记码给 tag, 其余(含无码)不给。
+  assert.equal(modelDisabledTag(reasons[0], localization.getFixedT(null, 'account')), '登录可用')
+  assert.equal(modelDisabledTag(reasons[1], localization.getFixedT(null, 'account')), undefined)
+  assert.equal(modelDisabledTag({}, localization.getFixedT(null, 'account')), undefined)
   await localization.changeLanguage('en')
   const t = localization.getFixedT(null, 'account')
   assert.equal(modelDisabledReason(reasons[0], t), 'Sign in to use built-in models')
   assert.equal(modelDisabledReason(reasons[1], t), 'Connect ChatGPT in Model services')
+  assert.equal(modelDisabledTag(reasons[0], t), 'Sign in to use')
   assert.deepEqual(reasons, original)
   for (const reason of reasons) assert.equal(modelDisabledReason({ disabled_reason: reason.disabled_reason }, t), reason.disabled_reason)
   const raw = '原始供应商提示 <name> & {{name}}'
@@ -34,6 +40,9 @@ test('model disabled reason follows explicit provenance and language without cha
   const menu = readFileSync(new URL('./ModelMenu.tsx', import.meta.url), 'utf8')
   assert.match(menu, /title=\{model\.disabled \? modelDisabledReason\(model, account\) : undefined\}/)
   assert.match(menu, /modelDisabledReason\(blocked\[0\], account\)/)
+  // 置灰行名字后挂灰色短 tag; 底部「切换后…」footnote 已按设计移除。
+  assert.match(menu, /tag=\{modelDisabledTag\(model, account\)\}/)
+  assert.doesNotMatch(menu, /models\.effect/)
   // 显示状态归服务端持久化: renderer 不得再持有一份私有隐藏标记。留着它的话, 任何一次目录
   // 重取都会整体覆盖 catalog.models, 把用户关掉的模型放回对话框。
   const panel = readFileSync(new URL('./AccountPanel.tsx', import.meta.url), 'utf8')
@@ -61,12 +70,17 @@ test('composer has one combined model control at the right of the spacer', () =>
   assert.match(menu, /data-testid="model-selector-menu"/)
   assert.match(menu, /data-testid="model-menu-manage"/)
   assert.match(menu, /max-h-\[300px\] min-h-0 overflow-y-auto/)
-  // 弹窗固定 200px 宽; 模型名/副标签溢出省略, hover 由 EllipsisText 的 tooltip 显示全文。
+  // 弹窗固定 320px 宽; 模型按提供商分组, 组标题承担归属信息, 模型名整行铺开;
+  // 超长名溢出省略, hover 由 EllipsisText 的 tooltip 显示全文。
   assert.match(menu, /w-\[var\(--vds-model-menu-width\)\]/)
-  // 思考强度二级弹窗同宽 200px, 不再使用旧的 240px 控件宽 token。
+  // 思考强度二级弹窗同宽, 不再使用旧的 240px 控件宽 token。
   assert.doesNotMatch(menu, /--vds-model-controls-width/)
   assert.match(menu, /<EllipsisText/)
   assert.match(menu, /wrapperClassName="flex-1"/)
+  // 分组: 订阅组与 API/个人模型组共用组标题层级; 行内不再挂右侧提供商副标签挤占模型名宽度。
+  assert.match(menu, /const MODEL_GROUP_HEADER_CLASS =/)
+  assert.match(menu, /apiModelGroups\.map\(\(group\)/)
+  assert.doesNotMatch(menu, /wrapperClassName="max-w-\[40%\] shrink-0"/)
   // 弹窗整体抬到 modal 层, 菜单内溢出 tooltip 内容层必须再抬一级否则被弹窗盖住。
   assert.match(menu, /const MODEL_MENU_TOOLTIP_CONTENT_CLASS = '!z-\[calc\(var\(--vds-z-modal\)\+2\)\]'/)
   assert.match(menu, /tooltipContentClassName=\{MODEL_MENU_TOOLTIP_CONTENT_CLASS\}/)
@@ -180,4 +194,36 @@ test('built-in provenance and token plan editions follow language without rewrit
   assert.equal(modelProviderLabel('dashscope-token-plan', '原始名称', t), 'Alibaba Cloud Model Studio Token Plan (Personal)')
   assert.equal(modelProviderLabel('dashscope-token-plan-team', '原始名称', t), 'Alibaba Cloud Model Studio Token Plan (Team)')
   assert.deepEqual(model, original)
+})
+
+test('probe failure detail classifies backend error codes and transport failures', () => {
+  // 后端拒绝 (PersonalApiProbeResult 形态, 带 message): 按 error_class 分类, 不透传原文
+  const reject = (error_class?: string) => ({ ok: false as const, message: 'raw upstream text', models: [], latency_ms: 1, error_class })
+  assert.equal(probeFailureDetail(reject('http_status_401')).kind, 'auth')
+  assert.equal(probeFailureDetail(reject('http_status_403')).kind, 'auth')
+  assert.equal(probeFailureDetail(reject('http_status_404')).kind, 'notFound')
+  const status = probeFailureDetail(reject('http_status_429'))
+  assert.equal(status.kind, 'status')
+  assert.equal(status.params?.status, 429)
+  assert.equal(probeFailureDetail(reject('base_url_required')).kind, 'baseUrl')
+  assert.equal(probeFailureDetail(reject('unsupported_wire_api')).kind, 'protocol')
+  // 非 HTTP 状态的 error_class 是 httpx 网络层异常名
+  assert.equal(probeFailureDetail(reject('ConnectError')).kind, 'network')
+  assert.equal(probeFailureDetail(reject('ReadTimeout')).kind, 'network')
+  // 无 error_class 且模型列表为空: 端点可达但没返回模型 (ok=bool(models))
+  assert.equal(probeFailureDetail(reject(undefined)).kind, 'noModels')
+  // 传输层失败 (PersonalApiFailure 形态, 带 code)
+  assert.equal(probeFailureDetail({ ok: false, error: '', code: 'network_failure' }).kind, 'network')
+  assert.equal(probeFailureDetail({ ok: false, error: '', code: 'http_failure', status: 401 }).kind, 'auth')
+  assert.equal(probeFailureDetail({ ok: false, error: '', code: 'http_failure', status: 500 }).kind, 'status')
+  assert.equal(probeFailureDetail({ ok: false, error: '', code: 'authentication_required' }).kind, 'generic')
+  // 每个分类都必须有原因与建议文案 key, 否则弹窗渲染空字符串
+  const kinds: ProbeFailureKind[] = ['missingKey', 'auth', 'notFound', 'status', 'network', 'protocol', 'baseUrl', 'noModels', 'generic']
+  for (const kind of kinds) {
+    assert.ok(PROBE_REASON_KEYS[kind], `missing reason key for ${kind}`)
+    assert.ok(PROBE_SUGGESTION_KEYS[kind], `missing suggestion key for ${kind}`)
+  }
+  // 测试与保存/刷新两种动作各有标题 key
+  assert.ok(PROBE_TITLE_KEYS.test, 'missing test title key')
+  assert.ok(PROBE_TITLE_KEYS.connection, 'missing connection title key')
 })

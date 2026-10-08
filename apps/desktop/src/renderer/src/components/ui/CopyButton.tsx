@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useRef, useState } from 'react'
 
 import { Button, type ButtonSize, type ButtonVariant } from './Button'
 import { IconButton, type IconButtonProps } from './IconButton'
+import { Tooltip } from './Tooltip'
 import { copyButtonClassName, copyButtonStatusClassName, copyButtonStyleClassName } from './classes'
 import { cx } from './utils'
 
@@ -12,9 +13,14 @@ interface CopyButtonBaseProps extends Omit<ButtonHTMLAttributes<HTMLButtonElemen
   getValue?: () => string | Promise<string>
   children?: ReactNode
   copiedLabel?: string
+  copiedIcon?: ReactNode
   errorLabel?: string
   feedbackDuration?: number
   idleLabel?: string
+  showLoading?: boolean
+  stableLabelWidth?: boolean
+  statusStyle?: boolean
+  tooltip?: boolean
   variant?: ButtonVariant
   writeText?: (text: string) => Promise<void>
 }
@@ -32,6 +38,7 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     children,
     className,
     copiedLabel,
+    copiedIcon,
     disabled,
     errorLabel,
     feedbackDuration = DEFAULT_COPY_FEEDBACK_DURATION_MS,
@@ -39,9 +46,13 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     icon,
     iconOnly,
     idleLabel,
+    showLoading = true,
     onClick,
     size,
+    stableLabelWidth = true,
+    statusStyle = true,
     title,
+    tooltip = false,
     value,
     variant = 'secondary',
     writeText,
@@ -93,13 +104,13 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
 
   const buttonProps = {
     'aria-label': label,
-    className: cx(copyButtonClassName({ className, status }), copyButtonStyleClassName({ status })),
+    className: cx(copyButtonClassName({ className, status: statusStyle ? status : 'idle' }), copyButtonStyleClassName({ status: statusStyle ? status : 'idle' })),
     'data-copy-status': status,
     disabled,
-    loading: copying,
+    loading: showLoading && copying,
     onClick: handleClick,
     ref,
-    title: title ?? label,
+    title: tooltip ? undefined : title ?? label,
     variant,
     ...props
   }
@@ -113,19 +124,20 @@ export const CopyButton = forwardRef<HTMLButtonElement, CopyButtonProps>(functio
     )
   }
 
-  return (
+  const button = (
     <Button {...buttonProps} icon={icon} size={size ?? 'sm'}>
-      {children ?? (
+      {(status === 'success' && copiedIcon ? copiedIcon : children) ?? (stableLabelWidth ? (
         <span className="grid">
           <span className="invisible col-start-1 row-start-1">{idleText}</span>
           <span className="invisible col-start-1 row-start-1">{copiedText}</span>
           <span className="invisible col-start-1 row-start-1">{errorText}</span>
           <span className="col-start-1 row-start-1">{label}</span>
         </span>
-      )}
+      ) : <span>{label}</span>)}
       {feedback}
     </Button>
   )
+  return tooltip ? <Tooltip content={label} portalled>{button}</Tooltip> : button
 })
 
 CopyButton.displayName = 'CopyButton'

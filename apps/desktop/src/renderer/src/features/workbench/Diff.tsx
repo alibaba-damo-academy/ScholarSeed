@@ -63,7 +63,7 @@ export function Diff({
       original.dispose()
       modified.dispose()
     }
-  }, [baseText, candidateText, frame, identity, onCandidateChange, path, readOnly])
+  }, [baseText, frame, identity, onCandidateChange, path, readOnly])
 
   return (
     <MonacoFrame

@@ -3,8 +3,9 @@
   "review": {
     "toolbar": "审阅处理",
     "progress": "已决定 {{decided}}/{{total}} · 剩余 {{remaining}}",
-    "outcomeProgress": "已处理 {{reviewed}} · 待处理 {{pending}} · 失败 {{failed}}",
+    "outcomeProgress": "已决定 {{reviewed}} · 待决定 {{pending}} · 失败 {{failed}}",
     "undoAll": "撤销全部",
+    "undo": "撤销",
     "acceptAll": "接受全部",
     "rejectAll": "拒绝全部",
     "submit": "提交",
@@ -137,6 +138,7 @@
     "loadFailed": "无法打开 {{title}}。",
     "loadFailureDetail": "{{message}}（{{code}}）",
     "loadFailureUnknown": "文档加载失败，请重试。",
+    "artifactTooLarge": "文件超过内置预览上限，请在系统中打开，或从对话产物卡片下载。",
     "missingTitle": "{{title}} 已不存在或已被移动。",
     "missingDescription": "文件可能已在书深之外被删除或重命名。",
     "conflictTitle": "磁盘文件已在外部变化",
@@ -162,6 +164,8 @@
     "desktopUnavailable": "系统打开不可用：桌面连接未就绪。"
   },
   "history": {
+    "pendingReview": "待审阅",
+    "reviewBackup": "审阅前备份",
     "origin": {
       "initial": "初始版本",
       "user": "用户保存",
@@ -335,6 +339,7 @@
     "slow": "当前设备初始化时间较长，Office 仍在后台继续准备。",
     "recoveringTitle": "正在恢复 Office 预热",
     "recovering": "运行资源加载中断，正在进行第 {{attempt}} 次自动重试。",
+    "retryCountdown": "{{seconds}} 秒后进行第 {{attempt}} 次自动重试。",
     "errorTitle": "Office 预热未完成",
     "failures": {
       "fontPermission": "无法获得系统字体访问权限，请检查系统设置后重试。",
@@ -342,9 +347,10 @@
       "fontRead": "系统字体读取未完成，请重试。",
       "runtimeAssets": "Office 运行资源未能完整加载，请重试。",
       "runtimeInitialization": "Office 引擎初始化失败，请重试。",
-      "runtimeExecution": "Office 运行时发生错误，请重试。"
+      "runtimeExecution": "Office 运行时发生错误，请重试。",
+      "warmupTimeout": "Office 后台预热超过 10 分钟仍未完成，请重试。"
     },
-    "retry": "重试"
+    "retry": "立即重试"
   },
   "markdown": {
     "saved": "已保存",
@@ -383,6 +389,10 @@
     "inlineMath": "行内公式",
     "link": "链接",
     "linkAddress": "链接地址",
+    "linkOpenExternal": "{{url}} — 单击在默认浏览器中打开",
+    "linkOpenInternal": "{{url}} — 单击跳转到引用位置",
+    "linkUnavailable": "{{url}} — 此链接暂不支持跳转",
+    "linkFailed": "无法打开链接 {{url}}，目标不可用或打开失败。",
     "imageFailed": "图片保存失败，请重试",
     "placeholder": "输入 / 唤起操作",
     "format": "格式",

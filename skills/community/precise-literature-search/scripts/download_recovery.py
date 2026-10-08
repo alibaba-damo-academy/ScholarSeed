@@ -11,12 +11,16 @@ from typing import Any
 from urllib.parse import quote, urlparse
 
 from io_utils import atomic_write_json, read_json, title_pdf_relative_path, utc_now
+from filesystem import filesystem_path
 from validate_json import ContractError, validate_data
 from browser_pool import abandon, cancellation_signals, run_lock
 from process_control import ChildProcessCancelled
 
 
-UNSUCCESSFUL = {"action_required", "failed", "skipped", "not_attempted"}
+#: States a recovery may still act on. `skipped` is deliberately absent: it is the
+#: terminal record of a paper the product did not grant (or cannot identify), so offering
+#: it for manual download or retry would hand the paid route an unauthorized target.
+UNSUCCESSFUL = {"action_required", "failed", "not_attempted"}
 
 
 def require_under_run(run_dir: Path, path: Path, label: str) -> Path:
@@ -122,7 +126,7 @@ def build_plan(
             "manual_download": {
                 "papers": manual,
                 "instructions": (
-                    "Open each URL in the dedicated workflow Chrome, save the PDF to its "
+                    "Open each URL in the dedicated workflow browser, save the PDF to its "
                     "exact target_file, then tell the host the manual downloads are ready."
                 ),
                 "verification": (
@@ -151,8 +155,9 @@ def build_plan(
 
 def is_pdf(path: Path) -> bool:
     try:
+        path = filesystem_path(path)
         return path.is_file() and path.read_bytes()[:5] == b"%PDF-"
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -308,7 +313,6 @@ def finish_manual(run_dir, recovery_arg):
     if manifest.get("run_id") != recovery.get("run_id"):
         raise ValueError("recovery and manifest run IDs must match")
     result = verify_manual(run_dir, recovery, manifest)
-    # Persist verified files even if subsequent browser cleanup needs attention.
     atomic_write_json(manifest_path, manifest)
     if not any(item.get("status") == "action_required" for item in manifest.get("papers", [])):
         result.update(abandon(run_dir))

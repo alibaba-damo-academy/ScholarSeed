@@ -29,6 +29,7 @@ from service.invocation.service.runtime import (
     TrustedInvocationWorkspace,
 )
 from service.paths import (
+    LITERATURE_SEARCH_DELETE_FLAG_FILENAME,
     LITERATURE_SEARCH_DIR,
     LITERATURE_SEARCH_QUERY_FILENAME,
     LITERATURE_SEARCH_STATE_FILENAME,
@@ -94,6 +95,8 @@ SEARCH_RUNTIME_LOST = "literature_search_runtime_lost"
 SEARCH_REPLAY_EVENT_LIMIT = 512
 SEARCH_STATE_WRITE_ATTEMPTS = 4
 SEARCH_STATE_WRITE_BACKOFF_SECONDS = 0.05
+# 删除标记是普通空文件; 0600 与其它任务产物一致, 不给同机其它用户读写。
+SEARCH_DELETE_FLAG_MODE = 0o600
 # content.delta 同时承载推理与用户可见两条通道, 适配器用 data.role 区分
 # (packages/adapters/codex/scholarseed_codex/events.py)。推理文本里会出现字面 <<< >>>,
 # 混进 output 会污染前端按定界符裁出的用户可见进度, 所以只累加非推理通道。
@@ -146,6 +149,7 @@ class LiteratureSearchService:
         self._root = root.expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._live: dict[str, LiveSearch] = {}
+        self._sweep_deleted()
 
     async def create(self, query: str, *, owner_id: str, user_id: str) -> dict[str, Any]:
         cleaned = query.strip()
@@ -167,7 +171,7 @@ class LiteratureSearchService:
                 trusted_workspace=TrustedInvocationWorkspace(root=self._root, path=workspace),
             )
         except Exception:
-            shutil.rmtree(workspace)
+            self._remove(workspace)
             raise
         # 创建即落盘一次已经确定的信息: 进程被杀后 query / owner / invocation_id 仍可恢复,
         # invocation_id 也是回到 trace 账本继续归因的唯一线索。运行期不再逐事件写盘。
@@ -177,7 +181,7 @@ class LiteratureSearchService:
             await self._publish_state(workspace, state)
         except Exception:
             # 连创建记录都写不下去时不要留下无主目录; 上层按运行时不可用回 503。
-            shutil.rmtree(workspace, ignore_errors=True)
+            self._remove(workspace)
             raise
         live = LiveSearch(state=state)
         self._live[task_id] = live
@@ -190,6 +194,9 @@ class LiteratureSearchService:
         """只读投影: 本进程在跑的任务给内存态, 其余给磁盘快照, 绝不回写。"""
         items: builtins.list[dict[str, Any]] = []
         for workspace in self._workspaces():
+            if self._flagged(workspace):
+                # 已标记删除: 对用户等价于已经不存在, 真正的删除交给下次启动清扫。
+                continue
             live = self._live.get(workspace.name)
             if live is not None and live.state.get("owner_id") == owner_id:
                 items.append(self._public(live.state))
@@ -223,17 +230,19 @@ class LiteratureSearchService:
                 return
             while True:
                 try:
-                    event = await asyncio.wait_for(subscriber.get(), timeout=SSE_HEARTBEAT_SECONDS)
+                    live_event = await asyncio.wait_for(
+                        subscriber.get(), timeout=SSE_HEARTBEAT_SECONDS
+                    )
                 except TimeoutError:
                     yield None
                     continue
-                if event is None:
+                if live_event is None:
                     return
-                sequence = int(event["seq"])
+                sequence = int(live_event["seq"])
                 if sequence <= next_seq:
                     continue
                 next_seq = sequence
-                yield event
+                yield live_event
                 if live.settled:
                     return
         finally:
@@ -263,7 +272,7 @@ class LiteratureSearchService:
             live.broadcast(None)
         self._live.pop(task_id, None)
         checked, _state = self._owned(task_id, owner_id)
-        shutil.rmtree(checked)
+        self._remove(checked)
 
     async def _consume(self, task_id: str, workspace: Path, prepared: PreparedInvocation) -> None:
         live = self._live.get(task_id)
@@ -403,11 +412,86 @@ class LiteratureSearchService:
 
         return sorted(rows, key=task_sequence)
 
+    @staticmethod
+    def _delete_flag(workspace: Path) -> Path:
+        return workspace / LITERATURE_SEARCH_DELETE_FLAG_FILENAME
+
+    def _flagged(self, workspace: Path) -> bool:
+        flag = self._delete_flag(workspace)
+        # 只认普通文件: 目录或符号链接/junction 都不是合法的删除标记。
+        return flag.is_file() and not flag.is_symlink()
+
+    def _mark_deleted(self, workspace: Path) -> None:
+        """把删除意图写进目录本身。
+
+        标记必须能在"部分删除"之后重新落下: ``rmtree`` 自底向上删, 失败时可能已经吃掉了
+        上一轮写的 deleted.flag, 所以每次失败都无条件重写, 而不是只在首次删除时写一次。
+        """
+        flag = self._delete_flag(workspace)
+        try:
+            # 任务目录是 skill 的可写 cwd, 同名条目可能是指向别处的符号链接/junction。
+            # 先摘掉链接本身, 再用 O_EXCL 建普通空文件: 窗口期里被塞进链接就直接失败,
+            # 绝不顺着它写到工作区之外。O_NOFOLLOW 是 POSIX 专有, 不能用作 Windows 实现。
+            flag.unlink(missing_ok=True)
+            os.close(os.open(flag, os.O_CREAT | os.O_EXCL | os.O_WRONLY, SEARCH_DELETE_FLAG_MODE))
+        except FileNotFoundError:
+            # 目录已在并发中消失: 与删除成功等价。
+            return
+        except OSError as error:
+            logger.error(
+                "literature_search_delete_flag_failed task=%s failure_type=%s errno=%s winerror=%s",
+                workspace.name,
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+
+    def _remove(self, workspace: Path) -> bool:
+        """删除任务目录; 删不掉就留下 deleted.flag, 由下次启动清扫重试。
+
+        macOS/Linux 即使有进程把该目录当 cwd 也删得掉; Windows 会以共享冲突拒绝(子进程还在
+        退出, 或实时扫描仍持有句柄)。这类失败不该冒泡成用户可见错误: 任务立刻从列表消失,
+        磁盘回收延后到下次启动。
+        """
+        try:
+            shutil.rmtree(workspace)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as error:
+            logger.warning(
+                "literature_search_delete_deferred task=%s failure_type=%s errno=%s winerror=%s",
+                workspace.name,
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+            self._mark_deleted(workspace)
+            return False
+
+    def _sweep_deleted(self) -> None:
+        """启动清扫: 重试上次没删掉的任务目录, 再失败就把标记补回去。"""
+        try:
+            pending = [row for row in self._workspaces() if self._flagged(row)]
+        except OSError as error:
+            logger.error(
+                "literature_search_sweep_failed failure_type=%s errno=%s winerror=%s",
+                type(error).__name__,
+                getattr(error, "errno", None),
+                getattr(error, "winerror", None),
+            )
+            return
+        for workspace in pending:
+            self._remove(workspace)
+
     def _owned(self, task_id: str, owner_id: str) -> tuple[Path, dict[str, Any]]:
         if SEARCH_TASK_PATTERN.fullmatch(task_id) is None:
             raise LiteratureSearchError("literature_search_not_found")
         workspace = (self._root / task_id).resolve()
         if workspace.parent != self._root or workspace.is_symlink():
+            raise LiteratureSearchError("literature_search_not_found")
+        if self._flagged(workspace):
+            # 已标记删除的任务对外一律是"不存在", 不能再被读取、订阅或重复删除。
             raise LiteratureSearchError("literature_search_not_found")
         state = self._read_state(workspace)
         if state is None or state.get("task_id") != task_id or state.get("owner_id") != owner_id:

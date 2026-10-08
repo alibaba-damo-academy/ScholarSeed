@@ -14,6 +14,7 @@
     "upload_base": {
       "default": "",
       "env": "UPLOAD_BASE_URL",
+      "proxy_bypass": true,
       "description": "Paper-card upload target; set UPLOAD_BASE_URL explicitly before uploading"
     }
   }

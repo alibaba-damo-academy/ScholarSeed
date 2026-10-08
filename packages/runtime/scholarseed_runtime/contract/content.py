@@ -10,6 +10,9 @@ CONTENT_OBSERVATIONS = "content_observations"
 CONTENT_FIELDS = frozenset({"text", "input", "output", "details"})
 CONTENT_SOURCE = "runtime_observation"
 CONTENT_SCHEMA_VERSION = 1
+REASONING_SOURCE = "reasoning_source"
+PUBLIC_REASONING_SUMMARY = "summary"
+REASONING_SUMMARY_INDEX = "summary_index"
 
 
 def validate_content(payload: RuntimeValue) -> None:

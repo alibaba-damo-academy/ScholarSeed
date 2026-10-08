@@ -10,13 +10,68 @@ import { describeTurnAdmissionFailure, turnAdmissionFeedback } from './input.ts'
 import { formatApplicationRequestFailure, permissionModeFeedback, permissionModeSelectedFeedback, formatRuntimeStatus } from './runtime.ts'
 
 import {
-  serviceErrorDetail, openSession, confirmUnknownTurn, requestFailureFeedback, postTurn, postSide, sendQueuedMessage, setMode, setSessionModel,
+  serviceErrorDetail, openSession, confirmUnknownTurn, checkSessionRecovery, requestFailureFeedback, postTurn, postSide, sendQueuedMessage, setMode, setSessionModel,
   createSubscriptionProfile, parseOpenSessionResponse, classifySessionResumeFailure, interruptSession, respondHil,
   DiagnosticOperationError, getDiagnosticPolicy, getSkillDocument, getSkills,
   getGlobalPermissionMode, setGlobalPermissionMode, DEFAULT_GLOBAL_PERMISSION_MODE, GLOBAL_PERMISSION_MODES,
-  SkillCatalogError, SkillDocumentError, setSkillActive, deleteQueuedMessage
+  SkillCatalogError, SkillDocumentError, setSkillActive, deleteQueuedMessage, submitFeedback
 } from './api.ts'
 import { SKILL_CATALOG_CHANGED_EVENT } from '../../skills.ts'
+
+for (const sessionId of [null, 'feedback-session']) {
+  test(`feedback without diagnostic consent excludes logs and trace: ${sessionId}`, async () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+    const previousFetch = globalThis.fetch
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+      scholarseed: { getApiBase: () => '' }, setTimeout, clearTimeout
+    } })
+    try {
+      globalThis.fetch = async (_input, init) => {
+        const body = init?.body as FormData
+        assert.equal(body.get('description'), 'Feedback test')
+        assert.equal(body.get('include_logs'), 'false')
+        assert.equal(body.get('include_trace'), 'false')
+        assert.equal(body.get('session_id'), sessionId)
+        const images = body.getAll('images') as File[]
+        assert.equal(images.length, 1)
+        assert.equal(await images[0].text(), 'screenshot')
+        return new Response(JSON.stringify({ id: 'feedback-ticket' }))
+      }
+      assert.deepEqual(await submitFeedback({
+        description: 'Feedback test', includeLogs: false, includeTrace: false, sessionId,
+        images: [new File(['screenshot'], 'screenshot.png', { type: 'image/png' })]
+      }), { ok: true, id: 'feedback-ticket' })
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+      else Reflect.deleteProperty(globalThis, 'window')
+    }
+  })
+}
+
+test('feedback consent forwards logs, trace, and only the selected session', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    scholarseed: { getApiBase: () => '' }, setTimeout, clearTimeout
+  } })
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const body = init?.body as FormData
+      assert.equal(body.get('include_logs'), 'true')
+      assert.equal(body.get('include_trace'), 'true')
+      assert.equal(body.get('session_id'), 'selected-session')
+      return new Response(JSON.stringify({ id: 'feedback-ticket' }))
+    }
+    assert.deepEqual(await submitFeedback({
+      description: 'Feedback test', includeLogs: true, includeTrace: true, sessionId: 'selected-session'
+    }), { ok: true, id: 'feedback-ticket' })
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
 
 test('queue withdrawal preserves business errors and uncertain transport results', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
@@ -199,9 +254,9 @@ test('service HTTP fallbacks carry producer provenance and retain same-named raw
   assert.deepEqual(fallback.applicationFailure, { key: 'request.httpFailure', status: 503, statusText: '' })
   assert.ok(fallback.applicationFailure)
   const stored = requestFailureFeedback(fallback.applicationFailure)
-  assert.equal(renderFeedback(locale, stored), '请求失败（503）：请求失败')
+  assert.equal(renderFeedback(locale, stored), '请求失败（503），请稍后重试。')
   await locale.changeLanguage('en')
-  assert.equal(renderFeedback(locale, stored), 'Request failed (503): Request failed')
+  assert.equal(renderFeedback(locale, stored), 'Request failed (503). Please try again later.')
   assert.equal(fallback.message, '503 request failed')
   for (const response of [
     new Response('503 request failed', { status: 503 }),
@@ -215,7 +270,7 @@ test('service HTTP fallbacks carry producer provenance and retain same-named raw
   const status = await serviceErrorDetail(new Response('', { status: 503, statusText: 'RAW status reason' }))
   assert.equal(status.message, '503 RAW status reason')
   assert.ok(status.applicationFailure)
-  assert.equal(renderFeedback(locale, requestFailureFeedback(status.applicationFailure)), 'Request failed (503): RAW status reason')
+  assert.equal(renderFeedback(locale, requestFailureFeedback(status.applicationFailure)), 'Request failed (503). Please try again later.')
 })
 
 test('session open distinguishes local timeout and empty failures without reclassifying diagnostic strings', async () => {
@@ -239,7 +294,7 @@ test('session open distinguishes local timeout and empty failures without reclas
       if (cause instanceof DOMException) {
         assert.equal(resume.code, 'request_timeout')
         assert.deepEqual(resume.applicationFailure, { key: 'request.timeout', diagnostic: 'upstream timeout detail' })
-        assert.equal(formatRuntimeStatus({ key: 'resume.stopped', reason: resume.applicationFailure }, locale.getFixedT(null, 'conversation')), `${en.resume.stopped}: Request timed out\nupstream timeout detail`)
+        assert.equal(formatRuntimeStatus({ key: 'resume.stopped', reason: resume.applicationFailure }, locale.getFixedT(null, 'conversation')), `${en.resume.stopped}: Request timed out`)
       } else if (cause.message) assert.equal(resume.applicationFailure, undefined)
       else assert.deepEqual(resume.applicationFailure, { key: 'request.failed' })
     }
@@ -294,6 +349,65 @@ test('unknown-turn confirmation preserves decision requests, raw errors, and gen
   }
 })
 
+test('recovery inspection never sends a turn and rejects malformed clearance', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const requests: string[] = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { scholarseed: { getApiBase: () => '' } } })
+  try {
+    globalThis.fetch = async (url, init) => {
+      requests.push(`${init?.method} ${url}`)
+      return Response.json({ ok: true, recovery_blocked: false, recovery_pending: false })
+    }
+    assert.deepEqual(await checkSessionRecovery('session/id'), {
+      ok: true, recovery_blocked: false, recovery_pending: false
+    })
+    assert.deepEqual(requests, ['POST /api/serve/sessions/session%2Fid/recovery/check'])
+    for (const result of [
+      { ok: false, recovery_blocked: true, recovery_pending: true, error: 'turn_recovery_blocked' },
+      { ok: true, recovery_blocked: false, recovery_pending: true, activity_active: true }
+    ]) {
+      globalThis.fetch = async () => Response.json(result)
+      assert.deepEqual(await checkSessionRecovery('session/id'), result)
+    }
+    globalThis.fetch = async () => Response.json({ ok: true, recovery_blocked: false })
+    assert.deepEqual(await checkSessionRecovery('session/id'), {
+      ok: false, recovery_blocked: true, recovery_pending: true, error: 'invalid_recovery_check'
+    })
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
+test('failed turn continuation carries its origin without changing ordinary messages', async () => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const previousFetch = globalThis.fetch
+  const requests: Array<Record<string, unknown>> = []
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {
+    scholarseed: { getApiBase: () => '' }
+  } })
+  try {
+    globalThis.fetch = async (_url, options) => {
+      requests.push(JSON.parse(String(options?.body)))
+      return Response.json({ ok: true, accepted: true, disposition: 'started' })
+    }
+    await postTurn('session', [{ type: 'text', text: '继续' }], 'default', {
+      clientUserMessageId: 'retry', continueTurnId: 'failed-turn'
+    })
+    await postTurn('session', [{ type: 'text', text: 'ordinary' }], 'default', {
+      clientUserMessageId: 'ordinary'
+    })
+    assert.equal(requests[0].continue_turn_id, 'failed-turn')
+    assert.equal('continue_turn_id' in requests[1], false)
+  } finally {
+    globalThis.fetch = previousFetch
+    if (previousWindow) Object.defineProperty(globalThis, 'window', previousWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+})
+
 test('HTTP fallback provenance survives every service-error adapter without changing requests or failure events', async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
   const previousFetch = globalThis.fetch
@@ -321,14 +435,14 @@ test('HTTP fallback provenance survives every service-error adapter without chan
     assert.ok(events.every(event => event.detail.message === '503 request failed' && event.detail.code === undefined))
     const locale = await requestTranslations()
     await locale.changeLanguage('en')
-    assert.equal(renderFeedback(locale, turnAdmissionFeedback(submitted)), 'Request failed (503): Request failed')
-    assert.equal(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), submitted), 'Request failed (503): Request failed')
+    assert.equal(renderFeedback(locale, turnAdmissionFeedback(submitted)), 'Request failed (503). Please try again later.')
+    assert.equal(describeTurnAdmissionFailure(locale.getFixedT(null, 'components'), submitted), 'Request failed (503). Please try again later.')
     const mode = await setMode('session', 'ask')
     assert.equal(mode.error, undefined)
     assert.equal(mode.detail, '503 request failed')
-    assert.equal(renderFeedback(locale, permissionModeFeedback(mode)), 'Request failed (503): Request failed')
+    assert.equal(renderFeedback(locale, permissionModeFeedback(mode)), 'Request failed (503). Please try again later.')
     const diagnostic = requestFailureFeedback({ key: 'request.timeout', diagnostic: '<raw>&{{message}}' })
-    assert.equal(renderFeedback(locale, diagnostic), 'Request timed out\n<raw>&{{message}}')
+    assert.equal(renderFeedback(locale, diagnostic), 'Request timed out')
     assert.equal(formatApplicationRequestFailure({ key: 'request.timeout', diagnostic: '<raw>&{{message}}' }, locale.getFixedT(null, 'conversation')), renderFeedback(locale, diagnostic))
     const selected = permissionModeSelectedFeedback('safe_auto')
     assert.equal(renderFeedback(locale, selected), 'Selected “Approve for me”. Applies to the next turn.')

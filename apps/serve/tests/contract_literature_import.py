@@ -10,7 +10,6 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -38,16 +37,10 @@ from service.literature.schema import (
     LiteratureView,
 )
 from service.literature.service import zotero
-from service.literature.service.arxiv import (
-    ARXIV_DOWNLOAD_FAILED,
-    ARXIV_INVALID,
-    ARXIV_NOT_FOUND,
-    ArxivDownloadError,
-    fetch_arxiv_pdf,
-    normalize_arxiv_id,
-)
+from service.literature.service.arxiv import ArxivDownloadError, normalize_arxiv_id
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.extractor import extract_pdf_metadata
+from service.literature.service.fulltext import FulltextDownload
 from service.literature.service.importer import (
     MAX_RECORDS_PER_IMPORT,
     LiteratureImportError,
@@ -438,8 +431,8 @@ class LiteratureImportTests(unittest.TestCase):
                 files,
             ),
             patch(
-                "service.literature.api.catalogue.fetch_arxiv_pdf",
-                return_value=(item.arxiv, payload),
+                "service.literature.api.catalogue.fetch_identifier_pdf",
+                return_value=FulltextDownload(content=payload, arxiv=item.arxiv),
             ),
         ):
             response = TestClient(app).post(f"/api/v1/literatures/{item.id}/attachments/arxiv")
@@ -456,74 +449,6 @@ class LiteratureImportTests(unittest.TestCase):
         assert primary is not None
         self.assertTrue(Path(primary.path).is_file())
         self.assertEqual(len(repository.attachments(item.id)), 1)
-
-    def test_arxiv_upstream_404_is_kept_apart_from_transport_failures(self) -> None:
-        """A missing upstream PDF is actionable; a dead network is not.
-
-        Folding the 404 into the transport code made the detail panel blame
-        the network for an identifier arXiv has no PDF for.
-        """
-
-        class _Response:
-            def __init__(self, status_code: int) -> None:
-                self.status_code = status_code
-
-            def raise_for_status(self) -> None:
-                raise httpx.ConnectError("boom")
-
-            def iter_bytes(self):
-                return iter(())
-
-            def __enter__(self) -> "_Response":
-                return self
-
-            def __exit__(self, *exc) -> bool:
-                return False
-
-        class _Client:
-            def __init__(self, status_code: int) -> None:
-                self._status_code = status_code
-
-            def stream(self, method: str, url: str) -> _Response:
-                return _Response(self._status_code)
-
-            def __enter__(self) -> "_Client":
-                return self
-
-            def __exit__(self, *exc) -> bool:
-                return False
-
-        with patch("httpx.Client", lambda **kwargs: _Client(404)):
-            with self.assertRaises(ArxivDownloadError) as missing:
-                fetch_arxiv_pdf("2401.12345")
-        self.assertEqual(missing.exception.code, ARXIV_NOT_FOUND)
-        with patch("httpx.Client", lambda **kwargs: _Client(500)):
-            with self.assertRaises(ArxivDownloadError) as broken:
-                fetch_arxiv_pdf("2401.12345")
-        self.assertEqual(broken.exception.code, ARXIV_DOWNLOAD_FAILED)
-
-    def test_arxiv_download_failure_codes_map_to_actionable_statuses(self) -> None:
-        repository = LiteratureRepository(self.root / "arxiv-errors.sqlite3")
-        item = repository.save(
-            LiteratureItem(id="arxiv-errors", title="Arxiv errors", arxiv="2401.99999")
-        )
-        app = FastAPI()
-        register_literature_routes(app)
-        expectations = {ARXIV_INVALID: 400, ARXIV_NOT_FOUND: 404, ARXIV_DOWNLOAD_FAILED: 502}
-        for code, status in expectations.items():
-            with (
-                patch(
-                    "service.literature.api.catalogue.LiteratureRepository",
-                    return_value=repository,
-                ),
-                patch(
-                    "service.literature.api.catalogue.fetch_arxiv_pdf",
-                    side_effect=ArxivDownloadError(code),
-                ),
-            ):
-                response = TestClient(app).post(f"/api/v1/literatures/{item.id}/attachments/arxiv")
-            self.assertEqual(response.status_code, status, response.text)
-            self.assertEqual(response.json()["detail"]["code"], code)
 
     def test_global_pdf_upload_accepts_missing_author(self) -> None:
         document = pdf_fixture.open()

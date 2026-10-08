@@ -1,5 +1,6 @@
 import { apiFetch } from '../../../api.ts'
 import { postActionStream } from '../../../action.ts'
+import { sseData } from '../../../sse.ts'
 import {
   ASSISTANT_TRANSLATION_TARGETS,
   type AssistantTranslationTarget
@@ -47,7 +48,8 @@ export interface PdfAiRequest {
   response_language: PdfResponseLanguage
 }
 export interface PdfAiProgress { phase: 'segment' | 'synthesis'; current: number; total: number; cached: number }
-export interface PdfAiTask { task_id: string; status: string; error?: string; error_code?: string; error_detail?: string; result?: PdfAiResult; crop?: string; progress?: PdfAiProgress }
+export interface PdfAiPreview { text?: string; summary?: ReadingSummary; pages?: { page: number; blocks: TranslationSentence[] }[] }
+export interface PdfAiTask { task_id: string; status: string; error?: string; error_code?: string; error_detail?: string; result?: PdfAiResult; crop?: string; progress?: PdfAiProgress; preview?: PdfAiPreview }
 export interface FigurePreview { crop: string; text: string }
 interface FigurePrepared {
   source_id: string; source_revision: string; title: string; page: number; rect: number[]; crop: string
@@ -57,6 +59,11 @@ interface FigureStreamResult extends FigurePrepared {
   error_code: string; error_detail: string
 }
 export const PDF_AI_PREFIX = '/api/literature/ai'
+const PDF_AI_INVALID_RESPONSE = 'pdf_ai_invalid_response'
+const PDF_AI_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+const PDF_AI_TASK_STATUSES = new Set(['pending', 'running', ...PDF_AI_TERMINAL_STATUSES])
+const PDF_AI_EVENT_STREAM = 'text/event-stream'
+export const pdfAiTaskFinished = (task: PdfAiTask): boolean => PDF_AI_TERMINAL_STATUSES.has(task.status)
 export class PdfAiRequestError extends Error {
   readonly code?: string
   readonly diagnostic: string
@@ -69,9 +76,41 @@ export class PdfAiRequestError extends Error {
 }
 export async function pdfAiApi<T>(path: string, body?: unknown): Promise<T> {
   const response = await apiFetch(path, body === undefined ? undefined : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  const payload = await response.json()
-  if (!response.ok) throw new PdfAiRequestError(pdfAiFailure(payload.detail) ?? { diagnostic: '' })
+  const responseText = await response.text()
+  let payload: unknown
+  try {
+    payload = responseText ? JSON.parse(responseText) : null
+  } catch {
+    throw new PdfAiRequestError({
+      code: PDF_AI_INVALID_RESPONSE,
+      diagnostic: response.ok ? '' : `HTTP ${response.status}`
+    })
+  }
+  const detail = typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>).detail
+    : undefined
+  if (!response.ok) throw new PdfAiRequestError(pdfAiFailure(detail) ?? { diagnostic: '' })
   return payload as T
+}
+
+export async function subscribePdfAiTask(taskId: string, signal: AbortSignal, onTask: (task: PdfAiTask) => void): Promise<void> {
+  const response = await apiFetch(`${PDF_AI_PREFIX}/tasks/${encodeURIComponent(taskId)}/events`, { signal })
+  if (!response.ok || !response.body || response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== PDF_AI_EVENT_STREAM) {
+    throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: `HTTP ${response.status}` })
+  }
+  for await (const data of sseData(response.body)) {
+    let task: PdfAiTask
+    try { task = JSON.parse(data) as PdfAiTask } catch {
+      throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: '' })
+    }
+    if (!task || task.task_id !== taskId || !PDF_AI_TASK_STATUSES.has(task.status)) {
+      throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: '' })
+    }
+    if (signal.aborted) return
+    onTask(task)
+    if (pdfAiTaskFinished(task)) return
+  }
+  if (!signal.aborted) throw new PdfAiRequestError({ code: PDF_AI_INVALID_RESPONSE, diagnostic: '' })
 }
 
 interface PdfVisualRegionSource {

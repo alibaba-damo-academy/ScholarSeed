@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState
 } from 'react'
 import { createPortal } from 'react-dom'
@@ -21,14 +22,16 @@ export type ToastDuration = false | number
 export interface ToastData {
   action?: ReactNode
   closeLabel?: string
+  dedupeKey?: string
   description?: ReactNode
   duration?: ToastDuration
   id: string
+  revision?: number
   title?: ReactNode
   tone?: ToastTone
 }
 
-export interface ToastInput extends Omit<ToastData, 'id'> {
+export interface ToastInput extends Omit<ToastData, 'id' | 'revision'> {
   id?: string
 }
 
@@ -58,11 +61,12 @@ export interface ToastProps extends Omit<HTMLAttributes<HTMLLIElement>, 'title'>
   duration?: ToastDuration
   id?: string
   onDismiss?: (id: string) => void
+  revision?: number
   title?: ReactNode
   tone?: ToastTone
 }
 
-const DEFAULT_TOAST_DURATION = 3000
+const DEFAULT_TOAST_DURATION = 6000
 const TOAST_ID_RADIX = 36
 const TOAST_ICON_BY_TONE: Record<ToastTone, string> = {
   error: 'fill-status-error',
@@ -70,11 +74,8 @@ const TOAST_ICON_BY_TONE: Record<ToastTone, string> = {
   success: 'fill-status-success',
   warning: 'fill-status-warning'
 }
-// 内容页锚点: 所有 Toaster 门户进该容器, 水平居中始终相对内容页而非窗口。
-const TOAST_VIEWPORT_ANCHOR_SELECTOR = '[data-vds-toast-viewport]'
 const TOASTER_STYLE_CLASS_NAME = [
-  // absolute(而非 fixed): 门户到内容主列锚点后不再随左右面板开合在窗口内漂移。
-  'absolute left-1/2 -translate-x-1/2 z-[var(--vds-toast-z-index)] block w-[min(var(--vds-toast-width),calc(100%-var(--vds-toast-viewport-gap)*2))]',
+  'fixed left-1/2 -translate-x-1/2 z-[var(--vds-toast-z-index)] block w-[min(var(--vds-toast-width),calc(100%-var(--vds-toast-viewport-gap)*2))]',
   // 多条提示垂直流式排列, 上下间距统一取 --vds-toast-stack-gap。
   'flex flex-col gap-[var(--vds-toast-stack-gap)] m-0 p-0 list-none pointer-events-none',
   '[&.vds-toaster--top-right]:top-[var(--vds-toast-viewport-top-offset)]',
@@ -109,25 +110,17 @@ const TOAST_CLOSE_GLYPH_STYLE = { fontSize: 'var(--vds-icon-7)' }
 const TOAST_CLOSEABLE_PADDING_CLASS_NAME =
   '[padding-right:calc(var(--vds-space-2)+var(--vds-toast-close-size))]'
 
-function useToastViewportAnchor(): Element | null {
-  const [anchor, setAnchor] = useState<Element | null>(() =>
-    typeof document === 'undefined' ? null : document.querySelector(TOAST_VIEWPORT_ANCHOR_SELECTOR)
-  )
-  useEffect(() => {
-    if (typeof document === 'undefined') return undefined
-    // 视图切换(home/工作台)会重建锚点元素, 监听 DOM 变化后重新绑定。
-    const observer = new MutationObserver(() => {
-      const next = document.querySelector(TOAST_VIEWPORT_ANCHOR_SELECTOR)
-      setAnchor((current) => (current === next ? current : next))
-    })
-    observer.observe(document.body, { childList: true, subtree: true })
-    return () => observer.disconnect()
-  }, [])
-  return anchor
-}
-
 function createToastId(): string {
   return `toast-${Date.now().toString(TOAST_ID_RADIX)}-${Math.random().toString(TOAST_ID_RADIX).slice(2)}`
+}
+
+function toastIdentity(toast: ToastInput): string | undefined {
+  if (toast.dedupeKey !== undefined) return JSON.stringify(['key', toast.dedupeKey])
+  if (toast.tone !== 'error') return undefined
+  const content = [toast.title, toast.description]
+  if (!content.some(value => typeof value === 'string' && value.length > 0)) return undefined
+  if (!content.every(value => value == null || typeof value === 'string' || typeof value === 'number')) return undefined
+  return JSON.stringify(['error', toast.duration === false, ...content])
 }
 
 export function useToast(): ToastContextValue {
@@ -138,14 +131,24 @@ export function useToast(): ToastContextValue {
 
 export function ToastProvider({ children, defaultToasts = [] }: ToastProviderProps): JSX.Element {
   const [toasts, setToasts] = useState<ToastData[]>(defaultToasts)
+  const toastsRef = useRef(toasts)
 
   const dismiss = useCallback((id: string) => {
-    setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id))
+    toastsRef.current = toastsRef.current.filter(toast => toast.id !== id)
+    setToasts(toastsRef.current)
   }, [])
 
   const toast = useCallback((nextToast: ToastInput) => {
-    const id = nextToast.id ?? createToastId()
-    setToasts((currentToasts) => [...currentToasts, { ...nextToast, id }])
+    const identity = toastIdentity(nextToast)
+    const existing = toastsRef.current.find(current => nextToast.id !== undefined
+      ? current.id === nextToast.id
+      : identity !== undefined && toastIdentity(current) === identity)
+    const id = existing?.id ?? nextToast.id ?? createToastId()
+    const updated = { ...nextToast, id, revision: (existing?.revision ?? 0) + 1 }
+    toastsRef.current = existing
+      ? toastsRef.current.map(current => current.id === id ? updated : current)
+      : [...toastsRef.current, updated]
+    setToasts(toastsRef.current)
     return id
   }, [])
 
@@ -169,7 +172,6 @@ export const Toaster = forwardRef<HTMLOListElement, ToasterProps>(
     ref
   ) => {
     const context = useContext(ToastContext)
-    const viewportAnchor = useToastViewportAnchor()
     const controlled = toasts !== undefined
     const currentToasts = toasts ?? context?.toasts ?? []
     const dismiss = useMemo<((id: string) => void) | undefined>(() => {
@@ -200,6 +202,7 @@ export const Toaster = forwardRef<HTMLOListElement, ToasterProps>(
             id={toast.id}
             key={toast.id}
             onDismiss={dismiss ? handleDismiss : undefined}
+            revision={toast.revision}
             title={toast.title}
             tone={toast.tone}
           />
@@ -207,9 +210,7 @@ export const Toaster = forwardRef<HTMLOListElement, ToasterProps>(
         {children}
       </ol>
     )
-    // 存在内容页锚点时门户进去, 所有 Toaster(全局与受控)共享同一居中基准;
-    // 无锚点(组件示例页等)时原位渲染。
-    return viewportAnchor ? createPortal(viewport, viewportAnchor) : viewport
+    return typeof document === 'undefined' ? viewport : createPortal(viewport, document.body)
   }
 )
 
@@ -227,6 +228,11 @@ export const Toast = forwardRef<HTMLLIElement, ToastProps>(
       duration = DEFAULT_TOAST_DURATION,
       id,
       onDismiss,
+      onMouseEnter,
+      onMouseLeave,
+      onFocusCapture,
+      onBlurCapture,
+      revision = 0,
       title,
       tone = 'info',
       ...props
@@ -236,12 +242,29 @@ export const Toast = forwardRef<HTMLLIElement, ToastProps>(
     const { t } = useTranslation('ui')
     const role = tone === 'error' ? 'alert' : 'status'
     const closeable = Boolean(id && onDismiss)
+    const [hovered, setHovered] = useState(false)
+    const [focused, setFocused] = useState(false)
+    const paused = hovered || focused
+    const remaining = useRef(0)
+    const dismissRef = useRef(onDismiss)
 
     useEffect(() => {
-      if (!id || duration === false || duration <= 0) return undefined
-      const timeout = window.setTimeout(() => onDismiss?.(id), duration)
-      return () => window.clearTimeout(timeout)
-    }, [duration, id, onDismiss])
+      dismissRef.current = onDismiss
+    }, [onDismiss])
+
+    useEffect(() => {
+      remaining.current = duration === false ? 0 : duration
+    }, [duration, id, revision])
+
+    useEffect(() => {
+      if (!id || !closeable || paused || duration === false || duration <= 0) return undefined
+      const startedAt = performance.now()
+      const timeout = window.setTimeout(() => dismissRef.current?.(id), remaining.current)
+      return () => {
+        window.clearTimeout(timeout)
+        remaining.current = Math.max(0, remaining.current - (performance.now() - startedAt))
+      }
+    }, [closeable, duration, id, paused, revision])
 
     return (
       <li
@@ -255,6 +278,22 @@ export const Toast = forwardRef<HTMLLIElement, ToastProps>(
         ref={ref}
         role={role}
         {...props}
+        onMouseEnter={(event) => {
+          setHovered(true)
+          onMouseEnter?.(event)
+        }}
+        onMouseLeave={(event) => {
+          setHovered(false)
+          onMouseLeave?.(event)
+        }}
+        onFocusCapture={(event) => {
+          setFocused(true)
+          onFocusCapture?.(event)
+        }}
+        onBlurCapture={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
+          onBlurCapture?.(event)
+        }}
       >
         <IconFont aria-hidden="true" className={cx(TOAST_ICON_CLASS_NAME, TOAST_ICON_TONE_CLASS_NAMES[tone])} type={TOAST_ICON_BY_TONE[tone]} />
         <div className={TOAST_BODY_CLASS_NAME}>

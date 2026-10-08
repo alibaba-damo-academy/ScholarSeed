@@ -6,10 +6,12 @@ import json
 import math
 import os
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import local
 from types import TracebackType
-from typing import Any
+from typing import Any, Iterator
 
 from damoatrace.recording.budget import ContentBudget
 from damoatrace.recording.content import CONTENT_MARKER, CONTENT_VERSION, prepare_content
@@ -25,6 +27,7 @@ class EvidenceWriter:
         make_private(self._path.parent, directory=True)
         self._closed = False
         self._budget = budget
+        self._batch = local()
 
     def emit(
         self,
@@ -75,15 +78,42 @@ class EvidenceWriter:
             raise ValueError("evidence writer is closed")
         if inputs is not None or outputs is not None:
             record[CONTENT_MARKER] = CONTENT_VERSION
-        if self._budget is not None:
-            self._budget.append(self._path, record)
+        records = getattr(self._batch, "records", None)
+        if records is not None:
+            records.append(record)
             return
-        encoded = json.dumps(record, ensure_ascii=False) + "\n"
+        self._append_many([record])
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Keep individual records, sharing only the current thread's write boundary."""
+        if self._closed:
+            raise ValueError("evidence writer is closed")
+        if getattr(self._batch, "records", None) is not None:
+            yield
+            return
+        records: list[dict[str, Any]] = []
+        self._batch.records = records
+        try:
+            yield
+            if records:
+                self._append_many(records)
+        finally:
+            self._batch.records = None
+
+    def _append_many(self, records: list[dict[str, Any]]) -> None:
+        if self._closed:
+            raise ValueError("evidence writer is closed")
+        if self._budget is not None:
+            self._budget.append_many(self._path, records)
+            return
         # Reopen under the shared lock: a purge may have replaced the inode.
         with evidence_lock(self._path):
             with self._path.open("a", encoding="utf-8") as stream:
                 make_private(self._path)
-                stream.write(encoded)
+                stream.writelines(
+                    json.dumps(record, ensure_ascii=False) + "\n" for record in records
+                )
                 stream.flush()
 
     def checkpoint(self) -> None:

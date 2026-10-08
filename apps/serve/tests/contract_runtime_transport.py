@@ -15,6 +15,7 @@ from service.chat.persistence.catalog import (
     SessionStatus,
 )
 from service.chat.persistence.events import ProductEventRecord, ProductEventStore
+from service.chat.persistence.worker import PersistenceWorker
 from service.chat.runtime.content import MessageSnapshots
 from service.chat.runtime.live import LiveSession
 from service.chat.service.events import SSE_HEARTBEAT_FRAME, EventService
@@ -194,6 +195,11 @@ class RuntimeTransportContract(unittest.IsolatedAsyncioTestCase):
         live._events = MagicMock(append=MagicMock(return_value=record))
         live._trace = MagicMock()
         live._logger = self.logger
+        live._persistence = PersistenceWorker()
+        self.addAsyncCleanup(live._persistence.close)
+        live._publication_lock = asyncio.Lock()
+        live._publication_error = None
+        live._broadcast_sequence = 0
 
         committed = await live.publish("message_delta", {"delta": "durable"})
 

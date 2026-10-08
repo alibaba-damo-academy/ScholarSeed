@@ -1,19 +1,16 @@
-"""Resolve Workbench selection anchors against immutable Content bytes.
+"""Resolve Workbench selection anchors into Assistant context.
 
-Viewer-provided preview text is presentation data only. This provider reopens the
-project-relative source and resolves the native tagged locator. A changed source revision
-may be rebound only when the authoritative selected text still has the declared digest.
+Chat selections use their click-time text snapshot without reopening or validating sources.
+Source reconstruction and revision checks belong only to independent selection actions.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
+import mimetypes
 from collections.abc import Callable, Mapping
-from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Any
-from zipfile import BadZipFile
 
 from openpyxl.utils.cell import get_column_letter, range_boundaries
 from openpyxl.xml.constants import MAX_COLUMN, MAX_ROW
@@ -45,7 +42,6 @@ from service.platform.pdf import (
 )
 from service.workbench.domain.model import capabilities_for
 from service.workbench.domain.selection import (
-    CALC_REFERENCE_RESOLVED_STATUS,
     REFERENCE_CONTENT_MODE,
     REFERENCE_CONTENT_MODE_KEY,
     SelectionDraftEvidence,
@@ -53,7 +49,6 @@ from service.workbench.domain.selection import (
     SelectionEvidenceMode,
     SelectionEvidenceReference,
     VerifiedSelectionEvidence,
-    calc_reference_descriptor,
     is_calc_reference,
 )
 from service.workbench.domain.slides import (
@@ -65,7 +60,7 @@ from service.workbench.service import doc as doc_selection
 from service.workbench.service import docx as docx_selection
 from service.workbench.service.slides import slide_processor_for
 
-PROVIDER_VERSION = "workbench.selection/v2"
+PROVIDER_VERSION = "workbench.selection/v4"
 SUPPORTED_KIND = ContextRefKind.SELECTION
 LOCATOR_TEXT = "text"
 LOCATOR_MARKDOWN = "markdown"
@@ -103,7 +98,10 @@ REASON_SOURCE_UNAVAILABLE = "source_unavailable"
 REASON_SOURCE_STALE = "source_revision_changed"
 REASON_SELECTION_STALE = "selection_text_changed"
 REASON_LOCATOR_INVALID = "selection_locator_invalid"
+REASON_SNAPSHOT_REQUIRED = "selection_snapshot_required"
+REASON_BUDGET_EXCEEDED = "selection_budget_exceeded"
 REFERENCE_SEPARATOR = " · "
+PDF_MEDIA_TYPE = "application/pdf"
 
 
 class SelectionLocatorError(ValueError):
@@ -363,104 +361,28 @@ class SelectionContextProvider:
         ref = request.ref
         if ref.kind is not SUPPORTED_KIND or ref.anchor is None:
             return self._item(ref, ContextResolutionState.UNSUPPORTED, REASON_SOURCE_UNSUPPORTED)
-        if not request.project_id:
-            return self._item(ref, ContextResolutionState.UNAVAILABLE, REASON_PROJECT_UNAVAILABLE)
         anchor = ref.anchor
-        locator = anchor.locator
-        try:
-            reference_text = _calc_reference_text(ref.source_id, locator)
-        except SelectionLocatorError:
-            return self._item(ref, ContextResolutionState.UNSUPPORTED, REASON_LOCATOR_INVALID)
-        if reference_text is not None and not ref.source_revision:
-            return self._item(ref, ContextResolutionState.STALE, REASON_SOURCE_STALE)
-        if reference_text is not None and not _selection_matches(
-            LOCATOR_CALC, locator, reference_text, anchor.selected_text_hash
-        ):
-            return self._item(ref, ContextResolutionState.STALE, REASON_SELECTION_STALE)
-        try:
-            payload, _media_type = self._content.read_bytes(request.project_id, ref.source_id)
-        except ContentError as exc:
-            state, reason = self._content_failure(exc)
-            return self._item(ref, state, reason)
-        except OSError:
-            return self._item(ref, ContextResolutionState.UNAVAILABLE, REASON_SOURCE_UNAVAILABLE)
-
-        revision = _digest(payload)
-        if not ref.source_revision:
-            return self._item(ref, ContextResolutionState.STALE, REASON_SOURCE_STALE)
-        if reference_text is not None and revision != ref.source_revision:
-            return self._item(ref, ContextResolutionState.STALE, REASON_SOURCE_STALE)
-        locator_kind = locator.get("kind") if isinstance(locator, Mapping) else None
-        if not isinstance(locator_kind, str) or locator_kind not in SUPPORTED_LOCATORS:
-            return self._item(ref, ContextResolutionState.UNSUPPORTED, REASON_LOCATOR_INVALID)
-        resolved_range = ""
-        try:
-            if reference_text is not None:
-                spreadsheet_content = read_spreadsheet_range(
-                    ref.source_id,
-                    payload,
-                    _string(locator, "sheet"),
-                    _string(locator, "range"),
-                    max_chars=MAXIMUM_ACTION_CONTEXT_CHARS,
-                )
-                selected = spreadsheet_content.text
-                resolved_range = spreadsheet_content.selected_range
-            else:
-                selected = self._resolve(
-                    payload,
-                    ref.source_id,
-                    locator_kind,
-                    locator,
-                    anchor.selected_text_hash,
-                )
-        except SpreadsheetRangeTooLarge:
-            return self._item(ref, ContextResolutionState.TOO_LARGE, "selection_budget_exceeded")
-        except SpreadsheetRangeError:
-            return self._item(ref, ContextResolutionState.UNSUPPORTED, REASON_LOCATOR_INVALID)
-        except (SelectionLocatorError, SlideSelectionError):
-            return self._item(ref, ContextResolutionState.UNSUPPORTED, REASON_LOCATOR_INVALID)
-        if not selected or (
-            reference_text is None
-            and not _selection_matches(
-                locator_kind,
-                locator,
-                selected,
-                anchor.selected_text_hash,
-            )
-        ):
-            return self._item(ref, ContextResolutionState.STALE, REASON_SELECTION_STALE)
+        selected = anchor.snapshot_text
+        if not selected:
+            return self._item(ref, ContextResolutionState.UNAVAILABLE, REASON_SNAPSHOT_REQUIRED)
         if request.budget.max_items < 1 or len(selected) > request.budget.max_chars:
-            return self._item(ref, ContextResolutionState.TOO_LARGE, "selection_budget_exceeded")
+            return self._item(ref, ContextResolutionState.TOO_LARGE, REASON_BUDGET_EXCEEDED)
         return AssistantContextResolution(
             state=ContextResolutionState.READY,
             provider_version=PROVIDER_VERSION,
-            source_revision=revision,
+            source_revision=ref.source_revision or "",
             items=(
                 AssistantContextResolvedItem(
                     item_id=ref.ref_id,
                     source_id=ref.source_id,
                     label=ref.label,
                     selection_source_label=ref.selection_source_label,
-                    source_revision=revision,
+                    source_revision=ref.source_revision or "",
                     text=selected,
                     role=ContextItemRole.MATERIAL,
-                    model_locator=(
-                        json.dumps(
-                            calc_reference_descriptor(
-                                ref.source_id,
-                                _string(locator, "sheet"),
-                                resolved_range,
-                                content_status=CALC_REFERENCE_RESOLVED_STATUS,
-                            ),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
-                        if reference_text is not None
-                        else ""
-                    ),
                     anchor=anchor,
                     content_hash=_text_digest(selected),
-                    media_type=_media_type,
+                    media_type=mimetypes.guess_type(ref.source_id)[0] or "",
                 ),
             ),
         )

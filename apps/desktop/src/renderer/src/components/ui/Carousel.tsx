@@ -101,6 +101,7 @@ const CAROUSEL_INDICATOR_PROGRESS_CLASS_NAME =
   'vds-carousel__indicator-progress absolute inset-y-0 left-0 w-full origin-left rounded-[inherit] bg-[var(--vds-carousel-indicator-value)]'
 const DEFAULT_AUTO_PLAY_INTERVAL_MS = 4000
 const MILLISECONDS_PER_SECOND = 1000
+const INERT_ATTRIBUTE = { inert: '' } as const
 
 function carouselTransform(index: number, orientation: CarouselOrientation, visibleItems: number): string {
   const offset = orientation === 'vertical'
@@ -110,7 +111,7 @@ function carouselTransform(index: number, orientation: CarouselOrientation, visi
 }
 
 function normalizedIntervalMs(intervalMs: number | undefined): number {
-  if (!Number.isFinite(intervalMs)) return DEFAULT_AUTO_PLAY_INTERVAL_MS
+  if (intervalMs === undefined || !Number.isFinite(intervalMs)) return DEFAULT_AUTO_PLAY_INTERVAL_MS
   return Math.max(Math.trunc(intervalMs), 1)
 }
 
@@ -281,9 +282,9 @@ export const CarouselContent = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDiv
           } as CSSProperties}
           {...props}
         >
-          {cloneCount > 0 && <div className="contents" aria-hidden="true" inert>{items.slice(-cloneCount)}</div>}
+          {cloneCount > 0 && <div className="contents" aria-hidden="true" {...INERT_ATTRIBUTE}>{items.slice(-cloneCount)}</div>}
           {children}
-          {cloneCount > 0 && <div className="contents" aria-hidden="true" inert>{items.slice(0, cloneCount)}</div>}
+          {cloneCount > 0 && <div className="contents" aria-hidden="true" {...INERT_ATTRIBUTE}>{items.slice(0, cloneCount)}</div>}
         </div>
       </div>
     )

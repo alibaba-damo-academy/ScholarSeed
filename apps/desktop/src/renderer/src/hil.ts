@@ -1,6 +1,6 @@
 import type { ProductHilData } from './api'
 import type { TFunction } from 'i18next'
-import type { ConvItem, HilOption, HilPermissionScope, HilSubmissionMessage } from './model'
+import type { ConvItem, HilOption, HilPermissionScope, HilSubmissionMessage, Thread } from './model'
 
 export type HilItem = Extract<ConvItem, { kind: 'hil' }>
 
@@ -9,9 +9,11 @@ const DENY_OPTION_IDS = new Set(['n', 'no', 'deny', 'decline', 'reject', 'cancel
 const ALLOW_ONCE_OPTION_IDS = new Set(['y', 'yes', 'accept', 'allowonce', 'allow_once'])
 const DENY_OPTION_LABEL = /^\s*(no|deny|decline|reject|cancel|stop|拒绝|取消)/i
 const ALLOW_ONCE_OPTION_LABEL = /(allow\s+once|once|仅这一次|允许一次|本次)/i
+const EPOCH_MILLISECONDS_THRESHOLD = 10_000_000_000
+const MILLISECONDS_PER_SECOND = 1_000
 
-function epochMilliseconds(timestamp: number): number {
-  return timestamp < 10_000_000_000 ? timestamp * 1_000 : timestamp
+export function hilTimestamp(timestamp: number): number {
+  return timestamp < EPOCH_MILLISECONDS_THRESHOLD ? timestamp * MILLISECONDS_PER_SECOND : timestamp
 }
 
 export function projectHilCard(
@@ -24,6 +26,7 @@ export function projectHilCard(
   return {
     kind: 'hil',
     requestId: data.request_id,
+    lifetime: data.lifetime,
     hilKind: data.kind,
     toolName: data.tool_name,
     title: data.title,
@@ -33,7 +36,8 @@ export function projectHilCard(
       header: question.name ?? question.header,
       question: question.question,
       options: question.options ?? [],
-      multiSelect: question.multiSelect
+      multiSelect: question.multiSelect,
+      papers: question.papers
     })),
     options: data.options,
     allowFreeText: data.allow_free_text,
@@ -47,7 +51,7 @@ export function projectHilCard(
     reason: data.reason,
     suggestedPrefix: data.suggested_prefix,
     prefixKind: data.prefix_kind,
-    requestedAt: epochMilliseconds(data.requested_at ?? timestamp),
+    requestedAt: hilTimestamp(data.requested_at ?? timestamp),
     hilState: 'pending',
     turnId,
     itemId,
@@ -57,6 +61,27 @@ export function projectHilCard(
 
 export function isQuestionHil(item: HilItem): boolean {
   return item.hilKind === 'question' || (item.questions?.length ?? 0) > 0
+}
+
+export function settlePendingHil(
+  conversation: ConvItem[], turnId: string | undefined,
+  state: 'cancelled' | 'stale', preserveSession = false
+): ConvItem[] {
+  return conversation.map((item) => (
+    item.kind === 'hil' && item.turnId === turnId
+      && !(preserveSession && item.lifetime === 'session')
+      && (item.hilState === 'pending' || item.hilState === 'submitting')
+      ? { ...item, ...hilResolution({ kind: state }), hilState: state }
+      : item
+  ))
+}
+
+export function hilResolvedRunState(
+  thread: Pick<Thread, 'running' | 'status' | 'turnOutcomes'>, turnId: string | undefined
+): Partial<Pick<Thread, 'running' | 'status'>> {
+  return thread.running && turnId && thread.turnOutcomes?.[turnId] === 'running'
+    ? { running: true, status: 'running' }
+    : {}
 }
 
 export function isTerminalHil(item: HilItem): boolean {
@@ -124,8 +149,9 @@ function isAllowOnceOption(option: HilOption): boolean {
 }
 
 export function permissionDecisionOptions(item: HilItem): {
-  allowOnce: HilOption
+  allowOnce: HilOption | undefined
   deny: HilOption
+  allowed: HilOption[]
 } {
   const options = item.options?.length
     ? item.options
@@ -135,7 +161,8 @@ export function permissionDecisionOptions(item: HilItem): {
       ]
   const allowed = options.filter((option) => !isDenyOption(option))
   return {
-    allowOnce: allowed.find(isAllowOnceOption) ?? allowed[0] ?? { id: 'accept', label: 'Allow once' },
+    allowOnce: allowed.find(isAllowOnceOption),
+    allowed,
     deny: options.find(isDenyOption) ?? { id: 'decline', label: 'Decline' }
   }
 }
@@ -172,10 +199,11 @@ export function hilResolution(message: { kind: 'stale' | 'cancelled' | 'handled'
 }
 
 /** The event's real answer wins, even when identical to application wording. */
-export function hilEventResolution(answer: string | undefined, state: HilItem['hilState']): Pick<HilItem, 'resolved' | 'resolvedMessage'> {
-  return answer
+export function hilEventResolution(answer: string | undefined, state: HilItem['hilState'], timestamp?: number): Pick<HilItem, 'resolved' | 'resolvedMessage' | 'resolvedAt'> {
+  const resolution = answer
     ? { resolved: answer, resolvedMessage: undefined }
     : hilResolution({ kind: state === 'stale' ? 'stale' : state === 'cancelled' ? 'cancelled' : 'handled' })
+  return { ...resolution, ...(timestamp === undefined ? {} : { resolvedAt: hilTimestamp(timestamp) }) }
 }
 
 export function hilSubmissionFailure(message: HilSubmissionMessage, diagnostic?: string): Pick<HilItem, 'submissionError' | 'submissionErrorMessage'> {

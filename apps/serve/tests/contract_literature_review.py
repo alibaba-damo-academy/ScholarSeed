@@ -19,7 +19,9 @@ from service.chat.active import DEVELOPER_PROMPT_FILE
 from service.chat.service.cards import CardRegistry
 from service.chat.service.tasks import ProductTaskLease
 from service.cli.bridge import parser
+from service.literature.api.gate import FulltextGate
 from service.literature.api.review import register_literature_review_routes
+from service.literature.service.confirmation import REVIEW_PACKET, prepare_confirmation
 from service.literature.service.result import SEARCH_CARD
 from service.literature.service.review import (
     CHECK_LABELS,
@@ -36,6 +38,7 @@ from service.literature.service.review import (
     REVIEW_CARD,
     SUMMARY,
     WRITING_REQUEST,
+    _fulltext_limitation_reason,
     prepare_review,
     prepare_review_search,
     review_retrieval_run,
@@ -60,6 +63,72 @@ LITERATURE_SKILL_FILE = (
 
 
 class LiteratureReviewContract(unittest.TestCase):
+    def test_review_preserves_supported_citation_styles(self) -> None:
+        for checkpoint in ("outline", "result"):
+            for style in ("numeric", "author_year", "ieee", "acm", "gbt7714_2025"):
+                with self.subTest(checkpoint=checkpoint, style=style):
+                    self.write(
+                        WRITING_REQUEST,
+                        {
+                            "intent": "中文综述",
+                            "publication": {"format": "latex_pdf", "citation_style": style},
+                        },
+                    )
+                    card = prepare_review(self.root, "survey", checkpoint).card
+                    projected = validate_review_card(card.model_dump(mode="json"))
+                    self.assertEqual(projected["output"]["citation_style"], style)
+
+    def test_review_rejects_unknown_citation_style(self) -> None:
+        self.write(
+            WRITING_REQUEST,
+            {
+                "intent": "中文综述",
+                "publication": {"format": "latex_pdf", "citation_style": "unsupported"},
+            },
+        )
+        with self.assertRaises(ValueError):
+            prepare_review(self.root, "survey", "outline")
+
+    def test_outline_confirmation_policies_and_settings(self) -> None:
+        packet = {
+            "packet_id": "packet",
+            "snapshot": {},
+            "outline_review": "timeout_auto",
+            "confirmation": {"state": "awaiting_display"},
+            "publication_display": {"format": "Markdown", "citation_style": "IEEE"},
+        }
+        self.write(REVIEW_PACKET, packet)
+        timed = prepare_confirmation(self.root, "survey", "session", "turn")
+        self.assertEqual(timed.timeout_seconds, 300)
+        self.assertIn("Markdown", timed.question["question"])
+        self.assertIn("IEEE", timed.question["question"])
+        self.assertIn("修改意见", timed.question["question"])
+        self.assertEqual(timed, prepare_confirmation(self.root, "survey", "session", "turn"))
+        packet["outline_review"] = "required"
+        packet["confirmation"]["state"] = "required"
+        self.write(REVIEW_PACKET, packet)
+        required = prepare_confirmation(self.root, "survey", "session", "turn")
+        self.assertIsNone(required.timeout_seconds)
+        self.assertNotIn("5 分钟", required.question["question"])
+        for state in ("auto", "approved", "timeout_applied"):
+            packet["confirmation"]["state"] = state
+            self.write(REVIEW_PACKET, packet)
+            self.assertIsNone(prepare_confirmation(self.root, "survey", "session", "turn").question)
+
+    def test_fulltext_limitation_reason_hides_internal_diagnostics(self) -> None:
+        self.assertEqual(
+            _fulltext_limitation_reason(
+                {"outcome": "not_in_paperhub", "detail": "PaperHub download HTTP 404"}
+            ),
+            "全文来源暂未返回可下载文件，仅使用摘要证据",
+        )
+        self.assertEqual(
+            _fulltext_limitation_reason(
+                {"outcome": "extract_failed", "detail": "float without caption: figure"}
+            ),
+            "全文解析失败",
+        )
+
     def test_literature_review_skill_owns_intake_and_output_decision_order(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
         skill = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")
@@ -76,8 +145,35 @@ class LiteratureReviewContract(unittest.TestCase):
 
     def test_review_checkpoint_does_not_replace_explicit_artifact_publication(self) -> None:
         prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
-        self.assertIn("it does not publish user-facing file cards", prompt)
-        self.assertIn("After the final write of each independent user-facing deliverable", prompt)
+        skill = " ".join(LITERATURE_SKILL_FILE.read_text(encoding="utf-8").split())
+        self.assertIn("it does not publish user-facing file cards", skill)
+        self.assertIn("After the final write of each independent user-facing deliverable", skill)
+        self.assertIn('"checkpoint":"outline"', skill)
+        self.assertIn('"checkpoint":"result"', skill)
+        self.assertIn('"capability":"artifact"', skill)
+        self.assertNotIn('"checkpoint":"outline"', prompt)
+        self.assertNotIn('"checkpoint":"result"', prompt)
+        self.assertNotIn("## Agent File Artifacts", prompt)
+        self.assertIn("`scholarseed-product-operations`", prompt)
+        artifact_rules = (
+            LITERATURE_SKILL_FILE.parent.parent
+            / "scholarseed-product-operations"
+            / "references"
+            / "artifacts.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("## Agent File Artifacts", artifact_rules)
+        self.assertIn("`capability=artifact`, `operation=publish`", artifact_rules)
+
+    def test_review_skill_owns_recovery_and_evidence_limits(self) -> None:
+        prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
+        skill = " ".join(LITERATURE_SKILL_FILE.read_text(encoding="utf-8").split())
+        self.assertNotIn("综述检索授权", prompt)
+        self.assertNotIn("checkpoint=retrieval", prompt)
+        self.assertIn("without searching, selecting or asking for authorization again", skill)
+        self.assertIn("未读取原文", skill)
+        self.assertIn("WARN, FAIL, NOT_CHECKED", skill)
+        self.assertIn("not online existence or claim-to-original-text support", skill)
+        self.assertIn("do not create a second native flat plan", skill)
 
     def test_authoritative_writing_request_drives_review_scope(self) -> None:
         self.write(
@@ -110,7 +206,7 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertEqual(card.output.citation_style, "author_year")
 
     def test_retrieval_waits_on_the_blocking_checkpoint_in_the_same_turn(self) -> None:
-        prompt = DEVELOPER_PROMPT_FILE.read_text(encoding="utf-8")
+        prompt = " ".join(LITERATURE_SKILL_FILE.read_text(encoding="utf-8").split())
         separate = "Run `run retrieval_adapt` as its own command"
         wait = "wait for the product authorization in this same turn"
         checkpoint = '"checkpoint":"retrieval"'
@@ -123,9 +219,12 @@ class LiteratureReviewContract(unittest.TestCase):
         self.assertLess(prompt.index(wait), prompt.index(checkpoint))
         self.assertLess(prompt.index(checkpoint), prompt.index(plan_transition))
         self.assertLess(prompt.index(plan_transition), prompt.index(resume))
-        self.assertIn("never start from `workflow evidence` without `--from`", prompt.lower())
+        self.assertIn("never start `workflow evidence` without `--from`", prompt.lower())
         self.assertIn("Keep the existing plan tree unchanged while waiting", prompt)
-        self.assertIn("do not call `request_user_input`, construct or relay a question", prompt)
+        self.assertIn(
+            "Do not call `request_user_input`, construct or relay an authorization question",
+            " ".join(prompt.split()),
+        )
         self.assertIn("make no full-text or later-stage writes", prompt)
         self.assertNotIn("checkpoint retrieval", prompt)
 
@@ -133,7 +232,7 @@ class LiteratureReviewContract(unittest.TestCase):
         instructions = LITERATURE_SKILL_FILE.read_text(encoding="utf-8")
         evidence = instructions[instructions.index("## 3. Evidence") :]
         retrieval = "Run `run retrieval_adapt` as its own command"
-        checkpoint = "`scholarseed-bridge literature review --json"
+        checkpoint = "`scholarseed_bridge` model tool"
         authorization = "`authorization.disposition=authorized`"
         resume = "`workflow evidence --from fulltext`"
 
@@ -177,6 +276,15 @@ class LiteratureReviewContract(unittest.TestCase):
             ],
         }
         self.write(OUTLINE, self.outline)
+        self.write(
+            REVIEW_PACKET,
+            {
+                "packet_id": "packet",
+                "outline_review": "auto",
+                "snapshot": {},
+                "confirmation": {"state": "auto"},
+            },
+        )
         self.write(SUMMARY, {"total_papers": 2, "with_fulltext": 1})
         self.report = {
             "schema": "slr/postcheck/1",
@@ -412,6 +520,132 @@ class LiteratureReviewContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "status_invalid"):
             review_retrieval_run(self.root, "survey")
 
+    def test_session_root_workspace_preserves_retrieval_identity_and_paths(self) -> None:
+        self.workspace = self.root
+        self.write(
+            "_status/retrieval_adapt.json", {"stage": "retrieval_adapt", "status": "SUCCESS"}
+        )
+        self.write(".slr-binding.json", {"schema_version": 1, "run_id": "root-run"})
+        self.write(METADATA, {"papers": [{"paper_id": "p1", "title": "One"}]})
+        self.write(CORPUS, {"p1": {"paper_id": "p1", "title": "One"}})
+        self.write(RETRIEVAL, {"input_count": 1, "output_count": 1})
+        self.assertEqual(review_retrieval_run(self.root, "."), "root-run")
+        prepared = prepare_review_search(self.root, ".", "root-run")
+        self.assertEqual({source.path for source in prepared.files}, {METADATA, CORPUS, RETRIEVAL})
+        self.assertEqual(prepared.card.candidates, 1)
+
+        manifest = {
+            "schema_version": 1,
+            "kind": "literature_review.retrieval_ready",
+            "run_id": "root-run",
+            "workspace": ".",
+            "checkpoint": "retrieval",
+            "stage_status_path": "_status/retrieval_adapt.json",
+            "artifacts": [
+                {
+                    "role": role,
+                    "path": name,
+                    "sha256": hashlib.sha256((self.root / name).read_bytes()).hexdigest(),
+                }
+                for role, name in (
+                    ("metadata", METADATA),
+                    ("selection", CORPUS),
+                    ("report", RETRIEVAL),
+                )
+            ],
+        }
+        self.write("_status/checkpoints/retrieval.json", manifest)
+        manifest_path = self.root / "_status/checkpoints/retrieval.json"
+        hashes = validate_review_checkpoint(
+            self.root,
+            ".",
+            "root-run",
+            "_status/checkpoints/retrieval.json",
+            hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(set(hashes), {METADATA, CORPUS, RETRIEVAL})
+        for workspace in ("../survey", str(self.root)):
+            with self.assertRaisesRegex(ValueError, "relative_path_invalid"):
+                review_retrieval_run(self.root, workspace)
+
+    def test_session_root_retrieval_reaches_authorization_without_moving_files(self) -> None:
+        self.workspace = self.root
+        self.write(
+            "_status/retrieval_adapt.json", {"stage": "retrieval_adapt", "status": "SUCCESS"}
+        )
+        self.write(".slr-binding.json", {"schema_version": 1, "run_id": "root-run"})
+        self.write(METADATA, {"papers": [{"paper_id": "p1", "title": "One", "source": "paperhub"}]})
+        self.write(CORPUS, {"p1": {"paper_id": "p1", "title": "One", "source": "paperhub"}})
+        self.write(RETRIEVAL, {"input_count": 1, "output_count": 1})
+        published = []
+        cards = []
+
+        async def publish(path, role, **kwargs):
+            published.append(path)
+            return {"artifact_id": path, "path": path, "sha256": kwargs["expected_sha256"]}
+
+        async def display(kind, content, **kwargs):
+            cards.append((kind, content.data))
+            return {"card_id": "root-card"}
+
+        async def authorize_sources(*args, **kwargs):
+            challenge = SimpleNamespace(
+                authorization_type="literature_review_fulltext", scope_digest="root-scope"
+            )
+            return challenge, SimpleNamespace(value="authorized"), None
+
+        live = SimpleNamespace(
+            id="session",
+            bridge_token="private",
+            publication_turn_id="turn",
+            active_assistant_snapshot_id="snapshot-1",
+            runtime_workdir=self.root,
+            active_task_lease=ProductTaskLease(
+                task_type=ProductTaskType.LITERATURE_REVIEW,
+                turn_id="turn",
+                generation=1,
+                source="skill_run",
+                workspace=".",
+                run_id="root-run",
+            ),
+            publish_artifact=publish,
+            display_card=display,
+        )
+        sessions = SimpleNamespace(bridge_caller=lambda sid: live if sid == live.id else None)
+        app = FastAPI()
+        register_literature_review_routes(
+            app, sessions, SimpleNamespace(authorize_sources=authorize_sources)
+        )
+        headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: live.bridge_token}
+        with TestClient(app) as client:
+            mismatch = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": "02_retrieval", "checkpoint": "retrieval"},
+                headers=headers,
+            )
+            self.assertEqual(mismatch.status_code, 400, mismatch.text)
+            self.assertEqual(mismatch.json()["reason"], "review_workspace_mismatch")
+            self.assertIn("task activation", mismatch.json()["action"])
+
+            response = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": ".", "checkpoint": "retrieval"},
+                headers=headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["authorization"]["disposition"], "authorized")
+            self.assertEqual(cards[0][0], SEARCH_CARD)
+            self.assertEqual(set(published), {METADATA, CORPUS, RETRIEVAL})
+
+            (self.root / "_status/retrieval_adapt.json").unlink()
+            missing = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": ".", "checkpoint": "retrieval"},
+                headers=headers,
+            )
+            self.assertEqual(missing.status_code, 400, missing.text)
+            self.assertEqual(missing.json()["reason"], "review_artifact_missing")
+
     def test_retrieval_checkpoint_rejects_noncanonical_stage_status(self) -> None:
         self.write(METADATA, {"papers": [{"paper_id": "p1", "title": "One"}]})
         self.write(RETRIEVAL, {"input_count": 1, "output_count": 1, "dropped": []})
@@ -575,6 +809,11 @@ class LiteratureReviewContract(unittest.TestCase):
             publication_turn_id="turn",
             active_assistant_snapshot_id="snapshot-1",
             active_task_type="literature_review",
+            last_submission_id="client-turn",
+            interrupt_generation=0,
+            active_assistant_revision=None,
+            current_task=None,
+            ledger=SimpleNamespace(active_turn_id="turn"),
             runtime_workdir=self.root,
             publish_artifact=publish,
             display_card=display,
@@ -604,10 +843,12 @@ class LiteratureReviewContract(unittest.TestCase):
         register_literature_review_routes(
             app,
             sessions,
-            SimpleNamespace(
-                prepare=prepare_authorization,
-                granted=lambda _challenge: False,
-                granted_scope=lambda **_scope: False,
+            FulltextGate(
+                SimpleNamespace(
+                    prepare=prepare_authorization,
+                    turn_granted_refs=lambda **_scope: (),
+                ),
+                SimpleNamespace(),
             ),
         )
         headers = {BRIDGE_SESSION_HEADER: live.id, BRIDGE_TOKEN_HEADER: "private"}
@@ -620,6 +861,26 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(cards[0][0], REVIEW_CARD)
             self.assertEqual(cards[0][1]["session_id"], "session")
             self.assertEqual(cards[0][1]["artifacts"], [])
+            live.catalog = SimpleNamespace(hil=lambda request_id: SimpleNamespace(created_at=1000))
+            self.write(
+                REVIEW_PACKET,
+                {
+                    "packet_id": "packet",
+                    "snapshot": {},
+                    "outline_review": "timeout_auto",
+                    "confirmation": {"state": "awaiting_display"},
+                    "publication_display": {"format": "Markdown", "citation_style": "IEEE"},
+                },
+            )
+            confirmed = client.post(LITERATURE_REVIEW_ROUTE, json=payload, headers=headers)
+            self.assertEqual(confirmed.status_code, 200, confirmed.text)
+            receipt = confirmed.json()["confirmation"]
+            self.assertEqual(receipt["packet_id"], "packet")
+            self.assertEqual(receipt["deadline_at"], 1300)
+            self.assertEqual(receipt["decision"]["answers"][receipt["request_id"]], "一键授权")
+            self.assertEqual(product_questions[-1][1]["timeout_seconds"], 300)
+            product_questions.clear()
+            cards.pop()
             self.write("06_output/survey.md", "# Finished review")
             self.write(GENERATION, {"final_status": "SUCCESS"})
             response = client.post(
@@ -664,8 +925,26 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(missing_lease.json()["error"], "review_publication_failed")
             self.assertEqual(missing_lease.json()["reason"], "task_context_missing")
             self.assertTrue(missing_lease.json()["recoverable"])
+            recovery = missing_lease.json()["next_action"]
+            self.assertEqual(recovery, missing_lease.json()["action"])
+            self.assertIn("scholarseed_bridge model tool", recovery)
+            self.assertIn("only after activation succeeds", recovery)
+            self.assertIn("does not itself renew", recovery)
+            self.assertNotIn("every stage command returns", recovery)
+            self.assertIsNone(getattr(live, "active_task_lease", None))
             self.assertEqual(len(cards), 1)
             lease(ProductTaskType.LITERATURE_REVIEW, str(retrieval_payload["run_id"]))
+            mismatch = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={"workspace": "02_retrieval", "checkpoint": "retrieval"},
+                headers=headers,
+            )
+            self.assertEqual(mismatch.status_code, 400, mismatch.text)
+            self.assertEqual(mismatch.json()["reason"], "review_workspace_mismatch")
+            self.assertIn(
+                "exact session-workdir-relative workspace", mismatch.json()["next_action"]
+            )
+            self.assertIn("inputs and state are unchanged", mismatch.json()["next_action"])
             response = client.post(
                 LITERATURE_REVIEW_ROUTE,
                 json=retrieval_payload,
@@ -681,6 +960,7 @@ class LiteratureReviewContract(unittest.TestCase):
             )
             self.assertTrue(all(item[1]["expected_sha256"] for item in published))
             authorization = response.json()["authorization"]
+            self.assertLess(response.text.index('"disposition"'), response.text.index('"sources"'))
             self.assertEqual(authorization["authorization_type"], "literature_review_fulltext")
             self.assertEqual(
                 authorization["sources"],
@@ -710,7 +990,32 @@ class LiteratureReviewContract(unittest.TestCase):
             self.assertEqual(unbound.status_code, 200, unbound.text)
             self.assertEqual(unbound.json()["authorization"]["disposition"], "authorized")
             self.assertTrue(cards[2][1]["run_id"].startswith("slr-"))
+            redundant_run = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={
+                    "workspace": "survey",
+                    "checkpoint": "retrieval",
+                    "run_id": f"{derived_run}4",
+                },
+                headers=headers,
+            )
+            self.assertEqual(redundant_run.status_code, 200, redundant_run.text)
+            self.assertEqual(redundant_run.json()["authorization"]["disposition"], "authorized")
+            self.assertEqual(cards[3][1]["run_id"], derived_run)
             cards.pop()
+            cards.pop()
+            lease(ProductTaskType.LITERATURE_REVIEW, f"{derived_run}4")
+            wrong_lease = client.post(
+                LITERATURE_REVIEW_ROUTE,
+                json={
+                    "workspace": "survey",
+                    "checkpoint": "retrieval",
+                    "run_id": f"{derived_run}4",
+                },
+                headers=headers,
+            )
+            self.assertEqual(wrong_lease.status_code, 400, wrong_lease.text)
+            self.assertEqual(wrong_lease.json()["reason"], "task_context_mismatch")
             lease(ProductTaskType.PRECISE_SEARCH, str(retrieval_payload["run_id"]))
             wrong_task = client.post(
                 LITERATURE_REVIEW_ROUTE,
@@ -719,7 +1024,7 @@ class LiteratureReviewContract(unittest.TestCase):
             )
             self.assertEqual(wrong_task.status_code, 400, wrong_task.text)
             self.assertEqual(wrong_task.json()["reason"], "task_context_mismatch")
-            self.assertEqual(prepare_authorization.call_count, 2)
+            self.assertEqual(prepare_authorization.call_count, 3)
             lease(ProductTaskType.LITERATURE_REVIEW, derived_run)
             switch_turn = True
             response = client.post(

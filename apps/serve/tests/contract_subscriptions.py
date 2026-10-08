@@ -18,7 +18,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from service.chat.api.settings import mount_setting_routes
-from service.chat.service.completions import CompletionBridge, mount_completion_bridge
+from service.chat.service.completions import (
+    CompletionBridge,
+    CompletionCredentialError,
+    mount_completion_bridge,
+)
 from service.chat.service.models import ModelService, SessionModelUnavailableError
 from service.chat.service.subscriptions import (
     SUBSCRIPTION_MODELS_RETRY_ATTEMPTS,
@@ -123,6 +127,68 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(items[0]["id"], "foreign-message")
         self.assertEqual(result["tools"], [{"type": "web_search"}])
         self.assertFalse(result["store"])
+
+    async def test_runtime_catalog_reuses_full_configuration_for_three_hours(self):
+        connection = await self.connected()
+        clock = SimpleNamespace(monotonic=lambda: 1000.0, time=time.time)
+        with patch("service.chat.service.subscriptions.time", clock):
+            first = await self.subscriptions.catalog(OWNER, connection)
+            self.requests.clear()
+            for age in (61.0, 3600.0, 10799.0):
+                clock.monotonic = lambda: 1000.0 + age
+                self.assertEqual(await self.subscriptions.catalog(OWNER, connection), first)
+                self.assertEqual(self.requests, [])
+            clock.monotonic = lambda: 11800.0
+            await self.subscriptions.catalog(OWNER, connection)
+            self.assertEqual(len(self.requests), 1)
+        self.assertEqual(
+            first["models"][0]["model_messages"],
+            UPSTREAM_MODELS_PAYLOAD["models"][0]["model_messages"],
+        )
+
+    async def test_model_list_keeps_short_ttl_and_fresh_bypasses_cache(self):
+        connection = await self.connected()
+        clock = SimpleNamespace(monotonic=lambda: 1000.0, time=time.time)
+        with patch("service.chat.service.subscriptions.time", clock):
+            await self.subscriptions.models(OWNER, connection, fresh=True)
+            self.requests.clear()
+            clock.monotonic = lambda: 1059.0
+            await self.subscriptions.models(OWNER, connection)
+            self.assertEqual(self.requests, [])
+            clock.monotonic = lambda: 1060.0
+            await self.subscriptions.models(OWNER, connection)
+            self.assertEqual(len(self.requests), 1)
+            await self.subscriptions.models(OWNER, connection, fresh=True)
+            self.assertEqual(len(self.requests), 2)
+
+    async def test_explicit_directory_refresh_invalidates_cached_runtime_configuration(self):
+        connection = await self.connected()
+        await self.subscriptions.catalog(OWNER, connection)
+        self.requests.clear()
+        await self.subscriptions.sync_directory(OWNER, connection)
+        await self.subscriptions.catalog(OWNER, connection)
+        self.assertEqual(len(self.requests), 2)
+
+    async def test_logout_invalidates_runtime_catalog_and_disconnect_rejects_cached_config(self):
+        connection = await self.connected()
+        await self.subscriptions.catalog(OWNER, connection)
+        self.requests.clear()
+        await self.subscriptions.logout(OWNER)
+        await self.subscriptions.catalog(OWNER, connection)
+        self.assertEqual(len(self.requests), 1)
+        self.subscriptions.disconnect(OWNER, connection)
+        with self.assertRaises(CompletionCredentialError):
+            await self.subscriptions.catalog(OWNER, connection)
+        self.credentials.replace(
+            OWNER,
+            connection,
+            OAuthTokens("new-access", "refresh", time.time() + 3600, "account"),
+            expected_generation=self.credentials.read(OWNER, connection).generation,
+        )
+        self.requests.clear()
+        await self.subscriptions.catalog(OWNER, connection)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0].headers["authorization"], "Bearer new-access")
 
     async def test_default_subscription_client_inherits_environment_proxy(self):
         client = httpx.AsyncClient(
@@ -259,6 +325,164 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(OAuthFailure):
             await self.subscriptions.sync_directory(OWNER, connection)
         self.assertEqual(len(self.requests), 1)
+
+    async def test_upstream_token_revoked_marks_credential_reauth_required(self):
+        """上游对未过期令牌返回 401 token_revoked → 回写 REAUTH_REQUIRED，不再停在 connected。"""
+
+        connection = await self.connected()
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+        self.reinstall(
+            lambda request: httpx.Response(
+                401,
+                json={
+                    "error": {
+                        "message": "Encountered invalidated oauth token for user",
+                        "type": None,
+                        "code": "token_revoked",
+                        "param": None,
+                    },
+                    "status": 401,
+                },
+            )
+        )
+        with self.assertRaises(OAuthFailure) as raised:
+            await self.subscriptions.sync_directory(OWNER, connection)
+        self.assertEqual(raised.exception.code, "oauth_reauth_required")
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
+        self.assertEqual(
+            self.subscriptions.status(OWNER, connection)["state"],
+            CredentialState.REAUTH_REQUIRED.value,
+        )
+
+    async def test_expired_refresh_401_is_removed_from_model_catalog(self):
+        connection = await self.connected()
+        record = self.credentials.read(OWNER, connection)
+        self.credentials.replace(
+            OWNER,
+            connection,
+            OAuthTokens("expired-access", "expired-refresh", time.time() - 1, "account"),
+            expected_generation=record.generation,
+        )
+        self.reinstall(
+            lambda request: httpx.Response(401, json={"error": {"message": "invalid grant"}})
+        )
+        payload = await self.models.catalog(user_id=OWNER)
+        row = next(
+            model
+            for model in payload["available_models"]
+            if model["key"] == personal_model_key(connection, MODEL)
+        )
+        self.assertTrue(row["disabled"])
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
+        self.assertEqual(len(self.requests), 1)
+
+    async def test_catalog_refreshes_expiring_oauth_only_once(self):
+        connection = await self.connected()
+        record = self.credentials.read(OWNER, connection)
+        self.credentials.replace(
+            OWNER,
+            connection,
+            OAuthTokens("expired-access", "expired-refresh", time.time() - 1, "account"),
+            expected_generation=record.generation,
+        )
+        self.reinstall(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "access_token": "refreshed-access",
+                    "refresh_token": "refreshed-refresh",
+                    "expires_in": 3600,
+                },
+            )
+        )
+        await self.models.catalog(user_id=OWNER)
+        await self.models.catalog(user_id=OWNER)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+
+    async def test_catalog_keeps_connection_on_transient_refresh_failure(self):
+        connection = await self.connected()
+        record = self.credentials.read(OWNER, connection)
+        self.credentials.replace(
+            OWNER,
+            connection,
+            OAuthTokens("expired-access", "expired-refresh", time.time() - 1, "account"),
+            expected_generation=record.generation,
+        )
+
+        def unavailable(request):
+            raise httpx.ConnectError("issuer unavailable", request=request)
+
+        self.reinstall(unavailable)
+        payload = await self.models.catalog(user_id=OWNER)
+        row = next(
+            model
+            for model in payload["available_models"]
+            if model["key"] == personal_model_key(connection, MODEL)
+        )
+        self.assertFalse(row.get("disabled", False))
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+
+    async def test_bridge_catalog_surfaces_reauth_instead_of_generic_502(self):
+        """模型桥目录端点遇到吊销令牌时透出 401+reauth 码，而不是通用 502。"""
+
+        connection = await self.connected()
+        self.reinstall(
+            lambda request: httpx.Response(
+                401, json={"error": {"code": "token_revoked"}, "status": 401}
+            )
+        )
+        registration = self.subscriptions.register(OWNER, connection, MODEL, "reauth-catalog", {})
+        result = await self.bridge.catalog(registration.bridge_id)
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(json.loads(result.body)["error"]["code"], "oauth_reauth_required")
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
+
+    async def test_revocation_is_not_masked_by_stale_directory_cache(self):
+        """已缓存目录 + 上游转为吊销：TTL 过期后重拉遇 401，必须上抛 reauth 而非回落旧缓存。"""
+
+        mode = {"status": 200}
+
+        def handler(request):
+            if mode["status"] == 200:
+                return httpx.Response(200, json=UPSTREAM_MODELS_PAYLOAD)
+            return httpx.Response(401, json={"error": {"code": "token_revoked"}, "status": 401})
+
+        self.reinstall(handler)
+        connection = await self.connected()
+        await self.subscriptions.models(OWNER, connection)
+        mode["status"] = 401
+        with patch("service.chat.service.subscriptions.SUBSCRIPTION_DIRECTORY_CACHE_SECONDS", 0.0):
+            with self.assertRaises(OAuthFailure) as raised:
+                await self.subscriptions.models(OWNER, connection)
+        self.assertEqual(raised.exception.code, "oauth_reauth_required")
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
+
+    async def test_non_revocation_upstream_error_does_not_mark_reauth(self):
+        """5xx/普通 401（非白名单 code）不得被误判为登录失效；吊销回写幂等。"""
+
+        connection = await self.connected()
+        handle = self.subscriptions._handle_upstream_revocation
+        self.assertEqual(handle(OWNER, connection, 401, "unauthorized"), "")
+        self.assertEqual(handle(OWNER, connection, 503, "token_revoked"), "")
+        self.assertEqual(handle(OWNER, connection, 401, ""), "")
+        self.assertEqual(self.credentials.read(OWNER, connection).state, CredentialState.CONNECTED)
+        self.assertEqual(handle(OWNER, connection, 401, "token_revoked"), "oauth_reauth_required")
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
+        self.assertEqual(handle(OWNER, connection, 401, "invalid_token"), "oauth_reauth_required")
+        self.assertEqual(
+            self.credentials.read(OWNER, connection).state, CredentialState.REAUTH_REQUIRED
+        )
 
     async def test_runtime_catalog_preserves_the_selected_connection_metadata(self):
         connection = await self.connected()
@@ -454,9 +678,11 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_cancels_complete_runtime_catalog(self):
         await self.assert_catalog_cancelled(disconnect=True)
 
-    async def test_missing_subscription_selection_never_falls_back_to_api_billing(self):
+    async def test_disconnected_subscription_falls_back_to_available_api_model(self):
         connection = await self.connected()
-        self.models._settings.runtime_model = lambda: personal_model_key(connection, MODEL)
+        selected = {"model": personal_model_key(connection, MODEL)}
+        self.models._settings.runtime_model = lambda: selected["model"]
+        self.models._settings.set_runtime_model = lambda value: selected.__setitem__("model", value)
         builtin = {"key": "paid-model", "billing": "api", "model_name": "paid-model"}
         with (
             patch("service.chat.service.models.load_builtin_work_config", return_value={}),
@@ -473,9 +699,15 @@ class SubscriptionContract(unittest.IsolatedAsyncioTestCase):
                 subscription["disabled_reason_code"], "subscription_connection_required"
             )
             self.assertEqual(subscription["disabled_reason"], "请在模型服务中连接 ChatGPT")
-            self.assertEqual((await self.models.catalog(user_id=OTHER))["current_model"], "")
+            self.assertEqual(catalog["current_model"], "paid-model")
+            self.assertEqual(selected["model"], "paid-model")
+            self.assertEqual(
+                (await self.models.catalog(user_id=OTHER))["current_model"], "paid-model"
+            )
             await self.models.delete_profile(connection, user_id=OWNER)
-            self.assertEqual((await self.models.catalog(user_id=OWNER))["current_model"], "")
+            self.assertEqual(
+                (await self.models.catalog(user_id=OWNER))["current_model"], "paid-model"
+            )
 
 
 class SharedOwnershipSubscriptionContract(unittest.IsolatedAsyncioTestCase):

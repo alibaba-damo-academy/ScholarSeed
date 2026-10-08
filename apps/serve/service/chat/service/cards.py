@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import stat
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import Any
 from service.chat.constants import PRODUCT_EVENT_DISPLAY_CARD
 from service.chat.persistence.events import ProductEventStore
 from service.platform.bridge import DisplayCardContent
+from service.platform.files import file_access_code
 
 DISPLAY_CARD_MAX_CONTENT_BYTES = 65_536
 DISPLAY_CARD_MAX_PER_TURN = 4
@@ -19,6 +22,8 @@ DISPLAY_CARD_ENCODING = "utf-8"
 DISPLAY_CARD_ID_PREFIX = "card"
 DISPLAY_CARD_IDEMPOTENCY_PREFIX = "display-card"
 DISPLAY_CARD_IDENTITY_SEPARATOR = "\0"
+DISPLAY_CARD_PATH_UNAVAILABLE = "display_card_path_unavailable"
+LOGGER = logging.getLogger(__name__)
 
 
 class DisplayCardError(ValueError):
@@ -73,17 +78,39 @@ def normalize_card(
                 raise DisplayCardError("display_card_path_invalid")
             root = workdir.resolve()
             source = (root / candidate).resolve()
-            if not source.is_relative_to(root) or not source.is_file():
+            if not source.is_relative_to(root):
                 raise DisplayCardError("display_card_path_invalid")
-        except (OSError, ValueError) as error:
+            if not stat.S_ISREG(source.stat().st_mode):
+                raise DisplayCardError("display_card_path_invalid")
+        except DisplayCardError:
+            raise
+        except ValueError as error:
             raise DisplayCardError("display_card_path_invalid") from error
+        except OSError as error:
+            LOGGER.warning(
+                "display_card_file_access_failed path=%s code=%s errno=%s winerror=%s",
+                content.path,
+                file_access_code(error),
+                error.errno,
+                getattr(error, "winerror", None),
+            )
+            raise DisplayCardError(DISPLAY_CARD_PATH_UNAVAILABLE) from error
         try:
             with source.open("rb") as stream:
                 encoded_source = stream.read(DISPLAY_CARD_MAX_CONTENT_BYTES + 1)
             if len(encoded_source) > DISPLAY_CARD_MAX_CONTENT_BYTES:
                 raise DisplayCardError("display_card_content_too_large")
             value = json.loads(encoded_source.decode(DISPLAY_CARD_ENCODING))
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        except OSError as error:
+            LOGGER.warning(
+                "display_card_file_access_failed path=%s code=%s errno=%s winerror=%s",
+                content.path,
+                file_access_code(error),
+                error.errno,
+                getattr(error, "winerror", None),
+            )
+            raise DisplayCardError(DISPLAY_CARD_PATH_UNAVAILABLE) from error
+        except (UnicodeError, json.JSONDecodeError) as error:
             raise DisplayCardError("display_card_content_invalid") from error
     if not isinstance(value, Mapping):
         raise DisplayCardError("display_card_content_invalid")

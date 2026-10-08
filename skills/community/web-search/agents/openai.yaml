@@ -1,6 +1,6 @@
 interface:
   display_name: "Web Search"
   short_description: "Search with official API, native, then visible-browser fallback"
-  default_prompt: "Use $web-search with the provider selected by the caller and return verified webpage candidates."
+  default_prompt: "Use $web-search automatic profile: try official, then native, then visible-browser in this one invocation and return verified webpage candidates."
 policy:
   allow_implicit_invocation: true

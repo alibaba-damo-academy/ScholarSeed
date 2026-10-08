@@ -2,6 +2,10 @@ import type { TFunction } from 'i18next'
 import type { createFormatters } from '../../../../localization/format'
 import type { LiteratureReview, LiteratureSummary } from '../../contracts/literature'
 
+export function literatureCollections(item: LiteratureSummary, projectId?: string): LiteratureSummary['collections'] {
+  return projectId ? item.project_collections : item.collections
+}
+
 export const REVIEW_STATUS = {
   outline: 'reviewProjection.outline', generated: 'reviewProjection.result', partial: 'reviewProjection.result',
   incomplete: 'reviewProjection.result', failed: 'reviewProjection.result'
@@ -15,7 +19,7 @@ const GENERATION_STATUSES = new Set(Object.keys(GENERATION_LABELS))
 const REVIEW_CHECKPOINTS = new Set<string>(['outline', 'result'])
 const PRECISE_SEARCH_ORIGIN = 'precise-search'
 const OUTPUT_FORMATS = new Set(['latex_pdf', 'markdown', null])
-const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', null])
+const CITATION_STYLES = new Set(['numeric', 'author_year', 'ieee', 'acm', 'gbt7714_2025', null])
 const DECISION_SOURCES = new Set(['user', 'default', null])
 
 /** 时间列展示到秒(中文即 2026/9/15 15:46:32), 同一天内多次导入或更新才能区分先后。 */

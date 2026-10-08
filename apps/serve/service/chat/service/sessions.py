@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import logging
 import mimetypes
 import sqlite3
 import time
@@ -15,18 +16,20 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from scholarseed_runtime.contract import (
+    AppliedState,
     CapabilityState,
     CommandState,
     ModelThinking,
-    PermissionIntent,
     RuntimeCapabilityName,
     RuntimeConfigurationIntent,
     RuntimeControlKind,
     RuntimeControlRequest,
     RuntimePermissionMode,
 )
+from scholarseed_runtime.contract.history import MessagePhase
 from scholarseed_runtime.contract.input import InputKind
 from scholarseed_runtime.contract.mcp import McpTrustDecision
+from scholarseed_runtime.contract.permission import PermissionUpdatePreview, PermissionUpdateScope
 from service.chat.constants import (
     ASK_PERMISSION_MODE,
     BYPASS_PERMISSION_MODE,
@@ -39,10 +42,11 @@ from service.chat.constants import (
     PRODUCT_REFERENCE_FILE,
     PRODUCT_REFERENCE_ORIGIN_LOCAL_FILE,
     PRODUCT_SESSION_STATE_INTERRUPTED,
+    PRODUCT_TURN_OUTCOME_COMPLETED,
+    PRODUCT_TURN_OUTCOME_INTERRUPTED,
     PRODUCT_TURN_OUTCOME_UNKNOWN,
     RUNTIME_CAPABILITY_UNAVAILABLE,
     SAFE_AUTO_PERMISSION_MODE,
-    SESSION_PERMISSION_SWITCH_REQUIRES_HIL_RESOLUTION_ERROR,
     SESSION_PROJECT_NOT_AUTHORIZED_ERROR,
     SESSION_PROJECT_NOT_REGISTERED_ERROR,
     SESSION_RECOVERY_INTERRUPT_REASON,
@@ -120,6 +124,13 @@ HTTP_CONFLICT = 409
 HTTP_UNAVAILABLE = 503
 HTTP_INTERNAL_ERROR = 500
 SESSION_OPEN_FAILED_ERROR = "harness_session_open_failed"
+# 结构化计时事件: 让 sessions/open 的锁等待与总耗时线上可归因 (Aone #87119853)。
+SESSION_OPEN_TIMING_EVENT = "session_open_timing"
+# 计时日志走 service 命名空间下的独立 logger: 注入的 _log (scholarseed.newserve) 不在 serve 的
+# INFO 放行名单内 (root=WARNING 会丢弃其 INFO, 见 cli/serve.py 的 namespace setLevel), 用独立
+# logger 才能保证埋点在生产日志里必达。
+SESSION_OPEN_TIMING_LOGGER = logging.getLogger(__name__).getChild("open_timing")
+RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS = 3.0
 SESSION_REQUIRED_CAPABILITIES_FIELD = "required_capabilities"
 SESSION_REQUIRED_CAPABILITIES_INVALID_ERROR = "invalid_required_capabilities"
 SESSION_RESUME_FAILED_ERROR = "harness_session_resume_failed"
@@ -127,6 +138,24 @@ SESSION_OUTPUT_UNAVAILABLE_ERROR = "session_output_unavailable"
 SESSION_MODEL_UNAVAILABLE_ERROR = "session_model_unavailable"
 SESSION_MODEL_SWITCH_FAILED_ERROR = "session_model_switch_failed"
 SESSION_PERMISSION_SWITCH_FAILED_ERROR = "session_permission_switch_failed"
+SESSION_PERMISSION_APPLICATION_INVALID = "session_permission_application_invalid"
+SESSION_PERMISSION_CONFIRMATION_REQUIRED = "session_permission_confirmation_required"
+SESSION_PERMISSION_UPDATE_UNCONFIRMED = "session_permission_update_unconfirmed"
+SESSION_PERMISSION_STOP_PENDING = "session_permission_stop_pending"
+SESSION_PERMISSION_CONTINUATION_STALE = "session_permission_continuation_stale"
+SESSION_PERMISSION_STOP_TIMEOUT_SECONDS = 30.0
+SESSION_PERMISSION_STOP_POLL_SECONDS = 0.1
+SESSION_PERMISSION_CONTINUATION_TEXT = (
+    "继续刚才中断的任务。先核对已完成操作和产物，不重复已产生副作用的步骤。"
+)
+
+
+class PermissionApplication(str, Enum):
+    AUTO = "auto"
+    NEXT_TURN = "next_turn"
+    INTERRUPT_CONTINUE = "interrupt_continue"
+
+
 RUNTIME_RPC_REJECTED_ERROR = "runtime_rpc_rejected"
 RUNTIME_TRANSPORT_LOST_ERROR = "runtime_transport_lost"
 RUNTIME_RPC_TIMEOUT_ERROR = "runtime_rpc_timeout"
@@ -140,6 +169,9 @@ RUNTIME_FAILURE_DEFAULT_MESSAGE = "请重试；若仍失败，请重新打开会
 RUNTIME_FAILURE_MESSAGES = {
     "agent_runtime_capacity_reached": (
         "Agent 运行时进程池已满。请在正在运行的任务结束后完全退出书深，重新打开后重试。"
+    ),
+    "runtime_thread_capacity_reached": (
+        "当前会话线程已满，请等待其他任务结束或关闭闲置会话后重试。"
     ),
     SESSION_MODEL_UNAVAILABLE_ERROR: "所选模型当前不可用，请检查模型配置后重试。",
     RUNTIME_RPC_REJECTED_ERROR: "Agent 运行时拒绝了本次请求，请重新打开会话后重试。",
@@ -200,14 +232,6 @@ def _required_capabilities(value: object) -> tuple[RuntimeCapabilityName, ...]:
     if len(capabilities) != len(value) or len(set(capabilities)) != len(capabilities):
         raise ValueError(SESSION_REQUIRED_CAPABILITIES_INVALID_ERROR)
     return capabilities
-
-
-def _permission_intent(mode: str, writable_roots: tuple[Path, ...] = ()) -> PermissionIntent:
-    return PermissionIntent(
-        mode=RuntimePermissionMode(mode),
-        revision=f"permission:{mode}",
-        writable_roots=writable_roots,
-    )
 
 
 def _runtime_failure_payload(error: Exception, *, operation: str) -> dict[str, Any]:
@@ -273,6 +297,7 @@ class SessionService:
         self._open_lock = asyncio.Lock()
         self._turn_confirmation: Callable[[str, str], Awaitable[None]] | None = None
         self._queue_cancellation: Callable[[str], Awaitable[None]] | None = None
+        self._settlement_resume: Callable[[LiveSession], None] | None = None
 
     def bind_turn_confirmation(self, callback: Callable[[str, str], Awaitable[None]]) -> None:
         self._turn_confirmation = callback
@@ -281,6 +306,9 @@ class SessionService:
         """Bind pending-message cleanup, called while the lifecycle lock is held."""
 
         self._queue_cancellation = callback
+
+    def bind_settlement_resume(self, callback: Callable[[LiveSession], None]) -> None:
+        self._settlement_resume = callback
 
     def broadcast_product_events(
         self,
@@ -484,16 +512,49 @@ class SessionService:
                     "error": "resume_session_fields_immutable",
                     "fields": mutable_resume_fields,
                 }, HTTP_CONFLICT
+        # _open_lock 是进程级全局串行锁: 整段冷恢复都握在锁内, 客户端 abort 也不会提前释放。
+        # 记录锁等待与总耗时, 才能把「服务端慢恢复」与「重试排队等锁」区分开 (Aone #87119853)。
+        lock_requested_at = time.perf_counter()
         async with self._open_lock:
-            if resume_id:
-                return await self._resume(resume_id, principal, actor_id, skill_environment)
-            return await self._create(
-                body,
-                principal,
-                actor_id,
-                skill_environment,
-                required_capabilities,
+            lock_wait_ms = (time.perf_counter() - lock_requested_at) * 1000.0
+            opened_at = time.perf_counter()
+            path = "resume" if resume_id else "create"
+            try:
+                if resume_id:
+                    payload, status = await self._resume(
+                        resume_id, principal, actor_id, skill_environment
+                    )
+                else:
+                    payload, status = await self._create(
+                        body,
+                        principal,
+                        actor_id,
+                        skill_environment,
+                        required_capabilities,
+                    )
+            except asyncio.CancelledError:
+                # 客户端断开是否取消本协程, 决定「排队等锁后自愈」还是「半启动进程被弃」两种机制;
+                # 此处仅观测并原样抛出, 不改变清理语义 (CancelledError 属 BaseException,
+                # _resume/_create 的 except Exception 兜底不会捕获它)。
+                SESSION_OPEN_TIMING_LOGGER.warning(
+                    "%s path=%s session_id=%s cancelled lock_wait_ms=%.0f elapsed_ms=%.0f",
+                    SESSION_OPEN_TIMING_EVENT,
+                    path,
+                    resume_id,
+                    lock_wait_ms,
+                    (time.perf_counter() - opened_at) * 1000.0,
+                )
+                raise
+            SESSION_OPEN_TIMING_LOGGER.info(
+                "%s path=%s session_id=%s status=%s lock_wait_ms=%.0f duration_ms=%.0f",
+                SESSION_OPEN_TIMING_EVENT,
+                path,
+                resume_id or payload.get("session_id", ""),
+                status,
+                lock_wait_ms,
+                (time.perf_counter() - opened_at) * 1000.0,
             )
+            return payload, status
 
     async def _create(
         self,
@@ -681,9 +742,14 @@ class SessionService:
             )
             await live.activate()
             self._sessions[session_id] = live
-            if was_inflight:
+            if self._access.pending_turn_settlement(session_id) is not None:
+                if self._settlement_resume is None:
+                    raise RuntimeError("pending turn settlement has no recovery owner")
+                self._access.mark_turn_recovery_blocked(session_id, True)
+            elif was_inflight:
                 await self._publish_recovery(live, record, recovery_hil)
         except Exception as exc:
+            self._access.mark_turn_recovery_blocked(session_id, True)
             if live is not None:
                 await live.aclose()
             failure = _runtime_failure_payload(exc, operation="resume")
@@ -699,6 +765,84 @@ class SessionService:
             )
             return failure, 500
         return self._snapshot(live, readiness=readiness), HTTP_OK
+
+    async def check_recovery(
+        self,
+        session_id: str,
+        principal: SessionPrincipal,
+        *,
+        actor_id: str,
+        skill_environment: Mapping[str, str] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        pending = self._access.pending_turn_settlement(session_id)
+        if pending is None:
+            return {"ok": True, "recovery_blocked": False, "recovery_pending": False}, HTTP_OK
+        live = self._sessions.get(session_id)
+        if live is None:
+            _, status = await self.open(
+                {"resume_session_id": session_id},
+                principal,
+                actor_id=actor_id,
+                skill_environment=skill_environment,
+            )
+            live = self._sessions.get(session_id)
+            if status != HTTP_OK or live is None:
+                return {
+                    "ok": False,
+                    "recovery_blocked": True,
+                    "recovery_pending": True,
+                    "error": "turn_recovery_blocked",
+                }, HTTP_OK
+        try:
+            await self._runtime.ensure_active(live)
+            session = live.runtime_session
+            if session is None:
+                raise RuntimeError("runtime session is unavailable")
+            activity = await session.activity()
+        except Exception as exc:
+            self._access.mark_turn_recovery_blocked(session_id, True)
+            self._logger.warning(
+                "turn_recovery_check_failed session_id=%s failure_type=%s",
+                session_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return {
+                "ok": False,
+                "recovery_blocked": True,
+                "recovery_pending": True,
+                "error": "turn_recovery_blocked",
+            }, HTTP_OK
+        if not activity.execution_tree_complete:
+            self._access.mark_turn_recovery_blocked(session_id, True)
+            return {
+                "ok": False,
+                "recovery_blocked": True,
+                "recovery_pending": True,
+                "error": "turn_recovery_blocked",
+            }, HTTP_OK
+        self._access.mark_turn_recovery_blocked(session_id, activity.execution_tree_idle)
+        if self._settlement_resume is None:
+            raise RuntimeError("pending turn settlement has no recovery owner")
+        if live.current_task is None or live.current_task.done():
+            self._settlement_resume(live)
+        if activity.execution_tree_idle and live.current_task is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(live.current_task),
+                    timeout=RECOVERY_CHECK_SETTLEMENT_WAIT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                pass
+        return {
+            "ok": True,
+            "recovery_blocked": bool(
+                (pending := self._access.pending_turn_settlement(session_id))
+                and pending.recovery_blocked
+            ),
+            "recovery_pending": pending is not None,
+            "activity_active": not activity.execution_tree_idle,
+        }, HTTP_OK
 
     async def _publish_recovery(
         self,
@@ -820,6 +964,8 @@ class SessionService:
 
     def _snapshot(self, live: LiveSession, *, readiness: Any) -> dict[str, Any]:
         record = self._access.get(live.id)
+        pending = self._access.pending_turn_settlement(live.id)
+        recovery_blocked = bool(pending and pending.recovery_blocked)
         model_state = self._model_state(live.id) if record is not None else None
         selected_model_id = (
             model_state.selected_model_id if model_state is not None else live.model_id
@@ -858,8 +1004,12 @@ class SessionService:
             "pending_hil": live.pending_hil_snapshot(),
             "uncertain_operations": live.ledger.uncertainty_snapshot(),
             "unknown_outcome": live.ledger.has_unknown_outcome,
-            "running": live.turn_active,
-            "active_turn_id": live.ledger.active_turn_id or None,
+            "running": live.turn_active and not recovery_blocked,
+            "active_turn_id": (
+                (live.ledger.active_turn_id or None) if not recovery_blocked else None
+            ),
+            "recovery_blocked": recovery_blocked,
+            "recovery_pending": pending is not None,
             "interrupting": live.interrupting,
             "last_interrupt_succeeded": live.last_interrupt_succeeded,
             "todos": list(record.todos) if record is not None else [],
@@ -1009,6 +1159,13 @@ class SessionService:
         live = self._sessions.get(record.session_id)
         binding = self._access.runtime_binding(record.session_id)
         model_state = self._model_state(record.session_id)
+        pending = self._access.pending_turn_settlement(record.session_id)
+        recovery_blocked = pending is not None and (live is None or pending.recovery_blocked)
+        pending_running = pending is not None and not (
+            record.last_turn_id == pending.native_turn_id
+            and record.status
+            in {SessionStatus.COMPLETED, SessionStatus.INTERRUPTED, SessionStatus.ERROR}
+        )
         return {
             "session_id": record.session_id,
             "runtime_id": record.runtime_id,
@@ -1043,13 +1200,17 @@ class SessionService:
             ),
             "created_at": record.created_at,
             "mtime": record.updated_at,
+            "last_seq": record.last_product_seq,
             "workdir": record.runtime_workdir,
             "runtime_workdir": record.runtime_workdir,
             "project_path": record.project_path,
             **self._title_projection(record),
             "turns": 1 if record.last_turn_id else 0,
             "live": live is not None,
-            "running": bool(live and live.turn_active),
+            "running": (bool(live and live.turn_active) or pending_running)
+            and not recovery_blocked,
+            "recovery_blocked": recovery_blocked,
+            "recovery_pending": pending is not None,
             "unknown_outcome": (
                 live.ledger.has_unknown_outcome
                 if live is not None
@@ -1069,8 +1230,15 @@ class SessionService:
         if not live.running:
             return {"ok": True, "idle": True, "interrupting": False}
         try:
-            await live.interrupt()
-        except Exception:
+            await live.interrupt(cleanup_background_processes=True)
+        except Exception as exc:
+            self._logger.error(
+                "session_interrupt_failed session_id=%s failure_type=%s safe_error=%s",
+                session_id,
+                type(exc).__name__,
+                str(getattr(exc, "safe_error", "") or ""),
+                exc_info=True,
+            )
             return {"ok": False, "error": "harness_interrupt_failed", "interrupting": False}
         await live.publish(
             PRODUCT_EVENT_SESSION_STATE,
@@ -1122,7 +1290,9 @@ class SessionService:
         if live is None:
             return {"ok": False, "error": "session_not_live"}, HTTP_CONFLICT
         if live.interactions.is_product_request(request_id):
-            interaction = await live.interactions.resolve(None, request_id, body)
+            interaction = await live.interactions.resolve(
+                None, request_id, body, active_turn_id=live.ledger.active_turn_id
+            )
         else:
             async with self._runtime.operation(live, request_id=request_id) as session:
                 interaction = await live.interactions.resolve(session, request_id, body)
@@ -1386,8 +1556,33 @@ class SessionService:
                 live.recover_publications()
             else:
                 self._runtime.recover_publications(session_id)
+        detached = live is None or live.runtime_session is None
+        durable_history = self._events.portable_history(session_id) if detached else ()
         return {
-            "turns": live.history() if live is not None else [],
+            "turns": (
+                live.history()
+                if not detached
+                else [
+                    {
+                        "kind": (
+                            "user"
+                            if entry.role == "user"
+                            else ("thinking" if entry.phase == MessagePhase.COMMENTARY else "text")
+                        ),
+                        "role": entry.role,
+                        "text": entry.text,
+                        "turn_id": entry.turn_id,
+                        "item_id": entry.item_id,
+                        "phase": entry.phase.value if entry.phase is not None else None,
+                    }
+                    for entry in durable_history
+                ]
+            ),
+            "recovery_blocked": bool(
+                (pending := self._access.pending_turn_settlement(session_id))
+                and (live is None or pending.recovery_blocked)
+            ),
+            "recovery_pending": pending is not None,
             "todos": list(record.todos) if record is not None else [],
             "todo_turn_id": record.todo_turn_id if record is not None else None,
             "todo_explanation": record.todo_explanation if record is not None else None,
@@ -1819,7 +2014,24 @@ class SessionService:
         selected = record.policy_id if record and record.policy_id else ASK_PERMISSION_MODE
         live = self._sessions.get(session_id)
         active = live.applied_permission_mode if live and live.runtime_session is not None else ""
-        return self._mode_payload(selected, active)
+        payload = self._mode_payload(selected, active)
+        return {
+            **payload,
+            "next_turn_selected": bool(
+                record and record.next_turn_mode == selected and payload["deferred"]
+            ),
+            "current_turn_modes": [
+                mode
+                for mode in PRODUCT_PERMISSION_MODES
+                if live
+                and isinstance(live.runtime_session, PermissionUpdatePreview)
+                and live.runtime_session.permission_update_scope(
+                    live.permission_intent(RuntimePermissionMode(mode))
+                )
+                == PermissionUpdateScope.TURN
+            ],
+            "switch_warning": live.permission_switch_warning if live else "",
+        }
 
     def model(self, session_id: str) -> dict[str, Any]:
         record = self._access.get(session_id)
@@ -2055,8 +2267,8 @@ class SessionService:
                 )
                 if not restart and live.applied_permission_mode != selected_mode:
                     permission_state = await self._apply_permission_intent(live, selected_mode)
-                    restart = permission_state is CommandState.RESTART_REQUIRED
-                    if permission_state is CommandState.APPLIED:
+                    restart = permission_state.state is CommandState.RESTART_REQUIRED
+                    if permission_state.state is CommandState.APPLIED:
                         live.applied_permission_mode = selected_mode
                 if not restart and (live.model_id, live.reasoning_effort, live.thinking) != (
                     selected_model,
@@ -2103,11 +2315,16 @@ class SessionService:
         self,
         live: LiveSession,
         mode: str,
-    ) -> CommandState:
+    ) -> AppliedState:
         session = live.runtime_session
         if session is None:
-            return CommandState.RESTART_REQUIRED
-        intent = _permission_intent(mode, live.writable_roots)
+            return AppliedState(
+                requested_revision=mode,
+                applied_revision="",
+                state=CommandState.RESTART_REQUIRED,
+                scope="session",
+            )
+        intent = live.permission_intent(RuntimePermissionMode(mode))
         applied = await session.reconfigure(
             RuntimeConfigurationIntent(
                 revision=intent.revision,
@@ -2117,7 +2334,7 @@ class SessionService:
         )
         if applied.state in {CommandState.REJECTED, CommandState.UNSUPPORTED}:
             raise RuntimeError(applied.safe_error or SESSION_PERMISSION_SWITCH_FAILED_ERROR)
-        return applied.state
+        return applied
 
     async def _apply_model_intent(
         self,
@@ -2160,7 +2377,7 @@ class SessionService:
         return {
             "mode": selected,
             "active_mode": active,
-            "deferred": active != selected,
+            "deferred": bool(active) and active != selected,
             "modes": list(PRODUCT_PERMISSION_MODES),
             "backend": self._runtime.runtime_id,
         }
@@ -2170,9 +2387,15 @@ class SessionService:
         session_id: str,
         principal: SessionPrincipal,
         mode: str,
+        *,
+        application: str = PermissionApplication.AUTO.value,
     ) -> tuple[dict[str, Any], int]:
         """Persist permission intent without allocating resources for a detached session."""
         target = mode.strip()
+        try:
+            action = PermissionApplication(application)
+        except ValueError:
+            return {"ok": False, "error": SESSION_PERMISSION_APPLICATION_INVALID}, HTTP_BAD_REQUEST
         if target not in PRODUCT_PERMISSION_MODES:
             return {
                 "ok": False,
@@ -2182,18 +2405,130 @@ class SessionService:
         self._access.require(session_id, principal)
         live = self._sessions.get(session_id)
         active = ""
+        warning = ""
+        continuation: dict[str, Any] = {}
         if live is None:
-            self._access.set_policy(session_id, principal, target)
+            self._access.set_policy(
+                session_id,
+                principal,
+                target,
+                next_turn=action is PermissionApplication.NEXT_TURN,
+            )
         else:
             async with live.lifecycle_lock:
-                if self._access.pending_hil(session_id):
+                pending_hil = bool(self._access.pending_hil(session_id))
+                if (
+                    action is PermissionApplication.AUTO
+                    and (live.running or pending_hil)
+                    and target != live.applied_permission_mode
+                    and target not in self.mode(session_id)["current_turn_modes"]
+                ):
                     return {
                         "ok": False,
-                        "error": SESSION_PERMISSION_SWITCH_REQUIRES_HIL_RESOLUTION_ERROR,
+                        "error": SESSION_PERMISSION_CONFIRMATION_REQUIRED,
                         **self.mode(session_id),
                     }, HTTP_CONFLICT
-                self._access.set_policy(session_id, principal, target)
-                apply_now = live.runtime_session is not None and not live.running
+                self._access.set_policy(
+                    session_id,
+                    principal,
+                    target,
+                    next_turn=action is PermissionApplication.NEXT_TURN,
+                )
+                live.permission_switch_warning = ""
+                apply_now = (
+                    action is not PermissionApplication.NEXT_TURN
+                    and live.runtime_session is not None
+                    and not live.running
+                    and not pending_hil
+                )
+                if (
+                    action is PermissionApplication.AUTO
+                    and live.runtime_session is not None
+                    and live.running
+                    and target != live.applied_permission_mode
+                ):
+                    try:
+                        applied = await self._apply_permission_intent(live, target)
+                        warning = applied.safe_error or (
+                            SESSION_PERMISSION_UPDATE_UNCONFIRMED
+                            if applied.state is not CommandState.APPLIED
+                            else ""
+                        )
+                        live.permission_switch_warning = warning
+                        if applied.state is CommandState.APPLIED:
+                            live.applied_permission_mode = target
+                            live.applied_permission_turn_id = (
+                                str(applied.values.get("turn_id") or "")
+                                if isinstance(applied.values, dict)
+                                else ""
+                            )
+                    except Exception as error:
+                        return (
+                            {
+                                **_runtime_failure_payload(error, operation="permission_switch"),
+                                **self.mode(session_id),
+                            },
+                            HTTP_INTERNAL_ERROR,
+                        )
+            if action is PermissionApplication.INTERRUPT_CONTINUE:
+                async with live.activation_lock:
+                    if live.running:
+                        submission_id = live.last_submission_id
+                        if not submission_id or live.catalog.queued_messages(live.id):
+                            return {
+                                "ok": False,
+                                "error": SESSION_PERMISSION_CONTINUATION_STALE,
+                                **self.mode(session_id),
+                            }, HTTP_CONFLICT
+                        try:
+                            interrupted = False
+                            async with asyncio.timeout(SESSION_PERMISSION_STOP_TIMEOUT_SECONDS):
+                                while live.running and not live.ledger.active_turn_id:
+                                    await asyncio.sleep(SESSION_PERMISSION_STOP_POLL_SECONDS)
+                                if live.running:
+                                    interrupted_turn_id = live.ledger.active_turn_id
+                                    await live.interrupt()
+                                    outcome = await live.ledger.wait_terminal(interrupted_turn_id)
+                                    if outcome not in {
+                                        PRODUCT_TURN_OUTCOME_INTERRUPTED,
+                                        PRODUCT_TURN_OUTCOME_COMPLETED,
+                                    }:
+                                        return {
+                                            "ok": False,
+                                            "error": SESSION_PERMISSION_CONTINUATION_STALE,
+                                            **self.mode(session_id),
+                                        }, HTTP_CONFLICT
+                                    interrupted = outcome == PRODUCT_TURN_OUTCOME_INTERRUPTED
+                                while live.running:
+                                    await asyncio.sleep(SESSION_PERMISSION_STOP_POLL_SECONDS)
+                        except TimeoutError:
+                            return {
+                                "ok": False,
+                                "error": SESSION_PERMISSION_STOP_PENDING,
+                                **self.mode(session_id),
+                            }, HTTP_CONFLICT
+                        except Exception as error:
+                            return {
+                                **_runtime_failure_payload(error, operation="permission_switch"),
+                                **self.mode(session_id),
+                            }, HTTP_INTERNAL_ERROR
+                        if (
+                            live.last_submission_id != submission_id
+                            or live.ledger.has_unknown_outcome
+                            or self._access.pending_hil(session_id)
+                            or self.mode(session_id)["mode"] != target
+                        ):
+                            return {
+                                "ok": False,
+                                "error": SESSION_PERMISSION_CONTINUATION_STALE,
+                                **self.mode(session_id),
+                            }, HTTP_CONFLICT
+                        if interrupted:
+                            continuation = {
+                                "submission_id": submission_id,
+                                "interrupt_generation": live.interrupt_generation,
+                            }
+                        apply_now = True
             if apply_now:
                 try:
                     await self.prepare_turn(live)
@@ -2207,7 +2542,12 @@ class SessionService:
                     )
             if live.runtime_session is not None:
                 active = live.applied_permission_mode
-        return {"ok": True, **self._mode_payload(target, active)}, HTTP_OK
+        return {
+            "ok": True,
+            **self.mode(session_id),
+            "switch_warning": warning,
+            **({"continuation": continuation} if continuation else {}),
+        }, HTTP_OK
 
     def unavailable(self, capability: str) -> dict[str, Any]:
         return {

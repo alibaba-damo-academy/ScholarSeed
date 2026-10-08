@@ -69,7 +69,17 @@ test('image capability failures tell users to select a model that declares image
   }
 })
 
-test('unknown provider errors and known application errors preserve diagnostics verbatim', async () => {
+test('unavailable PDF models explain login or model configuration in both languages', async () => {
+  for (const language of ['zh', 'en'] as const) {
+    const i18n = await translator(language)
+    const text = pdfAiFailureText({ code: 'pdf_ai_model_unavailable', diagnostic: '' }, i18n.getFixedT(null, 'pdf'))
+    assert.match(text, language === 'zh' ? /模型|登录/ : /model|sign in/i)
+    assert.notEqual(text, resources[language].pdf.reading.failed)
+  }
+  assert.equal(pdfAiFailureRecovery({ code: 'pdf_ai_model_unavailable', diagnostic: '' }).configure, true)
+})
+
+test('unknown provider errors and known application errors retain diagnostics without displaying them', async () => {
   const i18n = await translator('en')
   const diagnostic = '供应商 <response> & details\n  original whitespace  '
   for (const source of [
@@ -80,12 +90,12 @@ test('unknown provider errors and known application errors preserve diagnostics 
   ]) {
     const failure = pdfAiFailure(source)!
     assert.equal(failure.diagnostic, diagnostic)
-    assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), `${resources.en.pdf.reading.failed}\n${failure.code ? failure.code + '\n' : ''}${diagnostic}`)
+    assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), resources.en.pdf.reading.failed)
   }
   const known = pdfAiFailure({ code: 'pdf_ai_execution_failed', diagnostic })!
-  assert.equal(pdfAiFailureText(known, i18n.getFixedT(null, 'pdf')), `${resources.en.pdf.reading.errors.execution_failed}\n${diagnostic}`)
+  assert.equal(pdfAiFailureText(known, i18n.getFixedT(null, 'pdf')), resources.en.pdf.reading.errors.execution_failed)
   for (const code of ['unknown_code', '__proto__', 'constructor']) {
-    assert.equal(pdfAiFailureText({ code, diagnostic: '' }, i18n.getFixedT(null, 'pdf')), `${resources.en.pdf.reading.failed}\n${code}`)
+    assert.equal(pdfAiFailureText({ code, diagnostic: '' }, i18n.getFixedT(null, 'pdf')), resources.en.pdf.reading.failed)
   }
 })
 
@@ -94,7 +104,7 @@ test('legacy localized error text remains raw and is never used as error identit
   const legacy = resources.zh.pdf.reading.errors.literature_missing
   const failure = pdfAiFailure({ error: legacy })!
   assert.deepEqual(failure, { diagnostic: legacy })
-  assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), `${resources.en.pdf.reading.failed}\n${legacy}`)
+  assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), resources.en.pdf.reading.failed)
 })
 
 test('empty or malformed descriptors use the generic presentation fallback', async () => {
@@ -106,10 +116,10 @@ test('empty or malformed descriptors use the generic presentation fallback', asy
 })
 
 
-test('unknown codes and supplied diagnostics both survive generic error presentation', async () => {
+test('unknown codes and supplied diagnostics use generic error presentation', async () => {
   const i18n = await translator('en')
   const failure = { code: 'future_pdf_code', diagnostic: '原始诊断 <text> & {{value}}' }
-  assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), `${resources.en.pdf.reading.failed}\n${failure.code}\n${failure.diagnostic}`)
+  assert.equal(pdfAiFailureText(failure, i18n.getFixedT(null, 'pdf')), resources.en.pdf.reading.failed)
 })
 
 test('catch-only normalization preserves primitive diagnostics without inventing errors for normal tasks', () => {

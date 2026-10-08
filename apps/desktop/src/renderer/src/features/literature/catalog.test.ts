@@ -51,12 +51,85 @@ test('non-detail catalogue actions dismiss the open literature detail', () => {
   catalogue.scope(null)
 })
 
+test('turn selection follows only the visible matching literature scope', () => {
+  catalogue.scope('turn-project')
+  catalogue.select('paper', true)
+  assert.deepEqual(catalogue.selectedForTurn('turn-project', true), ['paper'])
+  assert.deepEqual(catalogue.selectedForTurn('turn-project', false), [])
+  assert.deepEqual(catalogue.selectedForTurn('another-project', true), [])
+  catalogue.select('paper', false)
+  assert.deepEqual(catalogue.selectedForTurn('turn-project', true), [])
+  catalogue.scope(null)
+})
+
 test('panel refresh does not request a literature list reload', () => {
   const before = catalogue.getSnapshot()
   catalogue.reloadPanel()
   const after = catalogue.getSnapshot()
   assert.equal(after.reload, before.reload)
   assert.equal(after.panelReload, before.panelReload + 1)
+})
+
+const PANEL_SNAPSHOT = {
+  counts: { all: 1, recent: 1, without_collection: 0, unread: 0, without_fulltext: 0 },
+  facets: { collections: [], tags: [], item_types: [], publications: [], years: [] },
+  projects: []
+} as never
+const OVERVIEW_COUNTS = {
+  all: 193, recent: 0, without_collection: 0, unread: 0, without_fulltext: 0
+}
+
+test('scope remount keeps cached rows for instant paint but revalidates them', () => {
+  catalogue.scope(null)
+  catalogue.items([{ id: 'cached-paper' }] as never)
+  catalogue.panel(PANEL_SNAPSHOT)
+  catalogue.tags([{ id: 'cached-tag' }] as never)
+  assert.equal(catalogue.itemsFresh(), true)
+  assert.equal(catalogue.panelFresh(), true)
+  assert.equal(catalogue.tagsFresh(), true)
+  catalogue.scope('cached-project')
+  catalogue.scope(null)
+  // 数据留着: 切回来不闪空态、不转 loading。
+  assert.equal(catalogue.getSnapshot().itemsReady, true)
+  assert.equal(catalogue.getSnapshot().items[0]?.id, 'cached-paper')
+  assert.equal(catalogue.getSnapshot().panel?.counts.all, 1)
+  assert.equal(catalogue.getSnapshot().scopedTags[0]?.id, 'cached-tag')
+  // 新鲜度清零: 挂载后必须重新取数, 而不是把上一次的快照当成事实。
+  assert.equal(catalogue.itemsFresh(), false)
+  assert.equal(catalogue.panelFresh(), false)
+  assert.equal(catalogue.tagsFresh(), false)
+})
+
+test('a mutation in one scope does not freeze the other scope snapshot', () => {
+  catalogue.scope(null)
+  catalogue.items([{ id: 'overview-paper' }] as never)
+  catalogue.panel(PANEL_SNAPSHOT)
+  catalogue.scope('mutating-project')
+  catalogue.items([{ id: 'project-paper' }] as never)
+  // 项目文献库里删除文献: 只失效当前作用域, 全览的存档时间戳原封不动。
+  catalogue.reload()
+  catalogue.scope(null)
+  assert.equal(catalogue.getSnapshot().items[0]?.id, 'overview-paper')
+  assert.equal(catalogue.itemsFresh(), false)
+  assert.equal(catalogue.panelFresh(), false)
+  catalogue.scope(null)
+})
+
+test('literature mutations expire the home overview counts cache', () => {
+  catalogue.scope(null)
+  for (const mutate of [
+    () => catalogue.reload(),
+    () => catalogue.reloadPanel(),
+    () => catalogue.imported({ q: undefined })
+  ]) {
+    catalogue.cacheOverviewCounts(OVERVIEW_COUNTS)
+    assert.equal(catalogue.overviewCountsFresh(), true)
+    mutate()
+    assert.equal(catalogue.overviewCountsFresh(), false)
+    // 旧值仍然可读: 首页先用它秒开, 再后台刷新成真实计数。
+    assert.equal(catalogue.overviewCounts()?.all, 193)
+  }
+  catalogue.scope(null)
 })
 
 test('tag filtering narrows the query without dropping the working selection', () => {

@@ -80,7 +80,12 @@ Windows 原生使用 Python 3.12，无需 Bash 或激活虚拟环境。在 Power
 .\scripts\slr.cmd init --workspace 'C:\Reviews\我的综述' --intent '实际研究请求'
 ```
 
-首次 doctor 可在依赖未安装时运行，报告实际系统、架构、Python、可用输出能力和修复命令。缺少运行环境时修复 ScholarSeed 产品安装；`SCHOLARSEED_PYTHON` 由产品入口指定。`setup.py` 只验证当前产品环境，不创建私有虚拟环境。
+首次 doctor 可在依赖未安装时运行，报告实际系统、架构、Python、可用输出能力和修复命令。它还用当前产品 Python 和继承的代理环境检查同步、异步 HTTP 传输能否初始化；缺少 SOCKS 依赖时应修复 ScholarSeed 产品安装，而不是在会话中临时安装。`SCHOLARSEED_PYTHON` 由产品入口指定。`setup.py` 只验证当前产品环境，不创建私有虚拟环境。
+
+| 平台 | 代理预检执行方式 |
+| --- | --- |
+| macOS | 使用绑定的产品 Python 子进程，继承当前代理变量；只初始化传输，不发起请求。 |
+| Windows | 使用绑定的产品 `python.exe` 子进程，继承当前代理变量；不依赖 POSIX Shell，也不发起请求。 |
 
 `init` 返回 `runtime.cli.argv` 及 PowerShell/CMD/POSIX 写法；后续主代理和子代理复用该命令，避免自行拼接路径。Windows 工作区另有 `slr.cmd` 快捷入口。仅需诊断已有绑定时，运行 `doctor --workspace <工作区> --no-network --json`。WSL 使用其 Linux Python 与 Linux 路径，不能复用 Windows 虚拟环境。
 
@@ -221,7 +226,7 @@ init 返回工作区专属 launcher。已有任务缺少 launcher 时使用
 ```bash
 ./my-survey/slr writing configure --request request.json
 ./my-survey/slr run retrieval_adapt
-scholarseed-bridge literature review --json '{"workspace":"my-survey","checkpoint":"retrieval"}'
+Call the `scholarseed_bridge` model tool with `{"capability":"literature","operation":"review","request":{"workspace":"my-survey","checkpoint":"retrieval"}}`.
 ./my-survey/slr workflow evidence --from fulltext
 ./my-survey/slr status --stage workflow
 ./my-survey/slr status --stage processing
@@ -335,6 +340,7 @@ PDF 降级 Markdown 共用同一文案；单独组件保持其请求范围。
   `model_config.fast.json`；
 - `config/model_config.fast.example.json` 保留为重置或迁移时的模板；
 - `PAPER_HUB_URL` 可覆盖 `config/endpoints.json` 的 PaperHub 地址；
+- PaperHub 全文下载默认继承代理，连接失败才回退直连；`NO_PROXY` 不会默认加入 PaperHub 域名。确需直连时使用 `PAPERHUB_PROXY_MODE=direct` 或 `SLR_NO_PROXY_EXTRA`，其他端点通过 `config/endpoints.json` 的 `proxy_bypass` 显式配置绕行；
 - 打包脚本只排除 `.venv`、缓存、日志和已有压缩包；模型凭据仅从接收者环境读取；
 - AS 必须作为独立压缩包分发，其最新版配置是唯一可信检索配置。
 
@@ -419,6 +425,11 @@ main直接修改v2及其实际依赖文件中的一切论文问题；无需同�
 流程，不上传文件。来源和元数据缺失均显式记录。本地导入字段可查询 `papers import-local --describe-input`；缺少可用文本时明确报错，不补抓摘要。
 
 ## 仓库集成与平台验证
+
+ScholarSeed 的大纲 checkpoint 会追加产品确认卡，询问是否按大纲及当前输出格式、
+引用样式开始写作，并允许直接输入修改意见。五分钟等待由产品拥有；主 Agent 将 bridge
+返回的 confirmation 原样交给 `writing review-complete --request FILE`，不再并行启动
+shell 轮询。修改不等于批准；取消不自动继续。独立宿主仍可使用原有显式等待命令。
 
 本次选择性合入上游 2026.09.22.2 的大纲五分钟确认与出版文案，产品版本为 2026.9.22+2。保留产品全文授权 checkpoint、工作区 task activate、产品 Python 准入、pypdf 补丁下限和 Fandol 字体。独立安装章节仅为上游背景；本仓库构建使用根目录 `npm run install:python` 与 prebundle。
 

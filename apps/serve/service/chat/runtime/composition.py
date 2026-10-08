@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from scholarseed_runtime.contract import (
+    CallbackAudience,
+    CallbackKind,
     CapabilitySet,
     CommandState,
     InterruptRequest,
@@ -23,6 +24,7 @@ from scholarseed_runtime.contract import (
     OpenSessionRequest,
     PermissionIntent,
     ResumeSessionRequest,
+    RuntimeCallbackRequest,
     RuntimeCallbackResponse,
     RuntimeCapabilityName,
     RuntimeEvent,
@@ -33,12 +35,14 @@ from scholarseed_runtime.contract import (
     RuntimeSession,
     RuntimeValue,
     TurnRequest,
+    service_tool_profile,
 )
 from scholarseed_runtime.contract.command import SkillConfiguration, SkillConfigurationRequest
 from scholarseed_runtime.contract.evidence import NOOP_RUNTIME_TIMING, RuntimeTimingPort
 from scholarseed_runtime.contract.incident import RuntimeRetryability
 from scholarseed_runtime.contract.inventory import ModelInventory, SkillInventory
 from scholarseed_runtime.contract.resource import ResourcePurpose, ResourceRequest
+from scholarseed_runtime.contract.session import RuntimeExecutionThread
 from scholarseed_runtime.gateway.driver import (
     RuntimeDriver,
     RuntimeObservation,
@@ -51,7 +55,11 @@ from service.capabilities.service.skills import (
     load_skill_state,
     save_skill_state,
 )
-from service.chat.active import base_instructions, developer_instructions
+from service.chat.active import (
+    RUNTIME_ALLOWED_NETWORK_DOMAINS,
+    base_instructions,
+    developer_instructions,
+)
 from service.chat.persistence.artifacts import SessionArtifactStore
 from service.chat.persistence.catalog import OpenState, SessionCatalogStore
 from service.chat.persistence.events import ProductEventStore
@@ -74,26 +82,24 @@ from service.chat.runtime.projection import (
 )
 from service.chat.runtime.secrets import _launch_secret_contract
 from service.chat.runtime.selection import RuntimeGateway
+from service.chat.runtime.timing import ActivationStage
+from service.chat.runtime.tools import SERVICE_BRIDGE_TOOL, execute_service_tool
 from service.chat.service.cards import CardRegistry
+from service.chat.service.coverage import CitationCoverage
 from service.chat.service.models import ModelService, SessionModelSpec
 from service.chat.service.publication import PublicationService
 from service.chat.service.recording import RecordingService
 from service.inference.reasoning import minimum_effort, require_declared_effort
 from service.paths import SERVICE_SKILL_ROOTS
 from service.platform.bridge import (
-    BRIDGE_COMMAND,
     BRIDGE_SESSION_ENV,
     BRIDGE_SOCKET_ENV,
     BRIDGE_TOKEN_ENV,
     INTERNAL_BASE_URL_ENV,
 )
 from service.platform.citations import CitationAnswerFilter
-from service.platform.executables import command_directories, probe_command, resolve_command
 from service.platform.resources import AgentResourceChangeSink
 from service.settings.capabilities import REASONING_EFFORT_LEVELS
-
-EXECUTABLE_PATH_ENV = "PATH"
-_LOGGER = logging.getLogger(__name__)
 
 
 def _invocation_turn_identity(session_id: str) -> str:
@@ -168,11 +174,22 @@ class LiveSessionService:
         self._cards = CardRegistry()
         self._activity_observer: SessionActivityObserver | None = None
         self._answer_filter: CitationAnswerFilter | None = None
+        self._citation_coverage: CitationCoverage | None = None
+        self._answer_guard: Callable[[str, bool], str] | None = None
         self._prewarm_task: asyncio.Task[object] | None = None
         self._prewarm_done = False
 
     def bind_publications(self, publications: PublicationService) -> None:
         self._publications = publications
+
+    async def execution_threads(self, session_id: str) -> tuple[RuntimeExecutionThread, ...]:
+        record = self._catalog.get(session_id)
+        binding = self._catalog.runtime_binding(session_id)
+        if record is None or binding is None or not record.runtime_workdir:
+            raise ValueError("session runtime binding unavailable")
+        return await self._gateway.provider_for(binding).execution_threads(
+            binding, Path(record.runtime_workdir)
+        )
 
     def bind_activity_observer(self, observer: SessionActivityObserver) -> None:
         """Bind the product policy that inspects workspace state after runtime actions."""
@@ -183,6 +200,12 @@ class LiveSessionService:
         """Bind the product-owned final-answer integrity policy before sessions open."""
 
         self._answer_filter = answer_filter
+
+    def bind_citation_coverage(self, coverage: CitationCoverage) -> None:
+        self._citation_coverage = coverage
+
+    def bind_answer_guard(self, answer_guard: Callable[[str, bool], str]) -> None:
+        self._answer_guard = answer_guard
 
     def bind_cards(self, cards: CardRegistry) -> None:
         """Bind product-composed domain card validators before sessions open."""
@@ -354,9 +377,9 @@ class LiveSessionService:
         return max(matches, key=lambda row: len(Path(str(row["path"])).parts), default=None)
 
     async def skill_configurations(
-        self, *, cwd: Path, user_id: str
+        self, *, cwd: Path, user_id: str, timing: RuntimeTimingPort = NOOP_RUNTIME_TIMING
     ) -> tuple[SkillConfiguration, ...]:
-        inventory = await self.skill_inventory(cwd=cwd, force_reload=True)
+        inventory = await self.skill_inventory(cwd=cwd, force_reload=True, timing=timing)
         return tuple(
             SkillConfiguration(path, enabled)
             for path, enabled in self._skills.session_enablement(
@@ -546,10 +569,13 @@ class LiveSessionService:
             project_id=project_id,
             resource_changes=self._resource_changes,
             local_socket=self._local_socket,
+            network_domains=RUNTIME_ALLOWED_NETWORK_DOMAINS,
             publications=self._publications,
             cards=self._cards,
             activity_observer=self._activity_observer,
             answer_filter=self._answer_filter,
+            citation_coverage=self._citation_coverage,
+            answer_guard=self._answer_guard,
             skill_inventory_provider=lambda cwd: self.skill_inventory(cwd=cwd, force_reload=True),
         )
         live.runtime_binding = self._catalog.runtime_binding(session_id)
@@ -605,12 +631,7 @@ class LiveSessionService:
         live._trace.add_secrets(tuple((model.process_environment or {}).values()))
         launch_secrets, secret_port = _launch_secret_contract(self._launch_environment(live))
         mode = str(revision[1] or RuntimePermissionMode.ASK.value)
-        permission = PermissionIntent(
-            mode=RuntimePermissionMode(mode),
-            revision=f"permission:{mode}",
-            writable_roots=live.writable_roots,
-            local_sockets=(live.local_socket,) if live.local_socket else (),
-        )
+        permission = live.permission_intent(RuntimePermissionMode(mode))
         base = base_instructions()
         instructions = developer_instructions(
             output_directory=live.output_root.relative_to(live.runtime_workdir).as_posix(),
@@ -621,9 +642,14 @@ class LiveSessionService:
             ),
         )
         binding = self._catalog.runtime_binding(live.id)
+        service_tools = (SERVICE_BRIDGE_TOOL,)
         replaces = (
             binding
-            if binding and self._events.rejected_turns(live.id, binding.opaque_session_ref)
+            if binding
+            and (
+                self._events.rejected_turns(live.id, binding.opaque_session_ref)
+                or binding.profile != service_tool_profile(service_tools)
+            )
             else None
         )
         request: OpenSessionRequest | ResumeSessionRequest
@@ -633,6 +659,7 @@ class LiveSessionService:
             request = ResumeSessionRequest(
                 binding=binding,
                 cwd=live.runtime_workdir,
+                execution_scope=live.id,
                 model=model_intent,
                 credential_port=credential_port,
                 launch_secrets=launch_secrets,
@@ -640,6 +667,7 @@ class LiveSessionService:
                 permission=permission,
                 base_instructions=base,
                 developer_instructions=instructions,
+                service_tools=service_tools,
                 skill_roots=SERVICE_SKILL_ROOTS,
                 skill_configurations=live.skill_configurations,
             )
@@ -648,6 +676,7 @@ class LiveSessionService:
             request = OpenSessionRequest(
                 product_session_id=live.id,
                 cwd=live.runtime_workdir,
+                execution_scope=live.id,
                 model=model_intent,
                 credential_port=credential_port,
                 launch_secrets=launch_secrets,
@@ -655,6 +684,7 @@ class LiveSessionService:
                 permission=permission,
                 base_instructions=base,
                 developer_instructions=instructions,
+                service_tools=service_tools,
                 skill_roots=SERVICE_SKILL_ROOTS,
                 skill_configurations=live.skill_configurations,
                 required_capabilities=activation.required_capabilities,
@@ -753,6 +783,7 @@ class LiveSessionService:
         skill_identity: Mapping[str, str] | None = None,
         ephemeral: bool = False,
         minimum_reasoning: bool = False,
+        permission: PermissionIntent | None = None,
     ) -> OneShotRuntimeResult:
         """Run one isolated turn through the configured surface runtime.
 
@@ -772,6 +803,9 @@ class LiveSessionService:
         if invocation_task is None:
             raise RuntimeError("one-shot invocation requires an asyncio task")
         self._one_shot_tasks[invocation_id] = (owner_id, invocation_task)
+        if permission is not None:
+            permission_mode = permission.mode
+            network_access = permission.network_access
         trace = SessionTrace(invocation_id, cwd, runtime_id=self.runtime_id)
         trace.invocation_started(
             purpose=purpose,
@@ -782,109 +816,155 @@ class LiveSessionService:
             input_chars=len(input_text),
             skill_identity=skill_identity,
         )
+        timing = trace.activation(invocation_id)
         driver: RuntimeDriver | None = None
         submitted = False
+        service_callbacks: set[asyncio.Task[None]] = set()
         try:
-            readiness = await self.readiness(executable=executable)
-            if not readiness.ready:
-                raise RuntimeError(readiness.safe_error or "harness_runtime_not_ready")
-            launch_environment = dict(process_environment or {})
-            if bridge_token:
-                launch_environment = self._bridge_environment(
-                    launch_environment,
-                    scope_id=invocation_id,
-                    token=bridge_token,
-                    local_socket=self._local_socket,
-                )
-            model, _options, _environment = self._session_options(
-                model_id=model_id,
-                executable=readiness.executable or executable,
-                process_environment=launch_environment,
-                session_id=invocation_id,
-                user_id=user_id,
-                turn_id_provider=_invocation_turn_identity,
-                source_text=input_text,
-            )
-            model_intent, credential_port = model.runtime_model()
-            if minimum_reasoning:
-                # 声明优先：我们在这条坐标上知道有哪些档；只有压根没声明档位形态时，
-                # 才退回 runtime 上报的清单兜底（订阅模型等我们未登记的情况）。
-                reasoning_effort = minimum_effort(model.reasoning_options)
-                if not reasoning_effort:
-                    inventory = await self.model_inventory(
-                        cwd=cwd, process_environment=launch_environment
+            with timing.measure(ActivationStage.TOTAL):
+                with timing.measure(ActivationStage.READINESS):
+                    readiness = await self.readiness(executable=executable)
+                if not readiness.ready:
+                    raise RuntimeError(readiness.safe_error or "harness_runtime_not_ready")
+                launch_environment = dict(process_environment or {})
+                with timing.measure(ActivationStage.PLAN):
+                    model, _options, _environment = self._session_options(
+                        model_id=model_id,
+                        executable=readiness.executable or executable,
+                        process_environment=launch_environment,
+                        session_id=invocation_id,
+                        user_id=user_id,
+                        turn_id_provider=_invocation_turn_identity,
+                        source_text=input_text,
                     )
-                    selected = next(
-                        (
-                            item
-                            for item in inventory.models
-                            if item.model == model.model_name
-                            or item.model_id == model.model_name
-                            or (not model.model_name and item.is_default)
-                        ),
-                        None,
+                    model_intent, credential_port = model.runtime_model()
+                    if minimum_reasoning:
+                        # 声明优先：我们在这条坐标上知道有哪些档；只有压根没声明档位形态时，
+                        # 才退回 runtime 上报的清单兜底（订阅模型等我们未登记的情况）。
+                        reasoning_effort = minimum_effort(model.reasoning_options)
+                        if not reasoning_effort:
+                            inventory = await self.model_inventory(
+                                cwd=cwd, process_environment=launch_environment
+                            )
+                            selected = next(
+                                (
+                                    item
+                                    for item in inventory.models
+                                    if item.model == model.model_name
+                                    or item.model_id == model.model_name
+                                    or (not model.model_name and item.is_default)
+                                ),
+                                None,
+                            )
+                            supported = (
+                                {item.value for item in selected.supported_reasoning_efforts}
+                                if selected
+                                else set()
+                            )
+                            reasoning_effort = next(
+                                (level for level in REASONING_EFFORT_LEVELS if level in supported),
+                                "",
+                            )
+                        # Missing effort metadata does not make generation unsupported;
+                        # an empty effort preserves the subscription model's default.
+                    else:
+                        require_declared_effort(model.reasoning_options, reasoning_effort)
+                    model_intent = replace(
+                        model_intent,
+                        reasoning_effort=reasoning_effort,
+                        service_tier=service_tier,
                     )
-                    supported = (
-                        {item.value for item in selected.supported_reasoning_efforts}
-                        if selected
-                        else set()
-                    )
-                    reasoning_effort = next(
-                        (level for level in REASONING_EFFORT_LEVELS if level in supported), ""
-                    )
-                # Missing effort metadata does not make generation unsupported;
-                # an empty effort preserves the subscription model's default.
-            else:
-                require_declared_effort(model.reasoning_options, reasoning_effort)
-            model_intent = replace(
-                model_intent,
-                reasoning_effort=reasoning_effort,
-                service_tier=service_tier,
-            )
-            launch_secrets, secret_port = _launch_secret_contract(launch_environment)
-            request = OpenSessionRequest(
-                product_session_id=invocation_id,
-                cwd=cwd,
-                model=model_intent,
-                credential_port=credential_port,
-                launch_secrets=launch_secrets,
-                secret_port=secret_port,
-                permission=PermissionIntent(
-                    mode=permission_mode,
-                    revision=f"permission:{permission_mode.value}",
-                    writable_roots=writable_roots,
-                    local_sockets=(
-                        (self._local_socket,) if bridge_token and self._local_socket else ()
+                launch_secrets, secret_port = _launch_secret_contract(launch_environment)
+                skill_configurations: tuple[SkillConfiguration, ...] = ()
+                if not ephemeral:
+                    with timing.measure(ActivationStage.SKILLS):
+                        skill_configurations = await self.skill_configurations(
+                            cwd=cwd, user_id=user_id, timing=timing
+                        )
+                request = OpenSessionRequest(
+                    product_session_id=invocation_id,
+                    cwd=cwd,
+                    execution_scope=invocation_id,
+                    model=model_intent,
+                    credential_port=credential_port,
+                    launch_secrets=launch_secrets,
+                    secret_port=secret_port,
+                    permission=permission
+                    or PermissionIntent(
+                        mode=permission_mode,
+                        revision=f"permission:{permission_mode.value}",
+                        writable_roots=writable_roots,
+                        network_access=network_access,
                     ),
-                    network_access=network_access,
-                ),
-                base_instructions=base_instructions,
-                developer_instructions=developer_instructions,
-                skill_roots=() if ephemeral else SERVICE_SKILL_ROOTS,
-                skill_configurations=(
-                    () if ephemeral else await self.skill_configurations(cwd=cwd, user_id=user_id)
-                ),
-                ephemeral=ephemeral,
-                required_capabilities=required_capabilities,
-            )
-            provider = self._gateway.provider(self.runtime_id)
-            receipt = await self.activation.acquire(
-                provider,
-                ResourceRequest(
-                    invocation_id,
-                    ResourcePurpose.INVOCATION,
-                    time.time() + provider.resource_policy.wait_seconds,
-                    request,
-                ),
-            )
-            try:
-                runtime_session = await provider.open(
-                    replace(request, reservation_id=receipt.reservation_id)
+                    base_instructions=base_instructions,
+                    developer_instructions=developer_instructions,
+                    service_tools=(SERVICE_BRIDGE_TOOL,) if bridge_token else (),
+                    skill_roots=() if ephemeral else SERVICE_SKILL_ROOTS,
+                    skill_configurations=skill_configurations,
+                    timing=timing,
+                    ephemeral=ephemeral,
+                    required_capabilities=required_capabilities,
                 )
-            finally:
-                await provider.cancel_resource(receipt.reservation_id)
+                provider = self._gateway.provider(self.runtime_id)
+                with timing.measure(ActivationStage.ADMISSION):
+                    receipt = await self.activation.acquire(
+                        provider,
+                        ResourceRequest(
+                            invocation_id,
+                            ResourcePurpose.INVOCATION,
+                            time.time() + provider.resource_policy.wait_seconds,
+                            request,
+                        ),
+                    )
+                with timing.measure(ActivationStage.ATTACH):
+                    try:
+                        runtime_session = await provider.open(
+                            replace(request, reservation_id=receipt.reservation_id)
+                        )
+                    finally:
+                        await provider.cancel_resource(receipt.reservation_id)
+
+            async def respond_service(callback: RuntimeCallbackRequest) -> None:
+                prompt = callback.prompt if isinstance(callback.prompt, Mapping) else {}
+                if (
+                    callback.kind is CallbackKind.DYNAMIC_TOOL
+                    and callback.native_session_id == runtime_session.binding.opaque_session_ref
+                    and callback.native_turn_id
+                    and prompt.get("tool") == SERVICE_BRIDGE_TOOL.name
+                ):
+                    try:
+                        result = await execute_service_tool(
+                            prompt.get("arguments"),
+                            session_id=invocation_id,
+                            token=bridge_token,
+                            local_socket=self._local_socket,
+                        )
+                    except Exception:
+                        self._logger.exception(
+                            "service_tool_execution_failed invocation_id=%s", invocation_id
+                        )
+                        result = {"ok": False, "error": "bridge_execution_failed"}
+                else:
+                    result = {"ok": False, "error": "bridge_access_denied"}
+                await runtime_session.respond(
+                    RuntimeCallbackResponse(
+                        request_id=callback.request_id,
+                        decision=CallbackKind.DYNAMIC_TOOL.value,
+                        values=result,
+                        idempotency_key=callback.request_id,
+                        responded_at=datetime.now(UTC).isoformat(),
+                    )
+                )
 
             async def observe(observation: RuntimeObservation) -> None:
+                if (
+                    isinstance(observation, RuntimeCallbackRequest)
+                    and observation.audience is CallbackAudience.SERVICE
+                ):
+                    task = asyncio.create_task(respond_service(observation))
+                    service_callbacks.add(task)
+                    task.add_done_callback(service_callbacks.discard)
+                    return
                 if isinstance(observation, RuntimeEvent):
                     if observation.kind is RuntimeEventKind.RUNTIME_EVIDENCE:
                         process, rpc = decode_evidence(observation)
@@ -904,6 +984,8 @@ class LiveSessionService:
             result = await driver.submit(
                 TurnRequest(command_id=invocation_id, items=items or (input_text,))
             )
+            if service_callbacks:
+                await asyncio.gather(*service_callbacks)
             trace.invocation_completed(
                 purpose=purpose,
                 model_key=model.key,
@@ -929,6 +1011,10 @@ class LiveSessionService:
             # outcome. Exceptions after submission remain uncertain, without replay.
             raise OneShotRuntimeError(submitted=submitted) from exc
         finally:
+            for task in tuple(service_callbacks):
+                task.cancel()
+            if service_callbacks:
+                await asyncio.gather(*service_callbacks, return_exceptions=True)
             self._one_shot_tasks.pop(invocation_id, None)
             self._one_shot_drivers.pop(invocation_id, None)
             if driver is not None:
@@ -1044,70 +1130,12 @@ class LiveSessionService:
 
     @staticmethod
     def _launch_environment(live: LiveSession) -> dict[str, str]:
-        """Keep product capability credentials separate from skill credential alignment."""
+        """Keep session-scoped bridge identity out of the shared App Server process."""
 
-        return LiveSessionService._bridge_environment(
-            live.process_environment,
-            scope_id=live.id,
-            token=live.bridge_token,
-            local_socket=live.local_socket,
-        )
-
-    @staticmethod
-    def _bridge_environment(
-        base: Mapping[str, str],
-        *,
-        scope_id: str,
-        token: str,
-        local_socket: Path | None,
-    ) -> dict[str, str]:
-        """Expose the installed product bridge command and its private execution scope."""
-
-        environment = dict(base)
-        environment.pop(BRIDGE_SOCKET_ENV, None)
-        base_url = os.environ.get(INTERNAL_BASE_URL_ENV, "")
-        if local_socket:
-            environment[BRIDGE_SOCKET_ENV] = str(local_socket)
-        if base_url or local_socket:
-            bridge = LiveSessionService._resolve_bridge_executable()
-            if bridge is not None:
-                executable_dir = str(bridge.parent)
-                inherited_path = environment.get(
-                    EXECUTABLE_PATH_ENV, os.environ.get(EXECUTABLE_PATH_ENV, "")
-                )
-                entries = [entry for entry in inherited_path.split(os.pathsep) if entry]
-                environment[EXECUTABLE_PATH_ENV] = os.pathsep.join(
-                    [executable_dir, *(entry for entry in entries if entry != executable_dir)]
-                )
-            environment.update(
-                {
-                    INTERNAL_BASE_URL_ENV: base_url,
-                    BRIDGE_SESSION_ENV: scope_id,
-                    BRIDGE_TOKEN_ENV: token,
-                }
-            )
-        return environment
-
-    @staticmethod
-    def _resolve_bridge_executable() -> Path | None:
-        """Resolve and probe the first usable product/PATH/environment bridge."""
-        seen: set[Path] = set()
-        for directory in command_directories():
-            candidate = resolve_command(BRIDGE_COMMAND, directory)
-            if candidate is None or candidate in seen:
-                continue
-            seen.add(candidate)
-            if LiveSessionService._probe_bridge(candidate):
-                return candidate
-        _LOGGER.warning(
-            "scholarseed-bridge executable unavailable; no working launcher was selected"
-        )
-        return None
-
-    @staticmethod
-    def _probe_bridge(path: Path) -> bool:
-        """Probe bridge help without entering a product operation."""
-        return probe_command(path)
+        blocked = {BRIDGE_SESSION_ENV, BRIDGE_TOKEN_ENV, BRIDGE_SOCKET_ENV, INTERNAL_BASE_URL_ENV}
+        return {
+            name: value for name, value in live.process_environment.items() if name not in blocked
+        }
 
     def _session_options(
         self,

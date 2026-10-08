@@ -13,7 +13,7 @@ document.
 
 ## 1. Scope
 
-`web-search` runs **exactly one** provider per invocation and publishes **one** result.
+`web-search` runs **exactly one** provider per invocation and writes **one** result for publication.
 There are three logical legs, but only two of them are produced by this skill's scripts:
 
 | Leg | `provider` value | Produced by | Result form |
@@ -46,25 +46,23 @@ scholarseed-skill-python <SKILL_DIR>/scripts/invoke.py --provider visible-browse
 
 ## 3. Where the result lands, and what the exit code means
 
-`invoke.py` is the **only** writer and publisher of the result file.
+`invoke.py` writes the result file; the model publishes it through the product tool.
 
 1. It runs the selected provider, getting back `(payload, search_exit_code)`.
-2. It writes `payload` to **`web-search-result.json`** (relative to the process working
+2. It writes `payload` to **`web-search-result.json`** by default, or the relative JSON filename
+   supplied by `--artifact-path` (relative to the process working
    directory; inside a ScholarSeed Invocation this is the one-shot workspace) as sorted-key,
    `ensure_ascii=False`, UTF-8 JSON with a trailing newline.
-3. It publishes that file as a **`role: final` Invocation artifact** through the product
-   bridge (`scholarseed-bridge artifact publish`). The packaged Desktop injects its
-   relocatable bridge through `SCHOLARSEED_BRIDGE_DIR` and `PATH`; publication never imports
-   `service` from the Python interpreter used to run this Skill.
-4. **`invoke.py`'s process exit code is the *publish* status, not the search status.**
+3. After the script returns, call the `scholarseed_bridge` model tool with
+   `{"capability":"artifact","operation":"publish","request":{"path":"<actual artifact filename>","role":"final"}}`.
+4. **`invoke.py`'s process exit code is the file-write status, not the search status or publication status.**
 
 > **Read the search outcome from the artifact's `status` field, never from the process
-> exit code.** A `failed` search still writes a well-formed artifact and still exits `0`
-> if publication succeeded. Conversely, a non-zero exit means the artifact could not be
-> published (bridge missing / unavailable), so there may be **no** artifact to read.
+> exit code.** A `failed` search still writes a well-formed artifact and exits `0`
+> if writing succeeded. Check the separate tool response before claiming publication.
 
-The artifact is registered for **every** search outcome — `completed`, `empty`,
-`unavailable`, `action_required`, and `failed` all produce a readable artifact.
+Publish every written result, including `completed`, `empty`, `unavailable`,
+`action_required`, and `failed` outcomes.
 
 ---
 
@@ -121,7 +119,7 @@ whether to fall through to the next leg or stop. The skill never switches provid
 itself.
 
 (Reminder: these are the *search* exit codes from `official.search` / `browser.search`.
-`invoke.py` returns the *publish* exit code instead — see §3.)
+`invoke.py` returns the *file-write* exit code instead — see §3.)
 
 ---
 

@@ -66,7 +66,7 @@ const IMPORT_CHOICES: readonly ImportChoice[] = [
 
 const IMPORT_CARD_CLASS_NAME = [
   'h-full w-full min-w-0 flex-col justify-start overflow-hidden',
-  'rounded-[var(--vds-radius-8)] p-[var(--vds-space-6)] text-center !whitespace-normal !gap-[var(--vds-space-5)]'
+  'rounded-[var(--vds-radius-8)] [&&]:![border-width:var(--vds-border-width-1)] p-[var(--vds-space-6)] text-center !whitespace-normal !gap-0'
 ].join(' ')
 const IMPORT_ICON_CLASS_NAME =
   'grid size-10 place-items-center rounded-[var(--vds-radius-4)] border border-[var(--vds-fill-6)] bg-[var(--vds-bg-white-default)] text-[var(--vds-brand-text-primary)]'
@@ -164,6 +164,7 @@ export function ImportDialog(): React.JSX.Element {
     }}>
       <DialogContent
         aria-label={resolving ? t('localImport.resolveLabel') : t('localImport.title')}
+        className={resolving ? undefined : 'w-[min(540px,calc(100vw-48px))]'}
         data-testid="resource-import-dialog"
         onDragOver={(event) => {
           if (!resolving && hasDraggedFiles(event.dataTransfer)) event.preventDefault()
@@ -238,7 +239,7 @@ export function ImportDialog(): React.JSX.Element {
                 {t('localImport.description')}
               </DialogDescription>
             </DialogHeader>
-            <div className="grid grid-cols-1 gap-[var(--vds-space-5)] sm:grid-cols-2">
+            <div className="grid grid-cols-[minmax(0,240px)] justify-center gap-[var(--vds-space-5)] sm:grid-cols-[repeat(2,240px)]">
               {IMPORT_CHOICES.map((choice) => {
                 const dropActive = dropMode === choice.mode
                 const ChoiceIcon = choice.icon
@@ -288,8 +289,8 @@ export function ImportDialog(): React.JSX.Element {
                         ? <Spinner size="sm" />
                         : <ChoiceIcon className="size-4" strokeWidth={1.8} />}
                     </span>
-                    <span className="w-full min-w-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">{t(choice.titleKey)}</span>
-                    <span className="w-full min-w-0 max-w-[360px] break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-tertiary)]">{t(choice.detail)}</span>
+                    <span className="mt-[var(--vds-space-5)] w-full min-w-0 text-[length:var(--vds-font-subhead)] font-[var(--vds-fw-medium)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-primary)]">{t(choice.titleKey)}</span>
+                    <span className="mt-[var(--vds-space-3)] w-full min-w-0 max-w-[360px] break-words text-[length:var(--vds-font-body-lv2)] leading-[var(--vds-lh-subhead)] text-[var(--vds-text-tertiary)]">{t(choice.detail)}</span>
                   </Button>
                 )
                 if (usesUnifiedPicker) {

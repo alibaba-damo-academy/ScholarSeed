@@ -299,6 +299,12 @@ interface DocumentWorkspaceEditorDelegate {
   changed(): void
 }
 
+interface PendingSave {
+  changeVersion: number
+  overwrite: boolean
+  promise: Promise<boolean>
+}
+
 function emptyCapabilities(): LoadedDocument['capabilities'] {
   return {
     can_preview: false,
@@ -396,7 +402,7 @@ export class DocumentWorkspace {
   private readonly listeners = new Set<() => void>()
   private nextId = 1
   private readonly saveDelegates = new Map<string, Map<symbol, DocumentSaveDelegate>>()
-  private readonly saves = new Map<string, Promise<boolean>>()
+  private readonly saves = new Map<string, PendingSave>()
   private readonly textHistories = new Map<string, TextHistoryState>()
   private readonly openings = new Map<string, Promise<string>>()
   private nextHistorySequence = 0
@@ -2061,15 +2067,41 @@ export class DocumentWorkspace {
   }
 
   async save(sessionId: string, overwrite = false): Promise<boolean> {
+    const requestedChangeVersion = this.state.sessions[sessionId]?.changeVersion ?? -1
     const active = this.saves.get(sessionId)
-    if (active) return active
-    const saving = this.commitSession(sessionId, overwrite)
-    this.saves.set(sessionId, saving)
+    if (
+      active
+      && requestedChangeVersion <= active.changeVersion
+      && (!overwrite || active.overwrite)
+    ) return active.promise
+    const saving = active
+      ? active.promise.then((saved) => {
+          if (!saved && !overwrite) return false
+          return this.commitSession(sessionId, overwrite)
+        })
+      : this.commitSession(sessionId, overwrite)
+    const pending = { changeVersion: requestedChangeVersion, overwrite, promise: saving }
+    this.saves.set(sessionId, pending)
     try {
       return await saving
     } finally {
-      if (this.saves.get(sessionId) === saving) this.saves.delete(sessionId)
+      if (this.saves.get(sessionId) === pending) this.saves.delete(sessionId)
     }
+  }
+
+  async reviewDraftBytes(sessionId: string): Promise<Uint8Array | null> {
+    let session = this.state.sessions[sessionId]
+    if (!session || !session.dirty) return null
+    const delegate = Array.from(this.saveDelegates.get(sessionId)?.values() ?? []).at(-1)
+    delegate?.prepare?.()
+    if (delegate?.beforeSave) {
+      await delegate.beforeSave()
+      delegate.prepare?.()
+    }
+    session = this.state.sessions[sessionId]
+    if (!session || !session.dirty) return null
+    const serialized = delegate ? await delegate.serialize() : session.bytes
+    return serialized ? copyBytes(serialized) : null
   }
 
   async saveFocused(): Promise<boolean> {

@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from apps.serve.tests import pdf as pdf_fixture
@@ -33,6 +35,7 @@ from service.chat.service.history import HistoryService
 from service.content.persistence.catalog import ContentCatalog
 from service.content.service.context import ContentContextProvider
 from service.content.service.port import ContentService, ProjectRegistry
+from service.literature.api.reading import register_reading_routes
 from service.literature.persistence import files as literature_files
 from service.literature.persistence.store import LiteratureRepository, edit_library
 from service.literature.schema import (
@@ -44,10 +47,12 @@ from service.literature.schema import (
 )
 from service.literature.service.attachment import LiteratureAttachmentContent
 from service.literature.service.context import LiteratureContextProvider
+from service.literature.service.pdf import LiteraturePdf
 from service.platform.context import (
     AssistantContextBudget,
     AssistantContextResolveRequest,
     ContextItemRole,
+    ContextOrigin,
     ContextRef,
     ContextRefKind,
     ContextResolutionState,
@@ -55,6 +60,7 @@ from service.platform.context import (
     SearchScope,
     SelectionAnchor,
 )
+from service.workbench.domain.model import WorkbenchFormatPolicy
 
 SESSION_ID = "context-provider-session"
 
@@ -64,6 +70,31 @@ def _selection_hash(text: str) -> str:
 
 
 class ContentContextProviderContract(unittest.TestCase):
+    def test_literature_range_snapshot_is_materialized_when_added(self) -> None:
+        literature_id = "paper-range-snapshot"
+        self.literature_repository.save(LiteratureItem(id=literature_id, title="Range"))
+        payload = "\n".join(f"row-{index}" for index in range(1, 152)).encode()
+        attachment = self.stage_attachment(literature_id, "evidence.csv", payload)
+        app = FastAPI()
+        register_reading_routes(
+            app,
+            self.literature_repository,
+            LiteratureAttachmentContent(self.literature_repository),
+            LiteraturePdf(self.literature_repository),
+            WorkbenchFormatPolicy(),
+        )
+        route = (
+            f"/api/v1/literatures/{literature_id}/attachments/{attachment['id']}/selection-snapshot"
+        )
+        body = {"source_revision": attachment["revision"], "sheet": "evidence", "range": "A1:A151"}
+        with TestClient(app) as client:
+            response = client.post(route, json=body)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["snapshot_text"], payload.decode())
+            self.assertEqual(response.json()["source_revision"], attachment["revision"])
+            stale = client.post(route, json={**body, "source_revision": "sha256:stale"})
+            self.assertEqual(stale.status_code, 412)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="content-context-")
         root = Path(self.temporary.name)
@@ -123,6 +154,10 @@ class ContentContextProviderContract(unittest.TestCase):
                 ContextRefKind.SESSION: SessionContextProvider(
                     HistoryService(self.session_catalog, self.events),
                 ),
+            },
+            active_document_resolvers={
+                ContextRefKind.FILE: self.provider,
+                ContextRefKind.LITERATURE: self.literature_provider,
             },
         )
 
@@ -475,6 +510,21 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertEqual(len(model_lines), 3)
         model_payload = json.loads(model_lines[1])
         self.assertEqual(model_payload["evidence"][0]["content"], source_text)
+        for omitted in (
+            "schema",
+            "session_id",
+            "snapshot_id",
+            "project_id",
+            "project_policy",
+            "material_policy",
+            "citation_policy",
+            "retrieval_directive",
+            "unavailable_material_policy",
+        ):
+            with self.subTest(omitted=omitted):
+                self.assertNotIn(omitted, model_payload)
+        self.assertEqual(result.context.snapshot.project_id, self.project.id)
+        self.assertEqual(result.context.snapshot.session_id, SESSION_ID)
         self.assertNotIn("nonce-agent-visible", repr(result.context.surface_refs))
         self.assertEqual(result.context.surface_refs[0]["source_id"], "agent.md")
         self.assertEqual(result.context.surface_refs[0]["title"], "agent.md")
@@ -502,7 +552,7 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertIsNotNone(result.context)
         assert result.context is not None
         payload = json.loads(result.context.model_context.splitlines()[1])
-        self.assertEqual(payload["evidence"], [])
+        self.assertNotIn("evidence", payload)
         self.assertEqual(len(payload["scopes"]), 1)
         self.assertEqual(payload["scopes"][0]["source_id"], "folder")
         self.assertEqual(
@@ -610,6 +660,263 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertIsNone(result.context)
         self.assertIsNotNone(result.failure)
 
+    def test_active_project_file_is_metadata_only_and_turn_scoped(self) -> None:
+        self.content.write_text(self.project.id, "notes.md", "private document body")
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="active-file-turn",
+            expected_revision=0,
+            question="Summarize this file",
+            active_document={"kind": "project_file", "path": "notes.md"},
+        )
+        self.assertIsNotNone(result.context)
+        context = result.context
+        assert context is not None
+        card = json.loads(context.model_context.splitlines()[1])
+        self.assertEqual(card["current_document"]["locator"], "notes.md")
+        self.assertEqual(card["current_document"]["read_tool"], "scholarseed_bridge resource read")
+        self.assertNotIn("private document body", context.model_context)
+        self.assertEqual(context.surface_refs, ())
+
+    def test_invalid_active_file_silently_keeps_ordinary_turn(self) -> None:
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="missing-active-file",
+            expected_revision=0,
+            question="What is two plus two?",
+            active_document={"kind": "project_file", "path": "missing.md"},
+        )
+        self.assertIsNotNone(result.context)
+        assert result.context is not None
+        self.assertNotIn('"current_document":', result.context.model_context)
+        self.assertEqual(result.context.surface_refs, ())
+
+    def test_queued_active_file_keeps_original_focus_and_rejects_reuse(self) -> None:
+        self.content.write_text(self.project.id, "first.md", "first body")
+        self.content.write_text(self.project.id, "second.md", "second body")
+        queued = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-focus-turn",
+            expected_revision=0,
+            question="Read this file",
+            active_document={"kind": "project_file", "path": "first.md"},
+        )
+        assert queued.context is not None
+        resumed = self.assistant.resume_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-focus-turn",
+            snapshot_id=queued.context.snapshot.snapshot_id,
+            question="Read this file",
+        )
+        assert resumed.context is not None
+        card = json.loads(resumed.context.model_context.splitlines()[1])
+        self.assertEqual(card["current_document"]["locator"], "first.md")
+        reused = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-focus-turn",
+            expected_revision=0,
+            question="Read this file",
+            active_document={"kind": "project_file", "path": "second.md"},
+        )
+        self.assertIsNone(reused.context)
+        self.assertIsNotNone(reused.failure)
+
+    def test_explicit_source_stays_visible_alongside_implicit_focus(self) -> None:
+        self.content.write_text(self.project.id, "explicit.md", "explicit body")
+        self.content.write_text(self.project.id, "focused.md", "focused body")
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(self.ref(ContextRefKind.FILE, "explicit.md"),),
+        )
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="explicit-and-focused",
+            expected_revision=selection.revision,
+            question="Read the explicitly attached file",
+            active_document={"kind": "project_file", "path": "focused.md"},
+        )
+        assert result.context is not None
+        card = json.loads(result.context.model_context.splitlines()[1])
+        self.assertEqual(card["current_document"]["locator"], "focused.md")
+        self.assertEqual(card["evidence"][0]["content"], "explicit body")
+        self.assertEqual(len(result.context.surface_refs), 1)
+
+    def test_active_literature_points_to_exact_attachment(self) -> None:
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Supplementary document")
+        payload = document.tobytes()
+        document.close()
+        self.literature_repository.save(
+            LiteratureItem(id="active-paper", title="Active Paper"), self.project.id
+        )
+        attachment = self.stage_attachment(
+            "active-paper",
+            "supplementary.pdf",
+            payload,
+            role=AttachmentRole.SUPPLEMENTARY,
+            media_type=PDF_MEDIA_TYPE,
+        )
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="active-literature-turn",
+            expected_revision=0,
+            question="Summarize this paper",
+            active_document={
+                "kind": "literature",
+                "literature_id": "active-paper",
+                "attachment_id": attachment["id"],
+            },
+        )
+        self.assertIsNotNone(result.context)
+        assert result.context is not None
+        card = json.loads(result.context.model_context.splitlines()[1])
+        self.assertEqual(card["current_document"]["attachment_id"], attachment["id"])
+        self.assertEqual(card["current_document"]["attachment_name"], "supplementary.pdf")
+        self.assertEqual(card["current_document"]["locator"], "literature:active-paper")
+        self.assertNotIn("Supplementary document", result.context.model_context)
+        self.assertEqual(result.context.surface_refs, ())
+
+        queued = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-active-literature-turn",
+            expected_revision=0,
+            question="Summarize this paper",
+            active_document={
+                "kind": "literature",
+                "literature_id": "active-paper",
+                "attachment_id": attachment["id"],
+            },
+        )
+        assert queued.context is not None
+        resumed = self.assistant.resume_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-active-literature-turn",
+            snapshot_id=queued.context.snapshot.snapshot_id,
+            question="Summarize this paper",
+        )
+        self.assertIsNotNone(resumed.context)
+
+    def test_selected_literatures_are_turn_scoped_tool_sources(self) -> None:
+        for literature_id in ("selected-first", "selected-second"):
+            self.literature_repository.save(
+                LiteratureItem(id=literature_id, title=literature_id), self.project.id
+            )
+        selected = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="selected-literatures",
+            expected_revision=0,
+            question="Summarize these papers",
+            selected_literature_ids=("selected-first", "selected-second"),
+        )
+        assert selected.context is not None
+        card = json.loads(selected.context.model_context.splitlines()[1])
+        self.assertEqual(
+            [scope["locator"] for scope in card["scopes"]],
+            ["literature:selected-first", "literature:selected-second"],
+        )
+        self.assertTrue(all("source_revision" not in scope for scope in card["scopes"]))
+        self.assertEqual(selected.context.surface_refs, ())
+        self.assertEqual(
+            [item.ref.origin for item in selected.context.snapshot.items],
+            [ContextOrigin.CURRENT_SELECTION, ContextOrigin.CURRENT_SELECTION],
+        )
+        self.assertEqual(self.assistant.selection(SESSION_ID).refs, ())
+        unselected = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="selected-literatures-cleared",
+            expected_revision=0,
+            question="A new question",
+        )
+        assert unselected.context is not None
+        self.assertEqual(unselected.context.model_context, "")
+
+    def test_queued_selected_literatures_keep_enqueue_selection(self) -> None:
+        for literature_id in ("queued-first", "queued-second"):
+            self.literature_repository.save(
+                LiteratureItem(id=literature_id, title=literature_id), self.project.id
+            )
+        queued = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-literatures",
+            expected_revision=0,
+            question="Read these papers",
+            selected_literature_ids=("queued-first",),
+        )
+        assert queued.context is not None
+        resumed = self.assistant.resume_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-literatures",
+            snapshot_id=queued.context.snapshot.snapshot_id,
+            question="Read these papers",
+        )
+        assert resumed.context is not None
+        self.assertIn("literature:queued-first", resumed.context.model_context)
+        self.assertNotIn("literature:queued-second", resumed.context.model_context)
+        changed = self.assistant.freeze_queued(
+            session_id=SESSION_ID,
+            client_turn_id="queued-literatures",
+            expected_revision=0,
+            question="Read these papers",
+            selected_literature_ids=("queued-second",),
+        )
+        self.assertIsNotNone(changed.failure)
+
+    def test_selected_literature_cannot_read_outside_session_project(self) -> None:
+        self.literature_repository.save(LiteratureItem(id="unlinked-paper", title="Unlinked paper"))
+        result = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="unlinked-literature",
+            expected_revision=0,
+            question="Read this paper",
+            selected_literature_ids=("unlinked-paper",),
+        )
+        self.assertIsNone(result.context)
+        assert result.failure is not None
+        self.assertEqual(result.failure.issues[0].reason, "literature_item_missing")
+
+    def test_global_active_literature_accepts_library_but_not_project_files(self) -> None:
+        self.literature_repository.save(LiteratureItem(id="global-paper", title="Global Paper"))
+        document = pdf_fixture.open()
+        document.new_page().insert_text((72, 72), "Global document")
+        attachment = self.stage_attachment(
+            "global-paper", "global.pdf", document.tobytes(), media_type=PDF_MEDIA_TYPE
+        )
+        document.close()
+        global_assistant = AssistantService(
+            AssistantStore(self.session_catalog.database),
+            project_for_session=lambda _session_id: None,
+            active_document_resolvers={
+                ContextRefKind.FILE: self.provider,
+                ContextRefKind.LITERATURE: self.literature_provider,
+            },
+        )
+        literature = global_assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="global-active-literature",
+            expected_revision=0,
+            question="Summarize this paper",
+            active_document={
+                "kind": "literature",
+                "literature_id": "global-paper",
+                "attachment_id": attachment["id"],
+            },
+        )
+        assert literature.context is not None
+        card = json.loads(literature.context.model_context.splitlines()[1])
+        self.assertEqual(card["current_document"]["name"], "Global Paper")
+        project_file = global_assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="global-active-project-file",
+            expected_revision=0,
+            question="What is this file?",
+            active_document={"kind": "project_file", "path": "notes.md"},
+        )
+        assert project_file.context is not None
+        self.assertNotIn('"current_document":', project_file.context.model_context)
+
     def test_literature_resolves_stable_item_id_to_tool_scope(self) -> None:
         with edit_library(self.project.id, self.literature_database) as edit:
             edit.view = LiteratureView(
@@ -667,7 +974,7 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertIsNotNone(frozen.context)
         assert frozen.context is not None
         payload = json.loads(frozen.context.model_context.splitlines()[1])
-        self.assertEqual(payload["evidence"], [])
+        self.assertNotIn("evidence", payload)
         self.assertEqual(payload["scopes"][0]["locator"], "literature:paper-stable-id")
         self.assertNotIn("nonce-literature-abstract", frozen.context.model_context)
 
@@ -735,6 +1042,7 @@ class ContentContextProviderContract(unittest.TestCase):
                     f"sha256:{hashlib.sha256(selected.encode('utf-8')).hexdigest()}"
                 ),
                 preview_text="forged preview",
+                snapshot_text=selected,
             ),
         )
         result = self.resolve(self.literature_provider, ref)
@@ -754,7 +1062,7 @@ class ContentContextProviderContract(unittest.TestCase):
 
         self.assertEqual(result.state, ContextResolutionState.READY)
         self.assertEqual(result.items[0].text, selected)
-        self.assertEqual(result.items[0].selection_source_label, "Selection paper · 划词")
+        self.assertEqual(result.items[0].selection_source_label, " 创建时标题 · 划词 ")
         self.assertEqual(result.items[0].label, "Selection paper · 划词")
         unmarked = self.resolve(self.literature_provider, replace(ref, selection_source_label=None))
         self.assertIsNone(unmarked.items[0].selection_source_label)
@@ -770,11 +1078,11 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertEqual(model_payload["evidence"][0]["content_level"], "selection")
         self.assertEqual(model_payload["evidence"][0]["locator"], "literature:paper-selection-id")
         surrounding_policy = model_payload["evidence"][0]["surrounding_context_policy"]
-        self.assertIn("scholarseed-bridge literature read", surrounding_policy)
+        self.assertIn("scholarseed_bridge literature read", surrounding_policy)
         self.assertNotIn("pdf read/search", surrounding_policy)
         self.assertEqual(model_payload["evidence"][0]["page"], 1)
         self.assertEqual(
-            frozen.context.snapshot.items[0].ref.selection_source_label, "Selection paper · 划词"
+            frozen.context.snapshot.items[0].ref.selection_source_label, " 创建时标题 · 划词 "
         )
         self.assertNotIn("selection_source_label", frozen.context.model_context)
         citation = self.literature_provider.citation_document(self.project.id, ref)
@@ -798,15 +1106,19 @@ class ContentContextProviderContract(unittest.TestCase):
                 refs=(failed_ref,),
             )
             revision = updated.revision
-            failure = self.assistant.freeze(
+            frozen = self.assistant.freeze(
                 session_id=SESSION_ID,
                 client_turn_id=f"failed-literature-{index}",
                 expected_revision=revision,
                 question="What is this?",
-            ).failure
-            assert failure is not None
-            self.assertEqual(failure.issues[0].selection_source_label, ref.selection_source_label)
-            self.assertEqual(failure.issues[0].label, ref.label)
+            )
+            self.assertIsNone(frozen.failure)
+            assert frozen.context is not None
+            self.assertEqual(frozen.context.snapshot.items[0].excerpt_text, selected)
+            self.assertEqual(
+                frozen.context.snapshot.items[0].ref.selection_source_label,
+                ref.selection_source_label,
+            )
 
     def test_literature_pdf_selection_uses_supplementary_attachment_without_primary(self) -> None:
         document = pdf_fixture.open()
@@ -848,6 +1160,7 @@ class ContentContextProviderContract(unittest.TestCase):
                 },
                 selected_text_hash=_selection_hash(selected),
                 preview_text=selected,
+                snapshot_text=selected,
             ),
         )
 
@@ -859,8 +1172,121 @@ class ContentContextProviderContract(unittest.TestCase):
             self.literature_provider,
             replace(ref, anchor=replace(ref.anchor, document_id="missing-attachment")),
         )
-        self.assertEqual(missing.state, ContextResolutionState.UNAVAILABLE)
-        self.assertEqual(missing.issues[0].code, "literature_source_unavailable")
+        self.assertEqual(missing.state, ContextResolutionState.READY)
+        self.assertEqual(missing.items[0].text, selected)
+
+    def test_literature_pdf_snapshot_resolves_without_reopening_attachment(self) -> None:
+        snapshot = "Frozen literature PDF selection"
+        ref = ContextRef(
+            ref_id="ref-missing-literature-snapshot",
+            kind=ContextRefKind.LITERATURE,
+            source_id="missing-literature-item",
+            label="Missing paper · 划词",
+            selection_source_label="Missing paper",
+            source_revision="sha256:" + "0" * 64,
+            anchor=SelectionAnchor(
+                document_id="missing-attachment",
+                locator={"kind": "pdf", "page": 1, "quads": [[0.1, 0.1, 0.9, 0.2]]},
+                selected_text_hash="sha256:" + "f" * 64,
+                preview_text="display only",
+                snapshot_text=snapshot,
+            ),
+        )
+
+        result = self.resolve(self.literature_provider, ref)
+
+        self.assertEqual(result.state, ContextResolutionState.READY)
+        self.assertEqual(result.source_revision, ref.source_revision)
+        self.assertEqual(result.items[0].text, snapshot)
+        self.assertEqual(result.items[0].content_hash, _selection_hash(snapshot))
+        legacy = self.resolve(
+            self.literature_provider,
+            replace(ref, anchor=replace(ref.anchor, snapshot_text=None)),
+        )
+        self.assertEqual(legacy.state, ContextResolutionState.UNAVAILABLE)
+        self.assertEqual(legacy.issues[0].code, "selection_snapshot_required")
+
+    def test_literature_xlsx_selection_resolves_exact_supplementary_attachment(self) -> None:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Cases"
+        sheet["B2"] = "Excel-only evidence"
+        output = BytesIO()
+        workbook.save(output)
+        payload = output.getvalue()
+        literature_id = "paper-xlsx-selection"
+        self.literature_repository.save(
+            LiteratureItem(id=literature_id, title="Spreadsheet paper"),
+            self.project.id,
+        )
+        primary_document = pdf_fixture.open()
+        primary_document.new_page().insert_text((72, 72), "Unrelated PDF")
+        primary_payload = primary_document.tobytes()
+        primary_document.close()
+        self.stage_attachment(
+            literature_id,
+            "primary.pdf",
+            primary_payload,
+            kind="pdf",
+            role=AttachmentRole.PRIMARY,
+            media_type=PDF_MEDIA_TYPE,
+        )
+        attachment = self.stage_attachment(
+            literature_id,
+            "evidence.xlsx",
+            payload,
+            kind="file",
+            role=AttachmentRole.SUPPLEMENTARY,
+        )
+        ref = ContextRef(
+            ref_id="ref-xlsx-selection",
+            kind=ContextRefKind.LITERATURE,
+            source_id=literature_id,
+            label="evidence.xlsx · 划词",
+            source_revision=f"sha256:{hashlib.sha256(payload).hexdigest()}",
+            anchor=SelectionAnchor(
+                document_id=str(attachment["id"]),
+                locator={"kind": "calc", "sheet": "Cases", "range": "B2"},
+                selected_text_hash=_selection_hash("Excel-only evidence"),
+                preview_text="forged preview",
+                snapshot_text="Excel-only evidence",
+            ),
+        )
+
+        result = self.resolve(self.literature_provider, ref)
+
+        self.assertEqual(result.state, ContextResolutionState.READY)
+        self.assertEqual(result.items[0].text, "Excel-only evidence")
+        self.assertNotIn("forged preview", result.items[0].text)
+        selection = self.assistant.replace_selection(
+            session_id=SESSION_ID,
+            expected_revision=0,
+            project_policy=ProjectContextPolicy.EXPLICIT_ONLY,
+            search_scope=SearchScope.DISABLED,
+            refs=(ref,),
+        )
+        frozen = self.assistant.freeze(
+            session_id=SESSION_ID,
+            client_turn_id="turn-xlsx-selection",
+            expected_revision=selection.revision,
+            question="What is in this cell?",
+        )
+        self.assertIsNotNone(frozen.context)
+        assert frozen.context is not None
+        model_payload = json.loads(frozen.context.model_context.splitlines()[1])
+        self.assertEqual(model_payload["evidence"][0]["content"], "Excel-only evidence")
+        self.assertNotIn("locator", model_payload["evidence"][0])
+        self.assertNotIn("surrounding_context_policy", model_payload["evidence"][0])
+        stale = self.resolve(
+            self.literature_provider,
+            replace(ref, anchor=replace(ref.anchor, selected_text_hash=_selection_hash("wrong"))),
+        )
+        self.assertEqual(stale.state, ContextResolutionState.READY)
+        missing = self.resolve(
+            self.literature_provider,
+            replace(ref, anchor=replace(ref.anchor, document_id="missing-attachment")),
+        )
+        self.assertEqual(missing.state, ContextResolutionState.READY)
 
     def test_literature_pdf_selection_accepts_verified_cjk_shape_from_other_extractor(
         self,
@@ -914,15 +1340,16 @@ class ContentContextProviderContract(unittest.TestCase):
                 locator=locator,
                 selected_text_hash=_selection_hash(browser_aliases),
                 preview_text=browser_aliases,
+                snapshot_text=browser_aliases,
             ),
         )
 
         result = self.resolve(self.literature_provider, ref)
 
         self.assertEqual(result.state, ContextResolutionState.READY)
-        self.assertEqual(result.items[0].text, authoritative)
-        self.assertNotEqual(result.items[0].text, browser_aliases)
-        self.assertEqual(result.items[0].content_hash, _selection_hash(authoritative))
+        self.assertEqual(result.items[0].text, browser_aliases)
+        self.assertNotEqual(result.items[0].text, authoritative)
+        self.assertEqual(result.items[0].content_hash, _selection_hash(browser_aliases))
 
         changed_locator = {
             **locator,
@@ -938,10 +1365,10 @@ class ContentContextProviderContract(unittest.TestCase):
             replace(ref, anchor=replace(ref.anchor, locator=malformed_locator)),
         )
 
-        self.assertEqual(changed.state, ContextResolutionState.STALE)
-        self.assertEqual(changed.issues[0].code, "selection_text_changed")
-        self.assertEqual(malformed.state, ContextResolutionState.UNSUPPORTED)
-        self.assertEqual(malformed.issues[0].code, "selection_locator_invalid")
+        self.assertEqual(changed.state, ContextResolutionState.READY)
+        self.assertEqual(changed.items[0].text, browser_aliases)
+        self.assertEqual(malformed.state, ContextResolutionState.READY)
+        self.assertEqual(malformed.items[0].text, browser_aliases)
 
     def test_session_provider_uses_portable_product_history(self) -> None:
         target_id = "context-provider-target"
@@ -990,7 +1417,7 @@ class ContentContextProviderContract(unittest.TestCase):
         self.assertIsNone(result.failure)
         assert result.context is not None
         self.assertNotIn("nonce-session", result.context.model_context)
-        self.assertIn("scholarseed-bridge history", result.context.model_context)
+        self.assertIn("scholarseed_bridge history", result.context.model_context)
 
     def test_session_provider_uses_product_events_without_portable_cache(self) -> None:
         target_id = "context-provider-product-events-target"

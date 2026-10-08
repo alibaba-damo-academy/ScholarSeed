@@ -40,9 +40,12 @@ from scholarseed_runtime.contract.interaction import (
     CallbackKind,
     RuntimeCallbackRequest,
     RuntimeCallbackResponse,
+    RuntimeServiceTool,
+    service_tool_profile,
 )
 from scholarseed_runtime.contract.model import (
     ModelCapabilities,
+    ModelCatalogEntry,
     ModelConnectionMode,
     ModelCredential,
     ModelCredentialPort,
@@ -63,6 +66,7 @@ from scholarseed_runtime.contract.runtime import (
 from scholarseed_runtime.contract.secret import (
     LaunchSecret,
     LaunchSecretIntent,
+    LaunchSecretScope,
     RuntimeSecret,
     RuntimeSecretPort,
 )
@@ -85,9 +89,11 @@ __all__ = [
     "InterruptRequest",
     "LaunchSecret",
     "LaunchSecretIntent",
+    "LaunchSecretScope",
     "InventoryRequest",
     "ModelConnectionMode",
     "ModelCapabilities",
+    "ModelCatalogEntry",
     "ModelToolProtocol",
     "ModelCredential",
     "ModelCredentialPort",
@@ -101,6 +107,8 @@ __all__ = [
     "RuntimeBinding",
     "RuntimeCallbackRequest",
     "RuntimeCallbackResponse",
+    "RuntimeServiceTool",
+    "service_tool_profile",
     "RuntimeCapability",
     "RuntimeCapabilityName",
     "RuntimeConfigurationIntent",

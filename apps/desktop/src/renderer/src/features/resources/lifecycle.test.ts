@@ -12,6 +12,7 @@ import {
   deriveLinkOverlapTarget,
   deriveCoveredLinkRoots,
   linkMountNameFromSource,
+  openResourceDirectory,
   refreshesResourceTree,
   relocateExpandedResourcePaths,
   RESOURCE_ROOT_DIRECTORY,
@@ -125,6 +126,55 @@ const tree: ResourceNode[] = [
     linkRoot: otherLinkedRoot
   }
 ]
+
+test('opening a collapsed linked directory selects and expands it without changing its mount', () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree, expanded: { unrelated: true } }
+  const opened = openResourceDirectory(resource, otherLinkedRoot.mountPath)
+  assert.equal(opened.selected, otherLinkedRoot.mountPath)
+  assert.deepEqual(opened.expanded, { unrelated: true, [otherLinkedRoot.mountPath]: true })
+  assert.equal(opened.tree, tree)
+  assert.equal(opened.tree[3].linkRoot, otherLinkedRoot)
+  assert.deepEqual(resource.expanded, { unrelated: true })
+})
+
+test('opening a directory is idempotent and preserves loaded children', () => {
+  const opened = openResourceDirectory({ ...INITIAL_RESOURCE_STATE, tree }, linkedRoot.mountPath)
+  assert.deepEqual(openResourceDirectory(opened, linkedRoot.mountPath), opened)
+  assert.equal(opened.tree[2].children, tree[2].children)
+})
+
+test('opening a nested directory expands its ancestors without collapsing unrelated rows', () => {
+  const path = 'resources/本地目录/子目录'
+  const opened = openResourceDirectory({
+    ...INITIAL_RESOURCE_STATE,
+    tree,
+    expanded: { [linkedRoot.mountPath]: true }
+  }, path)
+  assert.equal(opened.selected, path)
+  assert.deepEqual(opened.expanded, {
+    [linkedRoot.mountPath]: true,
+    'resources/本地目录': true,
+    [path]: true
+  })
+})
+
+test('opening an empty directory still selects and expands it', () => {
+  const path = 'resources/empty'
+  const resource = {
+    ...INITIAL_RESOURCE_STATE,
+    tree: [{ path, name: 'empty', kind: 'dir' as const, count: 0, children: [] }]
+  }
+  const opened = openResourceDirectory(resource, path)
+  assert.equal(opened.selected, path)
+  assert.equal(opened.expanded[path], true)
+  assert.equal(opened.tree, resource.tree)
+})
+
+test('opening a missing directory or a file leaves resource state unchanged', () => {
+  const resource = { ...INITIAL_RESOURCE_STATE, tree }
+  assert.equal(openResourceDirectory(resource, 'resources/missing'), resource)
+  assert.equal(openResourceDirectory(resource, 'resources/本地目录/报告.final.PDF'), resource)
+})
 
 test('rename locks the final real suffix while directories and dotfiles remain whole', () => {
   assert.deepEqual(resourceNameParts('note.md', 'file'), { basename: 'note', suffix: '.md' })
