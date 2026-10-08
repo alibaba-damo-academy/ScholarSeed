@@ -65,6 +65,7 @@ import {
 } from '../../api'
 import { COMPOSER_FOCUS_EVENT } from '../../reference'
 import { restoreComposerDraft } from '../../draft'
+import { ComposerEditor } from './Editor'
 import { ModelMenu } from './ModelMenu'
 import { LoginPrompt } from './LoginPrompt'
 import { reasoningPreference } from '../../reasoning'
@@ -171,7 +172,6 @@ import {
   PopoverTrigger,
   SearchBox,
   Spinner,
-  Textarea,
   Tooltip
 } from '../ui'
 import { IconFont } from '../primitive'
@@ -519,7 +519,6 @@ export function Composer({
     files: state.workspaceFilesOpen,
     documents: Object.keys(documents.tabs).length > 0
   })
-  const composing = React.useRef(false)
   const submissionInFlight = React.useRef(false)
   const composerInputRef = React.useRef<HTMLTextAreaElement>(null)
   const attachmentInputRef = React.useRef<HTMLInputElement>(null)
@@ -585,19 +584,6 @@ export function Composer({
     window.addEventListener(COMPOSER_FOCUS_EVENT, focus)
     return () => window.removeEventListener(COMPOSER_FOCUS_EVENT, focus)
   }, [])
-  const resizeComposer = React.useCallback((): void => {
-    const input = composerInputRef.current
-    if (!input) return
-    const maxHeight = home
-      ? HOME_COMPOSER_MAX_HEIGHT_PX
-      : COMPOSER_MAX_HEIGHT_PX
-    input.style.height = '0px'
-    input.style.height = `${Math.min(input.scrollHeight, maxHeight)}px`
-    input.style.overflowY = input.scrollHeight > maxHeight ? 'auto' : 'hidden'
-  }, [home])
-  React.useLayoutEffect(() => {
-    resizeComposer()
-  }, [resizeComposer, text])
   // @ 引用候选的键盘导航 (↑↓ 移动 · Enter/Tab 选中 · Esc 关闭)。
   // dismissed: Esc/选中后压住弹层, 直到下次输入 (onChange) 复位。
   const [selIdx, setSelIdx] = React.useState(0)
@@ -1883,6 +1869,47 @@ export function Composer({
     })
   }
 
+  const composerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (atActive) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        if (candCount) setSelIdx(index => (index + 1) % candCount)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        if (candCount) setSelIdx(index => (index - 1 + candCount) % candCount)
+        return
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (candCount) chooseAt(sel)
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setDismissed(true)
+        return
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submit()
+    }
+  }
+  const composerKeyDownRef = React.useRef(composerKeyDown)
+  React.useLayoutEffect(() => {
+    composerKeyDownRef.current = composerKeyDown
+  })
+  const handleComposerKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    composerKeyDownRef.current(event)
+  }, [])
+  const handleComposerChange = React.useCallback(() => {
+    setSelIdx(0)
+    setDismissed(false)
+  }, [])
+
   React.useEffect(() => {
     window.__scholarseedSubmitMessage = (message: string) => submit(message, [])
     return () => {
@@ -2879,62 +2906,18 @@ export function Composer({
                 </div>
               </div>
             )}
-            <Textarea
-              ref={composerInputRef}
+            <ComposerEditor
+              inputRef={composerInputRef}
+              draft={composerDraft}
+              maxHeight={home ? HOME_COMPOSER_MAX_HEIGHT_PX : COMPOSER_MAX_HEIGHT_PX}
               data-testid="composer-input"
               aria-label={t('composer.inputLabel')}
               rows={1}
               wrap="soft"
               spellCheck={false}
               unstyled
-              value={text}
-              onChange={(e) => {
-                composerDraft.set(e.target.value)
-                setSelIdx(0)
-                setDismissed(false)
-              }}
-              onCompositionStart={() => {
-                composing.current = true
-              }}
-              onCompositionEnd={() => {
-                composing.current = false
-              }}
-              onKeyDown={(e) => {
-                const ne = e.nativeEvent as KeyboardEvent & {
-                  isComposing?: boolean
-                }
-                if (composing.current || ne.isComposing || ne.keyCode === 229)
-                  return
-                // @ 面板开着时，键盘操作不得落入消息发送链路。
-                if (atActive) {
-                  if (e.key === 'ArrowDown') {
-                    e.preventDefault()
-                    if (candCount) setSelIdx((i) => (i + 1) % candCount)
-                    return
-                  }
-                  if (e.key === 'ArrowUp') {
-                    e.preventDefault()
-                    if (candCount)
-                      setSelIdx((i) => (i - 1 + candCount) % candCount)
-                    return
-                  }
-                  if (e.key === 'Enter' || e.key === 'Tab') {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    if (candCount) chooseAt(sel)
-                    return
-                  }
-                  if (e.key === 'Escape') {
-                    e.preventDefault()
-                    setDismissed(true)
-                    return
-                  }
-                }
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  void submit()
-                }
-              }}
+              onChange={handleComposerChange}
+              onKeyDown={handleComposerKeyDown}
               placeholder={
                 creditBlocked
                   ? t('composer.creditsPlaceholder')

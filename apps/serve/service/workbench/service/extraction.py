@@ -47,6 +47,7 @@ TEXT_LINE_KIND = "textlinehorizontal"
 REVISION_PREFIX = "sha256:"
 START_PAGE_OPTION = "--start-page"
 END_PAGE_OPTION = "--end-page"
+PARSER_ENCODING = "utf-8"
 UNDECODED_CHARACTER = re.compile(r"\(cid:\d+\)|\ufffd")
 POSITIONED_WORD = re.compile(r"\S+")
 CJK_CHARACTER = re.compile(
@@ -485,12 +486,20 @@ def main() -> int:
             start_page=arguments.start_page,
             end_page=arguments.end_page,
         )
-        print(json.dumps({"ok": True, "index": asdict(result)}, ensure_ascii=False))
+        sys.stdout.buffer.write(
+            json.dumps({"ok": True, "index": asdict(result)}, ensure_ascii=False).encode(
+                PARSER_ENCODING
+            )
+        )
         return 0
     except Exception as error:
         # Process boundary: malformed parser input must not terminate Serve. Preserve
         # an explicit failed result; no partial index is published as success.
-        print(json.dumps({"ok": False, "error": f"pdf_parse_failed:{type(error).__name__}"}))
+        sys.stdout.buffer.write(
+            json.dumps({"ok": False, "error": f"pdf_parse_failed:{type(error).__name__}"}).encode(
+                PARSER_ENCODING
+            )
+        )
         return 1
 
 

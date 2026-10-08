@@ -498,9 +498,15 @@
   "finalizations": {
     "notReadyTitle": "Review snapshot not ready",
     "refresh": "Refresh review snapshot status",
+    "refreshAction": "Refresh status",
     "more": "More unavailable rounds",
     "startedAt": "Round started at",
     "reason": "Reason:",
+    "reasons": {
+      "readFailed": "Could not read a file, so the review snapshot for this turn could not be saved.",
+      "snapshotUnavailable": "The review snapshot at the end of this turn was not saved and cannot be recovered.",
+      "unknown": "The review snapshot for this turn could not be processed."
+    },
     "loadFailed": "Could not load review snapshot status. Try again later.",
     "retryFailed": "Review snapshot retry did not complete ({{detail}}). Current files were not changed.",
     "openFailed": "Could not open {{path}}. Check that the file is still accessible.",

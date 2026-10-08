@@ -489,9 +489,15 @@
   "finalizations": {
     "notReadyTitle": "文件审阅快照未就绪",
     "refresh": "刷新审阅快照状态",
+    "refreshAction": "刷新状态",
     "more": "更多未就绪回合",
     "startedAt": "回合开始于",
     "reason": "原因：",
+    "reasons": {
+      "readFailed": "无法读取文件，未能保存本轮审阅快照。",
+      "snapshotUnavailable": "本轮结束时的审阅快照未保存，无法恢复。",
+      "unknown": "本轮审阅快照处理失败。"
+    },
     "loadFailed": "无法读取审阅快照状态，请稍后重试。",
     "retryFailed": "审阅快照重试未完成（{{detail}}）。文件现状未改写。",
     "openFailed": "无法打开 {{path}}，请检查文件是否仍可访问。",

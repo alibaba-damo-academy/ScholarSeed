@@ -30,6 +30,7 @@ from service.platform.pdf import PdfDocumentError, PdfPasswordError, pdf_documen
 from service.workbench.service.extraction import (
     END_PAGE_OPTION,
     MAX_DOCUMENT_PAGES,
+    PARSER_ENCODING,
     START_PAGE_OPTION,
     decode_index,
     index_identity,
@@ -349,11 +350,20 @@ class PdfIndexService:
         if not output:
             raise ValueError(PARSER_FAILED if returncode else PARSER_INVALID_OUTPUT)
         try:
-            result = json.loads(output)
+            result = json.loads(output.decode(PARSER_ENCODING))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise ValueError(PARSER_FAILED if returncode else PARSER_INVALID_OUTPUT) from error
+            code = PARSER_FAILED if returncode else PARSER_INVALID_OUTPUT
+            LOGGER.warning(
+                "PDF parser output rejected: error=%s returncode=%s output_bytes=%s cause=%s",
+                code,
+                returncode,
+                len(output),
+                type(error).__name__,
+            )
+            raise ValueError(code) from error
         if returncode:
             if isinstance(result, dict) and isinstance(result.get("error"), str):
+                LOGGER.warning("PDF parser result failed: error=%s", result["error"])
                 raise ValueError(result["error"])
             raise ValueError(PARSER_FAILED)
         if (
@@ -398,7 +408,10 @@ class PdfIndexService:
         if process.returncode or not output:
             diagnostic = stderr[-MAXIMUM_PARSER_STDERR_BYTES:].decode("utf-8", errors="replace")
             LOGGER.warning(
-                "PDF parser subprocess failed",
+                "PDF parser subprocess failed: returncode=%s output_bytes=%s stderr=%s",
+                process.returncode,
+                len(output),
+                diagnostic,
                 extra={
                     "parser_returncode": process.returncode,
                     "parser_stderr": diagnostic,
@@ -490,7 +503,12 @@ class PdfIndexService:
                     f"UPDATE {INDEX_TABLE} SET state=?,error=?,updated_at=? WHERE index_id=? AND attempt_id=?",
                     (FAILED, code, time.time(), key[1], attempt),
                 )
-            LOGGER.warning("PDF index failed", extra={"index_id": key[1], "error_code": code})
+            LOGGER.warning(
+                "PDF index failed: index_id=%s error=%s",
+                key[1],
+                code,
+                extra={"index_id": key[1], "error_code": code},
+            )
         finally:
             with self._lock:
                 self._jobs.pop(key, None)
